@@ -39,6 +39,7 @@ Rules:
 - When editing files, prefer small targeted changes.
 - Keep responses short unless the user asks for detail.
 - If a tool fails, explain the failure briefly and try a better next step.
+- When the task is complete, call the `quit` tool to end the interaction.
 """
 
 
@@ -249,6 +250,10 @@ async def _tool_websearch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
     return "\n".join(results) if results else "No results."
 
 
+async def _tool_quit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    return "Interaction ended."
+
+
 TOOL_DEFS = [
     {
         "type": "function",
@@ -391,10 +396,18 @@ TOOL_DEFS = [
             "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "quit",
+            "description": "Call this when the task is complete and the interaction should end.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
-TOOL_HANDLERS = {
+TOOL_HANDLERS: dict[str, Any] = {
     "send_message": _tool_send_message,
     "schedule_task": _tool_schedule_task,
     "list_tasks": _tool_list_tasks,
@@ -409,6 +422,7 @@ TOOL_HANDLERS = {
     "Bash": _tool_bash,
     "WebFetch": _tool_webfetch,
     "WebSearch": _tool_websearch,
+    "quit": _tool_quit,
 }
 
 
@@ -432,39 +446,26 @@ def _assistant_text(message: dict[str, Any]) -> str:
     return ""
 
 
-async def _chat(messages: list[dict[str, Any]]) -> dict[str, Any]:
+async def _call_llm(messages: list[dict]) -> dict:
     payload = {
         "model": OPENAI_MODEL,
         "messages": messages,
         "tools": TOOL_DEFS,
         "tool_choice": "auto",
     }
-    command = [
-        "curl.exe",
-        "-sS",
-        "-X",
-        "POST",
-        f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
-        "-H",
-        "content-type: application/json",
-    ]
-    if OPENAI_API_KEY:
-        command.extend(["-H", f"authorization: Bearer {OPENAI_API_KEY}"])
-    command.extend(["--data-binary", "@-"])
-
-    proc = await asyncio.create_subprocess_exec(
-        *command,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-    if proc.returncode != 0:
-        raise RuntimeError(f"curl failed: {stderr.decode('utf-8', errors='replace')}")
-    data = json.loads(stdout.decode("utf-8", errors="replace"))
-    if "error" in data:
-        raise RuntimeError(f"LLM request failed: {data['error']}")
-    return data["choices"][0]["message"]
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]
 
 
 async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
@@ -478,18 +479,43 @@ async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str, us
 
     final_text = ""
     for _ in range(_MAX_TOOL_ROUNDS):
-        assistant = await _chat(messages)
+        try:
+            assistant = await _call_llm(messages)
+        except Exception as exc:
+            logger.exception("LLM call failed")
+            final_text = f"LLM call failed: {exc}"
+            break
+
         assistant_entry: dict[str, Any] = {"role": "assistant"}
-        if "content" in assistant:
-            assistant_entry["content"] = assistant.get("content") or ""
+        if assistant.get("content"):
+            assistant_entry["content"] = assistant["content"]
+        else:
+            assistant_entry["content"] = ""
         if assistant.get("tool_calls"):
             assistant_entry["tool_calls"] = assistant["tool_calls"]
         messages.append(assistant_entry)
 
         tool_calls = assistant.get("tool_calls") or []
-        if not tool_calls:
+
+        # Check if LLM called the quit tool
+        if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
             final_text = _assistant_text(assistant).strip() or "Done."
+            # Still execute the quit tool to get its return message, but don't loop further
+            for tool_call in tool_calls:
+                if tool_call.get("function", {}).get("name") == "quit":
+                    call_id = tool_call["id"]
+                    result = "Interaction ended."
+                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
             break
+
+        if not tool_calls:
+            text = _assistant_text(assistant).strip()
+            if text:
+                final_text = text
+                break
+            else:
+                # No tool calls and no text content -- go back to loop start (retry)
+                continue
 
         for tool_call in tool_calls:
             call_id = tool_call["id"]
@@ -517,3 +543,31 @@ async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str, us
 
 async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     return await _run_agent_inner(prompt, bot, chat_id, db_path, use_session=False, notify_state=notify_state)
+
+
+async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
+    """Agent call triggered by heartbeat. No session persistence."""
+    return await _run_agent_inner(prompt, bot, chat_id, db_path, use_session=False)
+
+
+async def run_steward_agent(conversation_text: str, soulmd_content: str, bot: Any, chat_id: int, db_path: str) -> str:
+    """Steward Agent call. Reads recent conversation + current SOUL.md, outputs modification instructions.
+    Uses a different system prompt and no session persistence.
+    """
+    steward_prompt = f"""You are a memory steward. Your job is to update Cyrene's SOUL.md based on recent conversations.
+
+Read the recent conversation and current SOUL.md, then output:
+- APPEND: what new information to add
+- ERASE: what old information to remove
+- MERGE: what to consolidate
+- Or SKIP if nothing important
+
+SOUL.md:
+{soulmd_content}
+
+Recent conversation:
+{conversation_text}
+
+Output only the modifications needed, one per line, prefixed with APPEND/ERASE/MERGE/SKIP."""
+
+    return await _run_agent_inner(steward_prompt, bot, chat_id, db_path, use_session=False)
