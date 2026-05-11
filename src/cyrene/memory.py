@@ -1,44 +1,65 @@
-from cyrene.config import ASSISTANT_NAME, WORKSPACE_DIR
-from cyrene.conversations import ensure_conversations_dir
+"""Memory system -- workspace initialization and memory context assembly.
 
-_INITIAL_CLAUDE_MD = f"""# {ASSISTANT_NAME} - Personal AI Assistant
-
-You are {ASSISTANT_NAME}, a personal AI assistant running on Telegram.
-
-## Your Capabilities
-- You can read, write, and edit files in your workspace
-- You can run bash commands
-- You can search the web
-- You can send messages to the user via `mcp__cyrene__send_message`
-- You can schedule tasks via `mcp__cyrene__schedule_task`
-- You can manage tasks via `mcp__cyrene__list_tasks`, `mcp__cyrene__pause_task`, `mcp__cyrene__resume_task`, `mcp__cyrene__cancel_task`
-
-## Task Scheduling
-When the user asks you to schedule or remind something:
-- Use `schedule_task` with schedule_type "cron" for recurring patterns (e.g. "0 9 * * 1" = every Monday 9am)
-- Use `schedule_task` with schedule_type "interval" for periodic tasks (value in milliseconds, e.g. "3600000" = every hour)
-- Use `schedule_task` with schedule_type "once" for one-time tasks (value is ISO 8601 timestamp)
-
-## Memory
-- This file (CLAUDE.md) is your long-term memory for preferences and important facts
-- The `conversations/` folder contains your chat history, organized by date (YYYY-MM-DD.md)
-- You can search conversations/ to recall past discussions
-- Update this file anytime using Write/Edit tools to remember important information
-
-## Conversation History
-Your conversation history is stored in `conversations/` folder:
-- Each file is named by date (e.g., `2024-01-15.md`)
-- Use Glob and Grep to search past conversations
-- Example: `Grep pattern="weather" path="conversations/"` to find weather-related chats
-
-## User Preferences
-(Add user preferences as you learn them)
+Replaces the old static CLAUDE.md prompt with a living SOUL.md memory that
+the Steward Agent can read, write, and evolve over time.
 """
+
+import logging
+from datetime import datetime, timezone
+
+from cyrene.config import WORKSPACE_DIR
+from cyrene.conversations import CONVERSATIONS_DIR, ensure_conversations_dir
+from cyrene.soul import ensure_soul, read_shallow_memory
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_workspace() -> None:
-    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    ensure_conversations_dir()
-    claude_md = WORKSPACE_DIR / "CLAUDE.md"
-    if not claude_md.exists():
-        claude_md.write_text(_INITIAL_CLAUDE_MD)
+    """Initialize workspace: create directories, SOUL.md, and conversations/.
+
+    Signature is kept unchanged so that ``__main__.py`` and ``local_cli.py``
+    continue to work without modification.
+    """
+    try:
+        WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+        ensure_soul()
+        ensure_conversations_dir()
+        logger.info("Workspace initialized at %s", WORKSPACE_DIR)
+    except Exception:
+        logger.exception("Failed to initialize workspace")
+
+
+def get_memory_context() -> str:
+    """Assemble the memory context to inject into the LLM system prompt.
+
+    Returns:
+        A Markdown string containing:
+          - Core SOUL.md sections (shallow memory, with expired temporaries
+            filtered out).
+          - A brief note about today's conversation activity.
+    """
+    parts: list[str] = []
+
+    # 1. SOUL.md shallow memory (core sections + non-expired temporaries)
+    try:
+        shallow = read_shallow_memory()
+        if shallow:
+            parts.append(shallow)
+    except Exception:
+        logger.exception("Failed to read shallow memory")
+
+    # 2. Today's conversation summary
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_file = CONVERSATIONS_DIR / f"{today}.md"
+        if today_file.exists():
+            raw = today_file.read_text(encoding="utf-8")
+            exchange_count = raw.count("## ") - 1  # subtract the file-level H1
+            if exchange_count > 0:
+                parts.append(f"---\nToday's conversation has {exchange_count} exchange(s) so far.")
+    except Exception:
+        logger.debug("Could not read today's conversation file", exc_info=True)
+
+    result = "\n\n".join(parts).strip()
+    logger.debug("Memory context assembled (%d chars)", len(result))
+    return result
