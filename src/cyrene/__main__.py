@@ -1,10 +1,10 @@
 import asyncio
 import logging
 
-from nanoclaw.bot import setup_bot
-from nanoclaw.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, STORE_DIR, WORKSPACE_DIR
-from nanoclaw.db import init_db
-from nanoclaw.memory import ensure_workspace
+from cyrene.bot import setup_bot
+from cyrene.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, STORE_DIR, WORKSPACE_DIR
+from cyrene.db import init_db
+from cyrene.memory import ensure_workspace
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

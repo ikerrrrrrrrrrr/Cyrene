@@ -1,10 +1,10 @@
 import asyncio
 import sys
 
-from nanoclaw.agent import clear_session_id, run_agent
-from nanoclaw.config import ASSISTANT_NAME, DB_PATH, DATA_DIR, STORE_DIR, WORKSPACE_DIR
-from nanoclaw.db import init_db
-from nanoclaw.memory import ensure_workspace
+from cyrene.agent import clear_session_id, run_agent
+from cyrene.config import ASSISTANT_NAME, DB_PATH, DATA_DIR, STORE_DIR, WORKSPACE_DIR
+from cyrene.db import init_db
+from cyrene.memory import ensure_workspace
 
 
 class LocalBot:

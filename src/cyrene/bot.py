@@ -4,10 +4,10 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from nanoclaw.agent import run_agent, clear_session_id
-from nanoclaw.conversations import archive_exchange
-from nanoclaw.config import ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
-from nanoclaw.scheduler import setup_scheduler
+from cyrene.agent import run_agent, clear_session_id
+from cyrene.conversations import archive_exchange
+from cyrene.config import ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
+from cyrene.scheduler import setup_scheduler
 
 logger = logging.getLogger(__name__)
 

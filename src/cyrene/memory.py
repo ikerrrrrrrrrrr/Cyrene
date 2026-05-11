@@ -1,5 +1,5 @@
-from nanoclaw.config import ASSISTANT_NAME, WORKSPACE_DIR
-from nanoclaw.conversations import ensure_conversations_dir
+from cyrene.config import ASSISTANT_NAME, WORKSPACE_DIR
+from cyrene.conversations import ensure_conversations_dir
 
 _INITIAL_CLAUDE_MD = f"""# {ASSISTANT_NAME} - Personal AI Assistant
 
@@ -9,9 +9,9 @@ You are {ASSISTANT_NAME}, a personal AI assistant running on Telegram.
 - You can read, write, and edit files in your workspace
 - You can run bash commands
 - You can search the web
-- You can send messages to the user via `mcp__nanoclaw__send_message`
-- You can schedule tasks via `mcp__nanoclaw__schedule_task`
-- You can manage tasks via `mcp__nanoclaw__list_tasks`, `mcp__nanoclaw__pause_task`, `mcp__nanoclaw__resume_task`, `mcp__nanoclaw__cancel_task`
+- You can send messages to the user via `mcp__cyrene__send_message`
+- You can schedule tasks via `mcp__cyrene__schedule_task`
+- You can manage tasks via `mcp__cyrene__list_tasks`, `mcp__cyrene__pause_task`, `mcp__cyrene__resume_task`, `mcp__cyrene__cancel_task`
 
 ## Task Scheduling
 When the user asks you to schedule or remind something:

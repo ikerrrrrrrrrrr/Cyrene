@@ -12,8 +12,8 @@ from urllib.parse import quote
 import httpx
 from croniter import croniter
 
-from nanoclaw import db
-from nanoclaw.config import (
+from cyrene import db
+from cyrene.config import (
     DATA_DIR,
     OPENAI_API_KEY,
     OPENAI_BASE_URL,

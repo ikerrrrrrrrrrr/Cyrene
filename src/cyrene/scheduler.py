@@ -5,9 +5,9 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from croniter import croniter
 
-from nanoclaw import db
-from nanoclaw.agent import run_task_agent
-from nanoclaw.config import SCHEDULER_INTERVAL
+from cyrene import db
+from cyrene.agent import run_task_agent
+from cyrene.config import SCHEDULER_INTERVAL
 
 logger = logging.getLogger(__name__)
 

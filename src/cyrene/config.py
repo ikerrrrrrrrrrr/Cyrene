@@ -21,7 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 WORKSPACE_DIR = BASE_DIR / "workspace"
 STORE_DIR = BASE_DIR / "store"
 DATA_DIR = BASE_DIR / "data"
-DB_PATH = STORE_DIR / "nanoclaw.db"
+DB_PATH = STORE_DIR / "cyrene.db"
 STATE_FILE = DATA_DIR / "state.json"
 
 

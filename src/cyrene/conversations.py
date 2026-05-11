@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from nanoclaw.config import WORKSPACE_DIR
+from cyrene.config import WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
 
