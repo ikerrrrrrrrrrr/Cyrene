@@ -7,7 +7,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from cyrene.agent import run_agent, clear_session_id
 from cyrene.conversations import archive_exchange
 from cyrene.config import ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
-from cyrene.scheduler import setup_scheduler
+from cyrene.scheduler import reset_lottery, setup_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,9 @@ async def _handle_message(update: Update, context) -> None:
 
     chat_id = update.effective_chat.id
     user_text = update.message.text
+
+    # User initiative resets the proactive lottery impulse
+    reset_lottery()
 
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 

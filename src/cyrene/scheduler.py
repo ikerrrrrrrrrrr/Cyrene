@@ -1,34 +1,125 @@
+"""Scheduler, heartbeat, and proactive-messaging lottery system.
+
+Responsibilities
+----------------
+1. **Scheduled tasks** -- Check the SQLite database for due tasks and execute
+   them (inherited from the original scheduler).
+2. **Heartbeat** -- A lightweight periodic tick that triggers the checks above
+   and, on a coarser cadence (every ~30 min), also runs the proactive lottery.
+3. **Lottery** -- A probability-driven mechanism that occasionally prompts the
+   assistant to send an unsolicited message to the user.  State is persisted
+   to ``data/lottery_state.json`` so that it survives restarts.
+"""
+
+import asyncio
+import json
 import logging
+import random
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from croniter import croniter
 
 from cyrene import db
 from cyrene.agent import run_task_agent
-from cyrene.config import SCHEDULER_INTERVAL
+from cyrene.config import BASE_DIR, OWNER_ID, SCHEDULER_INTERVAL
 
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
 
+# ---------------------------------------------------------------------------
+# Lottery state  (persisted to disk)
+# ---------------------------------------------------------------------------
 
-def setup_scheduler(bot, db_path: str) -> AsyncIOScheduler:
-    global _scheduler
-    _scheduler = AsyncIOScheduler()
-    _scheduler.add_job(
-        _check_tasks,
-        "interval",
-        seconds=SCHEDULER_INTERVAL,
-        args=[bot, db_path],
-        id="check_tasks",
-        replace_existing=True,
+_LOTTERY_STATE: dict[str, float] = {
+    "probability": 0.0,       # current draw probability 0.0 .. 1.0
+    "delta": 0.15,            # increment on each failed draw
+    "max_probability": 0.85,  # ceiling for the accumulated probability
+}
+_LOTTERY_FILE = BASE_DIR / "data" / "lottery_state.json"
+
+# Big-heartbeat cadence: perform proactive checks every ~30 minutes.
+# Converted to the number of SCHEDULER_INTERVAL ticks.
+_BIG_HEARTBEAT_INTERVAL = max(1, 1800 // SCHEDULER_INTERVAL)
+_heartbeat_tick: int = 0
+
+
+def _load_lottery_state() -> None:
+    """Restore lottery state from ``_LOTTERY_FILE``."""
+    global _LOTTERY_STATE
+    try:
+        if _LOTTERY_FILE.exists():
+            data = json.loads(_LOTTERY_FILE.read_text(encoding="utf-8"))
+            _LOTTERY_STATE["probability"] = float(data.get("probability", 0.0))
+            _LOTTERY_STATE["delta"] = float(data.get("delta", 0.15))
+            _LOTTERY_STATE["max_probability"] = float(
+                data.get("max_probability", 0.85)
+            )
+            logger.debug(
+                "Loaded lottery state: probability=%.2f",
+                _LOTTERY_STATE["probability"],
+            )
+    except Exception:
+        logger.exception("Failed to load lottery state, using defaults")
+
+
+def _save_lottery_state() -> None:
+    """Persist current lottery state to ``_LOTTERY_FILE``."""
+    try:
+        _LOTTERY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LOTTERY_FILE.write_text(
+            json.dumps(_LOTTERY_STATE, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.exception("Failed to save lottery state")
+
+
+def reset_lottery() -> None:
+    """Reset the lottery probability to zero.
+
+    Called when the user sends a message -- user initiative resets the
+    proactive impulse.
+    """
+    _LOTTERY_STATE["probability"] = 0.0
+    _save_lottery_state()
+    logger.debug("Lottery probability reset by user activity")
+
+
+def _is_daytime() -> bool:
+    """``True`` between 06:00 and 22:00 in local time."""
+    hour = datetime.now().hour
+    return 6 <= hour < 22
+
+
+def _lottery_draw() -> bool:
+    """Perform a probabilistic draw.
+
+    * On **win** (random value < current probability): probability is reset
+      to zero and ``True`` is returned.
+    * On **loss**: probability is increased by *delta* (capped at
+      *max_probability*) and ``False`` is returned.
+    """
+    prob = _LOTTERY_STATE["probability"]
+    if random.random() < prob:
+        _LOTTERY_STATE["probability"] = 0.0
+        return True
+    _LOTTERY_STATE["probability"] = min(
+        _LOTTERY_STATE["probability"] + _LOTTERY_STATE["delta"],
+        _LOTTERY_STATE["max_probability"],
     )
-    return _scheduler
+    return False
 
 
-async def _check_tasks(bot, db_path: str) -> None:
+# ---------------------------------------------------------------------------
+# Scheduled-task execution  (preserved from the original scheduler)
+# ---------------------------------------------------------------------------
+
+async def _check_and_execute_tasks(bot, db_path: str) -> None:
+    """Query all due tasks from the database and execute each one."""
     try:
         tasks = await db.get_due_tasks(db_path)
     except Exception:
@@ -43,41 +134,176 @@ async def _check_tasks(bot, db_path: str) -> None:
 
 
 async def _execute_task(task: dict, bot, db_path: str) -> None:
+    """Run a single scheduled task and update its next-run time."""
     task_id = task["id"]
-    task_chat_id = task["chat_id"]  # Use chat_id from task, not global OWNER_ID
+    task_chat_id = task["chat_id"]
     prompt = task["prompt"]
-    logger.info("Executing task %s for chat %s: %s", task_id, task_chat_id, prompt[:80])
+    logger.info(
+        "Executing task %s for chat %s: %s",
+        task_id, task_chat_id, prompt[:80],
+    )
 
-    wrapped_prompt = f"You are executing a scheduled task. You MUST use the send_message tool to notify the user in Telegram. Task: {prompt}"
-    notify_state = {"sent": False}
+    wrapped_prompt = (
+        "You are executing a scheduled task. "
+        "You MUST use the send_message tool to notify the user in Telegram. "
+        f"Task: {prompt}"
+    )
+    notify_state: dict[str, bool] = {"sent": False}
 
     start = time.monotonic()
     try:
-        result = await run_task_agent(wrapped_prompt, bot, task_chat_id, db_path, notify_state)
+        result = await run_task_agent(
+            wrapped_prompt, bot, task_chat_id, db_path, notify_state,
+        )
 
-        # Fallback to avoid silent runs when the model forgets to call send_message.
+        # Fallback: if the model forgot to call send_message, send a plain
+        # reminder so the task doesn't go completely silent.
         if not notify_state["sent"]:
-            await bot.send_message(chat_id=task_chat_id, text=f"⏰ 定时提醒：{prompt}")
+            await bot.send_message(
+                chat_id=task_chat_id,
+                text=f"Reminder: {prompt}",
+            )
 
         duration_ms = int((time.monotonic() - start) * 1000)
-        await db.log_task_run(db_path, task_id, duration_ms, "success", result=result)
+        await db.log_task_run(
+            db_path, task_id, duration_ms, "success", result=result,
+        )
     except Exception as e:
         duration_ms = int((time.monotonic() - start) * 1000)
-        await db.log_task_run(db_path, task_id, duration_ms, "error", error=str(e))
+        await db.log_task_run(
+            db_path, task_id, duration_ms, "error", error=str(e),
+        )
         result = f"Error: {e}"
 
-    # Calculate next_run
+    # Calculate next_run based on schedule type
     stype = task["schedule_type"]
     svalue = task["schedule_value"]
     now = datetime.now(timezone.utc)
 
-    if stype == "cron":
-        next_run = croniter(svalue, now).get_next(datetime).isoformat()
-        await db.update_task_after_run(db_path, task_id, result, next_run, "active")
-    elif stype == "interval":
-        next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
-        await db.update_task_after_run(db_path, task_id, result, next_run, "active")
-    elif stype == "once":
-        await db.update_task_after_run(db_path, task_id, result, None, "completed")
-    else:
-        logger.warning("Unknown schedule_type %s for task %s", stype, task_id)
+    try:
+        if stype == "cron":
+            next_run = croniter(svalue, now).get_next(datetime).isoformat()
+            await db.update_task_after_run(
+                db_path, task_id, result, next_run, "active",
+            )
+        elif stype == "interval":
+            next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
+            await db.update_task_after_run(
+                db_path, task_id, result, next_run, "active",
+            )
+        elif stype == "once":
+            await db.update_task_after_run(
+                db_path, task_id, result, None, "completed",
+            )
+        else:
+            logger.warning(
+                "Unknown schedule_type %s for task %s", stype, task_id,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to update task %s after execution", task_id,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Proactive heartbeat  (lottery-driven)
+# ---------------------------------------------------------------------------
+
+async def _heartbeat_proactive_check(bot, db_path: str) -> None:
+    """Attempt to send a proactive message to the user.
+
+    The decision is based on a lottery draw that only happens during daytime
+    (06:00-22:00 local time).  If the draw succeeds, a short prompt is sent
+    through ``run_task_agent`` to generate a casual 1-2 sentence message.
+    """
+    if OWNER_ID is None:
+        logger.debug("OWNER_ID not configured, skipping proactive check")
+        return
+
+    try:
+        _load_lottery_state()
+
+        if not _is_daytime():
+            logger.debug("Nighttime, skipping proactive check")
+            return
+
+        if _lottery_draw():
+            _save_lottery_state()
+            logger.info("Lottery won -- sending proactive message")
+
+            prompt = (
+                "You are Cyrene, a proactive AI assistant. "
+                "Send a brief, casual message to the user "
+                "-- just 1-2 sentences. Do not use any tools."
+            )
+            try:
+                response = await asyncio.wait_for(
+                    run_task_agent(prompt, bot, OWNER_ID, db_path),
+                    timeout=30.0,
+                )
+                logger.info("Proactive message sent: %s", response[:100])
+            except asyncio.TimeoutError:
+                logger.warning("Proactive message generation timed out")
+        else:
+            _save_lottery_state()
+            logger.debug(
+                "Lottery draw failed, probability now %.2f",
+                _LOTTERY_STATE["probability"],
+            )
+    except Exception:
+        logger.exception("Proactive check failed")
+
+
+# ---------------------------------------------------------------------------
+# Main heartbeat
+# ---------------------------------------------------------------------------
+
+async def _heartbeat(bot, db_path: str) -> None:
+    """Periodic heartbeat invoked by APScheduler.
+
+    1. Check for due scheduled tasks and execute them.
+    2. On every *N*\ th tick (N such that ``N * SCHEDULER_INTERVAL ~ 30 min``)
+       run the proactive lottery check.
+    """
+    global _heartbeat_tick
+
+    try:
+        await _check_and_execute_tasks(bot, db_path)
+
+        _heartbeat_tick += 1
+        if _heartbeat_tick >= _BIG_HEARTBEAT_INTERVAL:
+            _heartbeat_tick = 0
+            await _heartbeat_proactive_check(bot, db_path)
+    except Exception:
+        logger.exception("Heartbeat error")
+
+
+# ---------------------------------------------------------------------------
+# Public entry point  (signature preserved for bot.py compatibility)
+# ---------------------------------------------------------------------------
+
+def setup_scheduler(bot, db_path: str) -> AsyncIOScheduler:
+    """Create and return an :class:`AsyncIOScheduler` with the heartbeat job.
+
+    The signature is kept stable so that ``bot._post_init`` continues to
+    work without modification.
+    """
+    global _scheduler
+    _scheduler = AsyncIOScheduler()
+    _scheduler.add_job(
+        _heartbeat,
+        "interval",
+        seconds=SCHEDULER_INTERVAL,
+        args=[bot, db_path],
+        id="heartbeat",
+        replace_existing=True,
+    )
+    big_minutes = (_BIG_HEARTBEAT_INTERVAL * SCHEDULER_INTERVAL) // 60
+    logger.info(
+        "Scheduler configured: interval=%ds, big_heartbeat every %d ticks "
+        "(~%d min)",
+        SCHEDULER_INTERVAL,
+        _BIG_HEARTBEAT_INTERVAL,
+        big_minutes,
+    )
+    return _scheduler
