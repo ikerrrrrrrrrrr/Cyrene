@@ -1,56 +1,49 @@
 import asyncio
-import sys
+import logging
 
 from cyrene.agent import clear_session_id, run_agent
-from cyrene.config import ASSISTANT_NAME, DB_PATH, DATA_DIR, STORE_DIR, WORKSPACE_DIR
+from cyrene.config import ASSISTANT_NAME, DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR
 from cyrene.db import init_db
-from cyrene.memory import ensure_workspace
+from cyrene.inbox import ensure_inbox
+from cyrene.soul import ensure_soul
+
+logger = logging.getLogger(__name__)
 
 
-class LocalBot:
-    async def send_message(self, chat_id: int, text: str) -> None:
-        print(f"[send_message:{chat_id}] {text}")
-
-
-async def _prepare_runtime() -> None:
-    for directory in (WORKSPACE_DIR, STORE_DIR, DATA_DIR):
-        directory.mkdir(parents=True, exist_ok=True)
+async def _prepare_cli() -> None:
+    """初始化（同 __main__ 但不需要 bot）"""
+    for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
+        d.mkdir(parents=True, exist_ok=True)
     await init_db(str(DB_PATH))
-    ensure_workspace()
+    ensure_soul()
+    ensure_inbox("cyrene")
 
 
-async def _run_once(prompt: str) -> None:
-    await _prepare_runtime()
-    response = await run_agent(prompt, LocalBot(), 0, str(DB_PATH))
-    print(response)
-
-
-async def _repl() -> None:
-    await _prepare_runtime()
-    bot = LocalBot()
-    print(f"{ASSISTANT_NAME} local CLI. Type /clear to reset memory, /exit to quit.")
+async def _cli_loop() -> None:
+    print(f"{ASSISTANT_NAME} CLI mode. Type 'quit' to exit, '/clear' to reset session.")
     while True:
         try:
-            prompt = input("> ").strip()
-        except EOFError:
+            user_input = input("\nYou: ").strip()
+            if not user_input:
+                continue
+            if user_input.lower() == "quit":
+                break
+            if user_input.lower() == "/clear":
+                clear_session_id()
+                print("Session cleared.")
+                continue
+
+            response = await run_agent(user_input, None, 0, str(DB_PATH))
+            print(f"\n{ASSISTANT_NAME}: {response}")
+        except KeyboardInterrupt:
             break
-        if not prompt:
-            continue
-        if prompt == "/exit":
-            break
-        if prompt == "/clear":
-            clear_session_id()
-            print("Session cleared.")
-            continue
-        response = await run_agent(prompt, bot, 0, str(DB_PATH))
-        print(response)
+        except Exception:
+            logger.exception("Error in CLI loop")
 
 
 def main() -> None:
-    if len(sys.argv) > 1:
-        asyncio.run(_run_once(" ".join(sys.argv[1:])))
-    else:
-        asyncio.run(_repl())
+    asyncio.run(_prepare_cli())
+    asyncio.run(_cli_loop())
 
 
 if __name__ == "__main__":

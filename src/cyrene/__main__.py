@@ -2,9 +2,13 @@ import asyncio
 import logging
 
 from cyrene.bot import setup_bot
-from cyrene.config import ASSISTANT_NAME, DATA_DIR, DB_PATH, STORE_DIR, WORKSPACE_DIR
+from cyrene.config import (
+    ASSISTANT_NAME, DATA_DIR, DB_PATH, INBOX_DIR,
+    SOUL_PATH, STORE_DIR, WORKSPACE_DIR,
+)
 from cyrene.db import init_db
-from cyrene.memory import ensure_workspace
+from cyrene.inbox import ensure_inbox
+from cyrene.soul import ensure_soul
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -14,17 +18,22 @@ logger = logging.getLogger(__name__)
 
 
 async def _prepare_runtime() -> None:
-    # Create directories
-    for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR):
+    """初始化运行时所需的目录和文件"""
+    # 创建目录
+    for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
-    # Initialize database
+    # 初始化数据库
     await init_db(str(DB_PATH))
     logger.info("Database initialized at %s", DB_PATH)
 
-    # Ensure CLAUDE.md exists
-    ensure_workspace()
-    logger.info("Workspace ready at %s", WORKSPACE_DIR)
+    # 创建 SOUL.md（如果不存在）
+    ensure_soul()
+    logger.info("SOUL.md ready at %s", SOUL_PATH)
+
+    # 创建默认 inbox
+    ensure_inbox("cyrene")
+    logger.info("Inbox ready at %s", INBOX_DIR)
 
 
 def _run_bot() -> None:
@@ -43,3 +52,5 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         logger.info("Shutting down...")
+    except Exception:
+        logger.exception("Fatal error")
