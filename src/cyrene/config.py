@@ -37,6 +37,7 @@ LOTTERY_MAX = float(os.getenv("LOTTERY_MAX", "0.85"))
 
 # === 搜索配置 ===
 SEARCH_PROXY = os.getenv("SEARCH_PROXY", "")  # 搜索用代理，如 http://127.0.0.1:7890
+SEARXNG_URL = os.getenv("SEARXNG_URL", "")  # SearxNG 自建搜索，如 http://localhost:8888
 
 # === Steward 配置 ===
 STEWARD_INTERVAL = int(os.getenv("STEWARD_INTERVAL", "1800"))  # 30 分钟

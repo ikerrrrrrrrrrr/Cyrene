@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, quote, urlparse
 import httpx
 import requests
 
-from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, SEARCH_PROXY
+from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, SEARCH_PROXY, SEARXNG_URL
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +256,40 @@ async def _search_baidu(query: str) -> list[dict]:
             break
 
     return results[:5]
+
+
+async def _search_searxng(query: str) -> list[dict]:
+    """Search via local SearxNG instance. No rate limits, clean JSON API."""
+    if not SEARXNG_URL:
+        return []
+    url = f"{SEARXNG_URL.rstrip('/')}/search"
+    headers = {"Accept": "application/json"}
+
+    def _fetch() -> list[dict]:
+        # SearxNG 是本地服务，不走代理
+        r = requests.get(url, params={"q": query, "format": "json", "language": "zh-CN", "safesearch": "0"}, headers=headers, timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("results", [])
+
+    loop = asyncio.get_event_loop()
+    try:
+        raw_results = await loop.run_in_executor(None, _fetch)
+    except Exception as exc:
+        logger.warning("SearxNG search failed: %s", exc)
+        return []
+
+    results = []
+    for r in raw_results:
+        title = r.get("title", "").strip()
+        url_val = r.get("url", "")
+        content = r.get("content", "").strip()
+        if title and url_val:
+            results.append({"title": title, "url": url_val, "snippet": content, "query": query})
+        if len(results) >= 5:
+            break
+
+    return results
 
 
 async def _search_bing(query: str) -> list[dict]:
@@ -537,15 +571,18 @@ async def deep_search(topic: str) -> str:
 
     async def _limited_search(q: str, engine: str) -> list[dict]:
         async with semaphore:
-            if engine == "ddg":
+            if engine == "searxng":
+                return await _search_searxng(q)
+            elif engine == "ddg":
                 return await _search_duckduckgo(q)
             elif engine == "baidu":
                 return await _search_baidu(q)
             else:
                 return await _search_bing(q)
 
-    # 同时搜索 DuckDuckGo、Bing 和百度
-    search_tasks = [_limited_search(q, "ddg") for q in queries]
+    # 优先 SearxNG（自建，无限制），其次 DDG+Bing+Baidu
+    search_tasks = [_limited_search(q, "searxng") for q in queries]
+    search_tasks += [_limited_search(q, "ddg") for q in queries]
     search_tasks += [_limited_search(q, "bing") for q in queries]
     search_tasks += [_limited_search(q, "baidu") for q in queries]
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
