@@ -105,6 +105,19 @@ async def clear() -> None:
         _registry.clear()
 
 
+async def collect_results() -> str:
+    """收集所有 subagent 的结果，格式化为文本。"""
+    async with _lock:
+        lines = []
+        for aid, info in _registry.items():
+            result = info.get("result", "")
+            if result:
+                lines.append(f"[{aid}]: {result[:300]}")
+            else:
+                lines.append(f"[{aid}]: 无结果")
+        return "\n\n".join(lines) if lines else "无 subagent 结果。"
+
+
 # ---------------------------------------------------------------------------
 # Sub-agent execution loop (moved from agent.py)
 # ---------------------------------------------------------------------------

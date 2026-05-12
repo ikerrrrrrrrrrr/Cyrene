@@ -277,6 +277,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                 _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
 
+            spawned = False
             for t in tcs:
                 try:
                     args = json.loads(t["function"].get("arguments") or "{}")
@@ -284,6 +285,22 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                 except Exception as e:
                     result = f"Tool failed: {e}"
                 messages.append({"role": "tool", "tool_call_id": t["id"], "content": _truncate(result)})
+                if t.get("function", {}).get("name") == "spawn_subagent":
+                    spawned = True
+
+            # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部完成
+            if spawned:
+                from cyrene.subagent import all_finished as _sub_all_done
+                for _ in range(120):  # max 10 min
+                    await asyncio.sleep(5)
+                    if await _sub_all_done():
+                        break
+                # 收集结果后生成摘要
+                _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                from cyrene.subagent import collect_results
+                summary = await collect_results()
+                return f"[所有子任务已完成]\n{summary}"
+
         _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
         return "Stopped after hitting the tool loop limit."
 
