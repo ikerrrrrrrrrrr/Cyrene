@@ -7,7 +7,6 @@ Architecture:
 """
 
 import asyncio
-import base64
 import json
 import logging
 import re
@@ -261,19 +260,16 @@ async def _search_bing(query: str) -> list[dict]:
         if not title or url_raw.startswith('/') or url_raw.startswith('#'):
             continue
 
-        # Resolve Bing redirect URL (base64-encoded in u parameter)
-        u_match = re.search(r'[?&]u=([a-zA-Z0-9+/_=-]+)', url_raw)
-        if u_match:
-            try:
-                b64 = u_match.group(1)[2:].replace('-', '+').replace('_', '/')
-                padded = b64 + '=' * (4 - len(b64) % 4) if len(b64) % 4 else b64
-                decoded = base64.b64decode(padded).decode('utf-8')
-                if decoded.startswith('http'):
-                    url_raw = decoded
-            except Exception:
-                pass
+        # Take URL from <cite> tag (Bing shows the real URL there)
+        cite_match = re.search(r'<cite[^>]*>([\s\S]*?)</cite>', block, re.DOTALL)
+        if cite_match:
+            real_url = re.sub(r'<[^>]+>', '', cite_match.group(1)).strip()
+            # Bing sometimes wraps the URL, clean it
+            real_url = real_url.replace(' ', '').replace('&#8203;', '')
+            if real_url.startswith('http'):
+                url_raw = real_url
 
-        if 'bing.com' in url_raw and '?' not in url_raw.split('/')[-1]:
+        if url_raw.startswith('https://www.bing.com/') and '?' not in url_raw.split('/')[-1]:
             continue
 
         # Extract snippet
