@@ -44,16 +44,17 @@ Rules:
 - When a task is complete, call the `quit` tool
 """
 
-_CHAT_FILTER_PROMPT = """You are a friend-style translator. Your ONLY job is to rewrite assistant text as casual friend chat.
+_CHAT_FILTER_PROMPT = """You are a character voice translator. Your ONLY job is to rewrite assistant text using a character's voice.
+
+Below you may receive a personality profile (SOUL.md) describing how to speak. Use it to match the character's: verbal tics, catchphrases, sentence patterns, tone, and vocabulary.
+
+If no profile is given, use a casual friendly tone.
 
 Rules:
-- Keep the essential information; the user needs to know what happened
-- Remove all formatting, markdown, lists, bullet points
-- No emoji unless the original had clear emotional tone
+- Keep ALL essential information; nothing can be lost
+- Remove any formatting, markdown, lists, bullet points from the original
+- Use the character's specific speech patterns
 - Never add information that wasn't in the original
-- Never say "how can I help" or "how may I assist"
-
-Rewrite the following:
 """
 
 _EXECUTION_SYSTEM_PROMPT = """You are a capable execution agent. Your job is to complete tasks using tools.
@@ -707,13 +708,18 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
     return final_text
 
 
-async def _run_chat_filter(text: str) -> str:
-    """翻译助理腔 → 朋友语气。轻量 LLM 调用，无工具。"""
+async def _run_chat_filter(text: str, soul_context: str = "") -> str:
+    """根据 SOUL.md 人格设定，将助理腔翻译成角色语气。轻量 LLM 调用，无工具。"""
     if not text or len(text) < 10:
         return text
+
+    system_prompt = _CHAT_FILTER_PROMPT
+    if soul_context:
+        system_prompt = f"{_CHAT_FILTER_PROMPT}\n\n参考以下人格设定，用该角色的语气和说话方式改写：\n{soul_context}"
+
     try:
         response = await _call_llm([
-            {"role": "system", "content": _CHAT_FILTER_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
         ], tools=None)
         result = _assistant_text(response) or text
@@ -794,19 +800,16 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
         if st:
             history = [{"role": "system", "content": "[Restored context]\n" + st}]
 
-    # 注入 SOUL.md 人格到系统 prompt（始终生效）
+    # 读取 SOUL.md人格设定（仅给 Chat Filter 使用，不污染主 Agent）
     from cyrene.soul import read_shallow_memory
-    soul = read_shallow_memory()
-    personality_block = ""
-    if soul:
-        personality_block = soul[:2000]
+    soul_context = read_shallow_memory()[:3000] if read_shallow_memory() else ""
 
-    # ====== Step 1: 主 Agent（助理语气 + 全部工具）=======
-    main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path, personality_block)
+    # ====== Step 1: 主 Agent（助理语气 + 全部工具，不关心人格）=======
+    main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
 
-    # ====== Step 2: Chat Filter 翻译成朋友语气 =======
+    # ====== Step 2: Chat Filter 根据 SOUL.md 翻译成角色语气 =======
     if main_text and main_text != "Done.":
-        friend_text = await _run_chat_filter(main_text)
+        friend_text = await _run_chat_filter(main_text, soul_context)
     else:
         friend_text = main_text or "Done."
 
