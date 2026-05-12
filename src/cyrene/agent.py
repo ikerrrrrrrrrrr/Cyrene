@@ -21,6 +21,7 @@ from cyrene.config import (
     STATE_FILE,
     WORKSPACE_DIR,
 )
+from cyrene.search import deep_search
 
 logger = logging.getLogger(__name__)
 _agent_lock = asyncio.Lock()
@@ -282,7 +283,16 @@ async def _tool_webfetch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
 
 
 async def _tool_websearch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
-    query = str(args["query"])
+    query = str(args.get("query", ""))
+    if not query:
+        return "No query provided."
+
+    # 超过 15 个字符的复杂查询走深度搜索，简单的直接搜索
+    if len(query) > 15:
+        result = await deep_search(query)
+        return result
+
+    # 短查询走原来的 DuckDuckGo 搜索
     url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
         response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
