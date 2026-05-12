@@ -45,6 +45,13 @@ async def _cli_loop() -> None:
 
 def main() -> None:
     asyncio.run(_prepare_cli())
+
+    # 人格设置向导（首次启动时运行）
+    from cyrene.setup import init_setup_flag, is_setup_done, run_setup
+    init_setup_flag()
+    if not is_setup_done():
+        asyncio.run(run_setup())
+
     asyncio.run(_cli_loop())
 
 

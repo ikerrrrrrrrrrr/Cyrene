@@ -588,6 +588,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
     payload = {
         "model": OPENAI_MODEL,
         "messages": messages,
+        "max_tokens": 8192,  # 推理模型需要足够 token 完成思考+输出
     }
     if tools:
         payload["tools"] = tools
@@ -614,9 +615,12 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str) -> str:
+async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str, personality_block: str = "") -> str:
     """主 Agent：助理语气 + 全部工具 + session 持久化。"""
-    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
+    system_content = _MAIN_AGENT_PROMPT
+    if personality_block:
+        system_content += "\n\n[人格设定]\n" + personality_block
+    messages = [{"role": "system", "content": system_content}, *history, {"role": "user", "content": user_message}]
 
     final_text = ""
     for _ in range(_MAX_TOOL_ROUNDS):
@@ -748,8 +752,15 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
         if st:
             history = [{"role": "system", "content": "[Restored context]\n" + st}]
 
+    # 注入 SOUL.md 人格到系统 prompt（始终生效）
+    from cyrene.soul import read_shallow_memory
+    soul = read_shallow_memory()
+    personality_block = ""
+    if soul:
+        personality_block = soul[:2000]
+
     # ====== Step 1: 主 Agent（助理语气 + 全部工具）=======
-    main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
+    main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path, personality_block)
 
     # ====== Step 2: Chat Filter 翻译成朋友语气 =======
     if main_text and main_text != "Done.":

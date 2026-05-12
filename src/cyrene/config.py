@@ -3,7 +3,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# 从项目根目录加载 .env，不依赖 CWD
+_base_dir = Path(__file__).resolve().parent.parent.parent
+load_dotenv(_base_dir / ".env")
 
 # === Bot 配置 ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

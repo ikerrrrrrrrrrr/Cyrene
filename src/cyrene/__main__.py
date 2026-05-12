@@ -40,6 +40,13 @@ async def _prepare_runtime() -> None:
     init_short_term(DATA_DIR)
     logger.info("Short-term memory initialized at %s", DATA_DIR / "short_term.json")
 
+    # 人格设置检测（Telegram 模式跳过交互，提示用户先运行 CLI）
+    from cyrene.setup import init_setup_flag, is_setup_done
+    init_setup_flag()
+    if not is_setup_done():
+        logger.warning("首次启动检测到未设置人格。请先运行 CLI 模式完成设置：")
+        logger.warning("  python -m cyrene.local_cli")
+
 
 def _run_bot() -> None:
     app = setup_bot()
