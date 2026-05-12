@@ -237,7 +237,7 @@ async def _search_bing(query: str) -> list[dict]:
         if hm:
             debug_titles.append(re.sub(r'<[^>]+>', '', hm.group(1)).strip()[:50])
     if debug_titles:
-        logger.info("Bing raw results for %r: %s", query[:30], debug_titles)
+        logger.warning("Bing raw results for %r: %s", query[:30], debug_titles)
 
     # 检查是否被限流（返回全是垃圾结果）
     if len(algo_blocks) > 0:
@@ -355,10 +355,10 @@ async def _filter_results(raw_results: list[dict], topic: str) -> list[dict]:
     )
 
     # DEBUG: 打印传给 filter 的原始结果
-    logger.info("=== Stage 3 filter input (topic=%s) ===", topic[:40])
+    logger.warning("=== Stage 3 filter input (topic=%s) ===", topic[:40])
     for i, r in enumerate(raw_results[:8]):
-        logger.info("  [%d] %s | snippet: %s", i+1, r.get("title", "?")[:40], r.get("snippet", "")[:60])
-    logger.info("=== end filter input ===")
+        logger.warning("  [%d] %s | snippet: %s", i+1, r.get("title", "?")[:40], r.get("snippet", "")[:60])
+    logger.warning("=== end filter input ===")
 
     messages = [
         {"role": "system", "content": system_msg},
@@ -548,10 +548,10 @@ async def deep_search(topic: str) -> str:
 
     # DEBUG: 打印原始搜索结果标题
     if deduped:
-        logger.info("=== Stage 2 raw results (%d) ===", len(deduped))
+        logger.warning("=== Stage 2 raw results (%d) ===", len(deduped))
         for i, r in enumerate(deduped[:10]):
-            logger.info("  [%d] %s | %s", i+1, r.get("title", "?")[:50], r.get("url", "")[:60])
-        logger.info("=== end raw results ===")
+            logger.warning("  [%d] %s | %s", i+1, r.get("title", "?")[:50], r.get("url", "")[:60])
+        logger.warning("=== end raw results ===")
 
     # -----------------------------------------------------------------------
     # Stage 3: Filter
