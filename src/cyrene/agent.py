@@ -47,8 +47,7 @@ Rules:
 _CHAT_FILTER_PROMPT = """You are a friend-style translator. Your ONLY job is to rewrite assistant text as casual friend chat.
 
 Rules:
-- 1-2 sentences max, like texting a friend
-- Keep the essential information
+- Keep the essential information; the user needs to know what happened
 - Remove all formatting, markdown, lists, bullet points
 - No emoji unless the original had clear emotional tone
 - Never add information that wasn't in the original
@@ -659,7 +658,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
     # 保存 session（只保存 user/assistant/tool 消息，不包括 system）
     session_msgs = [m for m in messages[1:] if m["role"] != "system"]
-    _save_session_messages(session_msgs)
+    await _save_session_messages(session_msgs)
 
     return final_text
 
@@ -674,7 +673,9 @@ async def _run_chat_filter(text: str) -> str:
             {"role": "user", "content": text}
         ], tools=None)
         result = _assistant_text(response) or text
-        return result.strip()
+        # Strip emojis as a safety net (models don't always follow instructions)
+        result = re.sub(r'[\U0001F300-\U0010FFFF]', '', result).strip()
+        return result
     except Exception:
         return text  # 失败时 fallback 到原文
 
