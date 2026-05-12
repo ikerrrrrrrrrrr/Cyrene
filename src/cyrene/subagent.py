@@ -1,5 +1,5 @@
 """
-Subagent registry and lifecycle management.
+Subagent registry, lifecycle management, and sub-agent execution loop.
 
 每个子 agent 在注册表中有一条记录：
   agent_id -> {"task": str, "status": "alive" | "done", "result": str}
@@ -7,10 +7,14 @@ Subagent registry and lifecycle management.
 注册表用于：
 1. 发送 inbox 消息前检查对方是否还活着
 2. 注入到每个 agent 的 context 中，让大家知道谁在干什么
+
+_run_subagent 原本在 agent.py 中，移到此处避免 tools.py 与 agent.py 之间的循环依赖。
 """
 
 import asyncio
+import json
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -99,3 +103,107 @@ async def clear() -> None:
     """清除注册表（新 session 时调用）。"""
     async with _lock:
         _registry.clear()
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent execution loop (moved from agent.py)
+# ---------------------------------------------------------------------------
+
+
+async def _run_subagent(agent_id: str, task: str, bot: Any, chat_id: int, db_path: str) -> str:
+    """Run a sub-agent in its own loop.
+
+    Has its own agent loop, inbox checking, and full tool access.
+    Communicates with other agents via inbox.
+
+    Uses lazy imports from agent.py to avoid circular dependencies.
+    """
+    from cyrene.agent import _call_llm, _caller_type, _current_agent_id, _MAX_TOOL_ROUNDS
+    from cyrene.llm import _assistant_text, _truncate
+    from cyrene.tools import TOOL_DEFS, _execute_tool
+
+    _caller_type.set(f"subagent_{agent_id}")
+    from cyrene.inbox import get_inbox_context as _get_inbox
+
+    subagent_prompt = f"""You are a sub-agent, ID: {agent_id}. Your job is to complete the assigned task.
+
+You can:
+- Use tools (files, search, bash, etc.)
+- Communicate with other agents via the send_agent_message tool
+- Check who else is active via the context at the top
+
+When you finish the task or need help, call quit.
+"""
+
+    messages = [
+        {"role": "system", "content": subagent_prompt},
+        {"role": "user", "content": task},
+    ]
+
+    final_text = ""
+    try:
+        for _ in range(_MAX_TOOL_ROUNDS):
+            # 每次 LLM 调用前注入注册表和 inbox
+            registry_ctx = await get_context(exclude=agent_id)
+            inbox_text = _get_inbox(agent_id)
+            inbox_ctx = ""
+            if inbox_text:
+                inbox_ctx = f"\n[收件箱]\n{inbox_text}\n"
+
+            system_content = subagent_prompt
+            extras = []
+            if registry_ctx:
+                extras.append(registry_ctx)
+            if inbox_ctx:
+                extras.append(inbox_ctx)
+            if extras:
+                system_content = subagent_prompt + "\n\n" + "\n".join(extras)
+            messages[0] = {"role": "system", "content": system_content}
+
+            response = await _call_llm(messages, tools=TOOL_DEFS)
+
+            entry: dict = {"role": "assistant", "content": response.get("content") or ""}
+            if response.get("reasoning_content"):
+                entry["reasoning_content"] = response["reasoning_content"]
+            if response.get("tool_calls"):
+                entry["tool_calls"] = response["tool_calls"]
+            messages.append(entry)
+
+            tcs = response.get("tool_calls") or []
+
+            # 检测 quit 或纯文本（活干完了）
+            should_exit = any(t.get("function", {}).get("name") == "quit" for t in tcs) or not tcs
+            if should_exit:
+                final_text = _assistant_text(response).strip() or "Done."
+                # 标记 willing_to_quit，等别人（每 5 秒检查 inbox）
+                from cyrene.inbox import get_inbox_context as _inbox_ctx
+                inbox_msg = await wait_for_others(agent_id, _inbox_ctx)
+                if inbox_msg == "":
+                    break  # 全部 finished，正常退出
+                elif inbox_msg == "timeout":
+                    break  # 超时，强制退出
+                else:
+                    # 有新消息，继续干活
+                    messages.append({"role": "user", "content": f"[等待期间收到新消息]\n{inbox_msg}"})
+                    continue
+
+            for tc in tcs:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"].get("arguments") or "{}")
+                    token = _current_agent_id.set(agent_id)
+                    try:
+                        result = await _execute_tool(name, args, bot, chat_id, db_path, None)
+                    finally:
+                        _current_agent_id.reset(token)
+                except Exception as e:
+                    result = f"Tool {name} failed: {e}"
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": _truncate(result)})
+        else:
+            final_text = "Sub-agent hit loop limit."
+    except Exception as e:
+        logger.exception("Sub-agent %s crashed", agent_id)
+        final_text = f"Sub-agent crashed: {e}"
+
+    await mark_done(agent_id, final_text)
+    return final_text
