@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -10,16 +9,11 @@ import httpx
 from contextvars import ContextVar
 
 from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, DATA_DIR, STATE_FILE
-from cyrene.short_term import touch_entry, get_context, clear_old_entries, load_entries, save_entries
+from cyrene.short_term import get_context, touch_entry
 from cyrene import debug
-from cyrene.llm import _assistant_text, _truncate, _MAX_TOOL_OUTPUT_CHARS
+from cyrene.llm import _assistant_text, _truncate
 from cyrene.tools import TOOL_DEFS, TOOL_HANDLERS, _execute_tool
 from cyrene.subagent import (
-    register as _reg_subagent,
-    mark_done as _mark_subagent_done,
-    wait_for_others as _subagent_wait_for_others,
-    get_context as _get_subagent_context,
-    is_alive,
     clear as _clear_subagents,
 )
 
@@ -277,8 +271,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
             tcs = response.get("tool_calls") or []
             if any(t.get("function", {}).get("name") == "quit" for t in tcs):
+                _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
             if not tcs:
+                _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
 
             for t in tcs:
@@ -288,16 +284,13 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                 except Exception as e:
                     result = f"Tool failed: {e}"
                 messages.append({"role": "tool", "tool_call_id": t["id"], "content": _truncate(result)})
+        _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
         return "Stopped after hitting the tool loop limit."
 
     # Phase 1 结束：纯聊天，无工具需要
-    return _assistant_text(response).strip() or "Done."
-
-    # 保存 session（只保存 user/assistant/tool 消息，不包括 system）
     session_msgs = [m for m in messages[1:] if m["role"] != "system"]
     await _save_session_messages(session_msgs)
-
-    return final_text
+    return _assistant_text(response).strip() or "Done."
 
 
 async def _run_chat_filter(text: str, soul_context: str = "") -> str:

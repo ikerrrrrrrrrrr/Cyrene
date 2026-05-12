@@ -30,7 +30,7 @@ from cyrene.config import (
     STATE_FILE,
     WORKSPACE_DIR,
 )
-from cyrene.llm import _truncate, _assistant_text
+from cyrene.llm import _truncate
 from cyrene.search import deep_search
 from cyrene.subagent import register as _reg_subagent, is_alive, _run_subagent
 from cyrene.inbox import send_message as _send_inbox
