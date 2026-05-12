@@ -21,10 +21,22 @@ from cyrene.config import (
     STATE_FILE,
     WORKSPACE_DIR,
 )
+from contextvars import ContextVar
+
 from cyrene.search import deep_search
 from cyrene.short_term import touch_entry, get_context, clear_old_entries, load_entries, save_entries
+from cyrene.subagent import (
+    register as _reg_subagent,
+    mark_done as _mark_subagent_done,
+    get_context as _get_subagent_context,
+    is_alive,
+    clear as _clear_subagents,
+)
 
 logger = logging.getLogger(__name__)
+
+# 当前 agent ID，用于 send_agent_message 识别发送者
+_current_agent_id: ContextVar[str] = ContextVar("_current_agent_id", default="main")
 _agent_lock = asyncio.Lock()
 _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 12
@@ -178,7 +190,8 @@ Output format (one per line, no explanations):
 
 
 async def clear_session_id() -> None:
-    """Clear session and compress conversation to short-term memory before discarding."""
+    """Clear session, subagent registry, and compress conversation to short-term memory before discarding."""
+    await _clear_subagents()
     if STATE_FILE.exists():
         try:
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -408,6 +421,31 @@ async def _tool_quit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     return "Interaction ended."
 
 
+async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    """Send a message to another sub-agent via inbox."""
+    target = str(args.get("to", ""))
+    content = str(args.get("content", ""))
+    if not target or not content:
+        return "Error: both 'to' and 'content' are required."
+    if not await is_alive(target):
+        return f"Cannot deliver: agent '{target}' is no longer alive."
+    from_agent = _current_agent_id.get()
+    from cyrene.inbox import send_message as _send_inbox
+    _send_inbox(from_agent, target, "chat", content)
+    return f"Message sent to {target}."
+
+
+async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    """Spawn a sub-agent to handle a specific task."""
+    agent_id = str(args.get("agent_id", ""))
+    task = str(args.get("task", ""))
+    if not agent_id or not task:
+        return "Error: agent_id and task are required."
+    await _reg_subagent(agent_id, task)
+    asyncio.create_task(_run_subagent(agent_id, task, bot, chat_id, db_path))
+    return f"Sub-agent '{agent_id}' spawned. Task: {task[:80]}"
+
+
 # ---------------------------------------------------------------------------
 # Tool definitions and dispatch
 # ---------------------------------------------------------------------------
@@ -562,11 +600,43 @@ TOOL_DEFS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_agent_message",
+            "description": "Send a message to another sub-agent via inbox. Use this to communicate with other sub-agents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Target agent ID"},
+                    "content": {"type": "string", "description": "Message content"},
+                },
+                "required": ["to", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "spawn_subagent",
+            "description": "Spawn a sub-agent to handle a specific task. The sub-agent will run independently.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string", "description": "Unique ID for the sub-agent"},
+                    "task": {"type": "string", "description": "The task for the sub-agent to complete"},
+                },
+                "required": ["agent_id", "task"],
+            },
+        },
+    },
 ]
 
 
 TOOL_HANDLERS: dict[str, Any] = {
     "send_message": _tool_send_message,
+    "send_agent_message": _tool_send_agent_message,
+    "spawn_subagent": _tool_spawn_subagent,
     "schedule_task": _tool_schedule_task,
     "list_tasks": _tool_list_tasks,
     "pause_task": _tool_pause_task,
@@ -788,6 +858,94 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
             messages.append({"role": "tool", "tool_call_id": call_id, "content": _truncate(result)})
 
     return "Done."
+
+
+# ---------------------------------------------------------------------------
+# Sub-agent
+# ---------------------------------------------------------------------------
+
+
+async def _run_subagent(agent_id: str, task: str, bot: Any, chat_id: int, db_path: str) -> str:
+    """Run a sub-agent in its own loop.
+
+    Has its own agent loop, inbox checking, and full tool access.
+    Communicates with other agents via inbox.
+    """
+    from cyrene.inbox import get_inbox_context as _get_inbox
+
+    subagent_prompt = f"""You are a sub-agent, ID: {agent_id}. Your job is to complete the assigned task.
+
+You can:
+- Use tools (files, search, bash, etc.)
+- Communicate with other agents via the send_agent_message tool
+- Check who else is active via the context at the top
+
+When you finish the task or need help, call quit.
+"""
+
+    messages = [
+        {"role": "system", "content": subagent_prompt},
+        {"role": "user", "content": task},
+    ]
+
+    final_text = ""
+    try:
+        for _ in range(_MAX_TOOL_ROUNDS):
+            # 每次 LLM 调用前注入注册表和 inbox
+            registry_ctx = await _get_subagent_context(exclude=agent_id)
+            inbox_text = _get_inbox(agent_id)
+            inbox_ctx = ""
+            if inbox_text:
+                inbox_ctx = f"\n[收件箱]\n{inbox_text}\n"
+
+            system_content = subagent_prompt
+            extras = []
+            if registry_ctx:
+                extras.append(registry_ctx)
+            if inbox_ctx:
+                extras.append(inbox_ctx)
+            if extras:
+                system_content = subagent_prompt + "\n\n" + "\n".join(extras)
+            messages[0] = {"role": "system", "content": system_content}
+
+            response = await _call_llm(messages, tools=TOOL_DEFS)
+
+            entry: dict = {"role": "assistant", "content": response.get("content") or ""}
+            if response.get("reasoning_content"):
+                entry["reasoning_content"] = response["reasoning_content"]
+            if response.get("tool_calls"):
+                entry["tool_calls"] = response["tool_calls"]
+            messages.append(entry)
+
+            tcs = response.get("tool_calls") or []
+            if any(t.get("function", {}).get("name") == "quit" for t in tcs):
+                final_text = _assistant_text(response).strip() or "Done."
+                break
+
+            if not tcs:
+                final_text = _assistant_text(response).strip() or "Done."
+                break
+
+            for tc in tcs:
+                name = tc["function"]["name"]
+                try:
+                    args = json.loads(tc["function"].get("arguments") or "{}")
+                    token = _current_agent_id.set(agent_id)
+                    try:
+                        result = await _execute_tool(name, args, bot, chat_id, db_path, None)
+                    finally:
+                        _current_agent_id.reset(token)
+                except Exception as e:
+                    result = f"Tool {name} failed: {e}"
+                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": _truncate(result)})
+        else:
+            final_text = "Sub-agent hit loop limit."
+    except Exception as e:
+        logger.exception("Sub-agent %s crashed", agent_id)
+        final_text = f"Sub-agent crashed: {e}"
+
+    await _mark_subagent_done(agent_id, final_text)
+    return final_text
 
 
 # ---------------------------------------------------------------------------
