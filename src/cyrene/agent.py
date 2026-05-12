@@ -34,20 +34,27 @@ _MAX_TOOL_OUTPUT_CHARS = 12000
 # System prompts
 # ---------------------------------------------------------------------------
 
-_CHAT_SYSTEM_PROMPT = """You are a close friend chatting with Alice. You're NOT an assistant.
+_MAIN_AGENT_PROMPT = """You are Cyrene, a capable AI assistant. Your job is to help Alice get things done.
 
 Rules:
-- Speak like a real friend: casual, short, natural
-- One or two sentences max per response
-- NO lists, NO tables, NO bullet points, NO markdown formatting
-- NO summarizing, NO concluding ("in summary", "overall", "all in all")
-- NO emojis unless Alice uses them first
-- Never say "how can I help you" or "how may I assist"
-- Just talk, like two friends hanging out
+- Respond clearly and directly
+- You have many tools available — use them when helpful
+- You can write files, search the web, run code, etc.
+- Be efficient and accurate
+- When a task is complete, call the `quit` tool
+"""
 
-When Alice asks you to do something (write files, search, research, etc.),
-call the `delegate_execution` tool with the full task description.
-You don't need to explain what you're doing — just do it.
+_CHAT_FILTER_PROMPT = """You are a friend-style translator. Your ONLY job is to rewrite assistant text as casual friend chat.
+
+Rules:
+- 1-2 sentences max, like texting a friend
+- Keep the essential information
+- Remove all formatting, markdown, lists, bullet points
+- No emoji unless the original had clear emotional tone
+- Never add information that wasn't in the original
+- Never say "how can I help" or "how may I assist"
+
+Rewrite the following:
 """
 
 _EXECUTION_SYSTEM_PROMPT = """You are a capable execution agent. Your job is to complete tasks using tools.
@@ -59,27 +66,6 @@ Rules:
 - Be concise in tool usage
 - When done, call the `quit` tool
 """
-
-# ---------------------------------------------------------------------------
-# Chat agent tool definitions (only delegate_execution)
-# ---------------------------------------------------------------------------
-
-_CHAT_TOOL_DEFS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "delegate_execution",
-            "description": "Call this when Alice asks you to do something that requires tools (file ops, search, research, etc.). Pass the FULL task description.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task": {"type": "string", "description": "The complete task Alice wants done"}
-                },
-                "required": ["task"],
-            },
-        },
-    },
-]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -625,6 +611,75 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Main agent (assistant tone + full tools + session persistence)
+# ---------------------------------------------------------------------------
+
+
+async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str) -> str:
+    """主 Agent：助理语气 + 全部工具 + session 持久化。"""
+    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
+
+    final_text = ""
+    for _ in range(_MAX_TOOL_ROUNDS):
+        response = await _call_llm(messages, tools=TOOL_DEFS)
+
+        assistant_entry: dict = {"role": "assistant", "content": response.get("content") or ""}
+        if response.get("tool_calls"):
+            assistant_entry["tool_calls"] = response["tool_calls"]
+        messages.append(assistant_entry)
+
+        tool_calls = response.get("tool_calls") or []
+
+        # quit tool
+        if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
+            final_text = _assistant_text(response).strip() or "Done."
+            for tc in tool_calls:
+                if tc.get("function", {}).get("name") == "quit":
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "Interaction ended."})
+            break
+
+        if not tool_calls:
+            final_text = _assistant_text(response).strip() or ""
+            if final_text:
+                break
+            continue  # 空内容重试
+
+        for tc in tool_calls:
+            call_id = tc["id"]
+            fn = tc["function"]
+            name = fn["name"]
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+                result = await _execute_tool(name, args, bot, chat_id, db_path, None)
+            except Exception as e:
+                result = f"Tool {name} failed: {e}"
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": _truncate(result)})
+    else:
+        final_text = "Stopped after hitting the tool loop limit."
+
+    # 保存 session（只保存 user/assistant/tool 消息，不包括 system）
+    session_msgs = [m for m in messages[1:] if m["role"] != "system"]
+    _save_session_messages(session_msgs)
+
+    return final_text
+
+
+async def _run_chat_filter(text: str) -> str:
+    """翻译助理腔 → 朋友语气。轻量 LLM 调用，无工具。"""
+    if not text or len(text) < 10:
+        return text
+    try:
+        response = await _call_llm([
+            {"role": "system", "content": _CHAT_FILTER_PROMPT},
+            {"role": "user", "content": text}
+        ], tools=None)
+        result = _assistant_text(response) or text
+        return result.strip()
+    except Exception:
+        return text  # 失败时 fallback 到原文
+
+
+# ---------------------------------------------------------------------------
 # Execution agent (internal, all tools)
 # ---------------------------------------------------------------------------
 
@@ -677,68 +732,31 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 
 
 async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
-    """Chat/Execution split agent. Main entry point."""
+    """Main entry point. Main agent (assistant tone + full tools) -> Chat filter (friend-style)."""
     async with _agent_lock:
         return await _run_chat_agent(user_message, bot, chat_id, db_path)
 
 
 async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
+    """Coordinator: main agent -> chat filter."""
     history = _load_session_messages()
 
     # 如果 history 为空（session 被重置），注入短期记忆
     if not history:
-        st_context = get_context(max_chars=5000)
-        if st_context:
-            history = [{"role": "system", "content": "[Restored context]\n" + st_context}]
+        st = get_context(max_chars=5000)
+        if st:
+            history = [{"role": "system", "content": "[Restored context]\n" + st}]
 
-    messages = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}, *history, {"role": "user", "content": user_message}]
+    # ====== Step 1: 主 Agent（助理语气 + 全部工具）=======
+    main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
 
-    # Call LLM with only chat tools (delegate_execution)
-    response = await _call_llm(messages, tools=_CHAT_TOOL_DEFS)
-
-    assistant_msg: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
-    if response.get("tool_calls"):
-        assistant_msg["tool_calls"] = response["tool_calls"]
-    messages.append(assistant_msg)
-
-    tool_calls = response.get("tool_calls") or []
-
-    # Case 1: LLM wants to delegate execution
-    exec_tool = None
-    for tc in tool_calls:
-        if tc.get("function", {}).get("name") == "delegate_execution":
-            exec_tool = tc
-            break
-
-    if exec_tool:
-        # Extract task
-        try:
-            args = json.loads(exec_tool.get("function", {}).get("arguments", "{}"))
-            task = args.get("task", user_message)
-        except json.JSONDecodeError:
-            task = user_message
-
-        # Run execution agent
-        exec_result = await _run_execution_agent(task, bot, chat_id, db_path)
-
-        # Feed result back to chat agent for natural response
-        messages.append({
-            "role": "tool",
-            "tool_call_id": exec_tool["id"],
-            "content": f"Task result: {exec_result[:500]}",
-        })
-
-        # Chat agent reframes the result in friend tone (no tools this time)
-        final_response = await _call_llm(messages, tools=[])  # no tools, just text
-        final_text = _assistant_text(final_response) or exec_result
+    # ====== Step 2: Chat Filter 翻译成朋友语气 =======
+    if main_text and main_text != "Done.":
+        friend_text = await _run_chat_filter(main_text)
     else:
-        # Case 2: Pure chat — no tools needed
-        final_text = _assistant_text(response) or ""
+        friend_text = main_text or "Done."
 
-    # Save session (all non-system messages)
-    await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
-
-    return final_text
+    return friend_text
 
 
 # ---------------------------------------------------------------------------
