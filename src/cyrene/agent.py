@@ -22,6 +22,7 @@ from cyrene.config import (
     WORKSPACE_DIR,
 )
 from cyrene.search import deep_search
+from cyrene.short_term import touch_entry, get_context, clear_old_entries, load_entries, save_entries
 
 logger = logging.getLogger(__name__)
 _agent_lock = asyncio.Lock()
@@ -113,15 +114,87 @@ def _load_session_messages() -> list[dict[str, Any]]:
     return messages if isinstance(messages, list) else []
 
 
-def _save_session_messages(messages: list[dict[str, Any]]) -> None:
+async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
+    """保存 session 消息。如果超过上限，触发后台压缩。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     trimmed = messages[-_MAX_HISTORY_MESSAGES:]
     STATE_FILE.write_text(json.dumps({"messages": trimmed}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 如果原始消息超过阈值，后台压缩
+    if len(messages) > _MAX_HISTORY_MESSAGES + 5:
+        asyncio.create_task(_compress_old_messages(messages))
+
+
+async def _compress_old_messages(all_messages: list[dict]) -> None:
+    """
+    压缩最早的一部分消息到短期记忆。
+    在后台运行，不阻塞对话。
+    """
+    # 取前 20 条用户+助理消息
+    to_compress = [m for m in all_messages[:20] if m["role"] in ("user", "assistant")]
+    if not to_compress:
+        return
+
+    # 格式化成文本
+    lines = []
+    for m in to_compress:
+        role = "User" if m["role"] == "user" else "Cyrene"
+        content = m.get("content", "")[:200]
+        lines.append(f"{role}: {content}")
+    text = "\n".join(lines)
+
+    # LLM 调用压缩
+    prompt = f"""Extract key information from this conversation. Focus on:
+1. Facts about the user (job, preferences, habits)
+2. Emotional patterns or recurring topics
+3. Action items or decisions made
+
+For each finding, classify as: fact | pattern | preference | emotion
+
+Conversation:
+{text}
+
+Output format (one per line, no explanations):
+[fact] user works at a tech company
+[emotion] user was frustrated about a project deadline
+[preference] user likes casual short replies
+"""
+
+    try:
+        response = await _call_llm([
+            {"role": "system", "content": "You extract structured memories from conversations. Be concise."},
+            {"role": "user", "content": prompt}
+        ], tools=None)
+        compressed = _assistant_text(response) or ""
+    except Exception:
+        logger.warning("Memory compression failed", exc_info=True)
+        return
+
+    # 解析并写入短期记忆
+    for line in compressed.split("\n"):
+        line = line.strip()
+        if not line or not line.startswith("["):
+            continue
+        try:
+            closing = line.index("]")
+            entry_type = line[1:closing]
+            content = line[closing + 1:].strip()
+            if content and len(content) > 3:
+                touch_entry(content, {
+                    "content": content,
+                    "type": entry_type,
+                    "emotional_valence": -2 if "frustrat" in content.lower() or "stress" in content.lower() or "angry" in content.lower()
+                    else 2 if "happy" in content.lower() or "love" in content.lower() or "excit" in content.lower()
+                    else 0,
+                })
+        except (ValueError, IndexError):
+            continue
 
 
 def clear_session_id() -> None:
     if STATE_FILE.exists():
         STATE_FILE.unlink()
+    # 不清短期记忆。它用于在 session 重置后注入上下文。
 
 
 def _json_result(payload: Any) -> str:
@@ -603,6 +676,13 @@ async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> 
 
 async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
     history = _load_session_messages()
+
+    # 如果 history 为空（session 被重置），注入短期记忆
+    if not history:
+        st_context = get_context(max_chars=5000)
+        if st_context:
+            history = [{"role": "system", "content": "[Restored context]\n" + st_context}]
+
     messages = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}, *history, {"role": "user", "content": user_message}]
 
     # Call LLM with only chat tools (delegate_execution)
@@ -648,7 +728,7 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
         final_text = _assistant_text(response) or ""
 
     # Save session (all non-system messages)
-    _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+    await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
 
     return final_text
 

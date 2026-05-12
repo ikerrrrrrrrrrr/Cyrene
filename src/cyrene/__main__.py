@@ -8,6 +8,7 @@ from cyrene.config import (
 )
 from cyrene.db import init_db
 from cyrene.inbox import ensure_inbox
+from cyrene.short_term import init_short_term
 from cyrene.soul import ensure_soul
 
 logging.basicConfig(
@@ -34,6 +35,10 @@ async def _prepare_runtime() -> None:
     # 创建默认 inbox
     ensure_inbox("cyrene")
     logger.info("Inbox ready at %s", INBOX_DIR)
+
+    # 初始化短期记忆
+    init_short_term(DATA_DIR)
+    logger.info("Short-term memory initialized at %s", DATA_DIR / "short_term.json")
 
 
 def _run_bot() -> None:

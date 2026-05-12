@@ -5,6 +5,7 @@ from cyrene.agent import clear_session_id, run_agent
 from cyrene.config import ASSISTANT_NAME, DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR
 from cyrene.db import init_db
 from cyrene.inbox import ensure_inbox
+from cyrene.short_term import init_short_term
 from cyrene.soul import ensure_soul
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ async def _prepare_cli() -> None:
     await init_db(str(DB_PATH))
     ensure_soul()
     ensure_inbox("cyrene")
+    init_short_term(DATA_DIR)
 
 
 async def _cli_loop() -> None:
