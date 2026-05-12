@@ -436,13 +436,20 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
 def _assistant_text(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):
-        return content
-    if isinstance(content, list):
+        if content.strip():
+            return content
+    elif isinstance(content, list):
         parts: list[str] = []
         for item in content:
             if isinstance(item, dict) and item.get("type") == "text":
                 parts.append(str(item.get("text", "")))
-        return "".join(parts)
+        text = "".join(parts)
+        if text.strip():
+            return text
+    # Fallback: use reasoning_content if content is empty (Qwen-style models)
+    reasoning = message.get("reasoning_content")
+    if reasoning and isinstance(reasoning, str):
+        return reasoning.strip()
     return ""
 
 
@@ -455,9 +462,11 @@ async def _call_llm(messages: list[dict]) -> dict:
     }
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
     }
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    if OPENAI_API_KEY and OPENAI_API_KEY != "lmstudio":
+        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
+    transport = httpx.AsyncHTTPTransport(retries=1)
+    async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
         resp = await client.post(
             f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
             json=payload,
