@@ -23,8 +23,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from croniter import croniter
 
 from cyrene import db
-from cyrene.agent import run_task_agent
-from cyrene.config import BASE_DIR, OWNER_ID, SCHEDULER_INTERVAL
+from cyrene.agent import run_steward_agent, run_task_agent
+from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STEWARD_INTERVAL
+from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
+from cyrene.soul import apply_soul_update, read_soul
 
 logger = logging.getLogger(__name__)
 
@@ -41,10 +43,21 @@ _LOTTERY_STATE: dict[str, float] = {
 }
 _LOTTERY_FILE = BASE_DIR / "data" / "lottery_state.json"
 
+# ---------------------------------------------------------------------------
+# Steward state  (persisted to disk)
+# ---------------------------------------------------------------------------
+
+_STEWARD_STATE_FILE = DATA_DIR / "steward_state.json"
+
 # Big-heartbeat cadence: perform proactive checks every ~30 minutes.
 # Converted to the number of SCHEDULER_INTERVAL ticks.
 _BIG_HEARTBEAT_INTERVAL = max(1, 1800 // SCHEDULER_INTERVAL)
+
+# Steward cadence: run steward agent every STEWARD_INTERVAL seconds.
+_STEWARD_TICK_INTERVAL = max(1, STEWARD_INTERVAL // SCHEDULER_INTERVAL)
+
 _heartbeat_tick: int = 0
+_steward_tick: int = 0
 
 
 def _load_lottery_state() -> None:
@@ -255,6 +268,109 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Steward auto-trigger
+# ---------------------------------------------------------------------------
+
+def _get_last_steward_run() -> float | None:
+    """Read the last steward run timestamp from ``_STEWARD_STATE_FILE``."""
+    try:
+        if _STEWARD_STATE_FILE.exists():
+            data = json.loads(_STEWARD_STATE_FILE.read_text(encoding="utf-8"))
+            return float(data.get("last_run", 0))
+    except Exception:
+        logger.exception("Failed to read steward state")
+    return None
+
+
+def _save_steward_run(timestamp: float) -> None:
+    """Persist the steward run timestamp to ``_STEWARD_STATE_FILE``."""
+    try:
+        _STEWARD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STEWARD_STATE_FILE.write_text(
+            json.dumps({"last_run": timestamp}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        logger.exception("Failed to save steward state")
+
+
+def _has_new_conversation() -> bool:
+    """Check whether today's conversation file exists and has actual content.
+
+    A freshly created file contains only the header line; this function
+    returns ``False`` in that case.  At least one archived exchange (with a
+    ``## `` timestamp heading) is required.
+    """
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_file = CONVERSATIONS_DIR / f"{today}.md"
+        if not today_file.exists():
+            return False
+        content = today_file.read_text(encoding="utf-8").strip()
+        # Look for at least one ``## HH:MM:SS`` timestamp heading added by
+        # ``archive_exchange``, which indicates real conversation content.
+        return bool(content) and "##" in content
+    except Exception:
+        logger.exception("Failed to check for new conversations")
+        return False
+
+
+async def _run_steward_if_needed(bot, db_path: str) -> None:
+    """Check conditions and run the steward agent when appropriate.
+
+    Triggers when:
+    1. At least ``STEWARD_INTERVAL`` seconds have elapsed since the last run.
+    2. Today's conversation file exists and contains archived exchanges.
+    """
+    try:
+        last_run = _get_last_steward_run()
+        now = time.time()
+
+        if last_run is not None and (now - last_run) < STEWARD_INTERVAL:
+            logger.debug(
+                "Steward not due yet (last run %.0f s ago)", now - last_run,
+            )
+            return
+
+        if not _has_new_conversation():
+            logger.debug("No new conversations today, skipping steward")
+            return
+
+        if OWNER_ID is None:
+            logger.debug("OWNER_ID not configured, skipping steward")
+            return
+
+        logger.info("Steward conditions met -- running steward agent")
+
+        conversation_text = await get_recent_conversations(days=1)
+        soulmd_content = read_soul()
+
+        if not conversation_text:
+            logger.debug("No conversation text available, skipping steward")
+            return
+
+        result = await run_steward_agent(
+            conversation_text, soulmd_content, bot, OWNER_ID, db_path,
+        )
+
+        result_stripped = (result or "").strip()
+        if result_stripped.upper().startswith("SKIP"):
+            logger.info("Steward returned SKIP -- no changes to SOUL.md")
+        elif result_stripped:
+            changes = apply_soul_update(result)
+            logger.info(
+                "Steward applied %d change(s) to SOUL.md", len(changes),
+            )
+        else:
+            logger.info("Steward returned empty result, no changes applied")
+
+        _save_steward_run(now)
+
+    except Exception:
+        logger.exception("Steward auto-trigger failed")
+
+
+# ---------------------------------------------------------------------------
 # Main heartbeat
 # ---------------------------------------------------------------------------
 
@@ -262,18 +378,27 @@ async def _heartbeat(bot, db_path: str) -> None:
     """Periodic heartbeat invoked by APScheduler.
 
     1. Check for due scheduled tasks and execute them.
-    2. On every *N*\ th tick (N such that ``N * SCHEDULER_INTERVAL ~ 30 min``)
+    2. On every Nth tick (N such that ``N * SCHEDULER_INTERVAL ~ 30 min``)
        run the proactive lottery check.
+    3. On every Mth tick (M such that ``M * SCHEDULER_INTERVAL ~ STEWARD_INTERVAL``)
+       run the steward agent auto-trigger.
     """
-    global _heartbeat_tick
+    global _heartbeat_tick, _steward_tick
 
     try:
         await _check_and_execute_tasks(bot, db_path)
 
+        # -- Lottery proactive check --
         _heartbeat_tick += 1
         if _heartbeat_tick >= _BIG_HEARTBEAT_INTERVAL:
             _heartbeat_tick = 0
             await _heartbeat_proactive_check(bot, db_path)
+
+        # -- Steward auto-trigger --
+        _steward_tick += 1
+        if _steward_tick >= _STEWARD_TICK_INTERVAL:
+            _steward_tick = 0
+            await _run_steward_if_needed(bot, db_path)
     except Exception:
         logger.exception("Heartbeat error")
 
