@@ -358,18 +358,49 @@ async def _tool_websearch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
         result = await deep_search(query)
         return result
 
-    # 短查询走原来的 DuckDuckGo 搜索
+    # 短查询走 DuckDuckGo 搜索，失败时 fallback 到 Bing
     url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
-    async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-        response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        response.raise_for_status()
-    html = response.text
-    matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.S)
-    results: list[str] = []
-    for href, title in matches[:10]:
-        clean_title = re.sub(r"<.*?>", "", title).strip()
-        results.append(f"- {clean_title}\n  {href}")
-    return "\n".join(results) if results else "No results."
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            response.raise_for_status()
+        html = response.text
+        matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.S)
+        if matches:
+            results = []
+            for href, title in matches[:10]:
+                clean_title = re.sub(r"<.*?>", "", title).strip()
+                results.append(f"- {clean_title}\n  {href}")
+            return "\n".join(results)
+    except Exception:
+        pass
+
+    # DuckDuckGo 失败，尝试 Bing
+    try:
+        bing_url = f"https://www.bing.com/search?q={quote(query)}&setmkt=en-US"
+        bing_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/131.0.0.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            bresp = await client.get(bing_url, headers=bing_headers)
+            bresp.raise_for_status()
+        bhtml = bresp.text
+        blocks = re.findall(r'<li\s+class="b_algo"[^>]*>([\s\S]*?)</li>', bhtml, re.DOTALL)
+        bresults = []
+        for block in blocks[:10]:
+            hm = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', block, re.DOTALL)
+            if hm:
+                bt = re.sub(r'<[^>]+>', '', hm.group(2)).strip()
+                bu = hm.group(1)
+                if bt and not bu.startswith('/'):
+                    bresults.append(f"- {bt}\n  {bu}")
+        if bresults:
+            return "\n".join(bresults)
+    except Exception:
+        pass
+
+    return "No results."
 
 
 async def _tool_quit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -588,8 +619,11 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
     payload = {
         "model": OPENAI_MODEL,
         "messages": messages,
-        "max_tokens": 8192,  # 推理模型需要足够 token 完成思考+输出
+        "max_tokens": 32000,
     }
+    # DeepSeek reasoning 模型需要显式启用 thinking
+    if "deepseek" in OPENAI_MODEL:
+        payload["thinking"] = {"type": "enabled"}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
@@ -605,7 +639,9 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
             json=payload,
             headers=headers,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.error("LLM API error %s: %s", resp.status_code, resp.text[:500])
+            resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]
 
@@ -627,8 +663,12 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         response = await _call_llm(messages, tools=TOOL_DEFS)
 
         assistant_entry: dict = {"role": "assistant", "content": response.get("content") or ""}
+        if response.get("reasoning_content"):
+            assistant_entry["reasoning_content"] = response["reasoning_content"]
         if response.get("tool_calls"):
             assistant_entry["tool_calls"] = response["tool_calls"]
+        if response.get("reasoning_content"):
+            assistant_entry["reasoning_content"] = response["reasoning_content"]
         messages.append(assistant_entry)
 
         tool_calls = response.get("tool_calls") or []
@@ -706,6 +746,8 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
             assistant_entry["content"] = ""
         if response.get("tool_calls"):
             assistant_entry["tool_calls"] = response["tool_calls"]
+        if response.get("reasoning_content"):
+            assistant_entry["reasoning_content"] = response["reasoning_content"]
         messages.append(assistant_entry)
 
         tool_calls = response.get("tool_calls") or []

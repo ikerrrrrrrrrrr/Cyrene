@@ -7,6 +7,7 @@ Architecture:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -147,6 +148,71 @@ async def _search_duckduckgo(query: str) -> list[dict]:
         if i < len(snippet_matches):
             snippet = re.sub(r"<.*?>", "", snippet_matches[i]).strip()
         results.append({"title": title, "url": real_url, "snippet": snippet, "query": query})
+
+    return results[:5]
+
+
+async def _search_bing(query: str) -> list[dict]:
+    """Search Bing and return up to 5 results with title, url, snippet.
+    Used as fallback when DuckDuckGo is unavailable (e.g. China)."""
+    url = f"https://www.bing.com/search?q={quote(query)}&setmkt=en-US"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+    }
+    transport = httpx.AsyncHTTPTransport(retries=1)
+
+    try:
+        async with httpx.AsyncClient(transport=transport, follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+    except Exception as exc:
+        logger.warning("Bing search failed for query %r: %s", query, exc)
+        return []
+
+    html = resp.text
+    results: list[dict] = []
+
+    # Bing results live in <li class="b_algo"> blocks
+    algo_blocks = re.findall(r'<li\s+class="b_algo"[^>]*>([\s\S]*?)</li>', html, re.DOTALL)
+    for block in algo_blocks:
+        # Extract link from <h2><a href="...">title</a></h2>
+        h2_match = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', block, re.DOTALL)
+        if not h2_match:
+            continue
+        url_raw = h2_match.group(1)
+        title = re.sub(r'<[^>]+>', '', h2_match.group(2)).strip()
+        if not title or url_raw.startswith('/') or url_raw.startswith('#'):
+            continue
+
+        # Resolve Bing redirect URL (base64-encoded in u parameter)
+        u_match = re.search(r'[?&]u=([a-zA-Z0-9+/_=-]+)', url_raw)
+        if u_match:
+            try:
+                b64 = u_match.group(1)[2:].replace('-', '+').replace('_', '/')
+                padded = b64 + '=' * (4 - len(b64) % 4) if len(b64) % 4 else b64
+                decoded = base64.b64decode(padded).decode('utf-8')
+                if decoded.startswith('http'):
+                    url_raw = decoded
+            except Exception:
+                pass
+
+        if 'bing.com' in url_raw and '?' not in url_raw.split('/')[-1]:
+            continue
+
+        # Extract snippet
+        snippet = ""
+        cap_match = re.search(r'<div[^>]*class="b_caption"[^>]*>([\s\S]*?)</div>', block, re.DOTALL)
+        if cap_match:
+            p_match = re.search(r'<p[^>]*>([\s\S]*?)</p>', cap_match.group(1), re.DOTALL)
+            if p_match:
+                snippet = re.sub(r'<[^>]+>', '', p_match.group(1)).strip()
+
+        results.append({"title": title, "url": url_raw, "snippet": snippet, "query": query})
+        if len(results) >= 5:
+            break
 
     return results[:5]
 
@@ -345,7 +411,7 @@ async def deep_search(topic: str) -> str:
         async with semaphore:
             return await _search_duckduckgo(q)
 
-    # Search all queries in parallel
+    # Search all queries in parallel (try DuckDuckGo first)
     search_tasks = [_limited_search(q) for q in queries]
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
@@ -355,6 +421,19 @@ async def deep_search(topic: str) -> str:
             all_results.extend(sr)
 
     logger.info("Stage 2 search complete: %d raw results", len(all_results))
+
+    # If DuckDuckGo returned nothing, fallback to Bing
+    if not all_results:
+        logger.warning("DuckDuckGo returned no results, trying Bing fallback")
+        async def _limited_bing(q: str) -> list[dict]:
+            async with semaphore:
+                return await _search_bing(q)
+        bing_tasks = [_limited_bing(q) for q in queries]
+        bing_results = await asyncio.gather(*bing_tasks, return_exceptions=True)
+        for br in bing_results:
+            if isinstance(br, list):
+                all_results.extend(br)
+        logger.info("Bing fallback: %d raw results", len(all_results))
 
     if not all_results:
         return f"Search returned no results for: {topic}"
