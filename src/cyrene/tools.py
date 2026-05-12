@@ -463,7 +463,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "spawn_subagent",
-            "description": "Spawn a sub-agent that has the same abilities as you (search, code, files, etc.). It runs independently in its own loop. Use this INSTEAD of writing a Python script to simulate, because sub-agents can actually search the web, run real commands, read real files, and communicate with each other via send_agent_message. Good for: parallel research, multi-perspective analysis, debate, complex multi-step tasks that need real tool access.",
+            "description": "Spawn a sub-agent that runs independently with full tool access. Useful for parallel work, multi-step tasks, or tasks where multiple perspectives are needed. Sub-agents can communicate via send_agent_message.",
             "parameters": {
                 "type": "object",
                 "properties": {
