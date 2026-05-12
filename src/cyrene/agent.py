@@ -29,6 +29,7 @@ from cyrene import debug
 from cyrene.subagent import (
     register as _reg_subagent,
     mark_done as _mark_subagent_done,
+    wait_for_others as _subagent_wait_for_others,
     get_context as _get_subagent_context,
     is_alive,
     clear as _clear_subagents,
@@ -457,8 +458,8 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
-            "name": "send_message",
-            "description": "Send a message to the user on Telegram or the local console.",
+            "name": "send_telegram",
+            "description": "Send a Telegram message to the user. NOT for agent-to-agent communication — use send_agent_message instead.",
             "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
         },
     },
@@ -637,7 +638,7 @@ TOOL_DEFS = [
 
 
 TOOL_HANDLERS: dict[str, Any] = {
-    "send_message": _tool_send_message,
+    "send_telegram": _tool_send_message,
     "send_agent_message": _tool_send_agent_message,
     "spawn_subagent": _tool_spawn_subagent,
     "schedule_task": _tool_schedule_task,
@@ -930,13 +931,22 @@ When you finish the task or need help, call quit.
             messages.append(entry)
 
             tcs = response.get("tool_calls") or []
-            if any(t.get("function", {}).get("name") == "quit" for t in tcs):
-                final_text = _assistant_text(response).strip() or "Done."
-                break
 
-            if not tcs:
+            # 检测 quit 或纯文本（活干完了）
+            should_exit = any(t.get("function", {}).get("name") == "quit" for t in tcs) or not tcs
+            if should_exit:
                 final_text = _assistant_text(response).strip() or "Done."
-                break
+                # 标记 willing_to_quit，等别人（每 5 秒检查 inbox）
+                from cyrene.inbox import get_inbox_context as _inbox_ctx
+                inbox_msg = await _subagent_wait_for_others(agent_id, _inbox_ctx)
+                if inbox_msg == "":
+                    break  # 全部 finished，正常退出
+                elif inbox_msg == "timeout":
+                    break  # 超时，强制退出
+                else:
+                    # 有新消息，继续干活
+                    messages.append({"role": "user", "content": f"[等待期间收到新消息]\n{inbox_msg}"})
+                    continue
 
             for tc in tcs:
                 name = tc["function"]["name"]
