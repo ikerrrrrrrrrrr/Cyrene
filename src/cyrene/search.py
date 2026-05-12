@@ -14,6 +14,7 @@ import re
 from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
+import requests
 
 from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
 
@@ -113,19 +114,20 @@ async def _search_duckduckgo(query: str) -> list[dict]:
     """Search DuckDuckGo and return up to 5 results with title, url, snippet."""
     url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    results: list[dict] = []
 
+    def _fetch() -> str:
+        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        return r.text
+
+    loop = asyncio.get_event_loop()
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
+        html = await loop.run_in_executor(None, _fetch)
     except Exception as exc:
         logger.warning("DuckDuckGo search failed for query %r: %s", query, exc)
         return []
 
-    html = resp.text
-    results: list[dict] = []
-
-    # Extract title+url from result__a tags
     title_matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.DOTALL)
     snippet_matches = re.findall(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
 
@@ -136,6 +138,8 @@ async def _search_duckduckgo(query: str) -> list[dict]:
         if i < len(snippet_matches):
             snippet = re.sub(r"<.*?>", "", snippet_matches[i]).strip()
         results.append({"title": title, "url": real_url, "snippet": snippet, "query": query})
+        if len(results) >= 5:
+            break
 
     return results[:5]
 
@@ -150,15 +154,17 @@ async def _search_bing(query: str) -> list[dict]:
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
 
+    def _fetch() -> str:
+        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        return r.text
+
+    loop = asyncio.get_event_loop()
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
+        html = await loop.run_in_executor(None, _fetch)
     except Exception as exc:
         logger.warning("Bing search failed for query %r: %s", query, exc)
         return []
-
-    html = resp.text
     results: list[dict] = []
 
     # Bing results live in <li class="b_algo"> blocks
@@ -222,15 +228,19 @@ async def _fetch_url(url: str) -> str:
     """Fetch a URL and return its plain text content, truncated to 3000 chars."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
+    def _fetch() -> str:
+        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+        r.raise_for_status()
+        return r.text
+
+    loop = asyncio.get_event_loop()
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
+        html = await loop.run_in_executor(None, _fetch)
     except Exception as exc:
         logger.debug("Failed to fetch URL %r: %s", url, exc)
         return ""
 
-    text = _strip_html(resp.text)
+    text = _strip_html(html)
     return text[:3000]
 
 
