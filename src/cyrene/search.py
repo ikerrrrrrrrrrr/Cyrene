@@ -110,34 +110,76 @@ def _extract_ddg_url(href: str) -> str:
     return href
 
 
-# DDG 最多爬 5 次，之后全走 Bing
-_DDG_CALLS_LEFT = 5
+# ---------------------------------------------------------------------------
+# 限流器：跟踪请求频率，超限时等待
+# ---------------------------------------------------------------------------
+class _RateLimiter:
+    def __init__(self, max_per_window: int, window_sec: float, cooldown_sec: float = 60.0):
+        self.max_per_window = max_per_window
+        self.window_sec = window_sec
+        self.cooldown_sec = cooldown_sec
+        self.timestamps: list[float] = []
+        self.in_cooldown = False
+
+    async def acquire(self) -> None:
+        """等待直到可以发起请求。"""
+        now = asyncio.get_event_loop().time()
+
+        if self.in_cooldown:
+            # 冷却中，等冷却结束
+            wait = min(self.cooldown_sec, self.window_sec * 2)
+            logger.info("Rate limiter in cooldown, waiting %.0fs", wait)
+            await asyncio.sleep(wait)
+            self.in_cooldown = False
+            self.timestamps.clear()
+            return
+
+        # 清理过期的时间戳
+        cutoff = now - self.window_sec
+        self.timestamps = [t for t in self.timestamps if t > cutoff]
+
+        if len(self.timestamps) >= self.max_per_window:
+            # 达到上限，等最旧的时间戳过期
+            wait = self.timestamps[0] + self.window_sec - now + 1
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self.timestamps.clear()
+
+        self.timestamps.append(asyncio.get_event_loop().time())
+
+    def mark_throttled(self) -> None:
+        """被限流时标记冷却。"""
+        self.in_cooldown = True
+        self.timestamps.clear()
+
+_DDG_LIMITER = _RateLimiter(max_per_window=3, window_sec=30)
+_BING_LIMITER = _RateLimiter(max_per_window=5, window_sec=30)
+
 
 async def _search_duckduckgo(query: str) -> list[dict]:
-    """Search DuckDuckGo and return up to 5 results with title, url, snippet.
-    最多爬 5 次，用完即止，后续靠 Bing。"""
-    global _DDG_CALLS_LEFT
-
-    if _DDG_CALLS_LEFT <= 0:
-        return []
-
-    _DDG_CALLS_LEFT -= 1
+    """Search DuckDuckGo and return up to 5 results with title, url, snippet."""
     url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     results: list[dict] = []
 
-    def _fetch() -> str:
+    await _DDG_LIMITER.acquire()
+
+    def _fetch() -> tuple[str, int]:
         r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
-        r.raise_for_status()
-        return r.text
+        return r.text, r.status_code
 
     loop = asyncio.get_event_loop()
     try:
-        html = await loop.run_in_executor(None, _fetch)
+        html, status = await loop.run_in_executor(None, _fetch)
     except Exception as exc:
         logger.warning("DuckDuckGo search failed for query %r: %s", query, exc)
         return []
 
+    # 检测是否被限流（202 或截断页面）
+    if status != 200 or len(html) < 20000 or 'result__a' not in html:
+        logger.warning("DuckDuckGo rate limited (status=%d, len=%d), cooling down", status, len(html))
+        _DDG_LIMITER.mark_throttled()
+        return []
 
     title_matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.DOTALL)
     snippet_matches = re.findall(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
@@ -155,6 +197,11 @@ async def _search_duckduckgo(query: str) -> list[dict]:
     return results[:5]
 
 
+_BING_DECOY_KEYWORDS = [
+    "youtube", "microsoft", "support.microsoft", "chatgpt", "reddit",
+    "google", "facebook", "instagram", "twitter", "amazon",
+]
+
 async def _search_bing(query: str) -> list[dict]:
     """Search Bing and return up to 5 results with title, url, snippet.
     Used as fallback when DuckDuckGo is unavailable (e.g. China)."""
@@ -164,6 +211,8 @@ async def _search_bing(query: str) -> list[dict]:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
+
+    await _BING_LIMITER.acquire()
 
     def _fetch() -> str:
         r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
@@ -180,6 +229,19 @@ async def _search_bing(query: str) -> list[dict]:
 
     # Bing results live in <li class="b_algo"> blocks
     algo_blocks = re.findall(r'<li\s+class="b_algo"[^>]*>([\s\S]*?)</li>', html, re.DOTALL)
+
+    # 检查是否被限流（返回全是垃圾结果）
+    if len(algo_blocks) > 0:
+        all_titles = []
+        for b in algo_blocks[:5]:
+            hm = re.search(r'<h2[^>]*>\s*<a[^>]+href="[^"]+"[^>]*>([\s\S]*?)</a>', b, re.DOTALL)
+            if hm:
+                all_titles.append(re.sub(r'<[^>]+>', '', hm.group(1)).strip().lower())
+        decoy_count = sum(1 for t in all_titles for d in _BING_DECOY_KEYWORDS if d in t)
+        if len(all_titles) > 0 and decoy_count >= len(all_titles) * 0.6:
+            logger.warning("Bing rate limited (decoy results %d/%d), cooling down", decoy_count, len(all_titles))
+            _BING_LIMITER.mark_throttled()
+            return []
     for block in algo_blocks:
         # Extract link from <h2><a href="...">title</a></h2>
         h2_match = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', block, re.DOTALL)

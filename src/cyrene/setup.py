@@ -75,11 +75,11 @@ async def _setup_from_name(name: str) -> None:
     """搜索人物生平+说话方式，写入 SOUL.md。"""
     print(f"\n正在搜索 {name} 的信息...")
 
-    # 1. 用 deep_search 搜索生平背景
-    bio = await _deep_search(f"{name} biography life background career achievements")
+    # 1. 用 deep_search 搜索生平背景（用中文确保命中中文内容）
+    bio = await _deep_search(f"{name} 生平 个人资料 早年经历 职业生涯 成就")
 
     # 2. 搜索说话方式
-    style = await _deep_search(f"{name} speaking style quotes interviews language personality")
+    style = await _deep_search(f"{name} 说话方式 语录 经典台词 直播风格 性格")
 
     # 3. 用 LLM 分析并生成 SOUL.md 内容
     soul_content = await _generate_soul_from_research(name, bio, style)
