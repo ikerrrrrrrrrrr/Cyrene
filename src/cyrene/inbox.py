@@ -191,3 +191,83 @@ def get_inbox_context(agent_name: str) -> str:
         f"You have {count} unread message{'s' if count > 1 else ''}:\n"
     )
     return header + "\n".join(summaries)
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent communication helpers
+# ---------------------------------------------------------------------------
+
+def spawn_agent(parent_name: str, task: str) -> str:
+    """Spawn a child agent to execute a task, and send it the task message.
+
+    1. Generates a unique child agent name (``agent_<timestamp>``).
+    2. Creates the child's inbox directory.
+    3. Sends the task message to the child's inbox.
+
+    Args:
+        parent_name: Name of the spawning agent.
+        task: Description of the task for the child agent.
+
+    Returns:
+        The generated child agent name.
+    """
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+    agent_name = f"agent_{timestamp}"
+    try:
+        ensure_inbox(agent_name)
+        send_task(agent_name, task, parent_name)
+        logger.info(
+            "Spawned agent '%s' from '%s' with task: %s",
+            agent_name, parent_name, task[:120],
+        )
+    except Exception:
+        logger.exception(
+            "Failed to spawn agent from '%s'", parent_name,
+        )
+    return agent_name
+
+
+def send_task(agent_name: str, task: str, parent_name: str = "system") -> str:
+    """Send a task message to *agent_name*.
+
+    Convenience wrapper around :func:`send_message` with ``msg_type="task"``.
+
+    Returns the generated ``message_id``.
+    """
+    return send_message(parent_name, agent_name, "task", task)
+
+
+def send_result(agent_name: str, result: str, parent_name: str = "system") -> str:
+    """Send a result message to *agent_name*.
+
+    Convenience wrapper around :func:`send_message` with ``msg_type="result"``.
+
+    Returns the generated ``message_id``.
+    """
+    return send_message(parent_name, agent_name, "result", result)
+
+
+def check_completed_tasks(agent_name: str) -> list[dict]:
+    """Check for completed tasks from child agents.
+
+    Reads and marks as read all messages in *agent_name*'s inbox, then
+    filters for messages of type ``"result"``.
+
+    Returns:
+        A list of result message dicts, each containing at minimum
+        ``from``, ``content``, and ``timestamp`` keys.
+    """
+    messages = read_messages(agent_name, mark_read=True)
+    return [m for m in messages if m.get("type") == "result"]
+
+
+def get_pending_tasks(agent_name: str) -> list[dict]:
+    """Get pending task messages for *agent_name* (does NOT mark as read).
+
+    Use this when an agent starts up to discover what it has been asked to do.
+
+    Returns:
+        A list of task message dicts of type ``"task"``.
+    """
+    messages = read_messages(agent_name, mark_read=False)
+    return [m for m in messages if m.get("type") == "task"]
