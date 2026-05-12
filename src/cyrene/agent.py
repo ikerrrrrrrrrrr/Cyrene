@@ -34,7 +34,7 @@ _MAX_TOOL_OUTPUT_CHARS = 12000
 # System prompts
 # ---------------------------------------------------------------------------
 
-_MAIN_AGENT_PROMPT = """You are Cyrene, a capable AI assistant. Your job is to help Alice get things done.
+_MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficiently.
 
 Rules:
 - Respond clearly and directly
@@ -652,54 +652,65 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str, personality_block: str = "") -> str:
-    """主 Agent：助理语气 + 全部工具 + session 持久化。"""
-    system_content = _MAIN_AGENT_PROMPT
-    if personality_block:
-        system_content += "\n\n[人格设定]\n" + personality_block
-    messages = [{"role": "system", "content": system_content}, *history, {"role": "user", "content": user_message}]
+# 轻量 tool：只有 use_tools + quit，用于第一阶段判断是否进重循环
+_LIGHT_TOOL_DEFS = [
+    {"type": "function", "function": {"name": "use_tools", "description": "Call this when the user asks you to DO something (file ops, search, code, web, etc.). Not needed for chat only.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
+    {"type": "function", "function": {"name": "quit", "description": "Call this when the interaction is done.", "parameters": {"type": "object", "properties": {}}}},
+]
 
-    final_text = ""
-    for _ in range(_MAX_TOOL_ROUNDS):
-        response = await _call_llm(messages, tools=TOOL_DEFS)
 
-        assistant_entry: dict = {"role": "assistant", "content": response.get("content") or ""}
-        if response.get("reasoning_content"):
-            assistant_entry["reasoning_content"] = response["reasoning_content"]
-        if response.get("tool_calls"):
-            assistant_entry["tool_calls"] = response["tool_calls"]
-        if response.get("reasoning_content"):
-            assistant_entry["reasoning_content"] = response["reasoning_content"]
-        messages.append(assistant_entry)
+async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str) -> str:
+    """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
+    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
 
-        tool_calls = response.get("tool_calls") or []
+    # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
+    response = await _call_llm(messages, tools=_LIGHT_TOOL_DEFS)
+    tool_calls = response.get("tool_calls") or []
 
-        # quit tool
-        if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
-            final_text = _assistant_text(response).strip() or "Done."
-            for tc in tool_calls:
-                if tc.get("function", {}).get("name") == "quit":
-                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": "Interaction ended."})
-            break
+    # 如果 LLM 调了 use_tools → 进入重循环（含全部工具）
+    use_tools_call = None
+    for tc in tool_calls:
+        name = tc.get("function", {}).get("name")
+        if name == "use_tools":
+            use_tools_call = tc
+        elif name == "quit":
+            return _assistant_text(response).strip() or "Done."
 
-        if not tool_calls:
-            final_text = _assistant_text(response).strip() or ""
-            if final_text:
-                break
-            continue  # 空内容重试
+    if use_tools_call:
+        # Phase 2: 重循环 — 全部工具，最多 N 轮
+        try:
+            task = json.loads(use_tools_call["function"]["arguments"]).get("task", user_message)
+        except (json.JSONDecodeError, KeyError, TypeError):
+            task = user_message
+        # 重新从 task 开始，不带 Phase 1 的 tool call 痕迹
+        messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": task}]
 
-        for tc in tool_calls:
-            call_id = tc["id"]
-            fn = tc["function"]
-            name = fn["name"]
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-                result = await _execute_tool(name, args, bot, chat_id, db_path, None)
-            except Exception as e:
-                result = f"Tool {name} failed: {e}"
-            messages.append({"role": "tool", "tool_call_id": call_id, "content": _truncate(result)})
-    else:
-        final_text = "Stopped after hitting the tool loop limit."
+        for _ in range(_MAX_TOOL_ROUNDS):
+            response = await _call_llm(messages, tools=TOOL_DEFS)
+            entry: dict = {"role": "assistant", "content": response.get("content") or ""}
+            if response.get("reasoning_content"):
+                entry["reasoning_content"] = response["reasoning_content"]
+            if response.get("tool_calls"):
+                entry["tool_calls"] = response["tool_calls"]
+            messages.append(entry)
+
+            tcs = response.get("tool_calls") or []
+            if any(t.get("function", {}).get("name") == "quit" for t in tcs):
+                return _assistant_text(response).strip() or "Done."
+            if not tcs:
+                return _assistant_text(response).strip() or "Done."
+
+            for t in tcs:
+                try:
+                    args = json.loads(t["function"].get("arguments") or "{}")
+                    result = await _execute_tool(t["function"]["name"], args, bot, chat_id, db_path, None)
+                except Exception as e:
+                    result = f"Tool failed: {e}"
+                messages.append({"role": "tool", "tool_call_id": t["id"], "content": _truncate(result)})
+        return "Stopped after hitting the tool loop limit."
+
+    # Phase 1 结束：纯聊天，无工具需要
+    return _assistant_text(response).strip() or "Done."
 
     # 保存 session（只保存 user/assistant/tool 消息，不包括 system）
     session_msgs = [m for m in messages[1:] if m["role"] != "system"]
