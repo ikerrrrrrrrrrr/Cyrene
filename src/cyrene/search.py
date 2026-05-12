@@ -470,16 +470,10 @@ async def deep_search(topic: str) -> str:
     logger.info("Deep search starting for: %s", topic)
 
     # -----------------------------------------------------------------------
-    # Stage 1: Generate queries
+    # Stage 1: Single query only — 不生成多轮搜索，避免触发限流
     # -----------------------------------------------------------------------
-    if len(topic) <= 15:
-        # Short queries: use the topic directly
-        queries = [topic]
-    else:
-        queries = await _generate_queries(topic)
-        if not queries:
-            queries = [topic]
-    logger.info("Stage 1 complete: generated %d queries", len(queries))
+    queries = [topic]
+    logger.info("Stage 1: single query only")
 
     # -----------------------------------------------------------------------
     # Stage 2: Parallel search and fetch
