@@ -41,8 +41,7 @@ async def _call_llm(messages: list[dict]) -> str:
     if OPENAI_API_KEY and OPENAI_API_KEY.lower() not in ("lmstudio", "dummy", ""):
         headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
 
-    transport = httpx.AsyncHTTPTransport(retries=1)
-    async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
             json=payload,
@@ -114,10 +113,9 @@ async def _search_duckduckgo(query: str) -> list[dict]:
     """Search DuckDuckGo and return up to 5 results with title, url, snippet."""
     url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    transport = httpx.AsyncHTTPTransport(retries=1)
 
     try:
-        async with httpx.AsyncClient(transport=transport, follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
     except Exception as exc:
@@ -128,18 +126,8 @@ async def _search_duckduckgo(query: str) -> list[dict]:
     results: list[dict] = []
 
     # Extract title+url from result__a tags
-    title_matches = re.findall(
-        r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>',
-        html,
-        re.DOTALL,
-    )
-
-    # Extract snippets from result__snippet tags
-    snippet_matches = re.findall(
-        r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
-        html,
-        re.DOTALL,
-    )
+    title_matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.DOTALL)
+    snippet_matches = re.findall(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
 
     for i, (href, title_html) in enumerate(title_matches):
         title = re.sub(r"<.*?>", "", title_html).strip()
@@ -155,17 +143,15 @@ async def _search_duckduckgo(query: str) -> list[dict]:
 async def _search_bing(query: str) -> list[dict]:
     """Search Bing and return up to 5 results with title, url, snippet.
     Used as fallback when DuckDuckGo is unavailable (e.g. China)."""
-    url = f"https://www.bing.com/search?q={quote(query)}&setmkt=en-US"
+    url = f"https://www.bing.com/search?q={quote(query)}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
-    transport = httpx.AsyncHTTPTransport(retries=1)
 
     try:
-        async with httpx.AsyncClient(transport=transport, follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
     except Exception as exc:
@@ -235,10 +221,9 @@ def _strip_html(text: str) -> str:
 async def _fetch_url(url: str) -> str:
     """Fetch a URL and return its plain text content, truncated to 3000 chars."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    transport = httpx.AsyncHTTPTransport(retries=1)
 
     try:
-        async with httpx.AsyncClient(transport=transport, follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=_HTTP_TIMEOUT) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
     except Exception as exc:
