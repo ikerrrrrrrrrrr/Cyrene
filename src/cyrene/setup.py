@@ -72,84 +72,77 @@ async def run_setup() -> None:
 
 
 async def _setup_from_name(name: str) -> None:
-    """搜索人物生平+说话方式，写入 SOUL.md。"""
-    print(f"\n正在搜索 {name} 的信息...")
+    """生成人物的人格文件，直接靠模型内部知识，不搜索。"""
+    print(f"\n正在生成 {name} 的人格...")
 
-    # 1. 用 deep_search 搜索生平背景（用中文确保命中中文内容）
-    bio = await _deep_search(f"{name} 生平 个人资料 早年经历 职业生涯 成就")
+    soul_content = await _generate_soul_profile(name)
 
-    # 2. 搜索说话方式
-    style = await _deep_search(f"{name} 说话方式 语录 经典台词 直播风格 性格")
-
-    # 3. 用 LLM 分析并生成 SOUL.md 内容
-    soul_content = await _generate_soul_from_research(name, bio, style)
-
-    # 4. 写入 SOUL.md
     soul_path = get_soul_path()
     soul_path.write_text(soul_content, encoding="utf-8")
     print(f"已为 {name} 创建人格文件！")
     print(f"   文件: {soul_path}")
 
 
-async def _deep_search(query: str) -> str:
-    """使用 deep_search 搜索并返回结果文本。"""
-    from cyrene.search import deep_search
-    try:
-        result = await deep_search(query)
-        return result or ""
-    except Exception:
-        return ""
-
-
-async def _generate_soul_from_research(name: str, bio: str, style: str) -> str:
-    """用 LLM 根据搜索生成 SOUL.md。"""
+async def _generate_soul_profile(name: str) -> str:
+    """直接用模型知识生成行为人格文件。"""
     from cyrene.agent import _call_llm, _assistant_text
 
-    prompt = f"""Based on the research below, create a SOUL.md file for an AI that will personify {name}.
+    prompt = f"""Create a BEHAVIOR PROFILE for an AI that will personify {name}.
 
-Research about {name}:
-{bio[:3000]}
+This is NOT a biography. This is a set of behavioral rules that tells the AI exactly how to speak and act like {name}.
 
-Speaking style of {name}:
-{style[:3000]}
+Use your knowledge about this person. Focus on what makes them unique.
 
-Generate a SOUL.md that captures:
-1. SELF:IDENTITY - Who this person is (key traits, background, values)
-2. SELF:BELIEFS - Core beliefs and worldview
-3. RELATIONSHIP:USER - How they would treat a close friend
-4. SPEECH:PATTERNS - Detailed speaking style analysis:
-   - Sentence length (short/long/mixed)
-   - Vocabulary level (simple/formal/technical)
-   - Typical phrases and signature expressions
-   - Tone (warm/formal/humorous/serious)
-   - Conversation style (direct/indirect, uses questions, interrupts, etc.)
-   - Examples of how they would say common things
-5. MEMORY:HIGHLIGHT - Key life events and achievements
+Include EXACTLY these sections:
 
-Format in clean markdown. Be specific and detailed about speaking style - include actual example phrases."""
+## CORE IDENTITY
+- Who they are in 1 sentence
+- Their archetype
+
+## SPEECH PATTERNS
+- Sentence structure (short/long, fragmented/complete)
+- Verbal tics and fillers
+- Signature phrases and catchphrases (exact quotes)
+- Vocabulary and tone
+
+## CONTRADICTIONS
+- Things they say then immediately deny
+- Self-defeating logic loops
+- The "30-second self-destruct" pattern
+
+## FIXED MISTAKES
+- Words they consistently mispronounce or misspell
+- Numbers they always get wrong
+- Facts they consistently misremember
+
+## BEHAVIORAL LOOPS
+- Circular argument patterns
+- Go-to deflection strategies
+- Repetitive question cycles
+
+## CLASSIC EXCHANGES
+- 2-3 example dialogues showing how they respond to common questions
+
+Write in concise bullet points with exact example quotes. No markdown formatting.
+Write the ENTIRE profile in Chinese."""
 
     try:
         response = await _call_llm([
-            {"role": "system", "content": "You create detailed personality profiles. Be specific and include speech pattern examples."},
+            {"role": "system", "content": "You create character behavior profiles. Focus on exact speech patterns and behavioral quirks. Use concrete examples."},
             {"role": "user", "content": prompt}
         ], tools=None)
         result = _assistant_text(response) or ""
-        if result:
-            return f"# {name}'s Soul\n\n" + result
+        if result and len(result) > 100:
+            return f"# {name}'s Soul\n\n{result}"
     except Exception:
         pass
 
-    # Fallback: 生成一个简单的 SOUL.md
     return f"""# {name}'s Soul
 
-## SELF:IDENTITY
-- I embody the persona of {name}.
-- My responses reflect {name}'s known personality and communication style.
+## CORE IDENTITY
+- I personify {name}.
 
-## RELATIONSHIP:USER
-- I treat the user as a trusted friend.
-
-## SPEECH:PATTERNS
+## SPEECH PATTERNS
 - Speaking style modeled after {name}.
 """
 
