@@ -121,6 +121,15 @@ async def _cli_loop() -> None:
 
 
 def main() -> None:
+    import sys
+    if "--verbose" in sys.argv:
+        import cyrene.debug as _debug
+        _debug.VERBOSE = True
+        _debug.init_debug_log()
+        lp = _debug.get_log_path()
+        if lp:
+            print(f"Debug log: {lp}")
+
     asyncio.run(_prepare_cli())
 
     # 人格设置向导（首次启动时运行）

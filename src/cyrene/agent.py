@@ -25,6 +25,7 @@ from contextvars import ContextVar
 
 from cyrene.search import deep_search
 from cyrene.short_term import touch_entry, get_context, clear_old_entries, load_entries, save_entries
+from cyrene import debug
 from cyrene.subagent import (
     register as _reg_subagent,
     mark_done as _mark_subagent_done,
@@ -37,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 # 当前 agent ID，用于 send_agent_message 识别发送者
 _current_agent_id: ContextVar[str] = ContextVar("_current_agent_id", default="main")
+# 当前调用者类型，用于 debug 日志
+_caller_type: ContextVar[str] = ContextVar("_caller_type", default="main_agent")
 _agent_lock = asyncio.Lock()
 _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 12
@@ -687,12 +690,13 @@ def _assistant_text(message: dict[str, Any]) -> str:
 
 
 async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
+    _t0 = __import__("time").monotonic()
+    _phase = "phase1" if tools is _LIGHT_TOOL_DEFS else ("phase2" if tools else "no_tools")
     payload = {
         "model": OPENAI_MODEL,
         "messages": messages,
         "max_tokens": 32000,
     }
-    # DeepSeek reasoning 模型需要显式启用 thinking
     if "deepseek" in OPENAI_MODEL:
         payload["thinking"] = {"type": "enabled"}
     if tools:
@@ -714,7 +718,10 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
             logger.error("LLM API error %s: %s", resp.status_code, resp.text[:500])
             resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]
+        msg = data["choices"][0]["message"]
+        if debug.VERBOSE:
+            debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
+        return msg
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +738,7 @@ _LIGHT_TOOL_DEFS = [
 
 async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str) -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
+    _caller_type.set("main_agent")
     messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
 
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
@@ -794,6 +802,9 @@ async def _run_chat_filter(text: str, soul_context: str = "") -> str:
     if not text or len(text) < 10:
         return text
 
+    _caller_type.set("chat_filter")
+    import time as _time
+    _t0 = _time.monotonic()
     system_prompt = _CHAT_FILTER_PROMPT
     if soul_context:
         system_prompt = f"{_CHAT_FILTER_PROMPT}\n\n参考以下人格设定，用该角色的语气和说话方式改写：\n{soul_context}"
@@ -804,8 +815,8 @@ async def _run_chat_filter(text: str, soul_context: str = "") -> str:
             {"role": "user", "content": text}
         ], tools=None)
         result = _assistant_text(response) or text
-        # Strip emojis as a safety net (models don't always follow instructions)
         result = re.sub(r'[\U0001F300-\U0010FFFF]', '', result).strip()
+        debug.log_chat_filter(text, result, (_time.monotonic() - _t0) * 1000)
         return result
     except Exception:
         return text  # 失败时 fallback 到原文
@@ -817,6 +828,7 @@ async def _run_chat_filter(text: str, soul_context: str = "") -> str:
 
 
 async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
+    _caller_type.set("execution_agent")
     """Execution agent with all tools. Used internally by chat agent."""
     messages = [
         {"role": "system", "content": _EXECUTION_SYSTEM_PROMPT},
@@ -866,6 +878,7 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 
 
 async def _run_subagent(agent_id: str, task: str, bot: Any, chat_id: int, db_path: str) -> str:
+    _caller_type.set(f"subagent_{agent_id}")
     """Run a sub-agent in its own loop.
 
     Has its own agent loop, inbox checking, and full tool access.
