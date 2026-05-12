@@ -21,8 +21,81 @@ async def _prepare_cli() -> None:
     init_short_term(DATA_DIR)
 
 
+def _show_help():
+    print()
+    print("=" * 40)
+    print("  Cyrene 帮助菜单")
+    print("=" * 40)
+    print("  1) 重新注入人格（重新运行设置向导）")
+    print("  2) 清除对话上下文（session）")
+    print("  3) 重置人格（恢复默认 SOUL.md）")
+    print("  4) 检查系统状态")
+    print("  0) 返回对话")
+    print("=" * 40)
+
+
+async def _handle_menu():
+    while True:
+        choice = input("\n选择操作 (0-4): ").strip()
+
+        if choice == "0":
+            print("返回对话。")
+            return
+
+        elif choice == "1":
+            from cyrene.setup import init_setup_flag, mark_setup_done, run_setup
+            init_setup_flag()
+            print("\n--- 重新注入人格 ---")
+            await run_setup()
+            print("人格设置完成。输入 /h 可以重新设置。")
+            return
+
+        elif choice == "2":
+            await clear_session_id()
+            print("✅ 对话上下文已清除。")
+            return
+
+        elif choice == "3":
+            from cyrene.soul import get_soul_path, ensure_soul
+            from cyrene.short_term import save_entries
+            soul_path = get_soul_path()
+            if soul_path.exists():
+                soul_path.unlink()
+            ensure_soul()
+            save_entries([])  # 同时清空短期记忆
+            print("✅ SOUL.md 已重置为默认。短期记忆已清空。")
+            return
+
+        elif choice == "4":
+            from cyrene.config import OPENAI_MODEL, OPENAI_BASE_URL
+            from cyrene.soul import get_soul_path, read_soul
+            from cyrene.short_term import load_entries
+            print("\n--- 系统状态 ---")
+            print(f"  模型: {OPENAI_MODEL}")
+            print(f"  地址: {OPENAI_BASE_URL}")
+            soul_path = get_soul_path()
+            print(f"  SOUL.md: {'存在' if soul_path.exists() else '不存在'} ({soul_path})")
+            if soul_path.exists():
+                soul_content = read_soul()
+                print(f"  人格内容: {len(soul_content)} 字符")
+            st_entries = load_entries()
+            print(f"  短期记忆: {len(st_entries)} 条")
+            from cyrene.config import STATE_FILE
+            if STATE_FILE.exists():
+                import json
+                msgs = json.loads(STATE_FILE.read_text()).get("messages", [])
+                print(f"  当前 session: {len(msgs)} 条消息")
+            else:
+                print("  当前 session: 空")
+            print("------------------")
+            return
+
+        else:
+            print("无效选择，请输入 0-4。")
+
+
 async def _cli_loop() -> None:
-    print(f"{ASSISTANT_NAME} CLI mode. Type 'quit' to exit, '/clear' to reset session.")
+    print(f"{ASSISTANT_NAME} CLI mode. '/h' for menu, '/clear' to reset session, 'quit' to exit.")
     while True:
         try:
             user_input = input("\nYou: ").strip()
@@ -30,6 +103,10 @@ async def _cli_loop() -> None:
                 continue
             if user_input.lower() == "quit":
                 break
+            if user_input.lower() == "/h":
+                _show_help()
+                await _handle_menu()
+                continue
             if user_input.lower() == "/clear":
                 await clear_session_id()
                 print("Session cleared.")

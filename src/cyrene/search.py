@@ -407,12 +407,16 @@ async def deep_search(topic: str) -> str:
     # -----------------------------------------------------------------------
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
-    async def _limited_search(q: str) -> list[dict]:
+    async def _limited_search(q: str, engine: str) -> list[dict]:
         async with semaphore:
-            return await _search_duckduckgo(q)
+            if engine == "ddg":
+                return await _search_duckduckgo(q)
+            else:
+                return await _search_bing(q)
 
-    # Search all queries in parallel (try DuckDuckGo first)
-    search_tasks = [_limited_search(q) for q in queries]
+    # 同时搜索 DuckDuckGo 和 Bing
+    search_tasks = [_limited_search(q, "ddg") for q in queries]
+    search_tasks += [_limited_search(q, "bing") for q in queries]
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     all_results: list[dict] = []
@@ -420,20 +424,7 @@ async def deep_search(topic: str) -> str:
         if isinstance(sr, list):
             all_results.extend(sr)
 
-    logger.info("Stage 2 search complete: %d raw results", len(all_results))
-
-    # If DuckDuckGo returned nothing, fallback to Bing
-    if not all_results:
-        logger.warning("DuckDuckGo returned no results, trying Bing fallback")
-        async def _limited_bing(q: str) -> list[dict]:
-            async with semaphore:
-                return await _search_bing(q)
-        bing_tasks = [_limited_bing(q) for q in queries]
-        bing_results = await asyncio.gather(*bing_tasks, return_exceptions=True)
-        for br in bing_results:
-            if isinstance(br, list):
-                all_results.extend(br)
-        logger.info("Bing fallback: %d raw results", len(all_results))
+    logger.info("Stage 2 search complete: %d raw results (DDG + Bing)", len(all_results))
 
     if not all_results:
         return f"Search returned no results for: {topic}"
