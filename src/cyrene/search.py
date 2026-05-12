@@ -110,21 +110,18 @@ def _extract_ddg_url(href: str) -> str:
     return href
 
 
-# DDG 限速：至少间隔 3 秒，连续失败时退避
-_DDG_LAST_CALL = 0.0
-_DDG_FAIL_COUNT = 0
+# DDG 最多爬 5 次，之后全走 Bing
+_DDG_CALLS_LEFT = 5
 
 async def _search_duckduckgo(query: str) -> list[dict]:
-    """Search DuckDuckGo and return up to 5 results with title, url, snippet."""
-    global _DDG_LAST_CALL, _DDG_FAIL_COUNT
+    """Search DuckDuckGo and return up to 5 results with title, url, snippet.
+    最多爬 5 次，用完即止，后续靠 Bing。"""
+    global _DDG_CALLS_LEFT
 
-    # 限速：至少间隔 3 秒，连续失败时退避
-    now = asyncio.get_event_loop().time()
-    min_interval = 3.0 + _DDG_FAIL_COUNT * 2  # 失败一次 +2 秒
-    wait = min_interval - (now - _DDG_LAST_CALL)
-    if wait > 0:
-        await asyncio.sleep(wait)
+    if _DDG_CALLS_LEFT <= 0:
+        return []
 
+    _DDG_CALLS_LEFT -= 1
     url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     results: list[dict] = []
@@ -137,13 +134,10 @@ async def _search_duckduckgo(query: str) -> list[dict]:
     loop = asyncio.get_event_loop()
     try:
         html = await loop.run_in_executor(None, _fetch)
-        _DDG_FAIL_COUNT = 0
     except Exception as exc:
-        _DDG_FAIL_COUNT += 1
         logger.warning("DuckDuckGo search failed for query %r: %s", query, exc)
         return []
-    finally:
-        _DDG_LAST_CALL = asyncio.get_event_loop().time()
+
 
     title_matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.DOTALL)
     snippet_matches = re.findall(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
