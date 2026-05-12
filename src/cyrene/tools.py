@@ -463,7 +463,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "spawn_subagent",
-            "description": "Spawn a sub-agent that runs independently with full tool access. Useful for parallel work, multi-step tasks, or tasks where multiple perspectives are needed. Sub-agents can communicate via send_agent_message.",
+            "description": "Spawn a sub-agent. A sub-agent has independent full tool access and can communicate with other agents via send_agent_message.",
             "parameters": {
                 "type": "object",
                 "properties": {

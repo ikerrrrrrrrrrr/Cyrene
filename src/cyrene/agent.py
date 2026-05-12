@@ -26,6 +26,8 @@ _caller_type: ContextVar[str] = ContextVar("_caller_type", default="main_agent")
 _agent_lock = asyncio.Lock()
 _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 12
+# 后台 compressor 任务，防止被事件循环 GC
+_pending_compressors: set[asyncio.Task] = set()
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -88,8 +90,10 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     STATE_FILE.write_text(json.dumps({"messages": trimmed}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 如果原始消息超过阈值，后台压缩
-    if len(messages) > _MAX_HISTORY_MESSAGES + 5:
-        asyncio.create_task(_compress_old_messages(messages))
+    if len(messages) >= _MAX_HISTORY_MESSAGES + 5:
+        task = asyncio.create_task(_compress_old_messages(messages))
+        _pending_compressors.add(task)
+        task.add_done_callback(_pending_compressors.discard)
 
 
 async def _compress_old_messages(all_messages: list[dict]) -> None:
@@ -271,10 +275,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
             tcs = response.get("tool_calls") or []
             if any(t.get("function", {}).get("name") == "quit" for t in tcs):
-                _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
             if not tcs:
-                _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
 
             spawned = False
@@ -296,12 +300,12 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                     if await _sub_all_done():
                         break
                 # 收集结果后生成摘要
-                _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 from cyrene.subagent import collect_results
                 summary = await collect_results()
                 return f"[所有子任务已完成]\n{summary}"
 
-        _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+        await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
         return "Stopped after hitting the tool loop limit."
 
     # Phase 1 结束：纯聊天，无工具需要
