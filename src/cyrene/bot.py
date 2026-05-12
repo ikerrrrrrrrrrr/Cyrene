@@ -31,7 +31,7 @@ async def _start(update: Update, context) -> None:
 async def _clear(update: Update, context) -> None:
     if not _is_owner(update):
         return
-    clear_session_id()
+    await clear_session_id()
     await update.message.reply_text("Session cleared. Starting fresh!")
 
 

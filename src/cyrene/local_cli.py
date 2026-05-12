@@ -31,7 +31,7 @@ async def _cli_loop() -> None:
             if user_input.lower() == "quit":
                 break
             if user_input.lower() == "/clear":
-                clear_session_id()
+                await clear_session_id()
                 print("Session cleared.")
                 continue
 

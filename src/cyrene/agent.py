@@ -191,8 +191,16 @@ Output format (one per line, no explanations):
             continue
 
 
-def clear_session_id() -> None:
+async def clear_session_id() -> None:
+    """Clear session and compress conversation to short-term memory before discarding."""
     if STATE_FILE.exists():
+        try:
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            msgs = data.get("messages", [])
+            if msgs:
+                await _compress_old_messages(msgs)
+        except Exception:
+            pass
         STATE_FILE.unlink()
     # 不清短期记忆。它用于在 session 重置后注入上下文。
 
