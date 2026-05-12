@@ -28,19 +28,60 @@ _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 12
 _MAX_TOOL_OUTPUT_CHARS = 12000
 
-_SYSTEM_PROMPT = """You are a local coding agent with tool access.
+# ---------------------------------------------------------------------------
+# System prompts
+# ---------------------------------------------------------------------------
 
-Operate inside the workspace and prefer using tools over guessing.
-Be concise and factual.
+_CHAT_SYSTEM_PROMPT = """You are a close friend chatting with Alice. You're NOT an assistant.
 
 Rules:
-- Use tools whenever a file, shell, web, or task action is needed.
-- Do not claim success without checking tool results.
-- When editing files, prefer small targeted changes.
-- Keep responses short unless the user asks for detail.
-- If a tool fails, explain the failure briefly and try a better next step.
-- When the task is complete, call the `quit` tool to end the interaction.
+- Speak like a real friend: casual, short, natural
+- One or two sentences max per response
+- NO lists, NO tables, NO bullet points, NO markdown formatting
+- NO summarizing, NO concluding ("in summary", "overall", "all in all")
+- NO emojis unless Alice uses them first
+- Never say "how can I help you" or "how may I assist"
+- Just talk, like two friends hanging out
+
+When Alice asks you to do something (write files, search, research, etc.),
+call the `delegate_execution` tool with the full task description.
+You don't need to explain what you're doing — just do it.
 """
+
+_EXECUTION_SYSTEM_PROMPT = """You are a capable execution agent. Your job is to complete tasks using tools.
+
+Rules:
+- Use tools to complete the task efficiently
+- Read/Write/Edit files, run Bash commands, search the web as needed
+- Return the RESULT of what you did, not a conversation
+- Be concise in tool usage
+- When done, call the `quit` tool
+"""
+
+# ---------------------------------------------------------------------------
+# Chat agent tool definitions (only delegate_execution)
+# ---------------------------------------------------------------------------
+
+_CHAT_TOOL_DEFS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "delegate_execution",
+            "description": "Call this when Alice asks you to do something that requires tools (file ops, search, research, etc.). Pass the FULL task description.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "The complete task Alice wants done"}
+                },
+                "required": ["task"],
+            },
+        },
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _truncate(text: str, limit: int = _MAX_TOOL_OUTPUT_CHARS) -> str:
@@ -86,6 +127,11 @@ def _json_result(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     return json.dumps(payload, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Tool implementations
+# ---------------------------------------------------------------------------
 
 
 async def _tool_send_message(args: dict[str, Any], bot: Any, chat_id: int, notify_state: dict[str, bool] | None) -> str:
@@ -253,6 +299,10 @@ async def _tool_websearch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
 async def _tool_quit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     return "Interaction ended."
 
+
+# ---------------------------------------------------------------------------
+# Tool definitions and dispatch
+# ---------------------------------------------------------------------------
 
 TOOL_DEFS = [
     {
@@ -453,18 +503,24 @@ def _assistant_text(message: dict[str, Any]) -> str:
     return ""
 
 
-async def _call_llm(messages: list[dict]) -> dict:
+# ---------------------------------------------------------------------------
+# LLM call (accepts tools as parameter)
+# ---------------------------------------------------------------------------
+
+
+async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
     payload = {
         "model": OPENAI_MODEL,
         "messages": messages,
-        "tools": TOOL_DEFS,
-        "tool_choice": "auto",
     }
-    headers = {
-        "Content-Type": "application/json",
-    }
-    if OPENAI_API_KEY and OPENAI_API_KEY != "lmstudio":
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+
+    headers = {"Content-Type": "application/json"}
+    if OPENAI_API_KEY and OPENAI_API_KEY.lower() not in ("lmstudio", "dummy", ""):
         headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
+
     transport = httpx.AsyncHTTPTransport(retries=1)
     async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
         resp = await client.post(
@@ -477,86 +533,129 @@ async def _call_llm(messages: list[dict]) -> dict:
         return data["choices"][0]["message"]
 
 
-async def run_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
-    async with _agent_lock:
-        return await _run_agent_inner(prompt, bot, chat_id, db_path, use_session=True)
+# ---------------------------------------------------------------------------
+# Execution agent (internal, all tools)
+# ---------------------------------------------------------------------------
 
 
-async def _run_agent_inner(prompt: str, bot: Any, chat_id: int, db_path: str, use_session: bool, notify_state: dict[str, bool] | None = None) -> str:
-    history = _load_session_messages() if use_session else []
-    messages = [{"role": "system", "content": _SYSTEM_PROMPT}, *history, {"role": "user", "content": prompt}]
+async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
+    """Execution agent with all tools. Used internally by chat agent."""
+    messages = [
+        {"role": "system", "content": _EXECUTION_SYSTEM_PROMPT},
+        {"role": "user", "content": task},
+    ]
 
-    final_text = ""
     for _ in range(_MAX_TOOL_ROUNDS):
-        try:
-            assistant = await _call_llm(messages)
-        except Exception as exc:
-            logger.exception("LLM call failed")
-            final_text = f"LLM call failed: {exc}"
-            break
+        response = await _call_llm(messages, tools=TOOL_DEFS)
 
         assistant_entry: dict[str, Any] = {"role": "assistant"}
-        if assistant.get("content"):
-            assistant_entry["content"] = assistant["content"]
+        if response.get("content"):
+            assistant_entry["content"] = response["content"]
         else:
             assistant_entry["content"] = ""
-        if assistant.get("tool_calls"):
-            assistant_entry["tool_calls"] = assistant["tool_calls"]
+        if response.get("tool_calls"):
+            assistant_entry["tool_calls"] = response["tool_calls"]
         messages.append(assistant_entry)
 
-        tool_calls = assistant.get("tool_calls") or []
+        tool_calls = response.get("tool_calls") or []
 
-        # Check if LLM called the quit tool
+        # Check for quit
         if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
-            final_text = _assistant_text(assistant).strip() or "Done."
-            # Still execute the quit tool to get its return message, but don't loop further
-            for tool_call in tool_calls:
-                if tool_call.get("function", {}).get("name") == "quit":
-                    call_id = tool_call["id"]
-                    result = "Interaction ended."
-                    messages.append({"role": "tool", "tool_call_id": call_id, "content": result})
             break
 
         if not tool_calls:
-            text = _assistant_text(assistant).strip()
-            if text:
-                final_text = text
-                break
-            else:
-                # No tool calls and no text content -- go back to loop start (retry)
-                continue
+            return _assistant_text(response) or "Done."
 
-        for tool_call in tool_calls:
-            call_id = tool_call["id"]
-            function = tool_call["function"]
-            name = function["name"]
+        for tc in tool_calls:
+            call_id = tc["id"]
+            fn = tc["function"]
+            name = fn["name"]
             try:
-                arguments = json.loads(function.get("arguments") or "{}")
-            except json.JSONDecodeError as exc:
-                result = f"Tool argument parse error: {exc}"
-            else:
-                try:
-                    result = await _execute_tool(name, arguments, bot, chat_id, db_path, notify_state)
-                except Exception as exc:
-                    logger.exception("Tool %s failed", name)
-                    result = f"Tool {name} failed: {exc}"
+                args = json.loads(fn.get("arguments") or "{}")
+                result = await _execute_tool(name, args, bot, chat_id, db_path, notify_state)
+            except Exception as e:
+                result = f"Tool {name} failed: {e}"
             messages.append({"role": "tool", "tool_call_id": call_id, "content": _truncate(result)})
-    else:
-        final_text = "Stopped after hitting the tool loop limit."
 
-    if use_session:
-        _save_session_messages([m for m in messages if m["role"] != "system"])
+    return "Done."
+
+
+# ---------------------------------------------------------------------------
+# Chat agent (entry point)
+# ---------------------------------------------------------------------------
+
+
+async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
+    """Chat/Execution split agent. Main entry point."""
+    async with _agent_lock:
+        return await _run_chat_agent(user_message, bot, chat_id, db_path)
+
+
+async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
+    history = _load_session_messages()
+    messages = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}, *history, {"role": "user", "content": user_message}]
+
+    # Call LLM with only chat tools (delegate_execution)
+    response = await _call_llm(messages, tools=_CHAT_TOOL_DEFS)
+
+    assistant_msg: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
+    if response.get("tool_calls"):
+        assistant_msg["tool_calls"] = response["tool_calls"]
+    messages.append(assistant_msg)
+
+    tool_calls = response.get("tool_calls") or []
+
+    # Case 1: LLM wants to delegate execution
+    exec_tool = None
+    for tc in tool_calls:
+        if tc.get("function", {}).get("name") == "delegate_execution":
+            exec_tool = tc
+            break
+
+    if exec_tool:
+        # Extract task
+        try:
+            args = json.loads(exec_tool.get("function", {}).get("arguments", "{}"))
+            task = args.get("task", user_message)
+        except json.JSONDecodeError:
+            task = user_message
+
+        # Run execution agent
+        exec_result = await _run_execution_agent(task, bot, chat_id, db_path)
+
+        # Feed result back to chat agent for natural response
+        messages.append({
+            "role": "tool",
+            "tool_call_id": exec_tool["id"],
+            "content": f"Task result: {exec_result[:500]}",
+        })
+
+        # Chat agent reframes the result in friend tone (no tools this time)
+        final_response = await _call_llm(messages, tools=[])  # no tools, just text
+        final_text = _assistant_text(final_response) or exec_result
+    else:
+        # Case 2: Pure chat — no tools needed
+        final_text = _assistant_text(response) or ""
+
+    # Save session (all non-system messages)
+    _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
 
     return final_text
 
 
+# ---------------------------------------------------------------------------
+# Backward-compatible public API
+# ---------------------------------------------------------------------------
+
+
 async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
-    return await _run_agent_inner(prompt, bot, chat_id, db_path, use_session=False, notify_state=notify_state)
+    """Alias for execution agent (no session). Used by scheduler."""
+    return await _run_execution_agent(prompt, bot, chat_id, db_path, notify_state=notify_state)
 
 
 async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
-    """Agent call triggered by heartbeat. No session persistence."""
-    return await _run_agent_inner(prompt, bot, chat_id, db_path, use_session=False)
+    """Alias for execution agent (no session). Used by heartbeat."""
+    return await _run_execution_agent(prompt, bot, chat_id, db_path)
 
 
 async def run_steward_agent(conversation_text: str, soulmd_content: str, bot: Any, chat_id: int, db_path: str) -> str:
@@ -579,4 +678,4 @@ Recent conversation:
 
 Output only the modifications needed, one per line, prefixed with APPEND/ERASE/MERGE/SKIP."""
 
-    return await _run_agent_inner(steward_prompt, bot, chat_id, db_path, use_session=False)
+    return await _run_execution_agent(steward_prompt, bot, chat_id, db_path)
