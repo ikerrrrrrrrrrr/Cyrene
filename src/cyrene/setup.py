@@ -72,10 +72,16 @@ async def run_setup() -> None:
 
 
 async def _setup_from_name(name: str) -> None:
-    """生成人物的人格文件，直接靠模型内部知识，不搜索。"""
-    print(f"\n正在生成 {name} 的人格...")
+    """搜索人物信息 + 生成行为人格文件。"""
+    print(f"\n正在搜索 {name} 的信息...")
 
-    soul_content = await _generate_soul_profile(name)
+    # 1. 用 SearxNG 搜索（模型内部知识可能不准或缺少最新信息）
+    from cyrene.search import deep_search
+    bio = await deep_search(f"{name} 生平 人物经历 背景")
+    style = await deep_search(f"{name} 说话方式 语录 口头禅 名场面 梗")
+
+    # 2. 用搜索结果 + 模型知识生成行为档案
+    soul_content = await _generate_soul_profile(name, bio, style)
 
     soul_path = get_soul_path()
     soul_path.write_text(soul_content, encoding="utf-8")
@@ -83,15 +89,23 @@ async def _setup_from_name(name: str) -> None:
     print(f"   文件: {soul_path}")
 
 
-async def _generate_soul_profile(name: str) -> str:
-    """直接用模型知识生成行为人格文件。"""
+async def _generate_soul_profile(name: str, bio: str = "", style: str = "") -> str:
+    """用搜索结果 + 模型知识生成行为人格文件。"""
     from cyrene.agent import _call_llm, _assistant_text
 
-    prompt = f"""Create a BEHAVIOR PROFILE for an AI that will personify {name}.
+    research_section = ""
+    if bio:
+        research_section += f"\n搜索到的生平信息：\n{bio[:2000]}\n"
+    if style:
+        research_section += f"\n搜索到的说话方式信息：\n{style[:2000]}\n"
+    if research_section:
+        research_section = "\n参考以下搜索结果（如果搜索结果为空或不相关，请忽略）：" + research_section
+
+    prompt = f"""Create a BEHAVIOR PROFILE for an AI that will personify {name}.{research_section}
 
 This is NOT a biography. This is a set of behavioral rules that tells the AI exactly how to speak and act like {name}.
 
-Use your knowledge about this person. Focus on what makes them unique.
+Use your knowledge about this person, supplemented by the search results above. Focus on what makes them unique.
 
 Include EXACTLY these sections:
 
