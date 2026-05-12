@@ -47,31 +47,28 @@ def log_llm_call(
     response: dict,
     duration_ms: float,
 ) -> None:
-    """Log one LLM call (request + response)."""
+    """Log one LLM call (request + response) — FULL content, no truncation."""
     if not VERBOSE:
         return
 
-    # Strip content for readability but keep structure
+    # Clean messages for JSON serialization (remove non-serializable fields)
+    clean_messages = _clean_for_json(messages)
+
     entry = {
         "type": "llm_call",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "caller": caller,
         "phase": phase,
-        "num_messages": len(messages),
-        "messages_preview": _preview_messages(messages),
-        "tools": [t.get("function", {}).get("name", "?") for t in (tools or [])],
-        "response_content_preview": (response.get("content") or "")[:200],
-        "response_tool_calls": [
-            {"name": tc.get("function", {}).get("name", "?"), "args": tc.get("function", {}).get("arguments", "")[:100]}
-            for tc in (response.get("tool_calls") or [])
-        ],
+        "messages": clean_messages,
+        "tools": tools,
+        "response": _clean_for_json(response),
         "duration_ms": round(duration_ms, 1),
     }
     _write_entry(entry)
 
 
 def log_tool_call(caller: str, tool_name: str, args: dict, result: str, duration_ms: float) -> None:
-    """Log one tool execution."""
+    """Log one tool execution — FULL args and result."""
     if not VERBOSE:
         return
     entry = {
@@ -80,7 +77,7 @@ def log_tool_call(caller: str, tool_name: str, args: dict, result: str, duration
         "caller": caller,
         "tool": tool_name,
         "args": args,
-        "result_preview": str(result)[:200],
+        "result": str(result),
         "duration_ms": round(duration_ms, 1),
     }
     _write_entry(entry)
@@ -100,22 +97,17 @@ def log_chat_filter(text: str, result: str, duration_ms: float) -> None:
     _write_entry(entry)
 
 
-def _preview_messages(messages: list) -> list:
-    """Return a compact preview of messages (truncated)."""
-    preview = []
-    for m in messages:
-        role = m.get("role", "?")
-        content = m.get("content", "")
-        tool_calls = m.get("tool_calls")
-        entry = {"role": role}
-        if content:
-            entry["content_preview"] = str(content)[:150]
-        if tool_calls:
-            entry["tool_calls"] = len(tool_calls)
-        if m.get("tool_call_id"):
-            entry["tool_call_id"] = m["tool_call_id"]
-        preview.append(entry)
-    return preview
+def _clean_for_json(obj):
+    """Recursively clean an object for JSON serialization."""
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _clean_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_for_json(i) for i in obj]
+    return str(obj)
 
 
 def get_log_path() -> str:

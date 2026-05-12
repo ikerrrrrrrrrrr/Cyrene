@@ -622,7 +622,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "spawn_subagent",
-            "description": "Spawn a sub-agent to handle a specific task. The sub-agent will run independently.",
+            "description": "Spawn a sub-agent for parallel independent work. Use when the task needs multiple perspectives, debate, discussion, or parallel research. Each sub-agent runs in its own loop and can communicate with other agents via send_agent_message.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -661,7 +661,11 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
         raise ValueError(f"Unknown tool: {name}")
-    return await handler(arguments, bot, chat_id, db_path, notify_state)
+    _t0 = __import__("time").monotonic()
+    result = await handler(arguments, bot, chat_id, db_path, notify_state)
+    if debug.VERBOSE:
+        debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
+    return result
 
 
 def _assistant_text(message: dict[str, Any]) -> str:
