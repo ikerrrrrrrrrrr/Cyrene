@@ -622,7 +622,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "spawn_subagent",
-            "description": "Spawn a sub-agent for parallel independent work. Use when the task needs multiple perspectives, debate, discussion, or parallel research. Each sub-agent runs in its own loop and can communicate with other agents via send_agent_message.",
+            "description": "Spawn a sub-agent that has the same abilities as you (search, code, files, etc.). It runs independently in its own loop. Use this INSTEAD of writing a Python script to simulate, because sub-agents can actually search the web, run real commands, read real files, and communicate with each other via send_agent_message. Good for: parallel research, multi-perspective analysis, debate, complex multi-step tasks that need real tool access.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -735,7 +735,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
 
 # 轻量 tool：只有 use_tools + quit，用于第一阶段判断是否进重循环
 _LIGHT_TOOL_DEFS = [
-    {"type": "function", "function": {"name": "use_tools", "description": "Call this when the user asks you to DO something (file ops, search, code, web, etc.). Not needed for chat only.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
+    {"type": "function", "function": {"name": "use_tools", "description": "Call this when the user asks you to DO something (file ops, search, code, web, spawn_subagent, etc.). Not needed for chat only. IMPORTANT: set task to the user's EXACT original message, do not rewrite it.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
     {"type": "function", "function": {"name": "quit", "description": "Call this when the interaction is done.", "parameters": {"type": "object", "properties": {}}}},
 ]
 
@@ -759,13 +759,8 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
             return _assistant_text(response).strip() or "Done."
 
     if use_tools_call:
-        # Phase 2: 重循环 — 全部工具，最多 N 轮
-        try:
-            task = json.loads(use_tools_call["function"]["arguments"]).get("task", user_message)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            task = user_message
-        # 重新从 task 开始，不带 Phase 1 的 tool call 痕迹
-        messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": task}]
+        # Phase 2: 重循环 — 全部工具。使用原始用户消息，不用 LLM 编的 task
+        messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
 
         for _ in range(_MAX_TOOL_ROUNDS):
             response = await _call_llm(messages, tools=TOOL_DEFS)
