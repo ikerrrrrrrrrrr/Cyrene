@@ -35,6 +35,9 @@ DAYTIME_END = int(os.getenv("DAYTIME_END", "22"))       # 22:00
 LOTTERY_DELTA = float(os.getenv("LOTTERY_DELTA", "0.15"))
 LOTTERY_MAX = float(os.getenv("LOTTERY_MAX", "0.85"))
 
+# === 搜索配置 ===
+SEARCH_PROXY = os.getenv("SEARCH_PROXY", "")  # 搜索用代理，如 http://127.0.0.1:7890
+
 # === Steward 配置 ===
 STEWARD_INTERVAL = int(os.getenv("STEWARD_INTERVAL", "1800"))  # 30 分钟
 

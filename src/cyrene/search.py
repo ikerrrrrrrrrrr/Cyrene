@@ -15,9 +15,18 @@ from urllib.parse import parse_qs, quote, urlparse
 import httpx
 import requests
 
-from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL
+from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, SEARCH_PROXY
 
 logger = logging.getLogger(__name__)
+
+
+def _proxied_session() -> requests.Session:
+    """创建 requests Session，如果配置了代理则使用代理。"""
+    s = requests.Session()
+    s.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    if SEARCH_PROXY:
+        s.proxies = {"http": SEARCH_PROXY, "https": SEARCH_PROXY}
+    return s
 
 _HTTP_TIMEOUT = 30.0
 _MAX_CONCURRENT = 20
@@ -158,13 +167,13 @@ _BING_LIMITER = _RateLimiter(max_per_window=5, window_sec=30)
 async def _search_duckduckgo(query: str) -> list[dict]:
     """Search DuckDuckGo and return up to 5 results with title, url, snippet."""
     url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     results: list[dict] = []
 
     await _DDG_LIMITER.acquire()
 
     def _fetch() -> tuple[str, int]:
-        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+        sess = _proxied_session()
+        r = sess.get(url, timeout=_HTTP_TIMEOUT)
         return r.text, r.status_code
 
     loop = asyncio.get_event_loop()
@@ -205,16 +214,16 @@ async def _search_bing(query: str) -> list[dict]:
     """Search Bing and return up to 5 results with title, url, snippet.
     Used as fallback when DuckDuckGo is unavailable (e.g. China)."""
     url = f"https://www.bing.com/search?q={quote(query)}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    }
 
     await _BING_LIMITER.acquire()
 
     def _fetch() -> str:
-        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+        sess = _proxied_session()
+        sess.headers.update({
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        })
+        r = sess.get(url, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
         return r.text
 
@@ -304,10 +313,10 @@ def _strip_html(text: str) -> str:
 
 async def _fetch_url(url: str) -> str:
     """Fetch a URL and return its plain text content, truncated to 3000 chars."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
     def _fetch() -> str:
-        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+        sess = _proxied_session()
+        r = sess.get(url, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
         return r.text
 
