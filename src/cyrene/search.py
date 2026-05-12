@@ -160,8 +160,8 @@ class _RateLimiter:
         self.in_cooldown = True
         self.timestamps.clear()
 
-_DDG_LIMITER = _RateLimiter(max_per_window=3, window_sec=30)
-_BING_LIMITER = _RateLimiter(max_per_window=5, window_sec=30)
+_DDG_LIMITER = _RateLimiter(max_per_window=3, window_sec=30, cooldown_sec=120)
+_BING_LIMITER = _RateLimiter(max_per_window=5, window_sec=30, cooldown_sec=180)
 
 
 async def _search_duckduckgo(query: str) -> list[dict]:
@@ -210,6 +210,54 @@ _BING_DECOY_KEYWORDS = [
     "google", "facebook", "instagram", "twitter", "amazon",
 ]
 
+async def _search_baidu(query: str) -> list[dict]:
+    """Search Baidu and return up to 5 results with title, url, snippet.
+    Baidu is accessible from China without proxy issues."""
+    url = f"https://www.baidu.com/s?wd={quote(query)}&ie=utf-8"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+    def _fetch() -> str:
+        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
+        return r.text
+
+    loop = asyncio.get_event_loop()
+    try:
+        html = await loop.run_in_executor(None, _fetch)
+    except Exception as exc:
+        logger.warning("Baidu search failed for query %r: %s", query, exc)
+        return []
+
+    results: list[dict] = []
+
+    # Baidu results: <div class="result" id="..."> <h3><a href="..." aria-text="title">
+    blocks = re.findall(r'<div\s+class="result"\s+id="\d+"[^>]*>([\s\S]*?)</div>\s*</div>', html, re.DOTALL)
+    if not blocks:
+        # Try alternative Baidu result format
+        blocks = re.findall(r'<div[^>]*class="c-container"[^>]*>([\s\S]*?)<!--ecms', html, re.DOTALL)
+
+    for block in blocks:
+        a_match = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
+        if not a_match:
+            continue
+        url = a_match.group(1)
+        title = re.sub(r'<[^>]+>', '', a_match.group(2)).strip()
+        if not title:
+            continue
+        # Extract snippet
+        snippet = ""
+        snip = re.search(r'<span[^>]*class="content-right_[^"]*"[^>]*>(.*?)</span>', block, re.DOTALL)
+        if not snip:
+            snip = re.search(r'<div[^>]*class="c-abstract"[^>]*>(.*?)</div>', block, re.DOTALL)
+        if snip:
+            snippet = re.sub(r'<[^>]+>', '', snip.group(1)).strip()
+
+        results.append({"title": title, "url": url, "snippet": snippet, "query": query})
+        if len(results) >= 5:
+            break
+
+    return results[:5]
+
+
 async def _search_bing(query: str) -> list[dict]:
     """Search Bing and return up to 5 results with title, url, snippet.
     Used as fallback when DuckDuckGo is unavailable (e.g. China)."""
@@ -219,10 +267,8 @@ async def _search_bing(query: str) -> list[dict]:
 
     def _fetch() -> str:
         sess = _proxied_session()
-        sess.headers.update({
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        })
+        sess.headers.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
+        # 不设置 Accept-Language，避免代理劫持
         r = sess.get(url, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
         return r.text
@@ -493,12 +539,15 @@ async def deep_search(topic: str) -> str:
         async with semaphore:
             if engine == "ddg":
                 return await _search_duckduckgo(q)
+            elif engine == "baidu":
+                return await _search_baidu(q)
             else:
                 return await _search_bing(q)
 
-    # 同时搜索 DuckDuckGo 和 Bing
+    # 同时搜索 DuckDuckGo、Bing 和百度
     search_tasks = [_limited_search(q, "ddg") for q in queries]
     search_tasks += [_limited_search(q, "bing") for q in queries]
+    search_tasks += [_limited_search(q, "baidu") for q in queries]
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     all_results: list[dict] = []
