@@ -26,7 +26,6 @@ data/
 .DS_Store
 
 # code agent
-.claude/worktrees/
-.claude/settings*.json
+.claude/
 CLAUDE.md
 CLAUDE.local.md
