@@ -32,7 +32,7 @@ from cyrene.config import (
 )
 from cyrene.llm import _truncate
 from cyrene.search import deep_search
-from cyrene.subagent import register as _reg_subagent, is_alive, _run_subagent
+from cyrene.subagent import register as _reg_subagent, can_receive, _run_subagent
 from cyrene.inbox import send_message as _send_inbox
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _json_result(payload: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _tool_send_message(args: dict[str, Any], bot: Any, chat_id: int, notify_state: dict[str, bool] | None) -> str:
+async def _tool_send_message(args: dict[str, Any], bot: Any, chat_id: int, _db_path: str, notify_state: dict[str, bool] | None) -> str:
     text = str(args.get("text", ""))
     if bot is not None:
         await bot.send_message(chat_id=chat_id, text=text)
@@ -271,8 +271,8 @@ async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: in
     content = str(args.get("content", ""))
     if not target or not content:
         return "Error: both 'to' and 'content' are required."
-    if not await is_alive(target):
-        return f"Cannot deliver: agent '{target}' is no longer alive."
+    if not await can_receive(target):
+        return f"Cannot deliver: agent '{target}' is not available (finished or timed out)."
     from cyrene.agent import _current_agent_id
     from_agent = _current_agent_id.get()
     _send_inbox(from_agent, target, "chat", content)

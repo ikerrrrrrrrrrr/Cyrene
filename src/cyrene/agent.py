@@ -59,8 +59,9 @@ If no profile is given, use a casual friendly tone.
 
 Rules:
 - Keep ALL essential information; nothing can be lost.
-- Remove any formatting, markdown, lists, bullet points from the original.
-- Use the character's specific speech patterns from the personality profile. Do not add generic emoji or interjections ("ah", "嗯", "哈哈") unless the character profile explicitly uses them.
+- Preserve code blocks, file paths, error messages, URLs, and numbered references as-is. Do not rewrite technical content.
+- Only rewrite conversational text into the character's voice.
+- Use the character's specific speech patterns from the personality profile.
 - Never add information that wasn't in the original.
 - Never use emoji unless the character's profile explicitly demonstrates that they use them.
 """
@@ -302,18 +303,24 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                 if t.get("function", {}).get("name") == "spawn_subagent":
                     spawned = True
 
-            # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部完成
+            # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部安静
             if spawned:
-                from cyrene.subagent import all_finished as _sub_all_done
+                from cyrene.subagent import all_quiescent as _sub_all_quiet, all_done as _sub_all_done, collect_results as _sub_collect
                 for _ in range(120):  # max 10 min
                     await asyncio.sleep(5)
-                    if await _sub_all_done():
+                    if await _sub_all_quiet():
                         break
-                # 收集结果后生成摘要
+                # 等 quiescent 后，收集结果
+                await asyncio.sleep(2)  # 给 subagent 一点时间写 registry
+                summary = await _sub_collect()
+                # 用 LLM 综合结果
+                synthesis = await _call_llm([
+                    {"role": "system", "content": "You are a research synthesizer. Combine the following expert findings into a clear, structured answer. Preserve all factual claims and cite sources when provided."},
+                    {"role": "user", "content": f"Task: {user_message}\n\nExpert findings:\n{summary}"}
+                ], tools=None)
+                final_text = _assistant_text(synthesis) or summary
                 await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
-                from cyrene.subagent import collect_results
-                summary = await collect_results()
-                return f"[所有子任务已完成]\n{summary}"
+                return final_text
 
         await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
         return "Stopped after hitting the tool loop limit."

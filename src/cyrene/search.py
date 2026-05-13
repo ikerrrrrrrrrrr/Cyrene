@@ -580,11 +580,14 @@ async def deep_search(topic: str) -> str:
             else:
                 return await _search_bing(q)
 
-    # 优先 SearxNG（自建，无限制），其次 DDG+Bing+Baidu
-    search_tasks = [_limited_search(q, "searxng") for q in queries]
-    search_tasks += [_limited_search(q, "ddg") for q in queries]
-    search_tasks += [_limited_search(q, "bing") for q in queries]
-    search_tasks += [_limited_search(q, "baidu") for q in queries]
+    # 只看 SearxNG（如果配置了）。手搓的 DDG/Bing/Baidu 限流严重，不可靠。
+    if SEARXNG_URL:
+        search_tasks = [_limited_search(q, "searxng") for q in queries]
+    else:
+        search_tasks = [_limited_search(q, "ddg") for q in queries]
+        search_tasks += [_limited_search(q, "bing") for q in queries]
+        search_tasks += [_limited_search(q, "baidu") for q in queries]
+
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     all_results: list[dict] = []
@@ -592,7 +595,8 @@ async def deep_search(topic: str) -> str:
         if isinstance(sr, list):
             all_results.extend(sr)
 
-    logger.info("Stage 2 search complete: %d raw results (DDG + Bing)", len(all_results))
+    engine = "SearxNG" if SEARXNG_URL else "DDG+Bing+Baidu"
+    logger.info("Stage 2 search complete: %d raw results (%s)", len(all_results), engine)
 
     if not all_results:
         return f"Search returned no results for: {topic}"
