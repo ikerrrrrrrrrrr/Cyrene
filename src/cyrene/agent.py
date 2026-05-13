@@ -243,6 +243,14 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
         msg = data["choices"][0]["message"]
         if debug.VERBOSE:
             debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
+        debug.publish_event({
+            "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
+            "tools": [t.get("function", {}).get("name") for t in (tools or [])],
+            "response": _assistant_text(msg)[:200],
+            "tool_calls": [{"name": tc["function"]["name"], "args": tc["function"].get("arguments", "")[:100]}
+                          for tc in (msg.get("tool_calls") or [])],
+            "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
+        })
         return msg
 
 
@@ -356,6 +364,7 @@ async def _run_chat_filter(text: str, soul_context: str = "") -> str:
         result = _assistant_text(response) or text
         result = re.sub(r'[\U0001F300-\U0010FFFF]', '', result).strip()
         debug.log_chat_filter(text, result, (_time.monotonic() - _t0) * 1000)
+        debug.publish_event({"type": "chat_filter", "input": text[:200], "output": result[:200]})
         return result
     except Exception:
         return text  # 失败时 fallback 到原文

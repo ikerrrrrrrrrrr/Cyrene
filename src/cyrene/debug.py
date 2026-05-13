@@ -113,3 +113,40 @@ def _clean_for_json(obj):
 def get_log_path() -> str:
     """Return the current debug log path, or empty string."""
     return str(_log_file) if _log_file else ""
+
+
+# ---------------------------------------------------------------------------
+# Event bus — 实时事件推送给 Web UI
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+_event_queue: asyncio.Queue | None = None
+
+
+def enable_event_bus() -> None:
+    """启用事件总线（由 webui 在启动时调用）。"""
+    global _event_queue
+    if _event_queue is None:
+        _event_queue = asyncio.Queue(maxsize=5000)
+
+
+async def publish_event(event: dict) -> None:
+    """发布一条事件（由 agent.py 调用）。"""
+    q = _event_queue
+    if q is None:
+        return
+    try:
+        q.put_nowait(event)
+    except asyncio.QueueFull:
+        pass  # 队列满了就丢弃
+
+
+async def subscribe():
+    """Async generator — 供 SSE 端点消费事件流。"""
+    q = _event_queue
+    if q is None:
+        return
+    while True:
+        event = await q.get()
+        yield event

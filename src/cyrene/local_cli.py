@@ -155,6 +155,8 @@ async def _run_with_web() -> None:
     scheduler = setup_scheduler(bot, str(DB_PATH))
     scheduler.start()
 
+    import cyrene.debug as _debug
+    _debug.enable_event_bus()
     app = create_app(bot, str(DB_PATH))
     import uvicorn
     config = uvicorn.Config(app, host="0.0.0.0", port=WEB_PORT, log_level="warning")

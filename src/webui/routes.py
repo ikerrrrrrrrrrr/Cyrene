@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from cyrene.agent import clear_session_id, run_agent
@@ -105,6 +105,27 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_status():
         """Return system status as JSON (used by status page and HTMX polling)."""
         return _collect_stats()
+
+    @router.get("/api/events")
+    async def api_events(request: Request):
+        """SSE endpoint — 推送 agent 实时事件。"""
+        from cyrene.debug import subscribe
+
+        async def event_stream():
+            async for event in subscribe():
+                if await request.is_disconnected():
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # ---- Attach router to app -----------------------------------------------
 

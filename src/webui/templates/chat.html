@@ -30,14 +30,210 @@
     </div>
 </div>
 
+<div id="timeline-panel" class="timeline-panel">
+    <div class="timeline-header" onclick="toggleTimeline()">&#9654; Agent Timeline</div>
+    <div id="timeline-content" class="timeline-content" style="display:none">
+        <svg id="timeline-svg" width="100%" height="600"></svg>
+    </div>
+</div>
+
+<style>
+.timeline-panel {
+    border-top: 1px solid #444;
+    background: #1a1a1a;
+}
+.timeline-header {
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #aaa;
+    user-select: none;
+}
+.timeline-content {
+    overflow-x: auto;
+    max-height: 600px;
+}
+.timeline-content svg {
+    display: block;
+}
+/* tooltip */
+.tooltip-box {
+    position: fixed;
+    background: #2a2a2a;
+    border: 1px solid #555;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    max-width: 500px;
+    max-height: 300px;
+    overflow-y: auto;
+    z-index: 1000;
+    pointer-events: none;
+    display: none;
+    color: #ddd;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    font-family: 'Courier New', monospace;
+}
+</style>
+
+<div id="tooltip" class="tooltip-box"></div>
+
 <script>
-    function scrollToBottom() {
-        const el = document.getElementById('message-list');
-        if (el) el.scrollTop = el.scrollHeight;
+const AGENT_COLORS = {
+    'main_agent': '#4CAF50',
+    'chat_filter': '#FF9800',
+    'subagent': '#2196F3',
+    'other': '#9E9E9E',
+};
+
+function colorForAgent(name) {
+    if (name === 'main_agent') return AGENT_COLORS.main_agent;
+    if (name === 'chat_filter') return AGENT_COLORS.chat_filter;
+    if (name && name.startsWith('subagent_')) return AGENT_COLORS.subagent;
+    return AGENT_COLORS.other;
+}
+
+let events = [];
+let currentCaller = null;
+let agentColumns = {};
+let rowIndex = 0;
+
+function toggleTimeline() {
+    const content = document.getElementById('timeline-content');
+    const header = document.querySelector('.timeline-header');
+    const isHidden = content.style.display === 'none';
+    content.style.display = isHidden ? 'block' : 'none';
+    header.innerHTML = isHidden ? '&#9660; Agent Timeline' : '&#9654; Agent Timeline';
+    if (isHidden) drawTimeline();
+}
+
+function addEvent(event) {
+    events.push(event);
+    //  columns for new callers
+    if (event.caller && !agentColumns[event.caller]) {
+        agentColumns[event.caller] = Object.keys(agentColumns).length;
     }
-    // Scroll to bottom on page load
-    document.addEventListener('DOMContentLoaded', scrollToBottom);
-    // Also scroll after HTMX swaps settle
-    document.addEventListener('htmx:afterSettle', scrollToBottom);
+    if (events.length > 200) events.shift();
+    const content = document.getElementById('timeline-content');
+    if (content.style.display !== 'none') drawTimeline();
+}
+
+function showTooltip(e, html) {
+    const tip = document.getElementById('tooltip');
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+    tip.style.left = (e.clientX + 15) + 'px';
+    tip.style.top = (e.clientY + 10) + 'px';
+}
+
+function hideTooltip() {
+    document.getElementById('tooltip').style.display = 'none';
+}
+
+function drawTimeline() {
+    const svg = document.getElementById('timeline-svg');
+    const agents = Object.keys(agentColumns);
+    const colW = 180;
+    const rowH = 32;
+    const padL = 20;
+    const headerH = 30;
+    const w = padL + agents.length * colW + 40;
+    const h = headerH + events.length * rowH + 20;
+    svg.setAttribute('width', w);
+    svg.setAttribute('height', Math.max(h, 200));
+    svg.setAttribute('viewBox', `0 0 ${w} ${Math.max(h, 200)}`);
+
+    let html = '';
+
+    // 背景
+    html += `<rect width="${w}" height="${Math.max(h, 200)}" fill="#1a1a1a"/>`;
+
+    // 列头
+    agents.forEach((name, i) => {
+        const x = padL + i * colW;
+        html += `<rect x="${x}" y="0" width="${colW}" height="${headerH - 5}" fill="#2a2a2a" rx="4"/>`;
+        html += `<text x="${x + colW/2}" y="${headerH/2 + 4}" text-anchor="middle" fill="#ccc" font-size="11" font-weight="bold">${name}</text>`;
+        // 竖线
+        html += `<line x1="${x + colW/2}" y1="${headerH}" x2="${x + colW/2}" y2="${Math.max(h, 200)}" stroke="#333" stroke-width="1"/>`;
+    });
+
+    // 事件行
+    let currentY = headerH;
+    events.forEach((evt, idx) => {
+        const agent = evt.caller || 'other';
+        const col = agentColumns[agent] !== undefined ? agentColumns[agent] : 0;
+        const x = padL + col * colW + 10;
+        const y = currentY;
+        const boxW = colW - 20;
+        const boxH = rowH - 4;
+        const color = colorForAgent(agent);
+        const phase = evt.phase || '';
+
+        // 连线（inbox 消息箭头）
+        if (evt.type === 'tool_call' && evt.tool === 'send_agent_message' && evt.args) {
+            const toAgent = evt.args.to;
+            const toCol = agentColumns[toAgent];
+            if (toCol !== undefined) {
+                const fromX = padL + col * colW + colW/2;
+                const toX = padL + toCol * colW + colW/2;
+                html += `<line x1="${fromX}" y1="${y + boxH/2}" x2="${toX}" y2="${y + boxH/2}" stroke="#FFA500" stroke-width="2" stroke-dasharray="4,3"/>`;
+                html += `<polygon points="${toX - (fromX < toX ? 6 : -6)},${y + boxH/2 - 4} ${toX - (fromX < toX ? 6 : -6)},${y + boxH/2 + 4} ${toX},${y + boxH/2}" fill="#FFA500"/>`;
+            }
+        }
+
+        // box
+        let label = '';
+        if (evt.type === 'llm_call') {
+            label = phase ? `LLM ${phase}` : 'LLM';
+            if (evt.tool_calls && evt.tool_calls.length) {
+                label += ': ' + evt.tool_calls.map(t => t.name).join(', ');
+            }
+        } else if (evt.type === 'tool_call') {
+            label = evt.tool;
+        } else if (evt.type === 'chat_filter') {
+            label = 'Chat Filter';
+        } else {
+            label = evt.type;
+        }
+
+        // truncated label
+        const displayLabel = label.length > 22 ? label.slice(0, 20) + '…' : label;
+        html += `<rect x="${x}" y="${y}" width="${boxW}" height="${boxH}" rx="4" fill="${color}" opacity="0.85"
+                       onmouseover="showTooltip(event, \`${escapeHtml(JSON.stringify(evt, null, 2))}\`)"
+                       onmouseout="hideTooltip()"/>`;
+        html += `<text x="${x + boxW/2}" y="${y + boxH/2 + 3}" text-anchor="middle" fill="#fff" font-size="10">${escapeHtml(displayLabel)}</text>`;
+
+        currentY += rowH;
+    });
+
+    svg.innerHTML = html;
+}
+
+function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+}
+
+// SSE 连接
+let eventSource = null;
+function connectSSE() {
+    if (eventSource) eventSource.close();
+    eventSource = new EventSource('/api/events');
+    eventSource.onmessage = function(e) {
+        try {
+            const evt = JSON.parse(e.data);
+            addEvent(evt);
+        } catch(err) {}
+    };
+    eventSource.onerror = function() {
+        setTimeout(connectSSE, 3000);
+    };
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    connectSSE();
+    scrollToBottom();
+});
+document.addEventListener('htmx:afterSettle', scrollToBottom);
 </script>
 {% endblock %}

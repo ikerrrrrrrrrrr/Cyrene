@@ -508,4 +508,8 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     if debug.VERBOSE:
         from cyrene.agent import _caller_type
         debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
+    debug.publish_event({
+        "type": "tool_call", "tool": name, "args": arguments,
+        "result_preview": str(result)[:200],
+    })
     return result
