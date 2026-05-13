@@ -66,6 +66,8 @@ async def run_setup() -> None:
         print("使用默认人格。")
 
     mark_setup_done()
+    from cyrene.agent import clear_session_id
+    await clear_session_id()
     print()
     print("设置完成！你可以开始和 Cyrene 聊天了。")
     print()
