@@ -216,6 +216,16 @@ Rules:
             should_exit = any(t.get("function", {}).get("name") == "quit" for t in tcs) or not tcs
             if should_exit:
                 final_text = _assistant_text(response).strip() or "Done."
+
+                # 验证 quit 是否附带了有效结果
+                if final_text in ("Done.", "Interaction ended.", ""):
+                    from cyrene.inbox import send_message as _send_feedback
+                    _send_feedback("validator", agent_id, "quit_quality",
+                        f"[quit 质量反馈] 你的 quit 没有附带任何结果。请重新 quit，并在 quit 的文字中说明：做了哪些工作、找到了什么信息、或者为什么没找到。即使没有找到结果也要说明原因。")
+                    await set_resumed(agent_id)
+                    messages.append({"role": "user", "content": f"[系统] quit 质量检查未通过。"})
+                    continue
+
                 # 标记 willing_to_quit，等别人（每 5 秒检查 inbox）
                 from cyrene.inbox import get_inbox_context as _inbox_ctx
                 inbox_msg = await wait_for_others(agent_id, _inbox_ctx)
