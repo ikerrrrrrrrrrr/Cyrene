@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, quote, urlparse
 import httpx
 import requests
 
+from cyrene import debug
 from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, SEARCH_PROXY, SEARXNG_URL
 
 logger = logging.getLogger(__name__)
@@ -50,17 +51,24 @@ async def _call_llm(messages: list[dict]) -> str:
     if OPENAI_API_KEY and OPENAI_API_KEY.lower() not in ("lmstudio", "dummy", ""):
         headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
 
+    _t0 = __import__("time").monotonic()
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            logger.error("search LLM error %s: %s", resp.status_code, resp.text[:500])
+            resp.raise_for_status()
         data = resp.json()
         message = data["choices"][0]["message"]
 
     content = message.get("content") or ""
+    if not content:
+        content = message.get("reasoning_content", "") or ""
+    if debug.VERBOSE:
+        debug.log_llm_call("search_filter", "no_tools", messages, None, message, (__import__("time").monotonic() - _t0) * 1000)
     return content.strip()
 
 
@@ -430,7 +438,7 @@ async def _filter_results(raw_results: list[dict], topic: str) -> list[dict]:
     system_msg = (
         "You are a search result filter. Given a topic and search results, "
         "classify each as RELEVANT or IRRELEVANT. "
-        "Only keep results that directly help answer the topic.\n\n"
+        "Keep results that are relevant to the topic, including background or partial matches. Discard only clearly unrelated results.\n\n"
         f"Topic: {topic}\n\n"
         "Results:\n"
         f"{chr(10).join(lines)}\n\n"

@@ -98,6 +98,11 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     """保存 session 消息。如果超过上限，触发后台压缩。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     trimmed = messages[-_MAX_HISTORY_MESSAGES:]
+    # 移除截断处孤立的 tool_calls（DeepSeek 要求 tool_calls 必须有对应的 tool response）
+    for i in range(len(trimmed) - 1, -1, -1):
+        if trimmed[i].get("tool_calls") and (i + 1 >= len(trimmed) or trimmed[i + 1].get("role") != "tool"):
+            trimmed = trimmed[:i]
+            break
     STATE_FILE.write_text(json.dumps({"messages": trimmed}, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 如果原始消息超过阈值，后台压缩

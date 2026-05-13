@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+
+<section class="card">
+    <h2>Session</h2>
+    <p>Clear the current conversation context. The agent will forget the current conversation but retain long-term memory (SOUL.md).</p>
+    <button class="btn btn-danger"
+            hx-post="/api/clear-session"
+            hx-confirm="Clear the current conversation? This cannot be undone.">
+        Clear Session
+    </button>
+</section>
+
+<section class="card">
+    <h2>Personality (SOUL.md)</h2>
+    <p>Edit Cyrene's personality profile. Changes take effect immediately for new messages.</p>
+    <form hx-post="/api/soul" hx-target="#soul-status">
+        <textarea name="content" class="soul-editor" rows="20">{{ soul_content }}</textarea>
+        <div class="form-actions">
+            <button type="submit" class="btn">Save</button>
+        </div>
+    </form>
+    <div id="soul-status"></div>
+</section>
+{% endblock %}

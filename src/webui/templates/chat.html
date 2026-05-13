@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="chat-layout">
+    <div id="message-list" class="message-list">
+        {% if messages %}
+            {% for msg in messages %}
+                {% include "chat_message.html" %}
+            {% endfor %}
+        {% else %}
+            <div class="empty-state">Send a message to start chatting.</div>
+        {% endif %}
+    </div>
+
+    <form class="input-area"
+          hx-post="/api/chat"
+          hx-target="#message-list"
+          hx-swap="beforeend"
+          hx-indicator="#spinner"
+          hx-on::after-request="this.reset(); scrollToBottom()">
+        <input type="text" name="message" class="chat-input"
+               placeholder="Type a message..." required autofocus>
+        <button type="submit" class="send-btn">Send</button>
+    </form>
+
+    <div id="spinner" class="spinner htmx-indicator">
+        <span class="spinner-dot"></span>
+        <span class="spinner-dot"></span>
+        <span class="spinner-dot"></span>
+        Thinking...
+    </div>
+</div>
+
+<script>
+    function scrollToBottom() {
+        const el = document.getElementById('message-list');
+        if (el) el.scrollTop = el.scrollHeight;
+    }
+    // Scroll to bottom on page load
+    document.addEventListener('DOMContentLoaded', scrollToBottom);
+    // Also scroll after HTMX swaps settle
+    document.addEventListener('htmx:afterSettle', scrollToBottom);
+</script>
+{% endblock %}
