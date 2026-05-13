@@ -454,6 +454,7 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
     else:
         friend_text = main_text or "Done."
 
+    debug.publish_event({"type": "chat_message"})
     return friend_text
 
 

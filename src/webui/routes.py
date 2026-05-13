@@ -89,6 +89,15 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return HTMLResponse(user_html + asst_html)
         return {"response": response}
 
+    @router.get("/api/chat-history")
+    async def api_chat_history():
+        """Return chat messages as HTML fragment (for SSE refresh)."""
+        messages = _load_session_for_template()
+        html = ""
+        for msg in messages:
+            html += _render("chat_message.html", {"msg": msg})
+        return HTMLResponse(html)
+
     @router.post("/api/clear-session")
     async def api_clear_session():
         """Clear the conversation session and redirect to chat page."""

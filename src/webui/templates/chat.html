@@ -223,11 +223,26 @@ function connectSSE() {
         try {
             const evt = JSON.parse(e.data);
             addEvent(evt);
-        } catch(err) {}
+            if (evt.type === 'chat_message') reloadMessages();
+        } catch(err) {
+            console.warn('SSE parse error', err);
+        }
+    };
+    eventSource.onopen = function() {
+        console.log('SSE connected');
     };
     eventSource.onerror = function() {
+        console.warn('SSE disconnected, reconnecting...');
         setTimeout(connectSSE, 3000);
     };
+}
+
+async function reloadMessages() {
+    const resp = await fetch('/api/chat-history');
+    if (!resp.ok) return;
+    const html = await resp.text();
+    document.getElementById('message-list').innerHTML = html;
+    scrollToBottom();
 }
 
 document.addEventListener('DOMContentLoaded', function() {
