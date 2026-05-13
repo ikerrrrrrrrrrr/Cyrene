@@ -15,6 +15,11 @@ OWNER_ID = int(os.environ["OWNER_ID"]) if os.getenv("OWNER_ID") else None
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-chat")
+# 禁止使用 pro 型号（消耗太快）
+if "pro" in OPENAI_MODEL.lower():
+    import logging
+    logging.getLogger(__name__).warning("Refusing to use Pro model: %s. Falling back to deepseek-v4-flash", OPENAI_MODEL)
+    OPENAI_MODEL = "deepseek-v4-flash"
 
 # === Agent 配置 ===
 ASSISTANT_NAME = os.getenv("ASSISTANT_NAME", "Cyrene")
