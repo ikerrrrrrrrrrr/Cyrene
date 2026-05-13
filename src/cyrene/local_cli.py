@@ -150,15 +150,17 @@ async def _run_with_web() -> None:
     from webui.server import create_app, WebBot
     from cyrene.config import WEB_PORT
     from cyrene.scheduler import setup_scheduler
-    import uvicorn
 
     bot = WebBot()
     scheduler = setup_scheduler(bot, str(DB_PATH))
     scheduler.start()
 
-    config = uvicorn.Config(create_app(bot, str(DB_PATH)), host="0.0.0.0", port=WEB_PORT, log_level="warning")
+    app = create_app(bot, str(DB_PATH))
+    import uvicorn
+    config = uvicorn.Config(app, host="0.0.0.0", port=WEB_PORT, log_level="warning")
     server = uvicorn.Server(config)
-    task = asyncio.create_task(server.serve())
+    asyncio.create_task(server.serve())
+    await asyncio.sleep(0.5)  # 等服务器绑定端口
 
     print(f"Web UI: http://localhost:{WEB_PORT}")
     print(f"CLI 和 Web 同时运行。quit 退出 CLI 时会同时关闭 Web。")
@@ -166,11 +168,7 @@ async def _run_with_web() -> None:
     try:
         await _cli_loop()
     finally:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            pass
+        server.should_exit = True
 
 
 if __name__ == "__main__":
