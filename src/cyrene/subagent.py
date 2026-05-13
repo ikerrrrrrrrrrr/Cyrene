@@ -171,7 +171,9 @@ You can:
 - Communicate with other agents via the send_agent_message tool
 - Check who else is active via the context at the top
 
-When you finish the task or need help, call quit.
+Rules:
+- Search max 3 times. If still no useful results, use your existing knowledge and tag the output with `[fallback to model knowledge]`.
+- When you call quit, include your findings or analysis in the text. Do not quit empty-handed.
 """
 
     messages = [
