@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="settings-page">
+  <h1>Settings</h1>
+
+  <div class="card settings-section">
+    <h2>Session</h2>
+    <p>Clear the current conversation. The agent will forget this conversation but retain long-term memory (SOUL.md and short-term).</p>
+    <button class="btn btn-danger" onclick="clearSession()">Clear Session</button>
+  </div>
+
+  <div class="card settings-section">
+    <h2>Personality</h2>
+    <p>Edit Cyrene's personality profile (SOUL.md). Changes take effect for new messages.</p>
+    <textarea id="soul-editor" class="soul-editor">{{ soul_content }}</textarea>
+    <div class="form-actions">
+      <button class="btn btn-primary" onclick="saveSoul()">Save</button>
+      <span id="save-status" class="save-status">&#10003; Saved</span>
+    </div>
+  </div>
+</div>
+
+<script>
+async function clearSession() {
+  if (!confirm('Clear the current conversation?')) return;
+  try {
+    var resp = await fetch('/api/chat/clear', { method: 'POST' });
+    if (resp.ok) {
+      document.getElementById('soul-editor').value = '';
+      location.href = '/';
+    }
+  } catch (err) {
+    console.error('Failed to clear session:', err);
+  }
+}
+
+async function saveSoul() {
+  var content = document.getElementById('soul-editor').value;
+  var status = document.getElementById('save-status');
+  try {
+    var resp = await fetch('/api/settings/soul', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: content }),
+    });
+    if (resp.ok) {
+      status.classList.add('show');
+      setTimeout(function() { status.classList.remove('show'); }, 2000);
+    }
+  } catch (err) {
+    console.error('Failed to save SOUL.md:', err);
+  }
+}
+</script>
+{% endblock %}

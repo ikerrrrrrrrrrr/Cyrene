@@ -36,7 +36,14 @@ _lock = asyncio.Lock()
 async def register(agent_id: str, task: str) -> None:
     """注册一个子 agent。"""
     async with _lock:
-        _registry[agent_id] = {"task": task, "status": RUNNING, "result": ""}
+        _registry[agent_id] = {"task": task, "status": RUNNING, "result": "", "messages": []}
+
+
+async def save_messages(agent_id: str, messages: list) -> None:
+    """Save subagent conversation messages to the registry."""
+    async with _lock:
+        if agent_id in _registry:
+            _registry[agent_id]["messages"] = messages
 
 
 async def mark_done(agent_id: str, result: str = "") -> None:
@@ -144,6 +151,33 @@ async def collect_results() -> str:
         return "\n\n".join(lines) if lines else "无 subagent 结果。"
 
 
+async def get_snapshot() -> dict:
+    """Return a JSON-safe snapshot of all subagents for the WebUI."""
+    async with _lock:
+        snapshot = {}
+        for aid, info in _registry.items():
+            msgs = []
+            for m in info.get("messages", []):
+                role = m.get("role", "")
+                content = m.get("content", "")
+                if role == "system":
+                    content = content[:200]  # trim system prompts
+                entry = {"role": role, "content": content}
+                if m.get("tool_calls"):
+                    entry["tool_calls"] = [
+                        {"name": tc["function"]["name"]}
+                        for tc in m["tool_calls"]
+                    ]
+                msgs.append(entry)
+            snapshot[aid] = {
+                "task": info.get("task", ""),
+                "status": info.get("status", ""),
+                "result": info.get("result", ""),
+                "messages": msgs,
+            }
+        return snapshot
+
+
 # ---------------------------------------------------------------------------
 # Sub-agent execution loop (moved from agent.py)
 # ---------------------------------------------------------------------------
@@ -209,6 +243,9 @@ Rules:
             if response.get("tool_calls"):
                 entry["tool_calls"] = response["tool_calls"]
             messages.append(entry)
+
+            # Save messages to registry for WebUI display
+            await save_messages(agent_id, messages)
 
             tcs = response.get("tool_calls") or []
 

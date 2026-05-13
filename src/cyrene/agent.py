@@ -275,6 +275,12 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
     response = await _call_llm(messages, tools=_LIGHT_TOOL_DEFS)
     tool_calls = response.get("tool_calls") or []
 
+    # Append Phase 1 response to messages before any save path
+    assistant_entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
+    if response.get("tool_calls"):
+        assistant_entry["tool_calls"] = response["tool_calls"]
+    messages.append(assistant_entry)
+
     # 如果 LLM 调了 use_tools → 进入重循环（含全部工具）
     use_tools_call = None
     for tc in tool_calls:
@@ -282,6 +288,8 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         if name == "use_tools":
             use_tools_call = tc
         elif name == "quit":
+            session_msgs = [m for m in messages[1:] if m["role"] != "system"]
+            await _save_session_messages(session_msgs)
             return _assistant_text(response).strip() or "Done."
 
     if use_tools_call:

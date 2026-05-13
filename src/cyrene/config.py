@@ -58,6 +58,9 @@ LOTTERY_FILE = DATA_DIR / "lottery_state.json"  # 抽奖状态持久化
 INBOX_DIR = DATA_DIR / "inbox"              # 收件箱目录，存放外部消息
 SOUL_PATH = WORKSPACE_DIR / "SOUL.md"       # 人格/身份文件
 
+# Web UI
+WEB_PORT = int(os.getenv("WEB_PORT", "4242"))
+
 
 def get_chat_workspace(chat_id: int) -> Path:
     """Get workspace directory for a specific chat.

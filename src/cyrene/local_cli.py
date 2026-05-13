@@ -120,8 +120,48 @@ async def _cli_loop() -> None:
             logger.exception("Error in CLI loop")
 
 
+def _run_web_mode() -> None:
+    """Start web UI mode (python -m cyrene.local_cli --web)."""
+    import sys as _sys
+    if "--verbose" in _sys.argv:
+        import cyrene.debug as _debug
+        _debug.VERBOSE = True
+        _debug.init_debug_log()
+
+    import asyncio
+    from cyrene.debug import enable_event_bus
+    from cyrene.scheduler import setup_scheduler
+    from webui.server import run_web, WebBot
+
+    async def _start():
+        for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
+            d.mkdir(parents=True, exist_ok=True)
+        await init_db(str(DB_PATH))
+        ensure_soul()
+        ensure_inbox("cyrene")
+        init_short_term(DATA_DIR)
+        enable_event_bus()
+
+        bot = WebBot()
+        scheduler = setup_scheduler(bot, str(DB_PATH))
+        scheduler.start()
+        print(f"{ASSISTANT_NAME} Web UI starting...")
+
+        try:
+            await run_web(bot, str(DB_PATH))
+        except KeyboardInterrupt:
+            logger.info("Shutting down...")
+        finally:
+            scheduler.shutdown()
+
+    asyncio.run(_start())
+
+
 def main() -> None:
     import sys
+    if "--web" in sys.argv:
+        _run_web_mode()
+        return
     if "--verbose" in sys.argv:
         import cyrene.debug as _debug
         _debug.VERBOSE = True
