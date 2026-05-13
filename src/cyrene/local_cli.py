@@ -122,7 +122,6 @@ async def _cli_loop() -> None:
 
 def main() -> None:
     import sys
-    headless = "--headless" in sys.argv
     if "--verbose" in sys.argv:
         import cyrene.debug as _debug
         _debug.VERBOSE = True
@@ -139,38 +138,7 @@ def main() -> None:
     if not is_setup_done():
         asyncio.run(run_setup())
 
-    if headless:
-        asyncio.run(_cli_loop())
-    else:
-        asyncio.run(_run_with_web())
-
-
-async def _run_with_web() -> None:
-    """启动 Web 前端 + CLI 双通道。"""
-    from webui.server import create_app, WebBot
-    from cyrene.config import WEB_PORT
-    from cyrene.scheduler import setup_scheduler
-
-    bot = WebBot()
-    scheduler = setup_scheduler(bot, str(DB_PATH))
-    scheduler.start()
-
-    import cyrene.debug as _debug
-    _debug.enable_event_bus()
-    app = create_app(bot, str(DB_PATH))
-    import uvicorn
-    config = uvicorn.Config(app, host="0.0.0.0", port=WEB_PORT, log_level="warning")
-    server = uvicorn.Server(config)
-    asyncio.create_task(server.serve())
-    await asyncio.sleep(0.5)  # 等服务器绑定端口
-
-    print(f"Web UI: http://localhost:{WEB_PORT}")
-    print(f"CLI 和 Web 同时运行。quit 退出 CLI 时会同时关闭 Web。")
-
-    try:
-        await _cli_loop()
-    finally:
-        server.should_exit = True
+    asyncio.run(_cli_loop())
 
 
 if __name__ == "__main__":

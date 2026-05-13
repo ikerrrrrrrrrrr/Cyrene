@@ -125,14 +125,16 @@ _event_queue: asyncio.Queue | None = None
 
 
 def enable_event_bus() -> None:
-    """启用事件总线（由 webui 在启动时调用）。"""
+    """启用事件总线。"""
     global _event_queue
     if _event_queue is None:
         _event_queue = asyncio.Queue(maxsize=5000)
 
 
 async def publish_event(event: dict) -> None:
-    """发布一条事件（由 agent.py 调用）。"""
+    """发布一条事件（由 agent.py 调用）。自动初始化事件总线。"""
+    if _event_queue is None:
+        enable_event_bus()
     q = _event_queue
     if q is None:
         return
@@ -143,10 +145,18 @@ async def publish_event(event: dict) -> None:
 
 
 async def subscribe():
-    """Async generator — 供 SSE 端点消费事件流。"""
+    """Async generator — 供 SSE 端点消费事件流。
+
+    自动初始化事件总线。每 15 秒发一次心跳保活。
+    """
+    if _event_queue is None:
+        enable_event_bus()
     q = _event_queue
     if q is None:
         return
     while True:
-        event = await q.get()
-        yield event
+        try:
+            event = await asyncio.wait_for(q.get(), timeout=15.0)
+            yield event
+        except asyncio.TimeoutError:
+            yield {"type": "heartbeat", "timestamp": datetime.now(timezone.utc).isoformat()}

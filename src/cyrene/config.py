@@ -47,9 +47,6 @@ SEARXNG_URL = os.getenv("SEARXNG_URL", "")  # SearxNG 自建搜索，如 http://
 # === Steward 配置 ===
 STEWARD_INTERVAL = int(os.getenv("STEWARD_INTERVAL", "1800"))  # 30 分钟
 
-# === Web UI 配置 ===
-WEB_PORT = int(os.getenv("WEB_PORT", "4242"))
-
 # === 路径 ===
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 WORKSPACE_DIR = BASE_DIR / "workspace"      # 工作区，存放 SOUL.md、CLAUDE.md 等运行时文件
