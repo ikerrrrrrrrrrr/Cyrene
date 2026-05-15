@@ -293,6 +293,12 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
             return _assistant_text(response).strip() or "Done."
 
     if use_tools_call:
+        await debug.publish_event({
+            "type": "phase_transition",
+            "from": "phase1_decision",
+            "to": "phase2_execution",
+            "detail": f"Phase 1 decided to use tools. Task: {user_message[:120]}",
+        })
         # Phase 2: 重循环 — 全部工具。使用原始用户消息，不用 LLM 编的 task
         messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
 
@@ -307,6 +313,12 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
             tcs = response.get("tool_calls") or []
             if any(t.get("function", {}).get("name") == "quit" for t in tcs):
+                await debug.publish_event({
+                    "type": "phase_transition",
+                    "from": "execution",
+                    "to": "done",
+                    "detail": "Agent called quit",
+                })
                 await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
             if not tcs:
@@ -326,26 +338,84 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
             # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部安静
             if spawned:
-                from cyrene.subagent import all_quiescent as _sub_all_quiet, all_done as _sub_all_done, collect_results as _sub_collect
-                for _ in range(120):  # max 10 min
+                await debug.publish_event({
+                    "type": "phase_transition",
+                    "from": "phase2_execution",
+                    "to": "subagent_monitoring",
+                    "detail": "Subagents spawned, entering monitoring loop",
+                })
+                from cyrene.subagent import (
+                    _run_subagent,
+                    collect_results as _sub_collect,
+                    clear as _sub_clear,
+                    get_snapshot as _sub_snapshot,
+                    get_raw_messages as _sub_raw_msgs,
+                    reactivate as _sub_reactivate,
+                )
+                from cyrene.inbox import get_unread_count as _inbox_unread
+
+                # 新退出条件：所有 agent 都 DONE/TIMEOUT 且 inbox 全部清空。
+                # 监控期间，DONE agent 如果收到消息就唤醒它继续处理。
+                quiet_ticks = 0
+                for _ in range(120):  # max 10 min 硬上限
                     await asyncio.sleep(5)
-                    if await _sub_all_quiet():
+                    snap = await _sub_snapshot()
+                    if not snap:
                         break
+
+                    # 1) 唤醒：DONE/TIMEOUT 的 agent 有未读消息 → 重启它的 loop
+                    resurrected = False
+                    for aid, info in snap.items():
+                        if info["status"] in ("done", "timeout") and _inbox_unread(aid) > 0:
+                            if await _sub_reactivate(aid):
+                                raw = await _sub_raw_msgs(aid)
+                                asyncio.create_task(
+                                    _run_subagent(aid, info["task"], bot, chat_id, db_path, resume_messages=raw)
+                                )
+                                resurrected = True
+
+                    # 2) 真正退出条件：所有 agent 都 DONE/TIMEOUT 且没有未读消息
+                    snap2 = await _sub_snapshot()
+                    all_truly_done = all(
+                        info["status"] in ("done", "timeout") and _inbox_unread(aid) == 0
+                        for aid, info in snap2.items()
+                    )
+                    if all_truly_done and not resurrected:
+                        quiet_ticks += 1
+                        if quiet_ticks >= 2:  # 连续两次 tick 都安静 → 真退出
+                            break
+                    else:
+                        quiet_ticks = 0
                 # 等 quiescent 后，收集结果
                 await asyncio.sleep(2)  # 给 subagent 一点时间写 registry
                 summary = await _sub_collect()
+                await debug.publish_event({
+                    "type": "phase_transition",
+                    "from": "subagent_monitoring",
+                    "to": "synthesis",
+                    "detail": "All subagents done, synthesizing results",
+                })
                 # 用 LLM 综合结果
                 synthesis = await _call_llm([
                     {"role": "system", "content": "You are a research synthesizer. Combine the following expert findings into a clear, structured answer. Preserve all factual claims and cite sources when provided."},
                     {"role": "user", "content": f"Task: {user_message}\n\nExpert findings:\n{summary}"}
                 ], tools=None)
                 final_text = _assistant_text(synthesis) or summary
+                messages.append({"role": "assistant", "content": final_text})
+                # 清空 registry，避免下一轮 spawn 把旧结果混入新 context
+                await _sub_clear()
                 await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return final_text
 
         await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
         return "Stopped after hitting the tool loop limit."
 
+    await debug.publish_event({
+        "type": "phase_transition",
+        "from": "phase1_decision",
+        "to": "chat_only",
+        "detail": "Phase 1 decided chat-only, no tools needed",
+    })
     # Phase 1 结束：纯聊天，无工具需要
     session_msgs = [m for m in messages[1:] if m["role"] != "system"]
     await _save_session_messages(session_msgs)
@@ -391,6 +461,7 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
         {"role": "user", "content": task},
     ]
 
+    final_text = "Done."
     for _ in range(_MAX_TOOL_ROUNDS):
         response = await _call_llm(messages, tools=TOOL_DEFS)
 
@@ -409,6 +480,7 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 
         # Check for quit
         if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
+            final_text = _assistant_text(response) or "Done."
             break
 
         if not tool_calls:
@@ -425,7 +497,7 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
                 result = f"Tool {name} failed: {e}"
             messages.append({"role": "tool", "tool_call_id": call_id, "content": _truncate(result)})
 
-    return "Done."
+    return final_text
 
 
 # ---------------------------------------------------------------------------
@@ -456,6 +528,12 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
     # ====== Step 1: 主 Agent（助理语气 + 全部工具，不关心人格）=======
     main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
 
+    await debug.publish_event({
+        "type": "phase_transition",
+        "from": "main_agent",
+        "to": "chat_filter",
+        "detail": "Applying SOUL.md persona voice",
+    })
     # ====== Step 2: Chat Filter 根据 SOUL.md 翻译成角色语气 =======
     if main_text and main_text != "Done.":
         friend_text = await _run_chat_filter(main_text, soul_context)

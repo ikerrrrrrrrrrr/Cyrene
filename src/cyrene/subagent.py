@@ -47,18 +47,68 @@ async def save_messages(agent_id: str, messages: list) -> None:
 
 
 async def mark_done(agent_id: str, result: str = "") -> None:
-    """标记 agent 已完成。"""
+    """标记 agent 已完成。
+
+    Result 会累加而非覆盖 —— 这样被唤醒的 agent 跑完第二轮再次 mark_done 时，
+    新的内容会被追加在已有结果之后，不会丢掉初次执行的结论。
+    """
     async with _lock:
         if agent_id in _registry:
             _registry[agent_id]["status"] = DONE
-            _registry[agent_id]["result"] = result[:1000]
+            existing = _registry[agent_id].get("result", "") or ""
+            if result and result != existing:
+                if existing:
+                    _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:2000]
+                else:
+                    _registry[agent_id]["result"] = result[:2000]
 
 
-async def set_waiting(agent_id: str) -> None:
-    """标记 agent 活干完了，等待其他人。"""
+async def reactivate(agent_id: str) -> bool:
+    """把 DONE/TIMEOUT 的 agent 状态改回 RESUMED，准备被重新启动。
+
+    返回 True 表示成功改了状态；如果 agent 不存在或已经在跑，返回 False。
+    """
+    async with _lock:
+        entry = _registry.get(agent_id)
+        if entry is None:
+            return False
+        if entry["status"] in (DONE, TIMEOUT):
+            entry["status"] = RESUMED
+            return True
+        return False
+
+
+async def get_raw_messages(agent_id: str) -> list:
+    """获取 agent 的完整消息历史（含 system prompt、tool_calls 原始参数）。
+
+    与 get_snapshot 不同 —— snapshot 是给 WebUI 用的，会精简内容；
+    这里返回的是可以直接喂给 LLM 续跑的原始 messages 列表。
+    """
+    async with _lock:
+        entry = _registry.get(agent_id)
+        if entry is None:
+            return []
+        return list(entry.get("messages", []))
+
+
+async def get_task(agent_id: str) -> str:
+    """获取 agent 的原始任务（被唤醒时用于恢复 context）。"""
+    async with _lock:
+        entry = _registry.get(agent_id)
+        return entry["task"] if entry else ""
+
+
+async def set_waiting(agent_id: str, result: str = "") -> None:
+    """标记 agent 活干完了，等待其他人。
+
+    可选地把当前阶段的 result 写入 registry —— 这样主 agent 即便提前 collect，
+    也能拿到真实内容，而不是空字符串。
+    """
     async with _lock:
         if agent_id in _registry and _registry[agent_id]["status"] == RUNNING:
             _registry[agent_id]["status"] = WAITING
+            if result:
+                _registry[agent_id]["result"] = result[:1000]
 
 
 async def set_resumed(agent_id: str) -> None:
@@ -69,12 +119,13 @@ async def set_resumed(agent_id: str) -> None:
 
 
 async def can_receive(agent_id: str) -> bool:
-    """检查 agent 是否能接收消息。running/waiting/resumed 都可以。"""
+    """检查 agent 是否能接收消息。
+
+    任何已注册的 agent 都能收 —— 即使是 DONE/TIMEOUT 的也可以，
+    主 agent 监控循环会负责唤醒它们处理新消息。
+    """
     async with _lock:
-        entry = _registry.get(agent_id)
-        if entry is None:
-            return False
-        return entry["status"] in (RUNNING, WAITING, RESUMED)
+        return agent_id in _registry
 
 
 async def all_quiescent() -> bool:
@@ -89,18 +140,28 @@ async def all_done() -> bool:
         return not any(info["status"] in (RUNNING, WAITING, RESUMED) for info in _registry.values())
 
 
-async def wait_for_others(agent_id: str, inbox_check_func, max_wait: int = 600) -> str:
-    """Subagent 干完活后调用：标记 waiting，等其他人。
+async def all_willing_to_quit() -> bool:
+    """没有 agent 还在主动干活 —— 全部都在 WAITING/DONE/TIMEOUT。
+
+    用于 wait_for_others 的解锁判断：当所有人都进入 WAITING（想退出但还在等别人）时，
+    应该让大家一起退出，而不是互相等待。
+    """
+    async with _lock:
+        return not any(info["status"] in (RUNNING, RESUMED) for info in _registry.values())
+
+
+async def wait_for_others(agent_id: str, inbox_check_func, max_wait: int = 600, result: str = "") -> str:
+    """Subagent 干完活后调用：标记 waiting（带 result），等其他人。
 
     每 5 秒检查一次：
-    - 所有 agent 都 done → 返回 ""（正常退出）
+    - 所有 agent 都不在干活 (RUNNING/RESUMED) → 返回 ""（一起退出）
     - inbox 有新消息 → 返回消息内容（回去继续干活）
     - 超时 → 返回 "timeout"
     """
-    await set_waiting(agent_id)
+    await set_waiting(agent_id, result=result)
     waited = 0
     while waited < max_wait:
-        if await all_done():
+        if await all_willing_to_quit():
             return ""
         await asyncio.sleep(5)
         waited += 5
@@ -183,11 +244,22 @@ async def get_snapshot() -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _run_subagent(agent_id: str, task: str, bot: Any, chat_id: int, db_path: str) -> str:
+async def _run_subagent(
+    agent_id: str,
+    task: str,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    resume_messages: list | None = None,
+) -> str:
     """Run a sub-agent in its own loop.
 
     Has its own agent loop, inbox checking, and full tool access.
     Communicates with other agents via inbox.
+
+    If *resume_messages* is provided, the agent picks up from that history
+    instead of starting fresh — used when a DONE agent is woken up to
+    process new inbox messages.
 
     Uses lazy imports from agent.py to avoid circular dependencies.
     """
@@ -196,7 +268,7 @@ async def _run_subagent(agent_id: str, task: str, bot: Any, chat_id: int, db_pat
     from cyrene.tools import TOOL_DEFS, _execute_tool
 
     _caller_type.set(f"subagent_{agent_id}")
-    from cyrene.inbox import get_inbox_context as _get_inbox
+    from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
 
     subagent_prompt = f"""You are a sub-agent, ID: {agent_id}. Your job is to complete the assigned task.
 
@@ -210,12 +282,19 @@ Rules:
 - When you call quit, include your findings or analysis in the text. Do not quit empty-handed.
 """
 
-    messages = [
-        {"role": "system", "content": subagent_prompt},
-        {"role": "user", "content": task},
-    ]
+    if resume_messages:
+        # 被唤醒：从已有历史续跑，注入一条提示让 LLM 知道发生了什么
+        messages = list(resume_messages)
+        messages.append({"role": "user", "content": "[你已被唤醒 — inbox 中有新消息需要处理。处理完后再决定是否 quit。]"})
+    else:
+        messages = [
+            {"role": "system", "content": subagent_prompt},
+            {"role": "user", "content": task},
+        ]
 
     final_text = ""
+    empty_quit_count = 0
+    _MAX_EMPTY_QUIT_RETRIES = 2
     try:
         for _ in range(_MAX_TOOL_ROUNDS):
             # 每次 LLM 调用前注入注册表和 inbox
@@ -224,6 +303,8 @@ Rules:
             inbox_ctx = ""
             if inbox_text:
                 inbox_ctx = f"\n[收件箱]\n{inbox_text}\n"
+                # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
+                _mark_inbox_read(agent_id)
 
             system_content = subagent_prompt
             extras = []
@@ -256,16 +337,21 @@ Rules:
 
                 # 验证 quit 是否附带了有效结果
                 if final_text in ("Done.", "Interaction ended.", ""):
+                    empty_quit_count += 1
+                    if empty_quit_count >= _MAX_EMPTY_QUIT_RETRIES:
+                        # 多次空 quit，强制退出避免死循环。结果写入 registry。
+                        final_text = "[未输出有效结果 — quit 多次为空]"
+                        break
                     from cyrene.inbox import send_message as _send_feedback
                     _send_feedback("validator", agent_id, "quit_quality",
                         f"[quit 质量反馈] 你的 quit 没有附带任何结果。请重新 quit，并在 quit 的文字中说明：做了哪些工作、找到了什么信息、或者为什么没找到。即使没有找到结果也要说明原因。")
                     await set_resumed(agent_id)
-                    messages.append({"role": "user", "content": f"[系统] quit 质量检查未通过。"})
+                    messages.append({"role": "user", "content": f"[系统] quit 质量检查未通过 (重试 {empty_quit_count}/{_MAX_EMPTY_QUIT_RETRIES})。"})
                     continue
 
-                # 标记 willing_to_quit，等别人（每 5 秒检查 inbox）
+                # 标记 willing_to_quit（带 result），等别人（每 5 秒检查 inbox）
                 from cyrene.inbox import get_inbox_context as _inbox_ctx
-                inbox_msg = await wait_for_others(agent_id, _inbox_ctx)
+                inbox_msg = await wait_for_others(agent_id, _inbox_ctx, result=final_text)
                 if inbox_msg == "":
                     break  # 全部 finished，正常退出
                 elif inbox_msg == "timeout":
@@ -273,6 +359,7 @@ Rules:
                 else:
                     # 有新消息，标记 RESUMED，继续干活
                     await set_resumed(agent_id)
+                    empty_quit_count = 0  # 收到新消息，重置空 quit 计数
                     messages.append({"role": "user", "content": f"[等待期间收到新消息]\n{inbox_msg}"})
                     continue
 

@@ -21,6 +21,7 @@ Message format::
 
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +30,7 @@ from cyrene.config import DATA_DIR
 logger = logging.getLogger(__name__)
 
 INBOX_DIR = DATA_DIR / "inbox"
+_INBOX_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -102,24 +104,25 @@ def send_message(
 
     Returns the generated ``message_id``.
     """
-    ensure_inbox(to_agent)
-    msg_id = _next_msg_id(to_agent)
-    message = {
-        "message_id": msg_id,
-        "from": from_agent,
-        "to": to_agent,
-        "type": msg_type,
-        "content": content,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-    msg_path = _inbox_path(to_agent) / f"{msg_id}.json"
     try:
-        msg_path.write_text(
-            json.dumps(message, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        current = _read_unread(to_agent)
-        _write_unread(to_agent, current + 1)
+        with _INBOX_LOCK:
+            ensure_inbox(to_agent)
+            msg_id = _next_msg_id(to_agent)
+            message = {
+                "message_id": msg_id,
+                "from": from_agent,
+                "to": to_agent,
+                "type": msg_type,
+                "content": content,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            msg_path = _inbox_path(to_agent) / f"{msg_id}.json"
+            msg_path.write_text(
+                json.dumps(message, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            current = _read_unread(to_agent)
+            _write_unread(to_agent, current + 1)
         logger.info(
             "Message %s sent from %s to %s (type=%s)",
             msg_id, from_agent, to_agent, msg_type,
@@ -128,12 +131,22 @@ def send_message(
         logger.exception(
             "Failed to send message from %s to %s", from_agent, to_agent,
         )
+        msg_id = ""
     return msg_id
 
 
 def get_unread_count(agent_name: str) -> int:
     """Return the number of unread messages for *agent_name*."""
     return _read_unread(agent_name)
+
+
+def mark_all_read(agent_name: str) -> None:
+    """Reset the unread counter to zero without touching message files.
+
+    Messages on disk are kept as a permanent log; only the unread counter
+    is reset so subsequent inbox injections show 0 new messages.
+    """
+    _write_unread(agent_name, 0)
 
 
 def read_messages(agent_name: str, mark_read: bool = True) -> list[dict]:

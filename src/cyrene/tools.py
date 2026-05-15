@@ -12,6 +12,7 @@ to avoid circular imports. agent.py adds "quit" to TOOL_HANDLERS after import.
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -178,10 +179,10 @@ async def _tool_grep(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
 async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     command = str(args["command"])
     timeout_ms = int(args.get("timeout_ms", 120000))
+    shell = os.environ.get("SHELL") or "/bin/sh"
     proc = await asyncio.create_subprocess_exec(
-        "powershell",
-        "-NoProfile",
-        "-Command",
+        shell,
+        "-lc",
         command,
         cwd=str(WORKSPACE_DIR),
         stdout=asyncio.subprocess.PIPE,
@@ -412,7 +413,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "Bash",
-            "description": "Run a PowerShell command in the workspace.",
+            "description": "Run a shell command in the workspace.",
             "parameters": {
                 "type": "object",
                 "properties": {"command": {"type": "string"}, "timeout_ms": {"type": "integer"}},
@@ -508,7 +509,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     if debug.VERBOSE:
         from cyrene.agent import _caller_type
         debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
-    debug.publish_event({
+    await debug.publish_event({
         "type": "tool_call", "tool": name, "args": arguments,
         "result_preview": str(result)[:200],
     })
