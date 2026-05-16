@@ -33,6 +33,10 @@ from cyrene.config import (
 )
 from cyrene.llm import _truncate
 from cyrene.search import deep_search
+from cyrene.shells import close_shell as _close_shell_session
+from cyrene.shells import list_shells as _list_shell_sessions
+from cyrene.shells import send_shell as _send_shell_session
+from cyrene.shells import start_shell as _start_shell_session
 from cyrene.subagent import register as _reg_subagent, can_receive, _run_subagent, _spawn_subagent_task
 from cyrene.inbox import send_message as _send_inbox
 
@@ -348,6 +352,69 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
     return f"Sub-agent '{agent_id}' spawned. Task: {task[:80]}"
 
 
+async def _tool_query_round(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    """Query live round status for the main agent."""
+    from cyrene.agent import query_live_rounds
+
+    return query_live_rounds(round_id=str(args.get("round_id", "")).strip())
+
+
+async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.agent import _current_round_id
+
+    snap = await _start_shell_session(
+        command=str(args.get("command", "") or ""),
+        cwd=str(args.get("cwd", ".") or "."),
+        title=str(args.get("title", "") or ""),
+        round_id=_current_round_id.get(),
+    )
+    return _json_result({
+        "shell_id": snap.get("id", ""),
+        "status": snap.get("status", ""),
+        "cwd": snap.get("cwd", "."),
+        "title": snap.get("title", "independent shell"),
+    })
+
+
+async def _tool_send_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    snap = await _send_shell_session(
+        str(args.get("shell_id", "")),
+        str(args.get("command", "")),
+        wait_ms=int(args.get("wait_ms", 700) or 700),
+    )
+    return _json_result({
+        "shell_id": snap.get("id", ""),
+        "status": snap.get("status", ""),
+        "elapsed": snap.get("elapsed", "—"),
+        "lines": snap.get("lines", [])[-20:],
+    })
+
+
+async def _tool_list_shells(_args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    shells = _list_shell_sessions(include_exited=False)
+    if not shells:
+        return "No independent shells are currently running."
+    return _json_result([
+        {
+            "shell_id": item.get("id", ""),
+            "title": item.get("title", "independent shell"),
+            "cwd": item.get("cwd", "."),
+            "status": item.get("status", ""),
+            "elapsed": item.get("elapsed", "—"),
+        }
+        for item in shells
+    ])
+
+
+async def _tool_close_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    snap = await _close_shell_session(str(args.get("shell_id", "")))
+    return _json_result({
+        "shell_id": snap.get("id", ""),
+        "status": snap.get("status", ""),
+        "elapsed": snap.get("elapsed", "—"),
+    })
+
+
 # ---------------------------------------------------------------------------
 # Tool definitions and dispatch
 # ---------------------------------------------------------------------------
@@ -481,6 +548,59 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "StartShell",
+            "description": "Start an independent persistent shell session for long-running work. Use this when you need a shell that stays alive and should keep appearing in the UI shell list.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string"},
+                    "title": {"type": "string"},
+                    "command": {"type": "string", "description": "Optional initial command to run immediately after the shell starts"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "SendShell",
+            "description": "Send a command to an existing persistent shell session and wait briefly for new output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "shell_id": {"type": "string"},
+                    "command": {"type": "string"},
+                    "wait_ms": {"type": "integer"},
+                },
+                "required": ["shell_id", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ListShells",
+            "description": "List currently running independent persistent shell sessions.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "CloseShell",
+            "description": "Terminate an independent persistent shell session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "shell_id": {"type": "string"},
+                },
+                "required": ["shell_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "WebFetch",
             "description": "Fetch a URL and return the response text.",
             "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]},
@@ -532,6 +652,19 @@ TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_round",
+            "description": "Inspect currently live rounds and their progress. Use this when the user asks how a background round is going or wants the status of a still-running discussion.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "round_id": {"type": "string", "description": "Optional specific live round id to inspect"},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -540,6 +673,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "send_telegram": _tool_send_message,
     "send_agent_message": _tool_send_agent_message,
     "spawn_subagent": _tool_spawn_subagent,
+    "query_round": _tool_query_round,
     "schedule_task": _tool_schedule_task,
     "list_tasks": _tool_list_tasks,
     "pause_task": _tool_pause_task,
@@ -551,6 +685,10 @@ TOOL_HANDLERS: dict[str, Any] = {
     "Glob": _tool_glob,
     "Grep": _tool_grep,
     "Bash": _tool_bash,
+    "StartShell": _tool_start_shell,
+    "SendShell": _tool_send_shell,
+    "ListShells": _tool_list_shells,
+    "CloseShell": _tool_close_shell,
     "WebFetch": _tool_webfetch,
     "WebSearch": _tool_websearch,
 }

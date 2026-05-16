@@ -20,6 +20,7 @@ const DATA = {
         contextChips: [{ icon: "⌛", label: "loading" }],
         messages: [],
       },
+      liveRounds: [],
       shells: [],
       subagents: [],
       flow: {
@@ -176,6 +177,8 @@ function connectEvents() {
           "phase_transition",
           "subagent_update",
           "session_update",
+          "shell_update",
+          "round_guidance_update",
         ].includes(data.type)) {
           scheduleRealtimeRefresh();
         }

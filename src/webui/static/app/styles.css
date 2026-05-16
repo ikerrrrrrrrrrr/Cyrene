@@ -543,6 +543,9 @@ button { font-family: inherit; }
 .msg-trace.only-trace {
   margin-top: 6px;
 }
+.runtime-trace {
+  margin-top: 2px;
+}
 .msg-trace-summary {
   display: flex;
   align-items: center;
@@ -638,6 +641,63 @@ button { font-family: inherit; }
 }
 .chip .x { color: var(--text-4); cursor: pointer; }
 .chip .x:hover { color: var(--err); }
+.chip.disabled {
+  opacity: 0.5;
+}
+.chip-guide {
+  border-color: var(--accent-dim);
+  background: var(--accent-faint);
+  color: var(--accent);
+}
+.context-picker {
+  margin-bottom: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  background: var(--bg-2);
+  overflow: hidden;
+}
+.context-picker-head {
+  padding: 8px 10px 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.context-option {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.context-option:hover {
+  background: var(--bg-1);
+}
+.context-option.active {
+  background: var(--accent-faint);
+}
+.context-option-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.context-option-title {
+  font-size: 12px;
+  color: var(--text);
+}
+.context-option-meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
 .composer textarea {
   width: 100%;
   background: transparent;
@@ -656,7 +716,6 @@ button { font-family: inherit; }
 }
 .composer-actions .iconbtn { width: 24px; height: 24px; }
 .composer-actions .send {
-  margin-left: auto;
   display: flex; align-items: center; gap: 6px;
   padding: 5px 12px;
   font-family: var(--mono);
@@ -667,6 +726,24 @@ button { font-family: inherit; }
   border: 0;
   cursor: pointer;
   font-weight: 600;
+}
+.composer-actions .send.secondary {
+  background: var(--bg-2);
+  color: var(--text-2);
+  border: 1px solid var(--line);
+  font-weight: 500;
+}
+.composer-actions .send.stop {
+  background: rgba(201, 120, 120, 0.14);
+  color: var(--err);
+  border: 1px solid rgba(201, 120, 120, 0.32);
+}
+.composer-actions .send.secondary:hover {
+  border-color: var(--line-2);
+  color: var(--text);
+}
+.composer-actions .send.stop:hover {
+  background: rgba(201, 120, 120, 0.2);
 }
 .composer-actions .send:disabled { background: var(--bg-3); color: var(--text-4); cursor: not-allowed; }
 .composer-hint {
@@ -684,6 +761,7 @@ button { font-family: inherit; }
   flex-direction: column;
   background: var(--bg-1);
   min-height: 0;
+  overflow-y: auto;
 }
 .side-section {
   border-bottom: 1px solid var(--line);
@@ -731,9 +809,18 @@ button { font-family: inherit; }
   white-space: pre;
   line-height: 1.5;
 }
-.shell-prompt { color: var(--text-4); }
-.shell-cmd { color: var(--text); }
+.shell-card-foot {
+  padding: 6px 10px 7px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-4);
+  background: var(--bg-1);
+}
+.shell-prompt { color: var(--text); }
 .shell-out { color: var(--text-3); }
+.shell-err { color: var(--err); }
+.shell-meta { color: var(--info); }
 .shell-ok  { color: var(--accent); }
 
 /* subagent mini */

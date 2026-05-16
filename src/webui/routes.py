@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from cyrene import debug
-from cyrene.agent import clear_session_id, get_session_labels, run_agent
+from cyrene.agent import clear_session_id, get_live_rounds, get_session_labels, interrupt_active_run, queue_round_guidance, run_agent
 from cyrene.config import (
     ASSISTANT_NAME,
     DATA_DIR,
@@ -27,6 +27,7 @@ from cyrene.config import (
 )
 from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange
 from cyrene.scheduler import reset_lottery
+from cyrene.shells import list_shells as list_live_shells
 from cyrene.short_term import load_entries
 
 logger = logging.getLogger(__name__)
@@ -66,10 +67,23 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_chat(request: Request):
         body = await request.json()
         message = (body.get("message") or "").strip()
+        guide_round_id = str(body.get("guide_round_id") or "").strip()
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
 
         reset_lottery()
+        if guide_round_id:
+            try:
+                item = await queue_round_guidance(guide_round_id, message, _bot, _CHAT_ID, _db_path)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return {
+                "response": f"Queued guidance for {guide_round_id}. It will run after the current main-agent output finishes.",
+                "queued": True,
+                "guide_round_id": guide_round_id,
+                "guide_request_id": item.get("id", ""),
+            }
+
         response = await run_agent(message, _bot, _CHAT_ID, _db_path)
         labels = get_session_labels()
         await archive_exchange(
@@ -85,6 +99,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/chat/history")
     async def api_chat_history():
         return {"messages": _load_messages()}
+
+    @router.post("/api/chat/interrupt")
+    async def api_interrupt_chat():
+        return {"ok": True, "interrupted": interrupt_active_run()}
 
     @router.post("/api/chat/clear")
     async def api_clear_session():
@@ -104,6 +122,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "result": info.get("result", ""),
             })
         return {"subagents": items}
+
+    @router.get("/api/rounds/live")
+    async def api_live_rounds():
+        return {"rounds": get_live_rounds()}
 
     # ---- SSE ----
 
@@ -271,6 +293,15 @@ def _build_sessions() -> list[dict]:
     return sessions
 
 
+def _build_summary(raw_msgs: list[dict]) -> dict:
+    prompt, completion = _usage_totals(raw_msgs)
+    return {
+        "tokens": _format_tokens(prompt, completion),
+        "spend": _calc_spend(prompt, completion),
+        "toolCalls": _count_tool_calls(raw_msgs),
+    }
+
+
 def _build_current_session() -> dict | None:
     """Build a session object from state.json + live subagents.
 
@@ -324,14 +355,17 @@ def _build_current_session() -> dict | None:
         })
 
     subagents.sort(key=lambda item: (item.get("createdAt") == "—", item.get("createdAt"), item["name"]))
+    live_rounds = get_live_rounds()
 
     started_at = datetime.fromtimestamp(_SERVER_STARTED_AT, tz=timezone.utc).strftime("%H:%M")
     duration = _format_duration(time.time() - _SERVER_STARTED_AT)
     last_msg = messages[-1] if messages else None
 
     is_empty = not messages
-    if subagents and any(s["status"] == "running" for s in subagents):
+    if live_rounds and any(str(item.get("status", "")) == "running" for item in live_rounds):
         live_status = "running"
+    elif live_rounds and any(int(item.get("pendingGuidance", 0) or 0) > 0 for item in live_rounds):
+        live_status = "queued"
     elif is_empty:
         live_status = "queued"  # nothing happening yet — fresh session
     else:
@@ -347,7 +381,7 @@ def _build_current_session() -> dict | None:
         "model": OPENAI_MODEL,
         "currentRoundId": current_round_id,
         "currentRoundTitle": current_round_title,
-        "summary": {"tokens": "—", "spend": "—", "toolCalls": _count_tool_calls(raw_msgs)},
+        "summary": _build_summary(raw_msgs),
         "chat": {
             "contextChips": [
                 {"icon": "🧠", "label": "SOUL.md"},
@@ -355,7 +389,8 @@ def _build_current_session() -> dict | None:
             ],
             "messages": messages,
         },
-        "shells": [],
+        "liveRounds": live_rounds,
+        "shells": list_live_shells(include_exited=False),
         "subagents": subagents,
         "flow": _build_live_flow(raw_msgs, messages, subagents, subagent_registry),
     }
@@ -413,6 +448,7 @@ def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
                 "contextChips": [{"icon": "📅", "label": date_str}],
                 "messages": messages,
             },
+            "liveRounds": [],
             "shells": [],
             "subagents": [],
             "flow": _build_simple_flow(messages),
@@ -487,6 +523,12 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
         ui_msg = {"id": f"m{i}", "role": ui_role, "time": "—"}
         if content:
             ui_msg["body"] = content
+        round_id = str(m.get("round_id", "")).strip()
+        if round_id:
+            ui_msg["roundId"] = round_id
+        queued_guidance_id = str(m.get("queued_guidance_id", "")).strip()
+        if queued_guidance_id:
+            ui_msg["queuedGuidanceId"] = queued_guidance_id
         if m.get("reasoning_content"):
             ui_msg["thinking"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -997,7 +1039,7 @@ def _build_live_flow_round(
 
     edges.extend(_build_comm_edges(agent_node_ids, round_id=round_id))
 
-    output_content = latest_agent["body"] if latest_agent else ""
+    output_content = str(latest_agent.get("body") or "") if latest_agent else ""
     output_status = "done" if output_content else ("running" if subagents else "queued")
     if output_content or subagents:
         flow_bottom = max(subagent_bottoms) if subagent_bottoms else (main_tool_base_y + _agent_lane_height(max(1, len(tool_nodes))))
@@ -1035,6 +1077,7 @@ def _empty_session() -> dict:
             "contextChips": [{"icon": "🧠", "label": "SOUL.md"}],
             "messages": [],
         },
+        "liveRounds": [],
         "shells": [],
         "subagents": [],
         "flow": {
@@ -1082,20 +1125,24 @@ async def _build_status() -> dict:
     running_subagents = sum(1 for v in _registry.values() if v.get("status") == "running")
     total_subagents = len(_registry)
 
+    main_prompt, main_completion = _usage_totals(session_msgs)
     workers = [{
         "id": "main", "role": "orchestrator", "status": "running",
         "host": "local", "uptime": _format_duration(time.time() - _SERVER_STARTED_AT),
-        "tokens": "—", "spend": "—",
+        "tokens": _format_tokens(main_prompt, main_completion),
+        "spend": _calc_spend(main_prompt, main_completion),
     }]
     for aid, info in _registry.items():
+        sub_msgs = info.get("messages", [])
+        sub_prompt, sub_completion = _usage_totals(sub_msgs)
         workers.append({
             "id": aid,
             "role": "subagent",
             "status": info.get("status", "running"),
             "host": "local",
             "uptime": "—",
-            "tokens": "—",
-            "spend": "—",
+            "tokens": _format_tokens(sub_prompt, sub_completion),
+            "spend": _calc_spend(sub_prompt, sub_completion),
         })
 
     metrics = [
@@ -1544,6 +1591,103 @@ def _usage_totals(raw_messages: list[dict]) -> tuple[int | None, int | None]:
     if not found:
         return None, None
     return prompt_total, completion_total
+
+
+def _format_tokens(prompt_tokens: int | None, completion_tokens: int | None) -> str:
+    if prompt_tokens is None and completion_tokens is None:
+        return "—"
+    parts: list[str] = []
+    if prompt_tokens is not None:
+        parts.append(f"{_fmt_tok(prompt_tokens)} in")
+    if completion_tokens is not None:
+        parts.append(f"{_fmt_tok(completion_tokens)} out")
+    return " / ".join(parts) if parts else "—"
+
+
+def _fmt_tok(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _model_pricing() -> tuple[float, float] | None:
+    """Return (input_price_per_1M, output_price_per_1M) for known models, or None."""
+    model_lower = OPENAI_MODEL.lower()
+    if "opus-4" in model_lower or "claude-opus-4" in model_lower:
+        return (15.0, 75.0)
+    if "sonnet-4" in model_lower or "claude-sonnet-4" in model_lower:
+        return (3.0, 15.0)
+    if "haiku-4" in model_lower or "claude-haiku-4" in model_lower:
+        return (0.25, 1.25)
+    if "deepseek" in model_lower:
+        return (0.14, 0.28)
+    return None
+
+
+def _calc_spend(prompt_tokens: int | None, completion_tokens: int | None) -> str:
+    if prompt_tokens is None and completion_tokens is None:
+        return "—"
+    pricing = _model_pricing()
+    if pricing is None:
+        return "—"
+    in_price, out_price = pricing
+    cost = 0.0
+    if prompt_tokens is not None:
+        cost += (prompt_tokens / 1_000_000) * in_price
+    if completion_tokens is not None:
+        cost += (completion_tokens / 1_000_000) * out_price
+    if cost < 0.01:
+        return "<$0.01"
+    return f"${cost:.2f}"
+
+
+def _build_shells_from_messages(raw_msgs: list[dict]) -> list[dict]:
+    """Extract bash/shell tool calls from raw messages and build shell entries."""
+    shells: list[dict] = []
+    tool_results: dict[str, str] = {}
+    for msg in raw_msgs:
+        if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            tool_results[str(msg["tool_call_id"])] = str(msg.get("content") or "")
+
+    shell_index = 0
+    for msg in raw_msgs:
+        if msg.get("role") != "assistant":
+            continue
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            if name.lower() not in ("bash", "shell", "cmd", "terminal"):
+                continue
+            args_str = fn.get("arguments", "{}")
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+            except Exception:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            cmd = args.get("command") or args.get("cmd") or json.dumps(args)
+            cwd = args.get("cwd") or args.get("workdir") or "workspace/"
+            result = tool_results.get(str(tc.get("id")), "")
+            lines: list[dict] = [
+                {"kind": "shell-prompt", "text": f"$ {cmd}"},
+            ]
+            if result:
+                for line in result.strip().split("\n")[:30]:
+                    lines.append({"kind": "shell-out", "text": line})
+            else:
+                lines.append({"kind": "shell-out", "text": "(running…)"})
+
+            shells.append({
+                "id": f"shell_{shell_index}",
+                "cwd": cwd,
+                "pid": "—",
+                "lines": lines,
+            })
+            shell_index += 1
+
+    return shells
 
 
 def _build_tool_nodes_for_owner(

@@ -109,6 +109,318 @@ async def test_send_agent_message_rejects_cross_round_target():
     assert "round_new" in result
 
 
+async def test_query_round_tool_reports_live_round():
+    from cyrene import subagent
+    from cyrene import tools
+
+    await subagent.clear()
+    await subagent.register("alice", "research topic", round_id="round_1")
+
+    result = await tools._tool_query_round({"round_id": "round_1"}, None, 0, "db.sqlite3", None)
+
+    assert "round_1" in result
+    assert "research topic" in result
+
+
+async def test_queue_round_guidance_drains_in_background(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import subagent
+    import cyrene.conversations as conversations
+
+    await subagent.clear()
+    await subagent.register("alice", "research topic", round_id="round_1")
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    agent.STATE_FILE.write_text(
+        json.dumps({
+            "session_title": "session label",
+            "messages": [
+                {"role": "user", "content": "round one question", "round_id": "round_1", "round_title": "round one"},
+                {"role": "assistant", "content": "round one reply", "round_id": "round_1", "round_title": "round one"},
+                {"role": "user", "content": "other round question", "round_id": "round_2", "round_title": "round two"},
+                {"role": "assistant", "content": "other round reply", "round_id": "round_2", "round_title": "round two"},
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    seen = {}
+
+    async def fake_run_chat_agent(
+        user_message,
+        bot,
+        chat_id,
+        db_path,
+        ephemeral_system="",
+        forced_round_id="",
+        history_override=None,
+        persist_base_messages=None,
+        persist_insert_at=None,
+    ):
+        seen["user_message"] = user_message
+        seen["ephemeral_system"] = ephemeral_system
+        seen["forced_round_id"] = forced_round_id
+        seen["history_override"] = history_override
+        seen["persist_base_messages"] = persist_base_messages
+        seen["persist_insert_at"] = persist_insert_at
+        return "guided reply"
+
+    async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id=""):
+        seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
+
+    monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
+    monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
+
+    item = await agent.queue_round_guidance("round_1", "please continue with logistics", None, 0, "db.sqlite3")
+    await asyncio.sleep(0.05)
+
+    assert item["target_round_id"] == "round_1"
+    assert seen["user_message"] == "please continue with logistics"
+    assert "Target round id: round_1" in seen["ephemeral_system"]
+    assert seen["forced_round_id"] == "round_1"
+    assert [msg["content"] for msg in seen["history_override"]] == ["round one question", "round one reply"]
+    assert [msg["content"] for msg in seen["persist_base_messages"]] == ["round one question", "round one reply", "other round question", "other round reply"]
+    assert seen["persist_insert_at"] == 4
+    assert seen["archived"][0] == "please continue with logistics"
+    assert seen["archived"][2:] == ("session label", "round one", "round_1")
+    assert not agent._round_guidance_queues.get("round_1")
+
+
+async def test_queue_round_guidance_persists_user_message_immediately(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import subagent
+
+    await subagent.clear()
+    await subagent.register("alice", "research topic", round_id="round_1")
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    agent.STATE_FILE.write_text(
+        json.dumps({
+            "messages": [
+                {"role": "user", "content": "round one question", "round_id": "round_1", "round_title": "round one"},
+                {"role": "assistant", "content": "round one reply", "round_id": "round_1", "round_title": "round one"},
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    gate = asyncio.Event()
+
+    async def fake_drain(*_args, **_kwargs):
+        await gate.wait()
+
+    monkeypatch.setattr(agent, "_drain_round_guidance", fake_drain)
+
+    item = await agent.queue_round_guidance("round_1", "queued follow-up", None, 0, "db.sqlite3")
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert saved[-1]["role"] == "user"
+    assert saved[-1]["content"] == "queued follow-up"
+    assert saved[-1]["round_id"] == "round_1"
+    assert saved[-1]["round_title"] == "round one"
+    assert saved[-1]["queued_guidance_id"] == item["id"]
+    gate.set()
+
+
+async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import soul
+
+    base_messages = [
+        {"role": "user", "content": "round one question", "round_id": "round_1"},
+        {"role": "assistant", "content": "round one reply", "round_id": "round_1"},
+        {"role": "user", "content": "other round question", "round_id": "round_2"},
+        {"role": "assistant", "content": "other round reply", "round_id": "round_2"},
+    ]
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
+    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
+    agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+        round_id = agent._current_round_id.get()
+        await agent._save_session_messages([
+            *history,
+            {"role": "user", "content": user_message, "round_id": round_id},
+            {"role": "assistant", "content": "raw reply", "round_id": round_id},
+        ])
+        return "raw reply"
+
+    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result=text))
+
+    result = await agent._run_chat_agent(
+        "guided follow-up",
+        None,
+        0,
+        "db.sqlite3",
+        forced_round_id="round_1",
+        history_override=base_messages[:2],
+    )
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert result == "raw reply"
+    assert [msg["content"] for msg in saved] == [
+        "round one question",
+        "round one reply",
+        "other round question",
+        "other round reply",
+        "guided follow-up",
+        "raw reply",
+    ]
+
+
+async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_place(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import soul
+
+    base_messages = [
+        {"role": "user", "content": "round one question", "round_id": "round_1"},
+        {"role": "assistant", "content": "round one reply", "round_id": "round_1"},
+        {"role": "user", "content": "later queued guidance", "round_id": "round_1", "queued_guidance_id": "guide_2"},
+    ]
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
+    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
+    agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+        round_id = agent._current_round_id.get()
+        await agent._save_session_messages([
+            *history,
+            {"role": "user", "content": user_message, "round_id": round_id},
+            {"role": "assistant", "content": "reply to current guidance", "round_id": round_id},
+        ])
+        return "reply to current guidance"
+
+    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result=text))
+
+    result = await agent._run_chat_agent(
+        "current queued guidance",
+        None,
+        0,
+        "db.sqlite3",
+        forced_round_id="round_1",
+        history_override=base_messages[:2],
+        persist_base_messages=base_messages,
+        persist_insert_at=2,
+    )
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert result == "reply to current guidance"
+    assert [msg["content"] for msg in saved] == [
+        "round one question",
+        "round one reply",
+        "current queued guidance",
+        "reply to current guidance",
+        "later queued guidance",
+    ]
+
+
+async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import soul
+
+    base_messages = [
+        {"role": "user", "content": "previous question", "round_id": "round_0"},
+        {"role": "assistant", "content": "previous reply", "round_id": "round_0"},
+    ]
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
+    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
+    agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+        await agent._append_session_message({
+            "role": "user",
+            "content": "queued guidance",
+            "round_id": "round_2",
+            "queued_guidance_id": "guide_1",
+        })
+        round_id = agent._current_round_id.get()
+        await agent._save_session_messages([
+            *history,
+            {"role": "user", "content": user_message, "round_id": round_id},
+            {"role": "assistant", "content": "raw reply", "round_id": round_id},
+        ])
+        return "raw reply"
+
+    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result=text))
+
+    result = await agent._run_chat_agent("current request", None, 0, "db.sqlite3", forced_round_id="round_1")
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert result == "raw reply"
+    assert [msg["content"] for msg in saved] == [
+        "previous question",
+        "previous reply",
+        "current request",
+        "raw reply",
+        "queued guidance",
+    ]
+    assert saved[-1]["queued_guidance_id"] == "guide_1"
+
+
+async def test_run_chat_agent_history_override_visible_reply_update_does_not_duplicate_messages(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import soul
+
+    base_messages = [
+        {"role": "user", "content": "round one question", "round_id": "round_1"},
+        {"role": "assistant", "content": "round one reply", "round_id": "round_1"},
+        {"role": "user", "content": "other round question", "round_id": "round_2"},
+        {"role": "assistant", "content": "other round reply", "round_id": "round_2"},
+    ]
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
+    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
+    agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+        round_id = agent._current_round_id.get()
+        await agent._save_session_messages([
+            *history,
+            {"role": "user", "content": user_message, "round_id": round_id},
+            {"role": "assistant", "content": "raw reply", "round_id": round_id},
+        ])
+        return "raw reply"
+
+    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result="visible reply"))
+
+    result = await agent._run_chat_agent(
+        "guided follow-up",
+        None,
+        0,
+        "db.sqlite3",
+        forced_round_id="round_1",
+        history_override=base_messages[:2],
+    )
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert result == "visible reply"
+    assert [msg["content"] for msg in saved] == [
+        "round one question",
+        "round one reply",
+        "other round question",
+        "other round reply",
+        "guided follow-up",
+        "visible reply",
+    ]
+
+
 def test_inbox_send_message_is_serialized():
     from cyrene import inbox
     import tempfile
@@ -279,6 +591,40 @@ def test_live_flow_contains_tool_nodes_and_comm_edges(tmp_path, monkeypatch):
     assert main_node["detail"]["tokensOut"] == 52
     assert alice_node["detail"]["tokensIn"] == 18
     assert alice_node["detail"]["tokensOut"] == 7
+
+
+def test_build_current_session_uses_live_shell_snapshots(monkeypatch, tmp_path):
+    from webui import routes
+
+    monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(routes, "DATA_DIR", tmp_path)
+    routes.STATE_FILE.write_text(
+        json.dumps({
+            "messages": [
+                {"role": "user", "content": "run server", "round_id": "round_1"},
+                {"role": "assistant", "content": "", "round_id": "round_1", "tool_calls": [
+                    {"id": "bash_1", "function": {"name": "Bash", "arguments": json.dumps({"command": "python -m http.server"})}},
+                ]},
+                {"role": "tool", "tool_call_id": "bash_1", "content": "started", "round_id": "round_1"},
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(routes, "list_live_shells", lambda include_exited=False: [{
+        "id": "shell_live",
+        "title": "dev server",
+        "cwd": ".",
+        "pid": 1234,
+        "status": "running",
+        "elapsed": "00:12",
+        "updatedAt": "12:00:00",
+        "lines": [{"kind": "meta", "text": "[shell started]"}],
+    }])
+
+    session = routes._build_current_session()
+
+    assert session["shells"][0]["id"] == "shell_live"
+    assert len(session["shells"]) == 1
 
 
 def test_build_sessions_skips_today_archive_when_live_session_exists(tmp_path, monkeypatch):
@@ -874,6 +1220,49 @@ async def test_tool_bash_returns_early_when_interrupted(monkeypatch):
 
     assert payload["exit_code"] == -1
     assert "interrupted" in payload["stderr"].lower()
+
+
+async def test_interrupt_active_run_clears_after_locked_run_finishes():
+    from cyrene import agent
+
+    agent._interrupt_event.clear()
+    locked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_lock():
+        async with agent._agent_lock:
+            locked.set()
+            await release.wait()
+
+    task = asyncio.create_task(hold_lock())
+    await locked.wait()
+
+    assert agent.interrupt_active_run() is True
+    assert agent._interrupt_event.is_set() is True
+
+    release.set()
+    await task
+    await asyncio.sleep(0.1)
+
+    assert agent._interrupt_event.is_set() is False
+
+
+async def test_run_agent_clears_stale_interrupt_before_starting(monkeypatch):
+    from cyrene import agent
+
+    seen = {}
+
+    async def fake_run_chat_agent(user_message, bot, chat_id, db_path):
+        seen["interrupt_before_start"] = agent._interrupt_event.is_set()
+        return "ok"
+
+    monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
+    agent._interrupt_event.set()
+
+    result = await agent.run_agent("hi", None, 0, "db.sqlite3")
+
+    assert result == "ok"
+    assert seen["interrupt_before_start"] is False
 
 
 async def test_run_main_agent_returns_background_notice_when_monitoring_is_interrupted(monkeypatch):

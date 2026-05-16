@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -25,12 +26,24 @@ _current_agent_id: ContextVar[str] = ContextVar("_current_agent_id", default="ma
 _current_round_id: ContextVar[str] = ContextVar("_current_round_id", default="")
 # 当前调用者类型，用于 debug 日志
 _caller_type: ContextVar[str] = ContextVar("_caller_type", default="main_agent")
+_persist_base_messages: ContextVar[list[dict[str, Any]] | None] = ContextVar("_persist_base_messages", default=None)
+_persist_merge_live_state: ContextVar[bool] = ContextVar("_persist_merge_live_state", default=False)
+_persist_history_prefix_len: ContextVar[int] = ContextVar("_persist_history_prefix_len", default=0)
+_persist_insert_at: ContextVar[int | None] = ContextVar("_persist_insert_at", default=None)
 _agent_lock = asyncio.Lock()
+_session_state_lock = asyncio.Lock()
 _interrupt_event = asyncio.Event()
 _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 12
 # 后台 compressor 任务，防止被事件循环 GC
 _pending_compressors: set[asyncio.Task] = set()
+_pending_interrupt_clearers: set[asyncio.Task] = set()
+_guidance_counter = 0
+_round_guidance_queues: dict[str, list[dict[str, Any]]] = {}
+_round_guidance_workers: dict[str, asyncio.Task] = {}
+_active_main_round_id = ""
+_active_main_round_prompt = ""
+_active_main_round_started_at = 0.0
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -98,6 +111,18 @@ def _load_session_messages() -> list[dict[str, Any]]:
     return messages if isinstance(messages, list) else []
 
 
+def _load_round_messages(round_id: str) -> list[dict[str, Any]]:
+    target_round_id = str(round_id or "").strip()
+    messages = _load_session_messages()
+    if not target_round_id:
+        return messages
+    return [
+        msg
+        for msg in messages
+        if str(msg.get("round_id", "")).strip() == target_round_id
+    ]
+
+
 def _load_session_state() -> dict[str, Any]:
     if not STATE_FILE.exists():
         return {}
@@ -114,15 +139,17 @@ def _write_session_state(state: dict[str, Any]) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
-    """保存 session 消息。如果超过上限，触发后台压缩。"""
-    state = _load_session_state()
+def _trim_session_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     trimmed = messages[-_MAX_HISTORY_MESSAGES:]
     # 移除截断处孤立的 tool_calls（DeepSeek 要求 tool_calls 必须有对应的 tool response）
     for i in range(len(trimmed) - 1, -1, -1):
         if trimmed[i].get("tool_calls") and (i + 1 >= len(trimmed) or trimmed[i + 1].get("role") != "tool"):
-            trimmed = trimmed[:i]
-            break
+            return trimmed[:i]
+    return trimmed
+
+
+async def _write_session_messages_locked(state: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+    trimmed = _trim_session_messages(messages)
     state["messages"] = trimmed
     if not str(state.get("session_title", "")).strip():
         state.pop("session_title", None)
@@ -134,11 +161,45 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
         "round_id": next((str(m.get("round_id", "")).strip() for m in reversed(trimmed) if m.get("round_id")), ""),
     })
 
-    # 如果原始消息超过阈值，后台压缩
     if len(messages) >= _MAX_HISTORY_MESSAGES + 5:
         task = asyncio.create_task(_compress_old_messages(messages))
         _pending_compressors.add(task)
         task.add_done_callback(_pending_compressors.discard)
+
+
+async def _save_full_session_messages(messages: list[dict[str, Any]]) -> None:
+    async with _session_state_lock:
+        state = _load_session_state()
+        await _write_session_messages_locked(state, messages)
+
+
+async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
+    """保存 session 消息。如果超过上限，触发后台压缩。"""
+    async with _session_state_lock:
+        state = _load_session_state()
+        effective_messages = messages
+        base_messages = _persist_base_messages.get()
+        if base_messages is None and _persist_merge_live_state.get():
+            current = state.get("messages", [])
+            base_messages = list(current) if isinstance(current, list) else []
+        if base_messages is not None:
+            prefix_len = max(0, min(_persist_history_prefix_len.get(), len(messages)))
+            insert_at = _persist_insert_at.get()
+            if insert_at is None:
+                insert_at = len(base_messages)
+            insert_at = max(0, min(insert_at, len(base_messages)))
+            suffix = messages[prefix_len:]
+            effective_messages = [*base_messages[:insert_at], *suffix, *base_messages[insert_at:]]
+        await _write_session_messages_locked(state, effective_messages)
+
+
+async def _append_session_message(entry: dict[str, Any]) -> None:
+    async with _session_state_lock:
+        state = _load_session_state()
+        messages = state.get("messages", [])
+        full_messages = list(messages) if isinstance(messages, list) else []
+        full_messages.append(entry)
+        await _write_session_messages_locked(state, full_messages)
 
 
 async def _publish_runtime_event(event: dict[str, Any]) -> None:
@@ -198,7 +259,7 @@ async def _persist_user_visible_reply(main_text: str, visible_text: str, round_i
             return
         messages[target_index] = {**messages[target_index], "content": visible_text}
 
-    await _save_session_messages(messages)
+    await _save_full_session_messages(messages)
 
 
 def _fallback_label(text: str, limit: int = 48) -> str:
@@ -225,18 +286,335 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         return {}
 
 
-def get_session_labels() -> dict[str, str]:
+def _round_epoch_ms(round_id: str) -> int | None:
+    match = re.fullmatch(r"round_(\d+)", str(round_id or "").strip())
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _round_started_iso(round_id: str) -> str | None:
+    epoch_ms = _round_epoch_ms(round_id)
+    if epoch_ms is None:
+        return None
+    try:
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _round_title_from_entry(entry: dict[str, Any]) -> str:
+    return (
+        str(entry.get("title", "")).strip()
+        or _fallback_label(entry.get("last_user") or entry.get("prompt") or entry.get("id"), limit=40)
+    )
+
+
+def _session_round_entries() -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    messages = _load_session_messages()
+    for msg in messages:
+        round_id = str(msg.get("round_id", "")).strip()
+        if not round_id:
+            continue
+        entry = entries.setdefault(round_id, {
+            "id": round_id,
+            "title": "",
+            "prompt": "",
+            "last_user": "",
+            "last_assistant": "",
+            "status": "done",
+            "pending_guidance": 0,
+            "subagent_count": 0,
+            "running_subagents": 0,
+            "started_at": _round_started_iso(round_id),
+            "updated_at": _round_started_iso(round_id),
+        })
+        if msg.get("round_title"):
+            entry["title"] = str(msg.get("round_title") or "").strip()
+        role = str(msg.get("role") or "")
+        content = str(msg.get("content") or "").strip()
+        if role == "user" and content:
+            if not entry["prompt"]:
+                entry["prompt"] = content
+            entry["last_user"] = content
+        elif role == "assistant" and content:
+            entry["last_assistant"] = content
+    return entries
+
+
+def get_live_rounds() -> list[dict[str, Any]]:
+    """Return live round summaries for UI context selection and tooling."""
+    entries = _session_round_entries()
+
+    from cyrene.subagent import _registry  # noqa: WPS437
+
+    for info in _registry.values():
+        round_id = str(info.get("round_id", "")).strip()
+        if not round_id:
+            continue
+        entry = entries.setdefault(round_id, {
+            "id": round_id,
+            "title": "",
+            "prompt": str(info.get("task") or "").strip(),
+            "last_user": "",
+            "last_assistant": "",
+            "status": "done",
+            "pending_guidance": 0,
+            "subagent_count": 0,
+            "running_subagents": 0,
+            "started_at": _round_started_iso(round_id) or info.get("created_at"),
+            "updated_at": info.get("updated_at") or _round_started_iso(round_id),
+        })
+        entry["subagent_count"] += 1
+        sub_status = str(info.get("status") or "done")
+        if sub_status in ("running", "waiting", "resumed"):
+            entry["running_subagents"] += 1
+            entry["status"] = "running"
+        if not entry.get("prompt"):
+            entry["prompt"] = str(info.get("task") or "").strip()
+        if info.get("updated_at"):
+            entry["updated_at"] = info.get("updated_at")
+        if info.get("created_at") and not entry.get("started_at"):
+            entry["started_at"] = info.get("created_at")
+
+    for round_id, queue in _round_guidance_queues.items():
+        entry = entries.setdefault(round_id, {
+            "id": round_id,
+            "title": "",
+            "prompt": "",
+            "last_user": "",
+            "last_assistant": "",
+            "status": "queued",
+            "pending_guidance": 0,
+            "subagent_count": 0,
+            "running_subagents": 0,
+            "started_at": _round_started_iso(round_id),
+            "updated_at": _round_started_iso(round_id),
+        })
+        entry["pending_guidance"] = len(queue)
+        if queue:
+            latest = queue[-1]
+            entry["updated_at"] = latest.get("created_at") or entry.get("updated_at")
+            if entry["status"] != "running":
+                entry["status"] = "queued"
+
+    if _active_main_round_id:
+        entry = entries.setdefault(_active_main_round_id, {
+            "id": _active_main_round_id,
+            "title": "",
+            "prompt": _active_main_round_prompt,
+            "last_user": _active_main_round_prompt,
+            "last_assistant": "",
+            "status": "running",
+            "pending_guidance": 0,
+            "subagent_count": 0,
+            "running_subagents": 0,
+            "started_at": datetime.fromtimestamp(_active_main_round_started_at, tz=timezone.utc).isoformat() if _active_main_round_started_at else _round_started_iso(_active_main_round_id),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        entry["status"] = "running"
+        if _active_main_round_prompt and not entry.get("prompt"):
+            entry["prompt"] = _active_main_round_prompt
+        if _active_main_round_started_at and not entry.get("started_at"):
+            entry["started_at"] = datetime.fromtimestamp(_active_main_round_started_at, tz=timezone.utc).isoformat()
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    live_entries: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    for entry in entries.values():
+        if entry.get("status") not in ("running", "queued") and not entry.get("pending_guidance", 0):
+            continue
+        started_at = entry.get("started_at")
+        updated_at = entry.get("updated_at")
+        elapsed = "—"
+        if started_at:
+            try:
+                started_dt = datetime.fromisoformat(str(started_at)).astimezone(timezone.utc)
+                elapsed = _format_duration((now - started_dt).total_seconds())
+            except Exception:
+                elapsed = "—"
+        live_entries.append({
+            "id": entry["id"],
+            "title": _round_title_from_entry(entry),
+            "prompt": entry.get("prompt", ""),
+            "lastUser": entry.get("last_user", ""),
+            "lastAssistant": entry.get("last_assistant", ""),
+            "status": entry.get("status", "queued"),
+            "pendingGuidance": int(entry.get("pending_guidance", 0) or 0),
+            "subagentCount": int(entry.get("subagent_count", 0) or 0),
+            "runningSubagents": int(entry.get("running_subagents", 0) or 0),
+            "startedAt": started_at or "",
+            "updatedAt": updated_at or "",
+            "elapsed": elapsed,
+        })
+
+    live_entries.sort(key=lambda item: item.get("startedAt") or "", reverse=True)
+    return live_entries
+
+
+def query_live_rounds(round_id: str = "") -> str:
+    """Summarize currently live rounds for the main agent."""
+    rounds = get_live_rounds()
+    if round_id:
+        rounds = [item for item in rounds if item.get("id") == round_id]
+    if not rounds:
+        if round_id:
+            return f"No live round found for {round_id}."
+        return "No live rounds are currently running."
+
+    lines = []
+    for item in rounds:
+        lines.append(
+            f"- {item['id']} | {item['status']} | {item['title']} | elapsed {item['elapsed']} | "
+            f"subagents {item['runningSubagents']}/{item['subagentCount']} | pending guidance {item['pendingGuidance']}"
+        )
+        prompt = item.get("prompt") or item.get("lastUser") or ""
+        if prompt:
+            lines.append(f"  prompt: {_fallback_label(prompt, limit=120)}")
+        last_answer = item.get("lastAssistant") or ""
+        if last_answer:
+            lines.append(f"  latest reply: {_fallback_label(last_answer, limit=160)}")
+    return "\n".join(lines)
+
+
+async def _publish_round_guidance_update(target_round_id: str) -> None:
+    live = next((item for item in get_live_rounds() if item.get("id") == target_round_id), None)
+    await debug.publish_event({
+        "type": "round_guidance_update",
+        "target_round_id": target_round_id,
+        "pending_guidance": int(live.get("pendingGuidance", 0) if live else 0),
+        "status": live.get("status", "") if live else "",
+        "title": live.get("title", "") if live else "",
+    })
+
+
+async def queue_round_guidance(target_round_id: str, content: str, bot: Any, chat_id: int, db_path: str) -> dict[str, Any]:
+    """Queue a follow-up question for a live round without interrupting current output."""
+    live = {item["id"]: item for item in get_live_rounds()}
+    target = live.get(target_round_id)
+    if target is None:
+        raise ValueError(f"Round {target_round_id} is not live.")
+
+    global _guidance_counter
+    _guidance_counter += 1
+    item = {
+        "id": f"guide_{_guidance_counter}",
+        "target_round_id": target_round_id,
+        "content": content,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    labels = get_session_labels(target_round_id)
+    queued_user_entry: dict[str, Any] = {
+        "role": "user",
+        "content": content,
+        "round_id": target_round_id,
+        "queued_guidance_id": item["id"],
+    }
+    if labels.get("round_title"):
+        queued_user_entry["round_title"] = labels["round_title"]
+    await _append_session_message(queued_user_entry)
+    _round_guidance_queues.setdefault(target_round_id, []).append(item)
+    await _publish_round_guidance_update(target_round_id)
+
+    worker = _round_guidance_workers.get(target_round_id)
+    if worker is None or worker.done():
+        _round_guidance_workers[target_round_id] = asyncio.create_task(
+            _drain_round_guidance(target_round_id, bot, chat_id, db_path)
+        )
+    return item
+
+
+async def _drain_round_guidance(target_round_id: str, bot: Any, chat_id: int, db_path: str) -> None:
+    from cyrene.conversations import archive_exchange
+
+    try:
+        while _round_guidance_queues.get(target_round_id):
+            item = _round_guidance_queues[target_round_id][0]
+            title = next((live["title"] for live in get_live_rounds() if live.get("id") == target_round_id), target_round_id)
+            full_messages = _load_session_messages()
+            insert_at = next(
+                (
+                    idx
+                    for idx, msg in enumerate(full_messages)
+                    if str(msg.get("queued_guidance_id", "")).strip() == str(item.get("id", "")).strip()
+                ),
+                len(full_messages),
+            )
+            persist_base_messages = [
+                msg
+                for msg in full_messages
+                if str(msg.get("queued_guidance_id", "")).strip() != str(item.get("id", "")).strip()
+            ]
+            round_history = [
+                msg
+                for msg in full_messages
+                if str(msg.get("round_id", "")).strip() == target_round_id and not str(msg.get("queued_guidance_id", "")).strip()
+            ]
+            guidance_system = (
+                "This user message is queued guidance for a still-running earlier round.\n"
+                f"Target round id: {target_round_id}\n"
+                f"Target round title: {title}\n"
+                "Treat the user's message as steering or a remaining question for that background work. "
+                "Do not pretend the target round has already concluded unless the evidence in context shows that it has."
+            )
+            async with _agent_lock:
+                response = await _run_chat_agent(
+                    str(item.get("content") or ""),
+                    bot,
+                    chat_id,
+                    db_path,
+                    ephemeral_system=guidance_system,
+                    forced_round_id=target_round_id,
+                    history_override=round_history,
+                    persist_base_messages=persist_base_messages,
+                    persist_insert_at=insert_at,
+                )
+            labels = get_session_labels(target_round_id)
+            await archive_exchange(
+                str(item.get("content") or ""),
+                response,
+                chat_id,
+                session_title=labels.get("session_title", ""),
+                round_title=labels.get("round_title", ""),
+                round_id=labels.get("round_id", ""),
+            )
+            queue = _round_guidance_queues.get(target_round_id, [])
+            if queue and queue[0].get("id") == item.get("id"):
+                queue.pop(0)
+            if not queue:
+                _round_guidance_queues.pop(target_round_id, None)
+            await _publish_round_guidance_update(target_round_id)
+    except Exception:
+        logger.exception("Failed to drain guidance queue for %s", target_round_id)
+    finally:
+        _round_guidance_workers.pop(target_round_id, None)
+        if _round_guidance_queues.get(target_round_id):
+            _round_guidance_workers[target_round_id] = asyncio.create_task(
+                _drain_round_guidance(target_round_id, bot, chat_id, db_path)
+            )
+
+
+def get_session_labels(round_id: str = "") -> dict[str, str]:
     state = _load_session_state()
     messages = state.get("messages", []) if isinstance(state.get("messages"), list) else []
     last_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
+    target_round_id = str(round_id or "").strip() or last_round_id
     round_title = next(
-        (str(m.get("round_title", "")).strip() for m in messages if str(m.get("round_id", "")).strip() == last_round_id and m.get("round_title")),
+        (
+            str(m.get("round_title", "")).strip()
+            for m in messages
+            if str(m.get("round_id", "")).strip() == target_round_id and m.get("round_title")
+        ),
         "",
     )
     return {
         "session_title": str(state.get("session_title", "")).strip(),
         "round_title": round_title,
-        "round_id": last_round_id,
+        "round_id": target_round_id,
     }
 
 
@@ -301,13 +679,16 @@ async def _refresh_session_labels(current_user_message: str, round_id: str) -> N
     round_title = _fallback_label(payload.get("round_title") or round_fallback, limit=40)
     session_title = _fallback_label(payload.get("session_title") or session_fallback, limit=56)
 
-    for msg in messages:
-        if str(msg.get("round_id", "")).strip() == round_id:
-            msg["round_title"] = round_title
-
-    state["messages"] = messages
-    state["session_title"] = session_title
-    _write_session_state(state)
+    async with _session_state_lock:
+        latest_state = _load_session_state()
+        latest_messages = latest_state.get("messages", [])
+        full_messages = list(latest_messages) if isinstance(latest_messages, list) else []
+        for msg in full_messages:
+            if str(msg.get("round_id", "")).strip() == round_id:
+                msg["round_title"] = round_title
+        latest_state["messages"] = full_messages
+        latest_state["session_title"] = session_title
+        _write_session_state(latest_state)
 
 
 async def _compress_old_messages(all_messages: list[dict]) -> None:
@@ -380,6 +761,18 @@ async def clear_session_id() -> None:
     """Clear session, subagent registry, and compress conversation to short-term memory before discarding."""
     from cyrene.inbox import clear_all_inboxes
 
+    for task in list(_pending_interrupt_clearers):
+        task.cancel()
+    _pending_interrupt_clearers.clear()
+    _interrupt_event.clear()
+    for task in list(_round_guidance_workers.values()):
+        task.cancel()
+    _round_guidance_workers.clear()
+    _round_guidance_queues.clear()
+    global _active_main_round_id, _active_main_round_prompt, _active_main_round_started_at
+    _active_main_round_id = ""
+    _active_main_round_prompt = ""
+    _active_main_round_started_at = 0.0
     await _clear_subagents()
     await clear_all_inboxes()
     if STATE_FILE.exists():
@@ -477,7 +870,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
     user_entry = {"role": "user", "content": user_message}
     if round_id:
         user_entry["round_id"] = round_id
-    phase1_messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT + "\n\n" + _PHASE1_DECISION_PROMPT}, *history, user_entry]
+    phase1_messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
 
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
     response = await _call_llm(phase1_messages, tools=_LIGHT_TOOL_DEFS)
@@ -768,25 +1161,75 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
     """Main entry point. Main agent (assistant tone + full tools) -> Chat filter (friend-style)."""
     if _agent_lock.locked():
-        _interrupt_event.set()
+        interrupt_active_run()
     async with _agent_lock:
+        _interrupt_event.clear()
         return await _run_chat_agent(user_message, bot, chat_id, db_path)
 
 
-async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
+async def _clear_interrupt_when_idle() -> None:
+    try:
+        while _agent_lock.locked():
+            await asyncio.sleep(0.05)
+    finally:
+        _interrupt_event.clear()
+
+
+def interrupt_active_run() -> bool:
+    """Best-effort interrupt for the currently running main-agent request."""
+    if not _agent_lock.locked():
+        _interrupt_event.clear()
+        return False
+    _interrupt_event.set()
+    task = asyncio.create_task(_clear_interrupt_when_idle())
+    _pending_interrupt_clearers.add(task)
+    task.add_done_callback(_pending_interrupt_clearers.discard)
+    return True
+
+
+async def _run_chat_agent(
+    user_message: str,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    ephemeral_system: str = "",
+    forced_round_id: str = "",
+    history_override: list[dict[str, Any]] | None = None,
+    persist_base_messages: list[dict[str, Any]] | None = None,
+    persist_insert_at: int | None = None,
+) -> str:
     """Coordinator: main agent -> chat filter."""
     import time as _time
 
-    round_id = f"round_{int(_time.time() * 1000)}"
+    round_id = str(forced_round_id or "").strip() or f"round_{int(_time.time() * 1000)}"
     round_token = _current_round_id.set(round_id)
+    full_session_messages = _load_session_messages()
+    global _active_main_round_id, _active_main_round_prompt, _active_main_round_started_at
+    _active_main_round_id = round_id
+    _active_main_round_prompt = user_message
+    _active_main_round_started_at = _time.time()
+    history = list(history_override) if history_override is not None else _load_session_messages()
+    merge_base = persist_base_messages
+    merge_insert_at = persist_insert_at
+    merge_live_state = history_override is None
+    if history_override is not None and merge_base is None:
+        merge_base = list(full_session_messages)
+        merge_insert_at = len(merge_base)
+        merge_live_state = False
+    elif merge_live_state and merge_insert_at is None:
+        merge_insert_at = len(history)
+    base_token = _persist_base_messages.set(merge_base)
+    merge_live_token = _persist_merge_live_state.set(merge_live_state and merge_base is None)
+    prefix_token = _persist_history_prefix_len.set(len(history) if (merge_base is not None or merge_live_state) else 0)
+    insert_token = _persist_insert_at.set(merge_insert_at if (merge_base is not None or merge_live_state) else None)
     try:
-        history = _load_session_messages()
-
         # 如果 history 为空（session 被重置），注入短期记忆
         if not history:
             st = get_context(max_chars=5000)
             if st:
                 history = [{"role": "system", "content": "[Restored context]\n" + st}]
+        if ephemeral_system:
+            history = [*history, {"role": "system", "content": ephemeral_system}]
 
         # 读取 SOUL.md人格设定（仅给 Chat Filter 使用，不污染主 Agent）
         from cyrene.soul import read_shallow_memory
@@ -812,6 +1255,13 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
         await _publish_runtime_event({"type": "chat_message"})
         return friend_text
     finally:
+        _persist_insert_at.reset(insert_token)
+        _persist_history_prefix_len.reset(prefix_token)
+        _persist_merge_live_state.reset(merge_live_token)
+        _persist_base_messages.reset(base_token)
+        _active_main_round_id = ""
+        _active_main_round_prompt = ""
+        _active_main_round_started_at = 0.0
         _current_round_id.reset(round_token)
 
 

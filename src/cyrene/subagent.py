@@ -433,24 +433,24 @@ Rules:
 
     try:
         for _ in range(_MAX_TOOL_ROUNDS):
-            # 每次 LLM 调用前注入注册表和 inbox
+            # 每次 LLM 调用前注入注册表和 inbox 作为独立消息，保持 messages[0] 稳定
             registry_ctx = await get_context(exclude=agent_id, round_id=round_id)
             inbox_text = _get_inbox(agent_id)
-            inbox_ctx = ""
+
+            # 移除上一轮的旧上下文消息（以特定前缀开头的用户消息）
+            messages = [m for m in messages if not (
+                m.get("role") == "user" and (
+                    str(m.get("content", "")).startswith("[活跃子 agent]") or
+                    str(m.get("content", "")).startswith("[收件箱]")
+                )
+            )]
+            # 注入新上下文
+            if registry_ctx:
+                messages.append({"role": "user", "content": registry_ctx})
             if inbox_text:
-                inbox_ctx = f"\n[收件箱]\n{inbox_text}\n"
+                messages.append({"role": "user", "content": f"[收件箱]\n{inbox_text}"})
                 # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
                 await _mark_inbox_read(agent_id)
-
-            system_content = subagent_prompt
-            extras = []
-            if registry_ctx:
-                extras.append(registry_ctx)
-            if inbox_ctx:
-                extras.append(inbox_ctx)
-            if extras:
-                system_content = subagent_prompt + "\n\n" + "\n".join(extras)
-            messages[0] = {"role": "system", "content": system_content}
 
             response = await _call_llm(messages, tools=TOOL_DEFS)
 
