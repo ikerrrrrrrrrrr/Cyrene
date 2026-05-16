@@ -14,7 +14,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from cyrene import debug
-from cyrene.agent import clear_session_id, run_agent
+from cyrene.agent import clear_session_id, get_session_labels, run_agent
 from cyrene.config import (
     ASSISTANT_NAME,
     DATA_DIR,
@@ -71,7 +71,15 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         reset_lottery()
         response = await run_agent(message, _bot, _CHAT_ID, _db_path)
-        await archive_exchange(message, response, _CHAT_ID)
+        labels = get_session_labels()
+        await archive_exchange(
+            message,
+            response,
+            _CHAT_ID,
+            session_title=labels.get("session_title", ""),
+            round_title=labels.get("round_title", ""),
+            round_id=labels.get("round_id", ""),
+        )
         return {"response": response}
 
     @router.get("/api/chat/history")
@@ -270,15 +278,27 @@ def _build_current_session() -> dict | None:
     returns an empty placeholder so the Chat page shows a clean "start a new
     conversation" view instead of falling back to an old archive.
     """
+    state: dict[str, Any] = {}
     raw_msgs: list[dict] = []
     if STATE_FILE.exists():
         try:
-            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            raw_msgs = data.get("messages", []) or []
+            loaded = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            state = loaded if isinstance(loaded, dict) else {}
+            raw_msgs = state.get("messages", []) or []
         except Exception:
             raw_msgs = []
+            state = {}
 
     messages = _convert_messages(raw_msgs) if raw_msgs else []
+    current_round_id = _latest_round_id_from_messages(raw_msgs)
+    current_round_title = next(
+        (
+            str(msg.get("round_title", "")).strip()
+            for msg in reversed(raw_msgs)
+            if str(msg.get("round_id", "")).strip() == current_round_id and msg.get("round_title")
+        ),
+        "",
+    )
 
     from cyrene.subagent import _registry  # noqa: WPS437
     subagent_registry = _infer_subagent_entries(raw_msgs, _registry)
@@ -293,6 +313,7 @@ def _build_current_session() -> dict | None:
             "name": agent_id,
             "status": ui_status,
             "task": info.get("task", ""),
+            "roundId": str(info.get("round_id", "")).strip(),
             "tokens": len(info.get("messages", [])),
             "elapsed": _elapsed_since(created_at),
             "progress": _status_progress(status),
@@ -318,12 +339,14 @@ def _build_current_session() -> dict | None:
 
     return {
         "id": "run_live",
-        "title": "new session" if is_empty else "current session",
+        "title": str(state.get("session_title", "")).strip() or ("new session" if is_empty else "current session"),
         "status": live_status,
         "started": started_at,
         "dur": duration,
         "preview": (last_msg["body"][:80] + "…") if last_msg and last_msg.get("body") else "—",
         "model": OPENAI_MODEL,
+        "currentRoundId": current_round_id,
+        "currentRoundTitle": current_round_title,
         "summary": {"tokens": "—", "spend": "—", "toolCalls": _count_tool_calls(raw_msgs)},
         "chat": {
             "contextChips": [
@@ -358,8 +381,18 @@ def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
             continue
 
         last_user = next((m for m in messages if m["role"] == "user"), None)
-        title = (last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str
+        session_title = _parse_archive_session_title(content)
+        title = session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
         preview = messages[-1].get("body", "")[:80] if messages else ""
+        current_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
+        current_round_title = next(
+            (
+                str(m.get("round_title", "")).strip()
+                for m in reversed(messages)
+                if str(m.get("round_id", "")).strip() == current_round_id and m.get("round_title")
+            ),
+            "",
+        )
 
         sessions.append({
             "id": f"day_{date_str}",
@@ -369,6 +402,8 @@ def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
             "dur": "—",
             "preview": preview,
             "model": OPENAI_MODEL,
+            "currentRoundId": current_round_id,
+            "currentRoundTitle": current_round_title,
             "summary": {
                 "tokens": f"{len(messages)} msgs",
                 "spend": "—",
@@ -385,27 +420,53 @@ def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
     return sessions
 
 
+def _parse_archive_meta(section: str, key: str) -> str:
+    match = re.search(rf"<!--\s*{re.escape(key)}:\s*(.*?)\s*-->", section)
+    return match.group(1).strip() if match else ""
+
+
+def _parse_archive_session_title(content: str) -> str:
+    return _parse_archive_meta(content, "session_title")
+
+
 def _parse_archive_file(content: str) -> list[dict]:
     """Parse a conversations/YYYY-MM-DD.md file into UI-formatted messages."""
     messages: list[dict] = []
-    pattern = re.compile(
-        r"##\s*(\S+\s+UTC)\s*\n+\*\*User\*\*:\s*(.*?)\n+\*\*[^*]+\*\*:\s*(.*?)(?=\n+---|\Z)",
-        re.DOTALL,
-    )
-    for idx, m in enumerate(pattern.finditer(content)):
-        ts, user_body, assistant_body = m.group(1), m.group(2).strip(), m.group(3).strip()
+    sections = re.split(r"\n---\s*\n", content)
+    round_index = 0
+
+    for section in sections:
+        if "**User**:" not in section:
+            continue
+        ts_match = re.search(r"##\s*(\S+\s+UTC)", section)
+        user_match = re.search(r"\*\*User\*\*:\s*(.*?)(?=\n+\*\*[^*]+\*\*:|\Z)", section, re.DOTALL)
+        assistant_match = re.search(r"\n\*\*[^*]+\*\*:\s*(.*)\Z", section, re.DOTALL)
+        if not ts_match or not user_match or not assistant_match:
+            continue
+
+        ts = ts_match.group(1).strip()
+        user_body = user_match.group(1).strip()
+        assistant_body = assistant_match.group(1).strip()
+        round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
+        round_title = _parse_archive_meta(section, "round_title")
+
         messages.append({
-            "id": f"m{idx}u",
+            "id": f"m{round_index}u",
             "role": "user",
             "time": ts,
             "body": user_body,
+            "round_id": round_id,
+            "round_title": round_title,
         })
         messages.append({
-            "id": f"m{idx}a",
+            "id": f"m{round_index}a",
             "role": "agent",
             "time": ts,
             "body": assistant_body,
+            "round_id": round_id,
+            "round_title": round_title,
         })
+        round_index += 1
     return messages
 
 
@@ -451,46 +512,74 @@ def _count_tool_calls(raw_msgs: list[dict]) -> int:
 
 
 def _build_simple_flow(messages: list[dict]) -> dict:
-    """Minimal flow for archive sessions — just user + agent + output."""
-    last_user = next((m for m in messages if m["role"] == "user"), None)
-    last_agent = next((m for m in reversed(messages) if m["role"] == "agent"), None)
-    nodes = [
-        {
-            "id": "n_user", "kind": "input", "x": 40, "y": 80,
-            "title": "user request", "status": "done",
-            "detail": {
-                "role": "User",
-                "text": last_user["body"] if last_user else "",
-                "tokens": 0,
-                "time": last_user["time"] if last_user else "—",
+    """Archive flow grouped by conversation round, without live tool traces."""
+    rounds: list[list[dict]] = []
+    current: list[dict] = []
+    current_round_id = ""
+
+    for msg in messages:
+        round_id = str(msg.get("round_id", "")).strip() or current_round_id or "archive_round_0"
+        if current and round_id != current_round_id:
+            rounds.append(current)
+            current = []
+        current.append(msg)
+        current_round_id = round_id
+    if current:
+        rounds.append(current)
+
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    y_offset = 0
+    multiple_rounds = len(rounds) > 1
+
+    for round_index, round_msgs in enumerate(rounds or [messages]):
+        prefix = f"r{round_index}_" if multiple_rounds else ""
+        last_user = next((m for m in round_msgs if m["role"] == "user"), None)
+        last_agent = next((m for m in reversed(round_msgs) if m["role"] == "agent"), None)
+        round_title = next((str(m.get("round_title", "")).strip() for m in round_msgs if m.get("round_title")), "") or "user request"
+        user_id = f"{prefix}n_user"
+        main_id = f"{prefix}n_main"
+        out_id = f"{prefix}n_out"
+
+        nodes.extend([
+            {
+                "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
+                "title": round_title, "status": "done",
+                "detail": {
+                    "role": "User",
+                    "text": last_user["body"] if last_user else "",
+                    "tokens": 0,
+                    "time": last_user["time"] if last_user else "—",
+                },
             },
-        },
-        {
-            "id": "n_main", "kind": "main", "x": 320, "y": 70,
-            "title": f"main agent · {ASSISTANT_NAME}",
-            "subtitle": "session",
-            "status": "done",
-            "model": OPENAI_MODEL,
-            "detail": {
-                "systemPrompt": f"You are {ASSISTANT_NAME}, an AI companion. Use SOUL.md to maintain persona.",
-                "reasoning": "Loaded session from archive — no live reasoning trace.",
-                "tokensIn": 0, "tokensOut": 0,
-                "model": OPENAI_MODEL, "temp": 0.2,
+            {
+                "id": main_id, "kind": "main", "x": 320, "y": y_offset + 70,
+                "title": f"main agent · {ASSISTANT_NAME}",
+                "subtitle": "archive",
+                "status": "done",
+                "model": OPENAI_MODEL,
+                "detail": {
+                    "systemPrompt": f"You are {ASSISTANT_NAME}, an AI companion. Use SOUL.md to maintain persona.",
+                    "reasoning": "Loaded session from archive — no live reasoning trace.",
+                    "tokensIn": 0, "tokensOut": 0,
+                    "model": OPENAI_MODEL, "temp": 0.2,
+                },
             },
-        },
-        {
-            "id": "n_out", "kind": "output", "x": 660, "y": 90,
-            "title": "response", "status": "done",
-            "detail": {
-                "kind": "Output",
-                "content": (last_agent["body"][:600] if last_agent else "—"),
+            {
+                "id": out_id, "kind": "output", "x": 660, "y": y_offset + 90,
+                "title": "response", "status": "done",
+                "detail": {
+                    "kind": "Output",
+                    "content": (last_agent["body"][:600] if last_agent else "—"),
+                },
             },
-        },
-    ]
-    edges = [
-        {"from": "n_user", "to": "n_main"},
-        {"from": "n_main", "to": "n_out"},
-    ]
+        ])
+        edges.extend([
+            {"from": user_id, "to": main_id},
+            {"from": main_id, "to": out_id},
+        ])
+        y_offset += 180
+
     return {"nodes": nodes, "edges": edges}
 
 
@@ -507,19 +596,26 @@ def _build_live_flow(raw_msgs: list[dict], messages: list[dict], subagents: list
     if not rounds:
         return {"nodes": [], "edges": []}
 
+    rounds, active_round_index = _prune_flow_rounds(rounds)
+    if not rounds:
+        return {"nodes": [], "edges": []}
+
     nodes: list[dict] = []
     edges: list[dict] = []
     next_y = 0
     multiple_rounds = len(rounds) > 1
 
     for round_index, round_raw in enumerate(rounds):
-        is_current_round = round_index == len(rounds) - 1
+        is_current_round = round_index == active_round_index
         round_messages = _convert_messages(round_raw)
+        round_id = _latest_round_id_from_messages(round_raw)
         round_registry = _round_registry_for_flow(round_raw, registry if is_current_round else {})
-        round_id = _round_id_from_messages(round_raw)
         related_agents = _related_round_agent_names(set(round_registry), round_id=round_id)
         if is_current_round and subagents:
-            candidate_subagents = subagents if not round_registry else [sa for sa in subagents if sa["name"] in related_agents]
+            candidate_subagents = [
+                sa for sa in subagents
+                if _subagent_matches_round(sa, round_id) and (not round_registry or sa["name"] in related_agents)
+            ]
             for sa in candidate_subagents:
                 entry = round_registry.setdefault(sa["name"], {
                     "task": sa.get("task", ""),
@@ -540,6 +636,7 @@ def _build_live_flow(raw_msgs: list[dict], messages: list[dict], subagents: list
                 if not round_id or info.get("round_id") in ("", round_id)
             }
         round_subagents = _subagent_cards_from_registry(round_registry)
+        round_recent_events = _events_for_round(recent_events, round_id) if is_current_round else []
         prefix = f"r{round_index}_" if multiple_rounds else ""
         round_nodes, round_edges, round_bottom = _build_live_flow_round(
             prefix=prefix,
@@ -547,7 +644,7 @@ def _build_live_flow(raw_msgs: list[dict], messages: list[dict], subagents: list
             messages=round_messages,
             subagents=round_subagents,
             registry=round_registry,
-            recent_events=recent_events if is_current_round else [],
+            recent_events=round_recent_events,
             y_offset=next_y,
             round_id=round_id,
         )
@@ -597,9 +694,46 @@ def _split_raw_rounds(raw_msgs: list[dict]) -> list[list[dict]]:
     return rounds
 
 
+def _round_has_activity(raw_msgs: list[dict]) -> bool:
+    return any(str(msg.get("role", "")) != "user" for msg in raw_msgs)
+
+
+def _prune_flow_rounds(rounds: list[list[dict]]) -> tuple[list[list[dict]], int]:
+    """Keep substantive rounds plus the latest pending user-only round.
+
+    This prevents interrupted trailing user messages from stretching the flow
+    into multiple empty rounds while still preserving the latest pending input.
+    """
+    if not rounds:
+        return [], -1
+
+    substantive_indices = [i for i, round_raw in enumerate(rounds) if _round_has_activity(round_raw)]
+    if not substantive_indices:
+        return [rounds[-1]], 0
+
+    keep_indices = set(substantive_indices)
+    latest_substantive = substantive_indices[-1]
+    tail_pending = [
+        i for i in range(latest_substantive + 1, len(rounds))
+        if not _round_has_activity(rounds[i])
+    ]
+    if tail_pending:
+        keep_indices.add(tail_pending[-1])
+
+    pruned: list[list[dict]] = []
+    index_map: dict[int, int] = {}
+    for original_index, round_raw in enumerate(rounds):
+        if original_index not in keep_indices:
+            continue
+        index_map[original_index] = len(pruned)
+        pruned.append(round_raw)
+
+    return pruned, index_map[latest_substantive]
+
+
 def _round_registry_for_flow(raw_msgs: list[dict], live_registry: dict[str, dict]) -> dict[str, dict]:
     entries: dict[str, dict] = {}
-    round_id = _round_id_from_messages(raw_msgs)
+    round_id = _latest_round_id_from_messages(raw_msgs)
     for msg in raw_msgs:
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {})
@@ -665,6 +799,30 @@ def _round_id_from_messages(raw_msgs: list[dict]) -> str:
     return ""
 
 
+def _latest_round_id_from_messages(raw_msgs: list[dict]) -> str:
+    for msg in reversed(raw_msgs):
+        round_id = str(msg.get("round_id", "")).strip()
+        if round_id:
+            return round_id
+    return ""
+
+
+def _events_for_round(recent_events: list[dict], round_id: str) -> list[dict]:
+    if not round_id:
+        return list(recent_events)
+    return [
+        event for event in recent_events
+        if str(event.get("round_id", "")).strip() == round_id
+    ]
+
+
+def _subagent_matches_round(subagent: dict[str, Any], round_id: str) -> bool:
+    if not round_id:
+        return True
+    subagent_round_id = str(subagent.get("roundId") or subagent.get("round_id") or "").strip()
+    return not subagent_round_id or subagent_round_id == round_id
+
+
 def _registry_status_from_ui(status: str) -> str:
     return {
         "running": "running",
@@ -721,6 +879,7 @@ def _build_live_flow_round(
     latest_phase = next((e for e in reversed(recent_events) if e.get("type") == "phase_transition"), None)
     latest_agent = next((m for m in reversed(messages) if m["role"] == "agent"), None)
     latest_assistant_raw = next((m for m in reversed(raw_msgs) if m.get("role") == "assistant"), None)
+    round_title = next((str(m.get("round_title", "")).strip() for m in raw_msgs if m.get("round_title")), "") or "user request"
     main_tokens_in, main_tokens_out = _usage_totals(raw_msgs)
     main_tool_base_y = main_y + 150
 
@@ -731,7 +890,7 @@ def _build_live_flow_round(
     nodes = [
         {
             "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
-            "title": "user request", "status": "done",
+            "title": round_title, "status": "done",
             "detail": {
                 "role": "User",
                 "text": last_user["body"] if last_user else "—",
@@ -1204,11 +1363,27 @@ def _infer_subagent_entries(raw_msgs: list[dict], registry: dict[str, dict]) -> 
             agent_id = str(args.get("agent_id") or "").strip()
             if not agent_id:
                 continue
-            spawned[agent_id] = {"task": str(args.get("task") or "")}
+            spawned[agent_id] = {
+                "task": str(args.get("task") or ""),
+                "round_id": str(msg.get("round_id", "")).strip(),
+            }
 
     for agent_id, meta in spawned.items():
         entry = entries.setdefault(agent_id, {})
+        meta_round_id = str(meta.get("round_id", "")).strip()
+        existing_round_id = str(entry.get("round_id", "")).strip()
+        if meta_round_id and existing_round_id and meta_round_id != existing_round_id:
+            # Treat a reused agent ID in a later round as a fresh live subagent.
+            entry["task"] = meta["task"] or entry.get("task", "")
+            entry["round_id"] = meta_round_id
+            entry["status"] = "running"
+            entry["result"] = ""
+            entry["messages"] = []
+            entry["created_at"] = None
+            entry["updated_at"] = None
+            continue
         entry.setdefault("task", meta["task"])
+        entry.setdefault("round_id", meta_round_id)
         entry.setdefault("status", "done")
         entry.setdefault("result", "")
         entry.setdefault("messages", [])
@@ -1227,6 +1402,8 @@ def _infer_subagent_entries(raw_msgs: list[dict], registry: dict[str, dict]) -> 
             entry["created_at"] = meta["created_at"]
         if meta.get("updated_at") and not entry.get("updated_at"):
             entry["updated_at"] = meta["updated_at"]
+        if meta.get("round_id") and not entry.get("round_id"):
+            entry["round_id"] = meta["round_id"]
 
     return entries
     result = []
@@ -1540,6 +1717,7 @@ def _scan_inbox_agents() -> dict[str, dict[str, Any]]:
     for inbox_dir in sorted(path for path in inbox_root.iterdir() if path.is_dir()):
         agent_id = inbox_dir.name
         timestamps: list[str] = []
+        round_ids: list[str] = []
         msg_count = 0
         for msg_file in sorted(inbox_dir.glob("msg_*.json")):
             try:
@@ -1550,6 +1728,9 @@ def _scan_inbox_agents() -> dict[str, dict[str, Any]]:
             timestamp = payload.get("timestamp")
             if isinstance(timestamp, str) and timestamp:
                 timestamps.append(timestamp)
+            round_id = str(payload.get("round_id", "")).strip()
+            if round_id:
+                round_ids.append(round_id)
 
         if msg_count == 0:
             continue
@@ -1559,6 +1740,7 @@ def _scan_inbox_agents() -> dict[str, dict[str, Any]]:
             "message_count": msg_count,
             "created_at": timestamps[0] if timestamps else None,
             "updated_at": timestamps[-1] if timestamps else None,
+            "round_id": round_ids[-1] if round_ids else "",
         }
 
     return agents

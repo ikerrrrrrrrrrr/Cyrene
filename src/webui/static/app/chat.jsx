@@ -26,6 +26,15 @@ function renderMarkdown(text) {
   return escapeHtml(source).replace(/\n/g, "<br>");
 }
 
+function traceSummary(msg) {
+  const parts = [];
+  if (msg.thinking) parts.push("reasoning");
+  if (msg.tools && msg.tools.length) {
+    parts.push(msg.tools.length === 1 ? "1 tool call" : msg.tools.length + " tool calls");
+  }
+  return parts.length ? "details · " + parts.join(" · ") : "details";
+}
+
 function formatProgressEvent(event) {
   switch (event.type) {
     case "phase_transition":
@@ -66,6 +75,21 @@ function getChatRuntimeSnapshot() {
   };
 }
 
+function isUnfinishedSubagent(status) {
+  return status === "running" || status === "queued";
+}
+
+function visibleRoundSubagents(session) {
+  const all = Array.isArray(session && session.subagents) ? session.subagents : [];
+  const currentRoundId = String(session && session.currentRoundId || "").trim();
+  if (!currentRoundId) return all.filter(function (sa) { return isUnfinishedSubagent(sa && sa.status); });
+  return all.filter(function (sa) {
+    const roundId = String(sa && sa.roundId || "").trim();
+    if (roundId && roundId === currentRoundId) return true;
+    return isUnfinishedSubagent(sa && sa.status);
+  });
+}
+
 function emitChatRuntime() {
   const runtime = getChatRuntime();
   const snapshot = getChatRuntimeSnapshot();
@@ -99,33 +123,29 @@ function clearChatRuntimeSseSubscription() {
   runtime.sseHandler = null;
 }
 
-function ChatPage() {
+function ChatPage({ selectedSessionId, onSelectSession }) {
   useDataVersion(); // re-render when DATA refreshes
-  const [selectedSessionId, setSelectedSessionId] = useState(null);
 
   const session = (selectedSessionId
     ? DATA.sessions.find(function (s) { return s.id === selectedSessionId; })
     : null) || DATA.sessions[0] || {
     id: "—", title: "—", status: "queued", started: "—", model: "—",
+    currentRoundId: "",
+    currentRoundTitle: "",
     summary: { tokens: "—", spend: "—", toolCalls: 0 },
     chat: { contextChips: [], messages: [] },
     shells: [], subagents: [],
   };
 
   const isLiveSession = session.id === "run_live";
-
-  // When sessions list refreshes, drop stale selection
-  useEffect(function () {
-    if (selectedSessionId && !DATA.sessions.some(function (s) { return s.id === selectedSessionId; })) {
-      setSelectedSessionId(null);
-    }
-  }, [selectedSessionId, DATA.sessions]);
+  const subagents = visibleRoundSubagents(session);
+  const runningSubagents = subagents.filter((s) => s.status === "running").length;
 
   // Expose global session switcher so the sidebar can switch the chat view
   useEffect(function () {
-    window.selectChatSession = function (id) { setSelectedSessionId(id); };
+    window.selectChatSession = function (id) { onSelectSession && onSelectSession(id); };
     return function () { delete window.selectChatSession; };
-  }, []);
+  }, [onSelectSession]);
 
   const [draft, setDraft] = useState("");
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
@@ -157,12 +177,13 @@ function ChatPage() {
   async function send() {
     const text = draft.trim();
     const runtime = getChatRuntime();
-    if (!text || runtime.sending) return;
+    if (!text) return;
     const userMsg = {
       id: "pending_user_" + Date.now(),
       role: "user", time: new Date().toLocaleTimeString(),
       body: text,
     };
+    runtime._reqCount = (runtime._reqCount || 0) + 1;
     updateChatRuntime({
       sending: true,
       pendingMessages: runtime.pendingMessages.concat([userMsg]),
@@ -206,8 +227,11 @@ function ChatPage() {
         };
       });
     } finally {
-      updateChatRuntime({ sending: false, liveProgress: [] });
-      clearChatRuntimeSseSubscription();
+      runtime._reqCount = Math.max(0, (runtime._reqCount || 1) - 1);
+      if (runtime._reqCount <= 0) {
+        updateChatRuntime({ sending: false, liveProgress: [] });
+        clearChatRuntimeSseSubscription();
+      }
     }
   }
 
@@ -227,7 +251,9 @@ function ChatPage() {
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
+      onSelectSession && onSelectSession(null);
       updateChatRuntime({ pendingMessages: [], sending: false, liveProgress: [] });
+      runtime._reqCount = 0;
       clearChatRuntimeSseSubscription();
     } catch (e) {
       alert("Failed: " + e.message);
@@ -258,7 +284,7 @@ function ChatPage() {
             <div className="archive-banner">
               <span>Viewing archive · {session.id.replace("day_", "")}</span>
               <span className="archive-banner-action"
-                    onClick={function () { setSelectedSessionId(null); window.selectChatSession = undefined; }}>
+                    onClick={function () { onSelectSession && onSelectSession(null); }}>
                 ← return to live session
               </span>
             </div>
@@ -290,7 +316,7 @@ function ChatPage() {
           <div className="composer" style={{ textAlign: "center", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 11 }}>
             <div style={{ padding: "16px 0" }}>
               This is an archived session — open the <a style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
-                  onClick={function () { setSelectedSessionId(null); }}>live session</a> to send messages.
+                  onClick={function () { onSelectSession && onSelectSession(null); }}>live session</a> to send messages.
             </div>
           </div>
         )}
@@ -320,7 +346,7 @@ function ChatPage() {
               <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>
                 {session.model}
               </span>
-              <button className="send" disabled={!draft.trim() || sending} onClick={send}>
+              <button className="send" disabled={!draft.trim()} onClick={send}>
                 {sending ? "sending…" : <>send <span className="kbd">⌘↵</span></>}
               </button>
             </div>
@@ -329,14 +355,14 @@ function ChatPage() {
             <span>{DATA.assistantName} plans, then acts. Subagents spawn for parallel work.</span>
             <span>
               {sending ? "running · " : ""}
-              {session.subagents.filter((s) => s.status === "running").length} active subagent(s)
+              {runningSubagents} active subagent(s)
             </span>
           </div>
         </div>
         )}
       </div>
 
-      <ChatSide session={session} />
+      <ChatSide session={session} subagents={subagents} />
     </div>
   );
 }
@@ -345,6 +371,7 @@ function Message({ msg, assistantName }) {
   const markdownBody = (msg.role === "agent" || msg.role === "system") && msg.body
     ? renderMarkdown(msg.body)
     : "";
+  const hasTrace = Boolean(msg.thinking || (msg.tools && msg.tools.length));
   return (
     <div className={"msg " + msg.role}>
       <div className="msg-meta">
@@ -356,20 +383,29 @@ function Message({ msg, assistantName }) {
         <span className="msg-time">{msg.time}</span>
       </div>
 
-      {msg.thinking && (
-        <div className="thinking">
-          <div className="thinking-head">reasoning</div>
-          {msg.thinking}
-        </div>
-      )}
-
       {msg.body && (
         msg.role === "agent" || msg.role === "system"
           ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
           : <div className="msg-body">{msg.body}</div>
       )}
 
-      {msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
+      {hasTrace && (
+        <details className={"msg-trace" + (!msg.body ? " only-trace" : "")}>
+          <summary className="msg-trace-summary">
+            <span className="msg-trace-caret">▸</span>
+            <span>{traceSummary(msg)}</span>
+          </summary>
+          <div className="msg-trace-body">
+            {msg.thinking && (
+              <div className="thinking">
+                <div className="thinking-head">reasoning</div>
+                {msg.thinking}
+              </div>
+            )}
+            {msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
+          </div>
+        </details>
+      )}
     </div>
   );
 }
@@ -391,7 +427,7 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session }) {
+function ChatSide({ session, subagents }) {
   return (
     <div className="chat-side">
       <div className="side-section">
@@ -408,12 +444,12 @@ function ChatSide({ session }) {
       <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
         <div className="side-head">
           Subagents
-          <span className="count">{session.subagents.length}</span>
+          <span className="count">{subagents.length}</span>
         </div>
-        {session.subagents.length === 0 && (
+        {subagents.length === 0 && (
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
         )}
-        {session.subagents.map((s) => <SubagentMini key={s.id} sa={s} />)}
+        {subagents.map((s) => <SubagentMini key={s.id} sa={s} />)}
       </div>
 
       <div className="side-section" style={{ borderBottom: 0 }}>

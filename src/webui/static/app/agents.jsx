@@ -1,10 +1,115 @@
 // Agents page — flowchart with nodes + edges + inspector
 const { useState: useStateAg, useRef: useRefAg, useEffect: useEffectAg, useMemo } = React;
 
-function AgentsPage({ orientation = "horizontal" }) {
-  useDataVersion();
-  const [selectedRun, setSelectedRun] = useStateAg(DATA.sessions[0]?.id || "");
-  const session = DATA.sessions.find((s) => s.id === selectedRun) || DATA.sessions[0] || { flow: { nodes: [], edges: [] } };
+const EMPTY_FLOW = { nodes: [], edges: [] };
+
+function staggerLevel(index) {
+  if (index <= 0) return 0;
+  const magnitude = Math.ceil(index / 2);
+  return index % 2 === 1 ? magnitude : -magnitude;
+}
+
+function flowRoundKey(id) {
+  const match = String(id || "").match(/^(r\d+)_/);
+  return match ? match[1] : "r0";
+}
+
+function compareRoundKeys(a, b) {
+  return Number(String(a).slice(1) || 0) - Number(String(b).slice(1) || 0);
+}
+
+function roundStatus(nodes, fallback) {
+  const statuses = nodes.map((node) => node.status).filter(Boolean);
+  if (statuses.includes("running")) return "running";
+  if (statuses.includes("err")) return "err";
+  if (statuses.includes("queued")) return "queued";
+  if (statuses.includes("done")) return "done";
+  return fallback || "queued";
+}
+
+function roundPreview(nodes) {
+  const inputNode = nodes.find((node) => node.kind === "input" && node.detail && node.detail.text);
+  if (inputNode) return String(inputNode.detail.text).replace(/\s+/g, " ").trim();
+  const outputNode = nodes.find((node) => node.kind === "output" && node.detail && node.detail.content);
+  if (outputNode) return String(outputNode.detail.content).replace(/\s+/g, " ").trim();
+  return nodes[0]?.title || "—";
+}
+
+function roundName(nodes, fallback) {
+  const inputNode = nodes.find((node) => node.kind === "input" && node.title);
+  return inputNode && String(inputNode.title).trim() ? String(inputNode.title).trim() : fallback;
+}
+
+function buildAgentRounds(session) {
+  const rounds = [];
+  const flow = session && session.flow ? session.flow : EMPTY_FLOW;
+  const sessionNodes = Array.isArray(flow.nodes) ? flow.nodes : [];
+  const sessionEdges = Array.isArray(flow.edges) ? flow.edges : [];
+  if (!sessionNodes.length) return rounds;
+
+  const buckets = new Map();
+  function ensureBucket(key) {
+    if (!buckets.has(key)) buckets.set(key, { key, nodes: [], edges: [] });
+    return buckets.get(key);
+  }
+
+  sessionNodes.forEach(function (node) {
+    ensureBucket(flowRoundKey(node.id)).nodes.push(node);
+  });
+
+  sessionEdges.forEach(function (edge) {
+    const key = flowRoundKey(edge.from || edge.to);
+    ensureBucket(key).edges.push(edge);
+  });
+
+  Array.from(buckets.values())
+    .sort(function (a, b) { return compareRoundKeys(a.key, b.key); })
+    .reverse()
+    .forEach(function (bucket) {
+      const nodeIds = new Set(bucket.nodes.map((node) => node.id));
+      const edges = bucket.edges.filter(function (edge) {
+        return nodeIds.has(edge.from) && nodeIds.has(edge.to);
+      });
+      const roundNumber = Number(bucket.key.slice(1) || 0) + 1;
+      const fallbackLabel = "Round " + roundNumber;
+      rounds.push({
+        id: (session && session.id ? session.id : "session") + ":" + bucket.key,
+        key: bucket.key,
+        label: roundName(bucket.nodes, fallbackLabel),
+        fallbackLabel,
+        preview: roundPreview(bucket.nodes),
+        status: roundStatus(bucket.nodes, session && session.status),
+        sessionId: session && session.id ? session.id : "",
+        sessionTitle: session && session.title ? session.title : "No session selected",
+        sessionStarted: session && session.started ? session.started : "—",
+        sessionDuration: session && session.dur ? session.dur : "—",
+        flow: { nodes: bucket.nodes, edges },
+      });
+    });
+
+  return rounds;
+}
+
+function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
+  const dv = useDataVersion();
+  const activeSession = useMemo(() => {
+    const sessions = DATA.sessions || [];
+    const preferredId = selectedSessionId;
+    return sessions.find((session) => session.id === preferredId) || sessions[0] || null;
+  }, [dv, selectedSessionId]);
+  const rounds = useMemo(() => buildAgentRounds(activeSession), [dv, activeSession && activeSession.id]);
+  const [selectedRound, setSelectedRound] = useStateAg(rounds[0]?.id || "");
+  const round = rounds.find((item) => item.id === selectedRound) || rounds[0] || {
+    id: "",
+    label: "Round 1",
+    preview: "—",
+    status: "queued",
+    sessionId: "",
+    sessionTitle: "No rounds yet",
+    sessionStarted: "—",
+    sessionDuration: "—",
+    flow: EMPTY_FLOW,
+  };
   const [selectedNode, setSelectedNode] = useStateAg("n_main");
   const [selectedEdgeIdx, setSelectedEdgeIdx] = useStateAg(null);
   const [zoom, setZoom] = useStateAg(0.85);
@@ -13,14 +118,25 @@ function AgentsPage({ orientation = "horizontal" }) {
   const wrapRef = useRefAg(null);
 
   useEffectAg(() => {
-    setSelectedNode(session.flow.nodes[0]?.id || null);
+    if (!rounds.some((item) => item.id === selectedRound)) {
+      setSelectedRound(rounds[0]?.id || "");
+    }
+  }, [rounds, selectedRound]);
+
+  useEffectAg(() => {
+    setSelectedNode(round.flow.nodes[0]?.id || null);
     setSelectedEdgeIdx(null);
-  }, [selectedRun]);
+  }, [selectedRound, round.flow.nodes]);
 
   // Reset pan when orientation changes
   useEffectAg(() => {
     setPan({ x: 20, y: 20 });
   }, [orientation]);
+
+  useEffectAg(() => {
+    setPan({ x: 20, y: 20 });
+    setZoom(0.85);
+  }, [selectedRound]);
 
   useEffectAg(() => {
     const el = wrapRef.current;
@@ -41,7 +157,7 @@ function AgentsPage({ orientation = "horizontal" }) {
     return () => ro.disconnect();
   }, []);
 
-  const { nodes, edges } = session.flow;
+  const { nodes, edges } = round.flow;
   const sel = nodes.find((n) => n.id === selectedNode);
 
   // Drag-to-pan
@@ -86,18 +202,12 @@ function AgentsPage({ orientation = "horizontal" }) {
   }
 
   // Compute node rects with wrapping:
-  // horizontal = bounded column height, overflow spills into new columns
-  // vertical   = bounded row width, overflow spills into new rows
+  // horizontal = preserve backend lane layout per round
+  // vertical   = transpose the same layout for top-to-bottom reading
   const nodeRects = useMemo(() => {
     const padding = 20;
-    const groupGap = 52;
-    const itemGapX = 22;
-    const itemGapY = 26;
-    const subagentGapY = 64;
     const roundGapY = 120;
     const rects = {};
-    const maxHeight = Math.max(320, viewport.height - 140);
-    const maxWidth = Math.max(420, viewport.width - 80);
 
     function nodeSize(n) {
       return {
@@ -112,65 +222,43 @@ function AgentsPage({ orientation = "horizontal" }) {
     }
 
     function layoutRound(roundNodes, topOffset) {
-      const groups = new Map();
-      for (const n of roundNodes) {
-        const key = String(n.x);
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(n);
-      }
-
-      const sortedGroups = Array.from(groups.entries())
-        .map(([key, list]) => ({ x: Number(key), list: list.slice().sort((a, b) => a.y - b.y) }))
-        .sort((a, b) => a.x - b.x);
-
+      if (!roundNodes.length) return topOffset;
+      const minX = Math.min(...roundNodes.map((n) => Number(n.x) || 0));
+      const minY = Math.min(...roundNodes.map((n) => Number(n.y) || 0));
+      const subagentOffsets = new Map();
+      roundNodes
+        .filter((node) => node.kind === "subagent")
+        .slice()
+        .sort((a, b) => {
+          if ((a.y || 0) !== (b.y || 0)) return (a.y || 0) - (b.y || 0);
+          return (a.x || 0) - (b.x || 0);
+        })
+        .forEach((node, index) => {
+          subagentOffsets.set(node.id, staggerLevel(index));
+        });
       let roundBottom = topOffset;
-      if (orientation === "horizontal") {
-        let currentGroupX = padding;
-        for (const group of sortedGroups) {
-          let colX = currentGroupX;
-          let colY = topOffset + padding;
-          let widestInCol = 0;
-          let groupRight = currentGroupX;
-          for (const n of group.list) {
-            const { w, h } = nodeSize(n);
-            if (colY > topOffset + padding && colY + h > topOffset + padding + maxHeight) {
-              colX += widestInCol + itemGapX;
-              colY = topOffset + padding;
-              widestInCol = 0;
-            }
-            rects[n.id] = { x: colX, y: colY, w, h };
-            colY += h + (n.kind === "subagent" ? subagentGapY : itemGapY);
-            widestInCol = Math.max(widestInCol, w);
-            groupRight = Math.max(groupRight, colX + w);
-            roundBottom = Math.max(roundBottom, colY - (n.kind === "subagent" ? subagentGapY : itemGapY));
+
+      for (const n of roundNodes.slice().sort((a, b) => {
+        if ((a.y || 0) !== (b.y || 0)) return (a.y || 0) - (b.y || 0);
+        return (a.x || 0) - (b.x || 0);
+      })) {
+        const { w, h } = nodeSize(n);
+        const relX = (Number(n.x) || 0) - minX;
+        const relY = (Number(n.y) || 0) - minY;
+        let x = orientation === "vertical" ? padding + relY : padding + relX;
+        let y = orientation === "vertical" ? topOffset + padding + relX : topOffset + padding + relY;
+        if (n.kind === "subagent") {
+          const lane = subagentOffsets.get(n.id) || 0;
+          if (orientation === "vertical") {
+            x += lane * 78;
+            y += Math.abs(lane) * 26;
+          } else {
+            x += Math.abs(lane) * 30;
+            y += lane * 72;
           }
-          currentGroupX = groupRight + groupGap;
         }
-      } else {
-        let currentGroupY = topOffset + padding;
-        for (const group of sortedGroups) {
-          let rowX = padding;
-          let rowY = currentGroupY;
-          let tallestInRow = 0;
-          let rowHasSubagent = false;
-          let groupBottom = currentGroupY;
-          for (const n of group.list) {
-            const { w, h } = nodeSize(n);
-            if (rowX > padding && rowX + w > padding + maxWidth) {
-              rowY += tallestInRow + (rowHasSubagent ? subagentGapY : itemGapY);
-              rowX = padding;
-              tallestInRow = 0;
-              rowHasSubagent = false;
-            }
-            rects[n.id] = { x: rowX, y: rowY, w, h };
-            rowX += w + itemGapX;
-            tallestInRow = Math.max(tallestInRow, h);
-            rowHasSubagent = rowHasSubagent || n.kind === "subagent";
-            groupBottom = Math.max(groupBottom, rowY + h);
-            roundBottom = Math.max(roundBottom, rowY + h);
-          }
-          currentGroupY = groupBottom + groupGap;
-        }
+        rects[n.id] = { x, y, w, h };
+        roundBottom = Math.max(roundBottom, y + h);
       }
 
       return roundBottom;
@@ -238,9 +326,18 @@ function AgentsPage({ orientation = "horizontal" }) {
 
   return (
     <div className="agents-layout">
-      <RunsList sessions={DATA.sessions} selected={selectedRun} onSelect={setSelectedRun} />
+      <RoundsList rounds={rounds} selected={selectedRound} onSelect={setSelectedRound} />
 
       <div className="canvas-wrap" ref={wrapRef} onWheel={onWheel}>
+        <div className="canvas-context">
+          <div className="canvas-context-round">{round.label}</div>
+          <div className="canvas-context-session">{round.sessionTitle}</div>
+          <div className="canvas-context-meta">
+            <span>{round.sessionId || "—"}</span>
+            <span>· {round.sessionStarted || "—"}</span>
+            <span>· {round.sessionDuration || "—"}</span>
+          </div>
+        </div>
         <div className="canvas-toolbar">
           <button onClick={() => setZoom(z => Math.min(1.6, z + 0.1))}>＋</button>
           <button onClick={() => setZoom(z => Math.max(0.4, z - 0.1))}>−</button>
@@ -339,30 +436,33 @@ function AgentsPage({ orientation = "horizontal" }) {
       </div>
 
       <Inspector node={sel} edge={selectedEdgeIdx != null ? edges[selectedEdgeIdx] : null}
-                 flow={session.flow}
+                 flow={round.flow}
                  onSelectNode={(id) => { setSelectedNode(id); setSelectedEdgeIdx(null); }} />
     </div>
   );
 }
 
-function RunsList({ sessions, selected, onSelect }) {
+function RoundsList({ rounds, selected, onSelect }) {
   return (
     <div className="runs-list">
       <div className="side-head" style={{ padding: "14px 14px 10px", margin: 0 }}>
-        Sessions <span className="count">{sessions.length}</span>
+        Rounds <span className="count">{rounds.length}</span>
       </div>
-      {sessions.map((r) => (
-        <div key={r.id}
-             className={"run-item " + (r.id === selected ? "active" : "")}
-             onClick={() => onSelect(r.id)}>
-          <div className={"sa-dot " + r.status}></div>
+      {rounds.length === 0 && (
+        <div className="runs-empty">No rounds yet.</div>
+      )}
+      {rounds.map((round) => (
+        <div key={round.id}
+             className={"run-item " + (round.id === selected ? "active" : "")}
+             onClick={() => onSelect(round.id)}>
+          <div className={"sa-dot " + round.status}></div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="run-title">{r.title}</div>
+            <div className="run-title">{round.label}</div>
             <div className="run-meta">
-              <span>{r.id}</span>
-              <span>· {r.started}</span>
-              <span>· {r.dur}</span>
+              <span>{round.sessionTitle}</span>
+              <span>· {round.sessionStarted}</span>
             </div>
+            <div className="run-preview">{round.preview}</div>
           </div>
         </div>
       ))}

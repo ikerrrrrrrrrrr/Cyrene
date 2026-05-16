@@ -4,7 +4,7 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
-from cyrene.agent import run_agent, clear_session_id
+from cyrene.agent import clear_session_id, get_session_labels, run_agent
 from cyrene.conversations import archive_exchange
 from cyrene.config import ASSISTANT_NAME, DB_PATH, OWNER_ID, TELEGRAM_BOT_TOKEN
 from cyrene.scheduler import reset_lottery, setup_scheduler
@@ -50,7 +50,15 @@ async def _handle_message(update: Update, context) -> None:
     response = await run_agent(user_text, context.bot, chat_id, str(DB_PATH))
 
     # Archive to conversations/ for long-term memory
-    await archive_exchange(user_text, response, chat_id)
+    labels = get_session_labels()
+    await archive_exchange(
+        user_text,
+        response,
+        chat_id,
+        session_title=labels.get("session_title", ""),
+        round_title=labels.get("round_title", ""),
+        round_id=labels.get("round_id", ""),
+    )
 
     # Split long messages
     for i in range(0, len(response), _TELEGRAM_MAX_LENGTH):

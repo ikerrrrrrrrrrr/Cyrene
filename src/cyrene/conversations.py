@@ -1,6 +1,7 @@
 """Conversation archiving for long-term memory."""
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,7 +23,31 @@ def _get_today_file() -> Path:
     return CONVERSATIONS_DIR / f"{today}.md"
 
 
-async def archive_exchange(user_message: str, assistant_response: str, chat_id: int) -> None:
+def _upsert_session_title(content: str, date_str: str, session_title: str) -> str:
+    header = f"# Conversations - {date_str}\n\n"
+    if not content:
+        content = header
+    elif not content.startswith("# Conversations - "):
+        content = header + content
+
+    if not session_title:
+        return content
+
+    marker = f"<!-- session_title: {session_title} -->\n\n"
+    pattern = re.compile(r"^(# Conversations - .*?\n\n)(?:<!-- session_title: .*? -->\n\n)?", re.DOTALL)
+    if pattern.search(content):
+        return pattern.sub(lambda match: match.group(1) + marker, content, count=1)
+    return header + marker + content[len(header):]
+
+
+async def archive_exchange(
+    user_message: str,
+    assistant_response: str,
+    chat_id: int,
+    session_title: str = "",
+    round_title: str = "",
+    round_id: str = "",
+) -> None:
     """Archive a single user-assistant exchange to today's conversation file.
 
     Format:
@@ -37,12 +62,19 @@ async def archive_exchange(user_message: str, assistant_response: str, chat_id: 
     ensure_conversations_dir()
 
     filepath = _get_today_file()
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    meta_lines = []
+    if round_id:
+        meta_lines.append(f"<!-- round_id: {round_id} -->")
+    if round_title:
+        meta_lines.append(f"<!-- round_title: {round_title} -->")
+    meta_block = ("\n".join(meta_lines) + "\n\n") if meta_lines else ""
 
     # Build the exchange entry
     entry = f"""## {timestamp}
 
-**User**: {user_message}
+{meta_block}**User**: {user_message}
 
 **Ape**: {assistant_response}
 
@@ -56,9 +88,9 @@ async def archive_exchange(user_message: str, assistant_response: str, chat_id: 
             content = filepath.read_text(encoding="utf-8")
         else:
             # Create file with header
-            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             content = f"# Conversations - {date_str}\n\n"
 
+        content = _upsert_session_title(content, date_str, session_title)
         content += entry
         filepath.write_text(content, encoding="utf-8")
         logger.debug(f"Archived exchange to {filepath}")

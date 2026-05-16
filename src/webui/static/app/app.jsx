@@ -1,12 +1,12 @@
 // Cyrene — app shell + page router
-const { useState: useStateApp, useEffect: useEffectApp } = React;
+const { useState: useStateApp, useEffect: useEffectApp, useMemo: useMemoApp } = React;
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "theme": "dark",
   "accent": "#8fb8a6",
   "density": "cozy",
   "textSize": "default",
-  "orientation": "vertical",
+  "orientation": "horizontal",
   "showLegend": true,
   "animatePulse": true
 }/*EDITMODE-END*/;
@@ -19,12 +19,17 @@ const ACCENT_PRESETS = {
 function App() {
   useDataVersion();
   const [page, setPage] = useStateApp("chat");
-  const [pendingSessionId, setPendingSessionId] = useStateApp(null);
+  const [selectedSessionId, setSelectedSessionId] = useStateApp(null);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
-  function openSession(id) {
-    setPendingSessionId(id);
-    setPage("sessions");
+  const activeSession = useMemoApp(function () {
+    return (selectedSessionId
+      ? DATA.sessions.find(function (session) { return session.id === selectedSessionId; })
+      : null) || DATA.sessions[0] || null;
+  }, [selectedSessionId, DATA.sessions]);
+
+  function selectSession(id) {
+    setSelectedSessionId(id || null);
   }
 
   useEffectApp(() => {
@@ -45,6 +50,21 @@ function App() {
     document.documentElement.dataset.legend = t.showLegend ? "on" : "off";
   }, [t.theme, t.accent, t.density, t.textSize, t.animatePulse, t.showLegend]);
 
+  useEffectApp(function () {
+    if (selectedSessionId && !DATA.sessions.some(function (session) { return session.id === selectedSessionId; })) {
+      setSelectedSessionId(null);
+    }
+  }, [selectedSessionId, DATA.sessions]);
+
+  useEffectApp(function () {
+    window.__selectedSessionId = activeSession ? activeSession.id : null;
+    window.selectUiSession = selectSession;
+    return function () {
+      delete window.__selectedSessionId;
+      delete window.selectUiSession;
+    };
+  }, [activeSession]);
+
   function toggleTheme() {
     const next = t.theme === "dark" ? "light" : "dark";
     const presetIndex = (ACCENT_PRESETS[t.theme] || []).indexOf(t.accent);
@@ -55,15 +75,28 @@ function App() {
 
   return (
     <div className="app" data-screen-label={"Cyrene · " + page}>
-      <Sidebar page={page} setPage={setPage} onOpenSession={openSession} />
+      <Sidebar
+        page={page}
+        setPage={setPage}
+        selectedSessionId={activeSession ? activeSession.id : null}
+        onSelectSession={selectSession}
+      />
       <div className="page">
-        <Topbar page={page} theme={t.theme} onToggleTheme={toggleTheme} />
-        {page === "chat"     && <ChatPage />}
-        {page === "agents"   && <AgentsPage orientation={t.orientation} />}
+        <Topbar
+          page={page}
+          theme={t.theme}
+          onToggleTheme={toggleTheme}
+          activeSession={activeSession}
+        />
+        {page === "chat"     && <ChatPage selectedSessionId={activeSession ? activeSession.id : null} onSelectSession={selectSession} />}
+        {page === "agents"   && <AgentsPage orientation={t.orientation} selectedSessionId={activeSession ? activeSession.id : null} />}
         {page === "sessions" && <SessionsPage
-                                  initialSessionId={pendingSessionId}
-                                  onClearInitial={() => setPendingSessionId(null)}
-                                  onOpenAgents={() => setPage("agents")} />}
+                                  selectedSessionId={activeSession ? activeSession.id : null}
+                                  onSelectSession={selectSession}
+                                  onOpenAgents={(sessionId) => {
+                                    selectSession(sessionId);
+                                    setPage("agents");
+                                  }} />}
         {page === "skills"   && <SkillsPage />}
         {page === "status"   && <StatusPage />}
         {page === "settings" && <SettingsPage tweaks={t} setTweak={setTweak} />}
@@ -100,10 +133,11 @@ function App() {
   );
 }
 
-function Sidebar({ page, setPage, onOpenSession }) {
+function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
   useDataVersion();
   const [skillsOpen, setSkillsOpen] = useStateApp(true);
   const sessionCount = (DATA.sessions || []).length;
+  const activeRecentSessionId = selectedSessionId || DATA.sessions[0]?.id || null;
   const items = [
     { id: "chat",     label: "Chat",     icon: "▸", key: "1" },
     { id: "agents",   label: "Agents",   icon: "⌘", key: "2" },
@@ -167,13 +201,10 @@ function Sidebar({ page, setPage, onOpenSession }) {
       </div>
       <div className="nav" style={{ paddingTop: 0 }}>
         {DATA.sessions.slice(0, 4).map((r) => (
-          <div key={r.id} className="nav-item"
+          <div key={r.id}
+               className={"nav-item " + (r.id === activeRecentSessionId ? "active" : "")}
                onClick={function () {
-                        if (page === "chat" && window.selectChatSession) {
-                          window.selectChatSession(r.id);
-                        } else {
-                          onOpenSession && onOpenSession(r.id);
-                        }
+                        onSelectSession && onSelectSession(r.id);
                       }}
                title={r.title}>
             <span className={"sa-dot " + r.status} style={{ marginTop: 0, width: 6, height: 6, flexShrink: 0 }}></span>
@@ -235,14 +266,14 @@ function SkillsRail({ onOpenPage }) {
   );
 }
 
-function Topbar({ page, theme, onToggleTheme }) {
+function Topbar({ page, theme, onToggleTheme, activeSession }) {
   useDataVersion();
-  const activeSession = DATA.sessions[0] || { title: "—", subagents: [] };
-  const runningSubagents = (activeSession.subagents || []).filter((s) => s.status === "running").length;
+  const session = activeSession || { title: "—", subagents: [] };
+  const runningSubagents = (session.subagents || []).filter((s) => s.status === "running").length;
   const title =
-    page === "chat" ? <>Chat<span className="crumb-sep">/</span><b>{activeSession.title}</b></> :
-    page === "agents" ? <>Agents<span className="crumb-sep">/</span><b>flowchart</b></> :
-    page === "sessions" ? <>Sessions<span className="crumb-sep">/</span><b>all runs</b></> :
+    page === "chat" ? <>Chat<span className="crumb-sep">/</span><b>{session.title}</b></> :
+    page === "agents" ? <>Agents<span className="crumb-sep">/</span><b>{session.title}</b></> :
+    page === "sessions" ? <>Sessions<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "skills" ? <>Skills<span className="crumb-sep">/</span><b>library</b></> :
     page === "status" ? <>Status<span className="crumb-sep">/</span><b>overview</b></> :
     <>Settings<span className="crumb-sep">/</span><b>workspace</b></>;

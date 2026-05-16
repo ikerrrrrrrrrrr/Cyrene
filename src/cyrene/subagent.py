@@ -15,6 +15,7 @@ _run_subagent 原本在 agent.py 中，移到此处避免 tools.py 与 agent.py 
 """
 
 import asyncio
+import inspect
 import json
 import logging
 from datetime import datetime, timezone
@@ -57,6 +58,9 @@ async def _publish_registry_event(agent_id: str) -> None:
 
 async def register(agent_id: str, task: str, round_id: str = "") -> None:
     """注册一个子 agent。"""
+    from cyrene.inbox import clear_inbox
+
+    await clear_inbox(agent_id)
     async with _lock:
         now = datetime.now(timezone.utc).isoformat()
         _registry[agent_id] = {
@@ -94,7 +98,12 @@ async def mark_done(agent_id: str, result: str = "") -> None:
             existing = _registry[agent_id].get("result", "") or ""
             if result and result != existing:
                 if existing:
-                    _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:2000]
+                    # 如果 existing 是 result 的前缀（说明是 set_waiting 截断的版本），
+                    # 直接用完整 result，避免重复拼接。
+                    if result.startswith(existing):
+                        _registry[agent_id]["result"] = result[:2000]
+                    else:
+                        _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:2000]
                 else:
                     _registry[agent_id]["result"] = result[:2000]
     await _publish_registry_event(agent_id)
@@ -155,7 +164,7 @@ async def set_waiting(agent_id: str, result: str = "") -> None:
     也能拿到真实内容，而不是空字符串。
     """
     async with _lock:
-        if agent_id in _registry and _registry[agent_id]["status"] == RUNNING:
+        if agent_id in _registry and _registry[agent_id]["status"] in (RUNNING, RESUMED):
             _registry[agent_id]["status"] = WAITING
             _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
             if result:
@@ -168,6 +177,15 @@ async def set_resumed(agent_id: str) -> None:
     async with _lock:
         if agent_id in _registry and _registry[agent_id]["status"] == WAITING:
             _registry[agent_id]["status"] = RESUMED
+            _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _publish_registry_event(agent_id)
+
+
+async def set_running(agent_id: str) -> None:
+    """标记 agent 已进入活跃执行态。"""
+    async with _lock:
+        if agent_id in _registry and _registry[agent_id]["status"] != RUNNING:
+            _registry[agent_id]["status"] = RUNNING
             _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
     await _publish_registry_event(agent_id)
 
@@ -204,24 +222,30 @@ async def all_willing_to_quit() -> bool:
         return not any(info["status"] in (RUNNING, RESUMED) for info in _registry.values())
 
 
-async def wait_for_others(agent_id: str, inbox_check_func, max_wait: int = 600, result: str = "") -> str:
+async def wait_for_others(agent_id: str, inbox_check_func, mark_read_func=None, max_wait: int = 600, result: str = "") -> str:
     """Subagent 干完活后调用：标记 waiting（带 result），等其他人。
 
     每 5 秒检查一次：
-    - 所有 agent 都不在干活 (RUNNING/RESUMED) → 返回 ""（一起退出）
     - inbox 有新消息 → 返回消息内容（回去继续干活）
+    - 所有 agent 都不在干活 (RUNNING/RESUMED) → 返回 ""（一起退出）
     - 超时 → 返回 "timeout"
+
+    先检查 inbox 再检查全局退出条件，避免在有人发来消息时直接退出。
     """
     await set_waiting(agent_id, result=result)
     waited = 0
     while waited < max_wait:
+        new_msgs = inbox_check_func(agent_id)
+        if new_msgs:
+            if mark_read_func:
+                maybe_awaitable = mark_read_func(agent_id)
+                if inspect.isawaitable(maybe_awaitable):
+                    await maybe_awaitable
+            return new_msgs
         if await all_willing_to_quit():
             return ""
         await asyncio.sleep(5)
         waited += 5
-        new_msgs = inbox_check_func(agent_id)
-        if new_msgs:
-            return new_msgs
     return "timeout"
 
 
@@ -298,6 +322,24 @@ async def get_snapshot() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _spawn_subagent_task(coro, agent_id: str) -> asyncio.Task:
+    """Create a fire-and-forget asyncio task with error logging.
+
+    If the coroutine raises before its internal try/except, the exception
+    would otherwise be silently lost.
+    """
+    task = asyncio.create_task(coro)
+    task.add_done_callback(lambda t: _log_task_exception(t, agent_id))
+    return task
+
+
+def _log_task_exception(task: asyncio.Task, agent_id: str) -> None:
+    try:
+        task.result()
+    except Exception:
+        logger.exception("Sub-agent %s task crashed before internal try/except", agent_id)
+
+
 async def _run_subagent(
     agent_id: str,
     task: str,
@@ -350,6 +392,8 @@ Rules:
             {"role": "user", "content": task},
         ]
 
+    await set_running(agent_id)
+
     final_text = ""
     empty_quit_count = 0
     _MAX_EMPTY_QUIT_RETRIES = 2
@@ -362,7 +406,7 @@ Rules:
             if inbox_text:
                 inbox_ctx = f"\n[收件箱]\n{inbox_text}\n"
                 # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
-                _mark_inbox_read(agent_id)
+                await _mark_inbox_read(agent_id)
 
             system_content = subagent_prompt
             extras = []
@@ -403,7 +447,7 @@ Rules:
                         final_text = "[未输出有效结果 — quit 多次为空]"
                         break
                     from cyrene.inbox import send_message as _send_feedback
-                    _send_feedback("validator", agent_id, "quit_quality",
+                    await _send_feedback("validator", agent_id, "quit_quality",
                         f"[quit 质量反馈] 你的 quit 没有附带任何结果。请重新 quit，并在 quit 的文字中说明：做了哪些工作、找到了什么信息、或者为什么没找到。即使没有找到结果也要说明原因。")
                     await set_resumed(agent_id)
                     messages.append({"role": "user", "content": f"[系统] quit 质量检查未通过 (重试 {empty_quit_count}/{_MAX_EMPTY_QUIT_RETRIES})。"})
@@ -411,7 +455,7 @@ Rules:
 
                 # 标记 willing_to_quit（带 result），等别人（每 5 秒检查 inbox）
                 from cyrene.inbox import get_inbox_context as _inbox_ctx
-                inbox_msg = await wait_for_others(agent_id, _inbox_ctx, result=final_text)
+                inbox_msg = await wait_for_others(agent_id, _inbox_ctx, mark_read_func=_mark_inbox_read, result=final_text)
                 if inbox_msg == "":
                     break  # 全部 finished，正常退出
                 elif inbox_msg == "timeout":

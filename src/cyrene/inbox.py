@@ -19,18 +19,21 @@ Message format::
     }
 """
 
+import asyncio
 import json
 import logging
-import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterable
 
 from cyrene.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
 INBOX_DIR = DATA_DIR / "inbox"
-_INBOX_LOCK = threading.Lock()
+_INBOX_LOCK = asyncio.Lock()
+_MAX_CONTEXT_MESSAGE_CHARS = 4000
+_MAX_CONTEXT_TOTAL_CHARS = 12000
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +83,16 @@ def _write_unread(agent_name: str, count: int) -> None:
         logger.exception("Failed to write unread count for %s", agent_name)
 
 
+def _iter_message_files(agent_name: str) -> Iterable[Path]:
+    return sorted(_inbox_path(agent_name).glob("msg_*.json"))
+
+
+def _truncate_for_context(text: str, limit: int = _MAX_CONTEXT_MESSAGE_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]..."
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -91,7 +104,7 @@ def ensure_inbox(agent_name: str) -> Path:
     return path
 
 
-def send_message(
+async def send_message(
     from_agent: str,
     to_agent: str,
     msg_type: str,
@@ -106,7 +119,7 @@ def send_message(
     Returns the generated ``message_id``.
     """
     try:
-        with _INBOX_LOCK:
+        async with _INBOX_LOCK:
             ensure_inbox(to_agent)
             msg_id = _next_msg_id(to_agent)
             message = {
@@ -143,36 +156,72 @@ def get_unread_count(agent_name: str) -> int:
     return _read_unread(agent_name)
 
 
-def mark_all_read(agent_name: str) -> None:
+async def mark_all_read(agent_name: str) -> None:
     """Reset the unread counter to zero without touching message files.
 
     Messages on disk are kept as a permanent log; only the unread counter
     is reset so subsequent inbox injections show 0 new messages.
     """
-    _write_unread(agent_name, 0)
+    async with _INBOX_LOCK:
+        _write_unread(agent_name, 0)
 
 
-def read_messages(agent_name: str, mark_read: bool = True) -> list[dict]:
+async def clear_inbox(agent_name: str) -> None:
+    """Delete all message files and reset unread state for one inbox."""
+    async with _INBOX_LOCK:
+        ensure_inbox(agent_name)
+        for msg_file in _iter_message_files(agent_name):
+            try:
+                msg_file.unlink()
+            except FileNotFoundError:
+                continue
+        unread_path = _unread_path(agent_name)
+        if unread_path.exists():
+            try:
+                unread_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+async def clear_all_inboxes() -> None:
+    """Delete every inbox directory and unread counter under the inbox root."""
+    async with _INBOX_LOCK:
+        if INBOX_DIR.exists():
+            for inbox_dir in sorted(path for path in INBOX_DIR.iterdir() if path.is_dir()):
+                for path in inbox_dir.glob("*"):
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        continue
+                try:
+                    inbox_dir.rmdir()
+                except FileNotFoundError:
+                    continue
+        INBOX_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def read_messages(agent_name: str, mark_read: bool = True) -> list[dict]:
     """Read all messages currently in *agent_name*'s inbox.
 
     When *mark_read* is ``True`` (the default) the unread counter is reset
     to zero after reading.
     """
-    ensure_inbox(agent_name)
-    messages: list[dict] = []
-    try:
-        msg_files = sorted(_inbox_path(agent_name).glob("msg_*.json"))
-        for f in msg_files:
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                messages.append(data)
-            except Exception:
-                logger.exception("Failed to read inbox message %s", f.name)
-    except Exception:
-        logger.exception("Failed to list inbox for %s", agent_name)
+    async with _INBOX_LOCK:
+        ensure_inbox(agent_name)
+        messages: list[dict] = []
+        try:
+            msg_files = _iter_message_files(agent_name)
+            for f in msg_files:
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    messages.append(data)
+                except Exception:
+                    logger.exception("Failed to read inbox message %s", f.name)
+        except Exception:
+            logger.exception("Failed to list inbox for %s", agent_name)
 
-    if mark_read:
-        _write_unread(agent_name, 0)
+        if mark_read:
+            _write_unread(agent_name, 0)
 
     return messages
 
@@ -188,16 +237,28 @@ def get_inbox_context(agent_name: str) -> str:
         return ""
 
     summaries: list[str] = []
+    total_chars = 0
     try:
-        msg_files = sorted(_inbox_path(agent_name).glob("msg_*.json"))
+        msg_files = _iter_message_files(agent_name)
         # Only show the latest `count` messages
         for f in msg_files[-count:]:
             try:
                 data = json.loads(f.read_text(encoding="utf-8"))
                 from_ = data.get("from", "unknown")
                 typ = data.get("type", "message")
-                content = data.get("content", "")
-                summaries.append(f"[from {from_}] ({typ}) {content[:200]}")
+                content = _truncate_for_context(str(data.get("content", "")))
+                rendered = f"[from {from_}] ({typ}) {content}"
+                if total_chars + len(rendered) > _MAX_CONTEXT_TOTAL_CHARS:
+                    remaining = _MAX_CONTEXT_TOTAL_CHARS - total_chars
+                    if remaining <= 0:
+                        summaries.append("[older unread content omitted]")
+                        break
+                    rendered = _truncate_for_context(rendered, remaining)
+                    summaries.append(rendered)
+                    summaries.append("[older unread content omitted]")
+                    break
+                summaries.append(rendered)
+                total_chars += len(rendered)
             except Exception:
                 pass
     except Exception:
@@ -213,7 +274,7 @@ def get_inbox_context(agent_name: str) -> str:
 # Multi-agent communication helpers
 # ---------------------------------------------------------------------------
 
-def spawn_agent(parent_name: str, task: str) -> str:
+async def spawn_agent(parent_name: str, task: str) -> str:
     """Spawn a child agent to execute a task, and send it the task message.
 
     1. Generates a unique child agent name (``agent_<timestamp>``).
@@ -231,7 +292,7 @@ def spawn_agent(parent_name: str, task: str) -> str:
     agent_name = f"agent_{timestamp}"
     try:
         ensure_inbox(agent_name)
-        send_task(agent_name, task, parent_name)
+        await send_task(agent_name, task, parent_name)
         logger.info(
             "Spawned agent '%s' from '%s' with task: %s",
             agent_name, parent_name, task[:120],
@@ -243,27 +304,27 @@ def spawn_agent(parent_name: str, task: str) -> str:
     return agent_name
 
 
-def send_task(agent_name: str, task: str, parent_name: str = "system") -> str:
+async def send_task(agent_name: str, task: str, parent_name: str = "system") -> str:
     """Send a task message to *agent_name*.
 
     Convenience wrapper around :func:`send_message` with ``msg_type="task"``.
 
     Returns the generated ``message_id``.
     """
-    return send_message(parent_name, agent_name, "task", task)
+    return await send_message(parent_name, agent_name, "task", task)
 
 
-def send_result(agent_name: str, result: str, parent_name: str = "system") -> str:
+async def send_result(agent_name: str, result: str, parent_name: str = "system") -> str:
     """Send a result message to *agent_name*.
 
     Convenience wrapper around :func:`send_message` with ``msg_type="result"``.
 
     Returns the generated ``message_id``.
     """
-    return send_message(parent_name, agent_name, "result", result)
+    return await send_message(parent_name, agent_name, "result", result)
 
 
-def check_completed_tasks(agent_name: str) -> list[dict]:
+async def check_completed_tasks(agent_name: str) -> list[dict]:
     """Check for completed tasks from child agents.
 
     Reads and marks as read all messages in *agent_name*'s inbox, then
@@ -273,11 +334,11 @@ def check_completed_tasks(agent_name: str) -> list[dict]:
         A list of result message dicts, each containing at minimum
         ``from``, ``content``, and ``timestamp`` keys.
     """
-    messages = read_messages(agent_name, mark_read=True)
+    messages = await read_messages(agent_name, mark_read=True)
     return [m for m in messages if m.get("type") == "result"]
 
 
-def get_pending_tasks(agent_name: str) -> list[dict]:
+async def get_pending_tasks(agent_name: str) -> list[dict]:
     """Get pending task messages for *agent_name* (does NOT mark as read).
 
     Use this when an agent starts up to discover what it has been asked to do.
@@ -285,5 +346,5 @@ def get_pending_tasks(agent_name: str) -> list[dict]:
     Returns:
         A list of task message dicts of type ``"task"``.
     """
-    messages = read_messages(agent_name, mark_read=False)
+    messages = await read_messages(agent_name, mark_read=False)
     return [m for m in messages if m.get("type") == "task"]

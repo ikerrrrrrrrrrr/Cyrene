@@ -31,6 +31,22 @@ async def test_set_waiting_writes_result():
     print("PASS test_set_waiting_writes_result")
 
 
+async def test_set_waiting_accepts_resumed_agents():
+    """被唤醒后的 agent 应该还能重新进入 WAITING 并更新结果。"""
+    from cyrene import subagent
+
+    await subagent.clear()
+    await subagent.register("a1", "task A")
+    await subagent.set_waiting("a1", result="first pass")
+    await subagent.set_resumed("a1")
+    await subagent.set_waiting("a1", result="second pass")
+
+    snapshot = await subagent.get_snapshot()
+    assert snapshot["a1"]["status"] == "waiting"
+    assert snapshot["a1"]["result"] == "second pass"
+    print("PASS test_set_waiting_accepts_resumed_agents")
+
+
 async def test_all_willing_to_quit_unlocks_with_all_waiting():
     """Bug 1 fix: when every agent is in WAITING, the new helper should
     return True so wait_for_others can release them."""
@@ -84,8 +100,8 @@ async def test_wait_for_others_returns_when_others_waiting():
     # Race both wait_for_others calls. We pass a short max_wait so a regression
     # (deadlock) would be visible as a timeout.
     results = await asyncio.gather(
-        subagent.wait_for_others("a1", empty_inbox, max_wait=30, result="A done"),
-        subagent.wait_for_others("a2", empty_inbox, max_wait=30, result="B done"),
+        subagent.wait_for_others("a1", empty_inbox, mark_read_func=None, max_wait=30, result="A done"),
+        subagent.wait_for_others("a2", empty_inbox, mark_read_func=None, max_wait=30, result="B done"),
     )
     assert results == ["", ""], (
         f"Expected both to unlock cleanly, got {results}. "
@@ -99,7 +115,7 @@ async def test_wait_for_others_returns_when_others_waiting():
     print("PASS test_wait_for_others_returns_when_others_waiting")
 
 
-def test_inbox_mark_all_read():
+async def test_inbox_mark_all_read():
     """Bug 3 fix: mark_all_read should reset the unread counter so subsequent
     get_inbox_context calls don't re-inject old messages."""
     from cyrene import inbox
@@ -108,8 +124,8 @@ def test_inbox_mark_all_read():
         # Redirect inbox dir for the test
         inbox.INBOX_DIR = Path(tmp) / "inbox"
 
-        inbox.send_message("sender", "receiver", "chat", "hello")
-        inbox.send_message("sender", "receiver", "chat", "world")
+        await inbox.send_message("sender", "receiver", "chat", "hello")
+        await inbox.send_message("sender", "receiver", "chat", "world")
         assert inbox.get_unread_count("receiver") == 2
 
         # Inject — but in real flow, we don't auto-mark. Verify mark_all_read does.
@@ -117,16 +133,52 @@ def test_inbox_mark_all_read():
         assert "hello" in ctx and "world" in ctx
         assert inbox.get_unread_count("receiver") == 2  # still unread
 
-        inbox.mark_all_read("receiver")
+        await inbox.mark_all_read("receiver")
         assert inbox.get_unread_count("receiver") == 0
 
         # Next injection returns empty — old messages don't pollute context
         assert inbox.get_inbox_context("receiver") == ""
 
         # But the message files are kept as a log
-        msgs = inbox.read_messages("receiver", mark_read=False)
+        msgs = await inbox.read_messages("receiver", mark_read=False)
         assert len(msgs) == 2
     print("PASS test_inbox_mark_all_read")
+
+
+async def test_inbox_context_keeps_long_messages():
+    """长消息注入 inbox context 时不应被硬截断到 200 字。"""
+    from cyrene import inbox
+
+    with tempfile.TemporaryDirectory() as tmp:
+        inbox.INBOX_DIR = Path(tmp) / "inbox"
+        long_text = "A" * 350 + " tail-marker"
+
+        await inbox.send_message("sender", "receiver", "chat", long_text)
+        ctx = inbox.get_inbox_context("receiver")
+
+        assert "tail-marker" in ctx, (
+            f"Long inbox message was truncated too aggressively: {ctx!r}"
+        )
+    print("PASS test_inbox_context_keeps_long_messages")
+
+
+async def test_register_clears_stale_inbox_messages():
+    """同名 agent 重新注册时，不应继承上一次残留的 inbox。"""
+    from cyrene import inbox
+    from cyrene import subagent
+
+    with tempfile.TemporaryDirectory() as tmp:
+        inbox.INBOX_DIR = Path(tmp) / "inbox"
+        await subagent.clear()
+        await inbox.send_message("old_sender", "alice", "chat", "stale message")
+        assert inbox.get_unread_count("alice") == 1
+
+        await subagent.register("alice", "fresh task")
+
+        assert inbox.get_unread_count("alice") == 0
+        msgs = await inbox.read_messages("alice", mark_read=False)
+        assert msgs == []
+    print("PASS test_register_clears_stale_inbox_messages")
 
 
 async def test_can_receive_allows_done_agents():
@@ -214,15 +266,18 @@ async def test_get_raw_messages_returns_full_history():
 
 async def main():
     await test_set_waiting_writes_result()
+    await test_set_waiting_accepts_resumed_agents()
     await test_all_willing_to_quit_unlocks_with_all_waiting()
     await test_all_willing_to_quit_blocks_with_one_running()
     await test_wait_for_others_returns_when_others_waiting()
-    test_inbox_mark_all_read()
+    await test_inbox_mark_all_read()
+    await test_inbox_context_keeps_long_messages()
+    await test_register_clears_stale_inbox_messages()
     await test_can_receive_allows_done_agents()
     await test_reactivate_dormant_agent()
     await test_mark_done_accumulates_result()
     await test_get_raw_messages_returns_full_history()
-    print("\nAll 9 tests passed.")
+    print("\nAll 12 tests passed.")
 
 
 if __name__ == "__main__":

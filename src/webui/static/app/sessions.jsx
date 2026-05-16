@@ -1,9 +1,8 @@
 // Sessions page — overview of every run
-const { useState: useStateSes, useEffect: useEffectSes } = React;
+const { useState: useStateSes } = React;
 
-function SessionsPage({ initialSessionId, onClearInitial, onOpenAgents }) {
+function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
   useDataVersion();
-  const [selected, setSelected] = useStateSes(initialSessionId || DATA.sessions[0]?.id || "");
   const [filter, setFilter] = useStateSes("all"); // all | running | done | err
   const [query, setQuery] = useStateSes("");
 
@@ -19,18 +18,13 @@ function SessionsPage({ initialSessionId, onClearInitial, onOpenAgents }) {
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
-      if (selected === id) setSelected(DATA.sessions[0]?.id || "");
+      if (selectedSessionId === id) onSelectSession && onSelectSession(null);
     } catch (err) { alert("Delete failed: " + err.message); }
   }
 
-  useEffectSes(() => {
-    if (initialSessionId) {
-      setSelected(initialSessionId);
-      onClearInitial && onClearInitial();
-    }
-  }, [initialSessionId]);
-
-  const session = DATA.sessions.find((s) => s.id === selected) || DATA.sessions[0];
+  const session = (selectedSessionId
+    ? DATA.sessions.find((s) => s.id === selectedSessionId)
+    : null) || DATA.sessions[0];
 
   const filtered = DATA.sessions.filter((s) => {
     if (filter !== "all" && s.status !== filter) return false;
@@ -86,7 +80,7 @@ function SessionsPage({ initialSessionId, onClearInitial, onOpenAgents }) {
                       if (!r.ok) throw new Error("HTTP " + r.status);
                       const data = await r.json();
                       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
-                      setSelected(DATA.sessions[0]?.id || "");
+                      onSelectSession && onSelectSession(null);
                     } catch (e) { alert("Failed to create session: " + e.message); }
                   }}>
             + new session
@@ -112,8 +106,8 @@ function SessionsPage({ initialSessionId, onClearInitial, onOpenAgents }) {
             <tbody>
               {filtered.map((s) => (
                 <tr key={s.id}
-                    className={s.id === selected ? "row-active" : ""}
-                    onClick={() => setSelected(s.id)}>
+                    className={s.id === session?.id ? "row-active" : ""}
+                    onClick={() => onSelectSession && onSelectSession(s.id)}>
                   <td><span className={"sa-dot " + s.status} style={{ marginTop: 0, width: 7, height: 7 }}></span></td>
                   <td>
                     <div className="cell-title">{s.title}</div>
@@ -188,7 +182,7 @@ function SessionDetailPane({ session, onOpenAgents, onDelete }) {
         <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
           <button className="btn primary"
                   style={{ flex: 1, justifyContent: "center" }}
-                  onClick={onOpenAgents}>
+                  onClick={() => onOpenAgents && onOpenAgents(session.id)}>
             open flowchart →
           </button>
           <button className="btn danger"

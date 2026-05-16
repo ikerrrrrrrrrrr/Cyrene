@@ -26,6 +26,7 @@ _current_round_id: ContextVar[str] = ContextVar("_current_round_id", default="")
 # 当前调用者类型，用于 debug 日志
 _caller_type: ContextVar[str] = ContextVar("_caller_type", default="main_agent")
 _agent_lock = asyncio.Lock()
+_interrupt_event = asyncio.Event()
 _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 12
 # 后台 compressor 任务，防止被事件循环 GC
@@ -51,6 +52,13 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 ## Tools
 - Use tools when helpful: files, search, web, code, sub-agents, etc.
 - When a task is complete, call the `quit` tool.
+"""
+
+_PHASE1_DECISION_PROMPT = """Decision phase rules:
+- The only available tools right now are `use_tools` and `quit`.
+- Never call concrete tools such as `WebSearch`, `Bash`, `Read`, or `spawn_subagent` directly in this phase.
+- If you need any real tool work, call `use_tools` with the user's exact original message.
+- If neither available tool fits, say clearly that there is no suitable tool in this phase.
 """
 
 _CHAT_FILTER_PROMPT = """You are a character voice translator. Your ONLY job is to rewrite assistant text using a character's voice.
@@ -85,27 +93,40 @@ Rules:
 
 
 def _load_session_messages() -> list[dict[str, Any]]:
+    state = _load_session_state()
+    messages = state.get("messages", [])
+    return messages if isinstance(messages, list) else []
+
+
+def _load_session_state() -> dict[str, Any]:
     if not STATE_FILE.exists():
-        return []
+        return {}
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except Exception:
         logger.exception("Failed to read state file")
-        return []
-    messages = data.get("messages", [])
-    return messages if isinstance(messages, list) else []
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_session_state(state: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     """保存 session 消息。如果超过上限，触发后台压缩。"""
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    state = _load_session_state()
     trimmed = messages[-_MAX_HISTORY_MESSAGES:]
     # 移除截断处孤立的 tool_calls（DeepSeek 要求 tool_calls 必须有对应的 tool response）
     for i in range(len(trimmed) - 1, -1, -1):
         if trimmed[i].get("tool_calls") and (i + 1 >= len(trimmed) or trimmed[i + 1].get("role") != "tool"):
             trimmed = trimmed[:i]
             break
-    STATE_FILE.write_text(json.dumps({"messages": trimmed}, ensure_ascii=False, indent=2), encoding="utf-8")
+    state["messages"] = trimmed
+    if not str(state.get("session_title", "")).strip():
+        state.pop("session_title", None)
+    _write_session_state(state)
     await debug.publish_event({
         "type": "session_update",
         "message_count": len(trimmed),
@@ -118,6 +139,175 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
         task = asyncio.create_task(_compress_old_messages(messages))
         _pending_compressors.add(task)
         task.add_done_callback(_pending_compressors.discard)
+
+
+async def _publish_runtime_event(event: dict[str, Any]) -> None:
+    """Publish a UI/runtime event annotated with the current round when present."""
+    round_id = _current_round_id.get()
+    if round_id and not str(event.get("round_id", "")).strip():
+        event = {**event, "round_id": round_id}
+    await debug.publish_event(event)
+
+
+def _assistant_entry_from_response(response: dict[str, Any], round_id: str, include_tool_calls: bool = True) -> dict[str, Any]:
+    entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
+    if response.get("reasoning_content"):
+        entry["reasoning_content"] = response["reasoning_content"]
+    if include_tool_calls and response.get("tool_calls"):
+        entry["tool_calls"] = response["tool_calls"]
+    if response.get("usage"):
+        entry["usage"] = response["usage"]
+    if round_id:
+        entry["round_id"] = round_id
+    return entry
+
+
+async def _persist_user_visible_reply(main_text: str, visible_text: str, round_id: str) -> None:
+    """Update the current round so the session shows the user-facing assistant reply."""
+    if not visible_text:
+        return
+
+    messages = _load_session_messages()
+    target_index = None
+    fallback_index = None
+
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if msg.get("role") != "assistant":
+            continue
+        if round_id and msg.get("round_id") != round_id:
+            continue
+
+        content = (msg.get("content") or "").strip()
+        if main_text and content == main_text.strip():
+            target_index = idx
+            break
+        if fallback_index is None and content and not msg.get("tool_calls"):
+            fallback_index = idx
+
+    if target_index is None:
+        target_index = fallback_index
+
+    if target_index is None:
+        entry: dict[str, Any] = {"role": "assistant", "content": visible_text}
+        if round_id:
+            entry["round_id"] = round_id
+        messages.append(entry)
+    else:
+        if (messages[target_index].get("content") or "") == visible_text:
+            return
+        messages[target_index] = {**messages[target_index], "content": visible_text}
+
+    await _save_session_messages(messages)
+
+
+def _fallback_label(text: str, limit: int = 48) -> str:
+    compact = re.sub(r"\s+", " ", str(text or "")).strip().strip("[](){}<>\"'`，。！？；：,.;!?")
+    return compact[:limit] or "Untitled"
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    source = str(text or "").strip()
+    if not source:
+        return {}
+    try:
+        data = json.loads(source)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{.*\}", source, re.DOTALL)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_session_labels() -> dict[str, str]:
+    state = _load_session_state()
+    messages = state.get("messages", []) if isinstance(state.get("messages"), list) else []
+    last_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
+    round_title = next(
+        (str(m.get("round_title", "")).strip() for m in messages if str(m.get("round_id", "")).strip() == last_round_id and m.get("round_title")),
+        "",
+    )
+    return {
+        "session_title": str(state.get("session_title", "")).strip(),
+        "round_title": round_title,
+        "round_id": last_round_id,
+    }
+
+
+async def _refresh_session_labels(current_user_message: str, round_id: str) -> None:
+    state = _load_session_state()
+    messages = state.get("messages", []) if isinstance(state.get("messages"), list) else []
+    if not messages:
+        return
+
+    session_user_inputs = [
+        str(msg.get("content", "")).strip()
+        for msg in messages
+        if msg.get("role") == "user" and str(msg.get("content", "")).strip()
+    ]
+    round_user_inputs = [
+        str(msg.get("content", "")).strip()
+        for msg in messages
+        if msg.get("role") == "user"
+        and str(msg.get("round_id", "")).strip() == round_id
+        and str(msg.get("content", "")).strip()
+    ]
+    if not round_user_inputs:
+        round_user_inputs = [_fallback_label(current_user_message, limit=80)]
+    if not session_user_inputs:
+        session_user_inputs = round_user_inputs
+
+    round_fallback = _fallback_label(" / ".join(round_user_inputs), limit=40)
+    session_fallback = _fallback_label(" / ".join(session_user_inputs), limit=56)
+    token = _caller_type.set("session_namer")
+    try:
+        response = await _call_llm([
+            {
+                "role": "system",
+                "content": (
+                    "You generate concise UI labels for chat sessions and rounds. "
+                    "Return strict JSON with keys round_title and session_title only."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Summarize the following chat inputs into compact labels.\n"
+                    "Rules:\n"
+                    "- round_title: summarize only the current round's user input(s)\n"
+                    "- session_title: summarize all user inputs in the session so far\n"
+                    "- Keep each label under 12 words\n"
+                    "- Use the user's language when obvious\n"
+                    "- No quotes, markdown, numbering, or trailing punctuation\n\n"
+                    f"Current round user inputs:\n{json.dumps(round_user_inputs, ensure_ascii=False)}\n\n"
+                    f"All session user inputs:\n{json.dumps(session_user_inputs, ensure_ascii=False)}\n\n"
+                    "Return JSON only."
+                ),
+            },
+        ], tools=None)
+        payload = _extract_json_object(_assistant_text(response))
+    except Exception:
+        logger.warning("Session naming failed", exc_info=True)
+        payload = {}
+    finally:
+        _caller_type.reset(token)
+
+    round_title = _fallback_label(payload.get("round_title") or round_fallback, limit=40)
+    session_title = _fallback_label(payload.get("session_title") or session_fallback, limit=56)
+
+    for msg in messages:
+        if str(msg.get("round_id", "")).strip() == round_id:
+            msg["round_title"] = round_title
+
+    state["messages"] = messages
+    state["session_title"] = session_title
+    _write_session_state(state)
 
 
 async def _compress_old_messages(all_messages: list[dict]) -> None:
@@ -188,7 +378,10 @@ Output format (one per line, no explanations):
 
 async def clear_session_id() -> None:
     """Clear session, subagent registry, and compress conversation to short-term memory before discarding."""
+    from cyrene.inbox import clear_all_inboxes
+
     await _clear_subagents()
+    await clear_all_inboxes()
     if STATE_FILE.exists():
         try:
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -253,7 +446,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
             msg["usage"] = data["usage"]
         if debug.VERBOSE:
             debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
-        await debug.publish_event({
+        await _publish_runtime_event({
             "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
             "tools": [t.get("function", {}).get("name") for t in (tools or [])],
             "response": _assistant_text(msg)[:200],
@@ -284,20 +477,37 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
     user_entry = {"role": "user", "content": user_message}
     if round_id:
         user_entry["round_id"] = round_id
-    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry]
+    phase1_messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT + "\n\n" + _PHASE1_DECISION_PROMPT}, *history, user_entry]
 
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
-    response = await _call_llm(messages, tools=_LIGHT_TOOL_DEFS)
+    response = await _call_llm(phase1_messages, tools=_LIGHT_TOOL_DEFS)
     tool_calls = response.get("tool_calls") or []
-
-    # Append Phase 1 response to messages before any save path
-    assistant_entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
-    if response.get("tool_calls"):
-        assistant_entry["tool_calls"] = response["tool_calls"]
-    if response.get("usage"):
-        assistant_entry["usage"] = response["usage"]
-    if round_id:
-        assistant_entry["round_id"] = round_id
+    invalid_phase1_tools = [
+        str(tc.get("function", {}).get("name") or "").strip()
+        for tc in tool_calls
+        if str(tc.get("function", {}).get("name") or "").strip() not in {"use_tools", "quit", ""}
+    ]
+    if invalid_phase1_tools:
+        retry_messages = [
+            *phase1_messages,
+            {
+                **_assistant_entry_from_response(response, round_id="", include_tool_calls=False),
+                "content": _assistant_text(response) or (response.get("content") or ""),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"[Decision-phase correction] You attempted unavailable tool(s): {', '.join(invalid_phase1_tools)}. "
+                    "Only `use_tools` and `quit` are available in this phase. "
+                    "If real tool work is needed, call `use_tools` with the user's exact original message. "
+                    "Otherwise say there is no suitable tool in this phase."
+                ),
+            },
+        ]
+        response = await _call_llm(retry_messages, tools=_LIGHT_TOOL_DEFS)
+    tool_calls = response.get("tool_calls") or []
+    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry]
+    assistant_entry = _assistant_entry_from_response(response, round_id)
     messages.append(assistant_entry)
 
     # 如果 LLM 调了 use_tools → 进入重循环（含全部工具）
@@ -312,7 +522,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
             return _assistant_text(response).strip() or "Done."
 
     if use_tools_call:
-        await debug.publish_event({
+        await _publish_runtime_event({
             "type": "phase_transition",
             "from": "phase1_decision",
             "to": "phase2_execution",
@@ -339,7 +549,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
             tcs = response.get("tool_calls") or []
             if any(t.get("function", {}).get("name") == "quit" for t in tcs):
-                await debug.publish_event({
+                await _publish_runtime_event({
                     "type": "phase_transition",
                     "from": "execution",
                     "to": "done",
@@ -367,7 +577,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
             # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部安静
             if spawned:
-                await debug.publish_event({
+                await _publish_runtime_event({
                     "type": "phase_transition",
                     "from": "phase2_execution",
                     "to": "subagent_monitoring",
@@ -375,6 +585,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                 })
                 from cyrene.subagent import (
                     _run_subagent,
+                    _spawn_subagent_task,
                     collect_results as _sub_collect,
                     clear as _sub_clear,
                     get_snapshot as _sub_snapshot,
@@ -385,9 +596,18 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
 
                 # 新退出条件：所有 agent 都 DONE/TIMEOUT 且 inbox 全部清空。
                 # 监控期间，DONE agent 如果收到消息就唤醒它继续处理。
+                # 如果用户发来新消息，中断监控让主 agent 立即处理。
+                _interrupt_event.clear()
+                interrupted = False
                 quiet_ticks = 0
                 for _ in range(120):  # max 10 min 硬上限
-                    await asyncio.sleep(5)
+                    try:
+                        await asyncio.wait_for(_interrupt_event.wait(), timeout=5)
+                        _interrupt_event.clear()
+                        interrupted = True
+                        break
+                    except asyncio.TimeoutError:
+                        pass
                     snap = await _sub_snapshot()
                     if not snap:
                         break
@@ -398,8 +618,9 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                         if info["status"] in ("done", "timeout") and _inbox_unread(aid) > 0:
                             if await _sub_reactivate(aid):
                                 raw = await _sub_raw_msgs(aid)
-                                asyncio.create_task(
-                                    _run_subagent(aid, info["task"], bot, chat_id, db_path, resume_messages=raw)
+                                _spawn_subagent_task(
+                                    _run_subagent(aid, info["task"], bot, chat_id, db_path, resume_messages=raw),
+                                    aid,
                                 )
                                 resurrected = True
 
@@ -415,10 +636,13 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                             break
                     else:
                         quiet_ticks = 0
+                if interrupted:
+                    await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                    return "[Sub-agents are still working in the background. You can continue the conversation.]"
                 # 等 quiescent 后，收集结果
                 await asyncio.sleep(2)  # 给 subagent 一点时间写 registry
                 summary = await _sub_collect()
-                await debug.publish_event({
+                await _publish_runtime_event({
                     "type": "phase_transition",
                     "from": "subagent_monitoring",
                     "to": "synthesis",
@@ -444,7 +668,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
         return "Stopped after hitting the tool loop limit."
 
-    await debug.publish_event({
+    await _publish_runtime_event({
         "type": "phase_transition",
         "from": "phase1_decision",
         "to": "chat_only",
@@ -476,7 +700,7 @@ async def _run_chat_filter(text: str, soul_context: str = "") -> str:
         result = _assistant_text(response) or text
         result = re.sub(r'[\U0001F300-\U0010FFFF]', '', result).strip()
         debug.log_chat_filter(text, result, (_time.monotonic() - _t0) * 1000)
-        await debug.publish_event({"type": "chat_filter", "input": text[:200], "output": result[:200]})
+        await _publish_runtime_event({"type": "chat_filter", "input": text[:200], "output": result[:200]})
         return result
     except Exception:
         return text  # 失败时 fallback 到原文
@@ -543,6 +767,8 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 
 async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
     """Main entry point. Main agent (assistant tone + full tools) -> Chat filter (friend-style)."""
+    if _agent_lock.locked():
+        _interrupt_event.set()
     async with _agent_lock:
         return await _run_chat_agent(user_message, bot, chat_id, db_path)
 
@@ -569,7 +795,7 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
         # ====== Step 1: 主 Agent（助理语气 + 全部工具，不关心人格）=======
         main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
 
-        await debug.publish_event({
+        await _publish_runtime_event({
             "type": "phase_transition",
             "from": "main_agent",
             "to": "chat_filter",
@@ -581,7 +807,9 @@ async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: st
         else:
             friend_text = main_text or "Done."
 
-        await debug.publish_event({"type": "chat_message"})
+        await _persist_user_visible_reply(main_text, friend_text, round_id)
+        await _refresh_session_labels(user_message, round_id)
+        await _publish_runtime_event({"type": "chat_message"})
         return friend_text
     finally:
         _current_round_id.reset(round_token)

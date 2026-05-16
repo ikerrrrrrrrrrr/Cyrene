@@ -33,7 +33,7 @@ from cyrene.config import (
 )
 from cyrene.llm import _truncate
 from cyrene.search import deep_search
-from cyrene.subagent import register as _reg_subagent, can_receive, _run_subagent
+from cyrene.subagent import register as _reg_subagent, can_receive, _run_subagent, _spawn_subagent_task
 from cyrene.inbox import send_message as _send_inbox
 
 logger = logging.getLogger(__name__)
@@ -179,6 +179,7 @@ async def _tool_grep(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
 async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     command = str(args["command"])
     timeout_ms = int(args.get("timeout_ms", 120000))
+    timeout_sec = timeout_ms / 1000
     shell = os.environ.get("SHELL") or "/bin/sh"
     proc = await asyncio.create_subprocess_exec(
         shell,
@@ -188,17 +189,67 @@ async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+
+    from cyrene.agent import _interrupt_event
+
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+
+    async def _read(stream: asyncio.StreamReader | None, chunks: list[bytes]) -> None:
+        if stream is None:
+            return
+        while True:
+            chunk = await stream.read(8192)
+            if not chunk:
+                break
+            chunks.append(chunk)
+
+    reads = asyncio.gather(_read(proc.stdout, stdout_chunks), _read(proc.stderr, stderr_chunks))
+    import time as _time
+    deadline = _time.monotonic() + timeout_sec
+
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_ms / 1000)
-    except TimeoutError:
+        while True:
+            if reads.done():
+                break
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                proc.kill()
+                reads.cancel()
+                try:
+                    await reads
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise ValueError(f"Command timed out after {timeout_ms} ms")
+            if _interrupt_event.is_set():
+                proc.kill()
+                reads.cancel()
+                try:
+                    await reads
+                except (asyncio.CancelledError, Exception):
+                    pass
+                payload = {
+                    "exit_code": -1,
+                    "stdout": _truncate(b"".join(stdout_chunks).decode("utf-8", errors="replace")),
+                    "stderr": "Command interrupted by new user message.",
+                }
+                return _json_result(payload)
+            try:
+                await asyncio.wait_for(asyncio.shield(reads), timeout=min(1, remaining))
+            except asyncio.TimeoutError:
+                pass
+
+        await proc.wait()
+    except ValueError:
+        raise
+    except Exception:
         proc.kill()
-        await proc.communicate()
-        raise ValueError(f"Command timed out after {timeout_ms} ms")
+        raise
 
     payload = {
         "exit_code": proc.returncode,
-        "stdout": _truncate(stdout.decode("utf-8", errors="replace")),
-        "stderr": _truncate(stderr.decode("utf-8", errors="replace")),
+        "stdout": _truncate(b"".join(stdout_chunks).decode("utf-8", errors="replace")),
+        "stderr": _truncate(b"".join(stderr_chunks).decode("utf-8", errors="replace")),
     }
     return _json_result(payload)
 
@@ -278,7 +329,7 @@ async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: in
         return f"Cannot deliver: agent '{target}' is not available (finished or timed out)."
     from cyrene.agent import _current_agent_id, _current_round_id
     from_agent = _current_agent_id.get()
-    _send_inbox(from_agent, target, "chat", content, round_id=_current_round_id.get())
+    await _send_inbox(from_agent, target, "chat", content, round_id=_current_round_id.get())
     return f"Message sent to {target}."
 
 
@@ -290,7 +341,7 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
         return "Error: agent_id and task are required."
     from cyrene.agent import _current_round_id
     await _reg_subagent(agent_id, task, round_id=_current_round_id.get())
-    asyncio.create_task(_run_subagent(agent_id, task, bot, chat_id, db_path))
+    _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path), agent_id)
     return f"Sub-agent '{agent_id}' spawned. Task: {task[:80]}"
 
 
@@ -512,9 +563,10 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     if debug.VERBOSE:
         from cyrene.agent import _caller_type
         debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
-    from cyrene.agent import _caller_type
+    from cyrene.agent import _caller_type, _current_round_id
     await debug.publish_event({
         "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
         "result_preview": str(result)[:200],
+        "round_id": _current_round_id.get(),
     })
     return result

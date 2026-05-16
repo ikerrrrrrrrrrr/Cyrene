@@ -533,6 +533,45 @@ button { font-family: inherit; }
   white-space: pre;
 }
 
+.msg-trace {
+  margin: 10px 0 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.msg-trace.only-trace {
+  margin-top: 6px;
+}
+.msg-trace-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.msg-trace-summary::-webkit-details-marker {
+  display: none;
+}
+.msg-trace[open] .msg-trace-summary {
+  border-bottom: 1px solid var(--line);
+}
+.msg-trace-caret {
+  color: var(--text-4);
+  transition: transform 120ms ease;
+}
+.msg-trace[open] .msg-trace-caret {
+  transform: rotate(90deg);
+}
+.msg-trace-body {
+  padding: 0 12px 10px;
+}
+
 /* thinking */
 .thinking {
   font-family: var(--mono);
@@ -781,11 +820,62 @@ button { font-family: inherit; }
   font-size: 12.5px; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.run-preview {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.runs-empty {
+  padding: 16px 14px;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
+}
 
 .canvas-wrap {
   position: relative;
   overflow: hidden;
   background-color: var(--bg);
+}
+.canvas-context {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  min-width: 220px;
+  max-width: min(360px, calc(100% - 96px));
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+  background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+  backdrop-filter: blur(8px);
+}
+.canvas-context-round {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+}
+.canvas-context-session {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.35;
+}
+.canvas-context-meta {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-4);
 }
 html[data-theme="dark"] .canvas-wrap {
   background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.025) 1px, transparent 0);
