@@ -9,6 +9,7 @@ function AgentsPage({ orientation = "horizontal" }) {
   const [selectedEdgeIdx, setSelectedEdgeIdx] = useStateAg(null);
   const [zoom, setZoom] = useStateAg(0.85);
   const [pan, setPan] = useStateAg({ x: 20, y: 20 });
+  const [viewport, setViewport] = useStateAg({ width: 1400, height: 900 });
   const wrapRef = useRefAg(null);
 
   useEffectAg(() => {
@@ -20,6 +21,25 @@ function AgentsPage({ orientation = "horizontal" }) {
   useEffectAg(() => {
     setPan({ x: 20, y: 20 });
   }, [orientation]);
+
+  useEffectAg(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    function measure() {
+      setViewport({
+        width: el.clientWidth || 1400,
+        height: el.clientHeight || 900,
+      });
+    }
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const { nodes, edges } = session.flow;
   const sel = nodes.find((n) => n.id === selectedNode);
@@ -65,22 +85,115 @@ function AgentsPage({ orientation = "horizontal" }) {
     }));
   }
 
-  // Compute node rects (positions may be transposed for vertical layout)
+  // Compute node rects with wrapping:
+  // horizontal = bounded column height, overflow spills into new columns
+  // vertical   = bounded row width, overflow spills into new rows
   const nodeRects = useMemo(() => {
+    const padding = 20;
+    const groupGap = 52;
+    const itemGapX = 22;
+    const itemGapY = 26;
+    const subagentGapY = 64;
+    const roundGapY = 120;
     const rects = {};
-    for (const n of nodes) {
-      const w = n.kind === "main" ? 220 : n.kind === "subagent" ? 200 : n.kind === "tool" ? 180 : n.kind === "output" ? 200 : 200;
-      const h = 86;
-      let x = n.x, y = n.y;
-      if (orientation === "vertical") {
-        // Swap axes; scale so columns/rows breathe given typical node sizes
-        x = n.y * 1.45 + 20;
-        y = n.x * 0.7 + 20;
+    const maxHeight = Math.max(320, viewport.height - 140);
+    const maxWidth = Math.max(420, viewport.width - 80);
+
+    function nodeSize(n) {
+      return {
+        w: n.kind === "main" ? 220 : n.kind === "subagent" ? 200 : n.kind === "tool" ? 180 : n.kind === "output" ? 200 : 200,
+        h: 86,
+      };
+    }
+
+    function roundKeyForNode(node) {
+      const m = String(node.id || "").match(/^(r\d+)_/);
+      return m ? m[1] : "r0";
+    }
+
+    function layoutRound(roundNodes, topOffset) {
+      const groups = new Map();
+      for (const n of roundNodes) {
+        const key = String(n.x);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(n);
       }
-      rects[n.id] = { x, y, w, h };
+
+      const sortedGroups = Array.from(groups.entries())
+        .map(([key, list]) => ({ x: Number(key), list: list.slice().sort((a, b) => a.y - b.y) }))
+        .sort((a, b) => a.x - b.x);
+
+      let roundBottom = topOffset;
+      if (orientation === "horizontal") {
+        let currentGroupX = padding;
+        for (const group of sortedGroups) {
+          let colX = currentGroupX;
+          let colY = topOffset + padding;
+          let widestInCol = 0;
+          let groupRight = currentGroupX;
+          for (const n of group.list) {
+            const { w, h } = nodeSize(n);
+            if (colY > topOffset + padding && colY + h > topOffset + padding + maxHeight) {
+              colX += widestInCol + itemGapX;
+              colY = topOffset + padding;
+              widestInCol = 0;
+            }
+            rects[n.id] = { x: colX, y: colY, w, h };
+            colY += h + (n.kind === "subagent" ? subagentGapY : itemGapY);
+            widestInCol = Math.max(widestInCol, w);
+            groupRight = Math.max(groupRight, colX + w);
+            roundBottom = Math.max(roundBottom, colY - (n.kind === "subagent" ? subagentGapY : itemGapY));
+          }
+          currentGroupX = groupRight + groupGap;
+        }
+      } else {
+        let currentGroupY = topOffset + padding;
+        for (const group of sortedGroups) {
+          let rowX = padding;
+          let rowY = currentGroupY;
+          let tallestInRow = 0;
+          let rowHasSubagent = false;
+          let groupBottom = currentGroupY;
+          for (const n of group.list) {
+            const { w, h } = nodeSize(n);
+            if (rowX > padding && rowX + w > padding + maxWidth) {
+              rowY += tallestInRow + (rowHasSubagent ? subagentGapY : itemGapY);
+              rowX = padding;
+              tallestInRow = 0;
+              rowHasSubagent = false;
+            }
+            rects[n.id] = { x: rowX, y: rowY, w, h };
+            rowX += w + itemGapX;
+            tallestInRow = Math.max(tallestInRow, h);
+            rowHasSubagent = rowHasSubagent || n.kind === "subagent";
+            groupBottom = Math.max(groupBottom, rowY + h);
+            roundBottom = Math.max(roundBottom, rowY + h);
+          }
+          currentGroupY = groupBottom + groupGap;
+        }
+      }
+
+      return roundBottom;
+    }
+
+    const rounds = new Map();
+    for (const n of nodes) {
+      const roundKey = roundKeyForNode(n);
+      if (!rounds.has(roundKey)) rounds.set(roundKey, []);
+      rounds.get(roundKey).push(n);
+    }
+
+    const sortedRounds = Array.from(rounds.entries())
+      .map(([key, list]) => ({ key, list }))
+      .sort((a, b) => Number(a.key.slice(1)) - Number(b.key.slice(1)));
+
+    let roundTop = 0;
+    for (const round of sortedRounds) {
+      const roundBottom = layoutRound(round.list, roundTop);
+      roundTop = roundBottom + roundGapY;
     }
     return rects;
-  }, [nodes, orientation]);
+  }, [nodes, orientation, viewport.height, viewport.width]);
 
   const canvasSize = useMemo(() => {
     let maxX = 0, maxY = 0;

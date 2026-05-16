@@ -1,6 +1,104 @@
 // Chat page — wired to /api/chat with live state and SSE updates
 const { useState, useRef, useEffect } = React;
 
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderMarkdown(text) {
+  const source = String(text || "");
+  if (!source) return "";
+  if (window.marked && window.DOMPurify) {
+    window.marked.setOptions({
+      gfm: true,
+      breaks: true,
+      headerIds: false,
+      mangle: false,
+    });
+    const html = window.marked.parse(source);
+    return window.DOMPurify.sanitize(html);
+  }
+  return escapeHtml(source).replace(/\n/g, "<br>");
+}
+
+function formatProgressEvent(event) {
+  switch (event.type) {
+    case "phase_transition":
+      return { icon: "●", text: event.detail || event.from + " → " + event.to };
+    case "tool_call": {
+      const args = event.args || {};
+      const argPreview = Object.values(args).filter(Boolean).map(String).join(", ").slice(0, 60);
+      return { icon: "▸", text: event.tool + (argPreview ? "(" + argPreview + ")" : "()") };
+    }
+    case "llm_call":
+      return { icon: "◎", text: (event.caller || "agent") + " · " + (event.phase || "thinking") };
+    case "chat_filter":
+      return { icon: "✱", text: "Applying persona voice..." };
+    default:
+      return null;
+  }
+}
+
+function getChatRuntime() {
+  if (!window.__chatRuntime) {
+    window.__chatRuntime = {
+      sending: false,
+      pendingMessages: [],
+      liveProgress: [],
+      listeners: new Set(),
+      sseHandler: null,
+    };
+  }
+  return window.__chatRuntime;
+}
+
+function getChatRuntimeSnapshot() {
+  const runtime = getChatRuntime();
+  return {
+    sending: runtime.sending,
+    pendingMessages: runtime.pendingMessages.slice(),
+    liveProgress: runtime.liveProgress.slice(),
+  };
+}
+
+function emitChatRuntime() {
+  const runtime = getChatRuntime();
+  const snapshot = getChatRuntimeSnapshot();
+  runtime.listeners.forEach(function (listener) { listener(snapshot); });
+}
+
+function updateChatRuntime(updater) {
+  const runtime = getChatRuntime();
+  const next = typeof updater === "function" ? updater(runtime) : updater;
+  if (next && typeof next === "object") Object.assign(runtime, next);
+  emitChatRuntime();
+}
+
+function ensureChatRuntimeSseSubscription() {
+  const runtime = getChatRuntime();
+  if (runtime.sseHandler) return;
+  runtime.sseHandler = function (event) {
+    const entry = formatProgressEvent(event);
+    if (!entry) return;
+    updateChatRuntime(function (state) {
+      return { liveProgress: state.liveProgress.concat([entry]).slice(-30) };
+    });
+  };
+  window.__sseHandlers.add(runtime.sseHandler);
+}
+
+function clearChatRuntimeSseSubscription() {
+  const runtime = getChatRuntime();
+  if (!runtime.sseHandler) return;
+  window.__sseHandlers.delete(runtime.sseHandler);
+  runtime.sseHandler = null;
+}
+
 function ChatPage() {
   useDataVersion(); // re-render when DATA refreshes
   const [selectedSessionId, setSelectedSessionId] = useState(null);
@@ -30,50 +128,23 @@ function ChatPage() {
   }, []);
 
   const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const [pendingMessages, setPendingMessages] = useState([]);
-  const [liveProgress, setLiveProgress] = useState([]);
-  const progressRef = useRef([]);
+  const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const taRef = useRef(null);
   const scrollRef = useRef(null);
+  const sending = runtimeState.sending;
+  const pendingMessages = runtimeState.pendingMessages;
+  const liveProgress = runtimeState.liveProgress;
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [session.chat.messages.length, pendingMessages.length]);
+  }, [session.chat.messages.length, pendingMessages.length, liveProgress.length, sending]);
 
-  // Subscribe to SSE events during sending for real-time progress display
   useEffect(() => {
-    if (!sending) {
-      setLiveProgress([]);
-      progressRef.current = [];
-      return;
-    }
-    function formatEvent(event) {
-      switch (event.type) {
-        case "phase_transition":
-          return { icon: "●", text: event.detail || event.from + " → " + event.to };
-        case "tool_call": {
-          const args = event.args || {};
-          const argPreview = Object.values(args).filter(Boolean).map(String).join(", ").slice(0, 60);
-          return { icon: "▸", text: event.tool + (argPreview ? "(" + argPreview + ")" : "()") };
-        }
-        case "llm_call":
-          return { icon: "◎", text: (event.caller || "agent") + " · " + (event.phase || "thinking") };
-        case "chat_filter":
-          return { icon: "✱", text: "Applying persona voice..." };
-        default:
-          return null;
-      }
-    }
-    function handler(event) {
-      var entry = formatEvent(event);
-      if (!entry) return;
-      progressRef.current = progressRef.current.concat([entry]).slice(-30);
-      setLiveProgress(progressRef.current);
-    }
-    window.__sseHandlers.add(handler);
-    return function () { window.__sseHandlers.delete(handler); };
-  }, [sending]);
+    const runtime = getChatRuntime();
+    runtime.listeners.add(setRuntimeState);
+    setRuntimeState(getChatRuntimeSnapshot());
+    return function () { runtime.listeners.delete(setRuntimeState); };
+  }, []);
 
   function autosize(e) {
     setDraft(e.target.value);
@@ -85,14 +156,19 @@ function ChatPage() {
 
   async function send() {
     const text = draft.trim();
-    if (!text || sending) return;
-    setSending(true);
+    const runtime = getChatRuntime();
+    if (!text || runtime.sending) return;
     const userMsg = {
       id: "pending_user_" + Date.now(),
       role: "user", time: new Date().toLocaleTimeString(),
       body: text,
     };
-    setPendingMessages((arr) => [...arr, userMsg]);
+    updateChatRuntime({
+      sending: true,
+      pendingMessages: runtime.pendingMessages.concat([userMsg]),
+      liveProgress: [],
+    });
+    ensureChatRuntimeSseSubscription();
     setDraft("");
     if (taRef.current) taRef.current.style.height = "auto";
 
@@ -109,22 +185,29 @@ function ChatPage() {
         role: "agent", time: new Date().toLocaleTimeString(),
         body: data.response || "(no response)",
       };
-      setPendingMessages((arr) => [...arr, agentMsg]);
+      updateChatRuntime(function (state) {
+        return { pendingMessages: state.pendingMessages.concat([agentMsg]) };
+      });
       // Refresh sessions FIRST so the run_live entry contains the new
       // messages before we clear pending — otherwise there's a flash of
       // "No messages yet" between pending-clear and sessions-arriving.
       if (window.refreshSessions) {
         await window.refreshSessions();
       }
-      setPendingMessages([]);
+      updateChatRuntime({ pendingMessages: [] });
     } catch (e) {
-      setPendingMessages((arr) => [...arr, {
-        id: "err_" + Date.now(),
-        role: "system", time: new Date().toLocaleTimeString(),
-        body: "Error: " + e.message,
-      }]);
+      updateChatRuntime(function (state) {
+        return {
+          pendingMessages: state.pendingMessages.concat([{
+            id: "err_" + Date.now(),
+            role: "system", time: new Date().toLocaleTimeString(),
+            body: "Error: " + e.message,
+          }]),
+        };
+      });
     } finally {
-      setSending(false);
+      updateChatRuntime({ sending: false, liveProgress: [] });
+      clearChatRuntimeSseSubscription();
     }
   }
 
@@ -144,7 +227,8 @@ function ChatPage() {
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
-      setPendingMessages([]);
+      updateChatRuntime({ pendingMessages: [], sending: false, liveProgress: [] });
+      clearChatRuntimeSseSubscription();
     } catch (e) {
       alert("Failed: " + e.message);
     }
@@ -258,6 +342,9 @@ function ChatPage() {
 }
 
 function Message({ msg, assistantName }) {
+  const markdownBody = (msg.role === "agent" || msg.role === "system") && msg.body
+    ? renderMarkdown(msg.body)
+    : "";
   return (
     <div className={"msg " + msg.role}>
       <div className="msg-meta">
@@ -276,7 +363,11 @@ function Message({ msg, assistantName }) {
         </div>
       )}
 
-      {msg.body && <div className="msg-body">{msg.body}</div>}
+      {msg.body && (
+        msg.role === "agent" || msg.role === "system"
+          ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
+          : <div className="msg-body">{msg.body}</div>
+      )}
 
       {msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
     </div>

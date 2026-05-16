@@ -3,7 +3,7 @@
 // Static fallback values keep the UI usable if the backend is unreachable.
 
 const DATA = {
-  user: { name: "you", handle: "you", initials: "Y" },
+  user: { name: "loading…", handle: "loading", initials: "…" },
   assistantName: "Cyrene",
 
   sessions: [
@@ -106,11 +106,17 @@ async function bootstrapData() {
   }
 }
 
+let __sessionsRequestSeq = 0;
+let __statusRequestSeq = 0;
+let __refreshTimer = null;
+
 async function refreshSessions() {
+  const seq = ++__sessionsRequestSeq;
   try {
     const r = await fetch("/api/sessions");
     if (!r.ok) return;
     const { sessions } = await r.json();
+    if (seq !== __sessionsRequestSeq) return;
     if (Array.isArray(sessions) && sessions.length) {
       DATA.sessions = sessions;
       bumpData();
@@ -119,12 +125,24 @@ async function refreshSessions() {
 }
 
 async function refreshStatus() {
+  const seq = ++__statusRequestSeq;
   try {
     const r = await fetch("/api/status");
     if (!r.ok) return;
-    DATA.status = await r.json();
+    const status = await r.json();
+    if (seq !== __statusRequestSeq) return;
+    DATA.status = status;
     bumpData();
   } catch (e) { /* swallow */ }
+}
+
+function scheduleRealtimeRefresh() {
+  if (__refreshTimer) return;
+  __refreshTimer = window.setTimeout(() => {
+    __refreshTimer = null;
+    void refreshSessions();
+    void refreshStatus();
+  }, 60);
 }
 
 window.refreshSessions = refreshSessions;
@@ -150,9 +168,16 @@ function connectEvents() {
         // Notify subscribers (used by chat.jsx during sending)
         window.__sseHandlers.forEach(function (fn) { fn(data); });
 
-        if (["chat_message", "tool_call", "llm_call", "chat_filter", "phase_transition"].includes(data.type)) {
-          refreshSessions();
-          refreshStatus();
+        if ([
+          "chat_message",
+          "tool_call",
+          "llm_call",
+          "chat_filter",
+          "phase_transition",
+          "subagent_update",
+          "session_update",
+        ].includes(data.type)) {
+          scheduleRealtimeRefresh();
         }
       } catch (e) { /* swallow */ }
     };

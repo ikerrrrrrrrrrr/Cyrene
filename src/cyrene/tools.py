@@ -273,10 +273,12 @@ async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: in
     if not target or not content:
         return "Error: both 'to' and 'content' are required."
     if not await can_receive(target):
+        if target.lower() in {"main", "main_agent", "cyrene", "danny", "host", "coordinator", "parent"}:
+            return "Main agent does not receive inbox messages. Put your final conclusion in your next quit response; the parent agent will collect it automatically."
         return f"Cannot deliver: agent '{target}' is not available (finished or timed out)."
-    from cyrene.agent import _current_agent_id
+    from cyrene.agent import _current_agent_id, _current_round_id
     from_agent = _current_agent_id.get()
-    _send_inbox(from_agent, target, "chat", content)
+    _send_inbox(from_agent, target, "chat", content, round_id=_current_round_id.get())
     return f"Message sent to {target}."
 
 
@@ -286,7 +288,8 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
     task = str(args.get("task", ""))
     if not agent_id or not task:
         return "Error: agent_id and task are required."
-    await _reg_subagent(agent_id, task)
+    from cyrene.agent import _current_round_id
+    await _reg_subagent(agent_id, task, round_id=_current_round_id.get())
     asyncio.create_task(_run_subagent(agent_id, task, bot, chat_id, db_path))
     return f"Sub-agent '{agent_id}' spawned. Task: {task[:80]}"
 
@@ -464,7 +467,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "spawn_subagent",
-            "description": "Spawn a sub-agent. A sub-agent has independent full tool access and can communicate with other agents via send_agent_message.",
+            "description": "Spawn a sub-agent. A sub-agent has independent full tool access and can communicate with other agents via send_agent_message. The parent agent automatically collects each sub-agent's final result from its quit text, so do not invent a separate coordinator agent.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -509,8 +512,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     if debug.VERBOSE:
         from cyrene.agent import _caller_type
         debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
+    from cyrene.agent import _caller_type
     await debug.publish_event({
-        "type": "tool_call", "tool": name, "args": arguments,
+        "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
         "result_preview": str(result)[:200],
     })
     return result

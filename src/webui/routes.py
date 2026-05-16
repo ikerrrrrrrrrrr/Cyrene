@@ -1,7 +1,9 @@
 """Route handlers for the Cyrene Web UI (SPA backend)."""
 
+import getpass
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -11,9 +13,11 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
+from cyrene import debug
 from cyrene.agent import clear_session_id, run_agent
 from cyrene.config import (
     ASSISTANT_NAME,
+    DATA_DIR,
     DB_PATH,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
@@ -209,11 +213,30 @@ async def _build_ui_data() -> dict:
 
 def _build_user() -> dict:
     """User identity from environment or workspace owner."""
-    import os
-    name = os.environ.get("USER") or os.environ.get("USERNAME") or "you"
-    handle = name.lower().replace(" ", "")
-    initials = "".join(p[0].upper() for p in name.split()[:2]) or name[:2].upper()
+    name = _resolve_local_username()
+    handle = re.sub(r"[^a-z0-9._-]+", "", name.lower().replace(" ", "")) or "user"
+    parts = [part for part in re.split(r"[\s._-]+", name) if part]
+    initials = "".join(part[0].upper() for part in parts[:2]) or name[:2].upper() or "U"
     return {"name": name, "handle": handle, "initials": initials}
+
+
+def _resolve_local_username() -> str:
+    """Best-effort local account name for the current machine."""
+    candidates = [
+        os.environ.get("USER"),
+        os.environ.get("USERNAME"),
+        os.environ.get("LOGNAME"),
+    ]
+    try:
+        candidates.append(getpass.getuser())
+    except Exception:
+        pass
+
+    for candidate in candidates:
+        if candidate and candidate.strip():
+            return candidate.strip()
+
+    return "user"
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +254,10 @@ def _build_sessions() -> list[dict]:
         sessions.append(current)
 
     # 2. Historical sessions from conversation archives (one per day, most recent first)
-    archive_sessions = _build_archive_sessions()
+    skip_dates: set[str] = set()
+    if current and current.get("chat", {}).get("messages"):
+        skip_dates.add(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    archive_sessions = _build_archive_sessions(skip_dates=skip_dates)
     sessions.extend(archive_sessions)
 
     return sessions
@@ -255,20 +281,28 @@ def _build_current_session() -> dict | None:
     messages = _convert_messages(raw_msgs) if raw_msgs else []
 
     from cyrene.subagent import _registry  # noqa: WPS437
+    subagent_registry = _infer_subagent_entries(raw_msgs, _registry)
     subagents = []
-    for agent_id, info in _registry.items():
+    for agent_id, info in subagent_registry.items():
         status = info.get("status", "running")
         ui_status = {"running": "running", "waiting": "queued", "resumed": "running",
                      "done": "done", "timeout": "err"}.get(status, status)
+        created_at = info.get("created_at")
         subagents.append({
             "id": agent_id,
             "name": agent_id,
             "status": ui_status,
             "task": info.get("task", ""),
-            "tokens": 0,
-            "elapsed": "—",
-            "progress": 1.0 if status == "done" else 0.5,
+            "tokens": len(info.get("messages", [])),
+            "elapsed": _elapsed_since(created_at),
+            "progress": _status_progress(status),
+            "result": info.get("result", ""),
+            "messageCount": len(info.get("messages", [])),
+            "createdAt": _short_time(created_at),
+            "updatedAt": _short_time(info.get("updated_at")),
         })
+
+    subagents.sort(key=lambda item: (item.get("createdAt") == "—", item.get("createdAt"), item["name"]))
 
     started_at = datetime.fromtimestamp(_SERVER_STARTED_AT, tz=timezone.utc).strftime("%H:%M")
     duration = _format_duration(time.time() - _SERVER_STARTED_AT)
@@ -300,11 +334,11 @@ def _build_current_session() -> dict | None:
         },
         "shells": [],
         "subagents": subagents,
-        "flow": _build_live_flow(messages, subagents),
+        "flow": _build_live_flow(raw_msgs, messages, subagents, subagent_registry),
     }
 
 
-def _build_archive_sessions() -> list[dict]:
+def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
     """Build session entries from conversation archives (one per day)."""
     if not CONVERSATIONS_DIR.exists():
         return []
@@ -313,6 +347,8 @@ def _build_archive_sessions() -> list[dict]:
     files = sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)
     for filepath in files[:10]:  # cap at 10 most recent days
         date_str = filepath.stem
+        if skip_dates and date_str in skip_dates:
+            continue
         try:
             content = filepath.read_text(encoding="utf-8")
         except Exception:
@@ -381,10 +417,15 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
         if role not in ("user", "assistant"):
             continue
         content = (m.get("content") or "").strip()
-        if not content:
+        has_live_detail = bool(m.get("reasoning_content") or m.get("tool_calls"))
+        if role == "user" and not content:
+            continue
+        if role == "assistant" and not content and not has_live_detail:
             continue
         ui_role = "user" if role == "user" else "agent"
-        ui_msg = {"id": f"m{i}", "role": ui_role, "time": "—", "body": content}
+        ui_msg = {"id": f"m{i}", "role": ui_role, "time": "—"}
+        if content:
+            ui_msg["body"] = content
         if m.get("reasoning_content"):
             ui_msg["thinking"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -453,12 +494,243 @@ def _build_simple_flow(messages: list[dict]) -> dict:
     return {"nodes": nodes, "edges": edges}
 
 
-def _build_live_flow(messages: list[dict], subagents: list[dict]) -> dict:
-    """Build a richer flow for the current session, including subagents."""
+def _build_live_flow(raw_msgs: list[dict], messages: list[dict], subagents: list[dict], registry: dict[str, dict]) -> dict:
+    """Build a richer flow for the current session, stacked by conversation round."""
+    rounds = _split_raw_rounds(raw_msgs)
+    recent_events = debug.get_recent_events(250)
+    if not rounds and raw_msgs:
+        rounds = [raw_msgs]
+    if not rounds:
+        synthetic_round = _synthetic_live_round(registry, recent_events)
+        if synthetic_round:
+            rounds = [synthetic_round]
+    if not rounds:
+        return {"nodes": [], "edges": []}
+
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    next_y = 0
+    multiple_rounds = len(rounds) > 1
+
+    for round_index, round_raw in enumerate(rounds):
+        is_current_round = round_index == len(rounds) - 1
+        round_messages = _convert_messages(round_raw)
+        round_registry = _round_registry_for_flow(round_raw, registry if is_current_round else {})
+        round_id = _round_id_from_messages(round_raw)
+        related_agents = _related_round_agent_names(set(round_registry), round_id=round_id)
+        if is_current_round and subagents:
+            candidate_subagents = subagents if not round_registry else [sa for sa in subagents if sa["name"] in related_agents]
+            for sa in candidate_subagents:
+                entry = round_registry.setdefault(sa["name"], {
+                    "task": sa.get("task", ""),
+                    "status": "done",
+                    "result": sa.get("result", ""),
+                    "messages": [],
+                    "created_at": None,
+                    "updated_at": None,
+                    "round_id": round_id,
+                })
+                entry["task"] = entry.get("task") or sa.get("task", "")
+                entry["status"] = _registry_status_from_ui(sa.get("status", entry.get("status", "done")))
+                entry["result"] = entry.get("result") or sa.get("result", "")
+        if is_current_round and not round_registry and registry:
+            round_registry = {
+                agent_id: dict(info)
+                for agent_id, info in registry.items()
+                if not round_id or info.get("round_id") in ("", round_id)
+            }
+        round_subagents = _subagent_cards_from_registry(round_registry)
+        prefix = f"r{round_index}_" if multiple_rounds else ""
+        round_nodes, round_edges, round_bottom = _build_live_flow_round(
+            prefix=prefix,
+            raw_msgs=round_raw,
+            messages=round_messages,
+            subagents=round_subagents,
+            registry=round_registry,
+            recent_events=recent_events if is_current_round else [],
+            y_offset=next_y,
+            round_id=round_id,
+        )
+        nodes.extend(round_nodes)
+        edges.extend(round_edges)
+        next_y = round_bottom + 180
+
+    return {"nodes": nodes, "edges": edges}
+
+
+def _synthetic_live_round(registry: dict[str, dict], recent_events: list[dict]) -> list[dict]:
+    if not registry:
+        return []
+    round_id = next((str(info.get("round_id", "")).strip() for info in registry.values() if info.get("round_id")), "")
+    latest_phase = next((e for e in reversed(recent_events) if e.get("type") == "phase_transition"), None)
+    latest_llm = next((e for e in reversed(recent_events) if e.get("type") == "llm_call" and e.get("caller") == "main_agent"), None)
+    prompt = (
+        latest_phase.get("detail")
+        if latest_phase and latest_phase.get("detail")
+        else latest_llm.get("response")
+        if latest_llm and latest_llm.get("response")
+        else "Live round in progress"
+    )
+    entry: dict[str, Any] = {"role": "user", "content": prompt}
+    if round_id:
+        entry["round_id"] = round_id
+    return [entry]
+
+
+def _split_raw_rounds(raw_msgs: list[dict]) -> list[list[dict]]:
+    rounds: list[list[dict]] = []
+    current: list[dict] = []
+    for msg in raw_msgs:
+        if msg.get("round_id") and current:
+            current_round_id = current[0].get("round_id")
+            if current_round_id and msg.get("round_id") != current_round_id:
+                rounds.append(current)
+                current = []
+        if msg.get("role") == "user":
+            if current:
+                rounds.append(current)
+            current = [msg]
+        elif current:
+            current.append(msg)
+    if current:
+        rounds.append(current)
+    return rounds
+
+
+def _round_registry_for_flow(raw_msgs: list[dict], live_registry: dict[str, dict]) -> dict[str, dict]:
+    entries: dict[str, dict] = {}
+    round_id = _round_id_from_messages(raw_msgs)
+    for msg in raw_msgs:
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            if fn.get("name") != "spawn_subagent":
+                continue
+            args = _safe_json_loads(fn.get("arguments") or "{}")
+            if not isinstance(args, dict):
+                continue
+            agent_id = str(args.get("agent_id") or "").strip()
+            if not agent_id:
+                continue
+            live = dict(live_registry.get(agent_id, {}))
+            if round_id and live.get("round_id") and live.get("round_id") != round_id:
+                live = {}
+            task = str(args.get("task") or live.get("task") or "")
+            entries[agent_id] = {
+                "task": task,
+                "status": live.get("status", "done"),
+                "result": live.get("result", ""),
+                "messages": list(live.get("messages", [])),
+                "created_at": live.get("created_at"),
+                "updated_at": live.get("updated_at"),
+                "round_id": round_id or live.get("round_id", ""),
+            }
+    return entries
+
+
+def _related_round_agent_names(seed_ids: set[str], round_id: str = "") -> set[str]:
+    if not seed_ids:
+        return set()
+    related = set(seed_ids)
+    inbox_root = DATA_DIR / "inbox"
+    if not inbox_root.exists():
+        return related
+
+    changed = True
+    while changed:
+        changed = False
+        for msg_file in inbox_root.glob("*/*.json"):
+            try:
+                payload = json.loads(msg_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if round_id and str(payload.get("round_id", "")) != round_id:
+                continue
+            from_agent = str(payload.get("from", ""))
+            to_agent = str(payload.get("to", ""))
+            if from_agent in related or to_agent in related:
+                size_before = len(related)
+                if from_agent:
+                    related.add(from_agent)
+                if to_agent:
+                    related.add(to_agent)
+                changed = changed or len(related) != size_before
+    return related
+
+
+def _round_id_from_messages(raw_msgs: list[dict]) -> str:
+    for msg in raw_msgs:
+        round_id = str(msg.get("round_id", "")).strip()
+        if round_id:
+            return round_id
+    return ""
+
+
+def _registry_status_from_ui(status: str) -> str:
+    return {
+        "running": "running",
+        "queued": "waiting",
+        "done": "done",
+        "err": "timeout",
+    }.get(status, status)
+
+
+def _subagent_cards_from_registry(round_registry: dict[str, dict]) -> list[dict]:
+    cards: list[dict] = []
+    for agent_id, info in round_registry.items():
+        status = info.get("status", "done")
+        ui_status = {"running": "running", "waiting": "queued", "resumed": "running",
+                     "done": "done", "timeout": "err"}.get(status, status)
+        created_at = info.get("created_at")
+        cards.append({
+            "id": agent_id,
+            "name": agent_id,
+            "status": ui_status,
+            "task": info.get("task", ""),
+            "tokens": len(info.get("messages", [])),
+            "elapsed": _elapsed_since(created_at),
+            "progress": _status_progress(status),
+            "result": info.get("result", ""),
+            "messageCount": len(info.get("messages", [])),
+            "createdAt": _short_time(created_at),
+            "updatedAt": _short_time(info.get("updated_at")),
+        })
+    return cards
+
+
+def _build_live_flow_round(
+    prefix: str,
+    raw_msgs: list[dict],
+    messages: list[dict],
+    subagents: list[dict],
+    registry: dict[str, dict],
+    recent_events: list[dict],
+    y_offset: int,
+    round_id: str,
+) -> tuple[list[dict], list[dict], int]:
+    main_x = 320
+    main_y = y_offset + 70
+    main_tool_x = 600
+    subagent_x = 900
+    subagent_tool_x = 1220
+    output_x = 1540
+    subagent_base_y = y_offset + 40
+    subagent_gap_y = 220
+
     last_user = next((m for m in messages if m["role"] == "user"), None)
+    latest_main_llm = next((e for e in reversed(recent_events) if e.get("type") == "llm_call" and e.get("caller") == "main_agent"), None)
+    latest_phase = next((e for e in reversed(recent_events) if e.get("type") == "phase_transition"), None)
+    latest_agent = next((m for m in reversed(messages) if m["role"] == "agent"), None)
+    latest_assistant_raw = next((m for m in reversed(raw_msgs) if m.get("role") == "assistant"), None)
+    main_tokens_in, main_tokens_out = _usage_totals(raw_msgs)
+    main_tool_base_y = main_y + 150
+
+    main_id = f"{prefix}n_main"
+    user_id = f"{prefix}n_user"
+    output_id = f"{prefix}n_out"
+
     nodes = [
         {
-            "id": "n_user", "kind": "input", "x": 40, "y": 80,
+            "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
             "title": "user request", "status": "done",
             "detail": {
                 "role": "User",
@@ -468,30 +740,65 @@ def _build_live_flow(messages: list[dict], subagents: list[dict]) -> dict:
             },
         },
         {
-            "id": "n_main", "kind": "main", "x": 320, "y": 70,
+            "id": main_id, "kind": "main", "x": main_x, "y": main_y,
             "title": f"main agent · {ASSISTANT_NAME}",
-            "subtitle": "orchestrator",
-            "status": "running" if subagents else "done",
+            "subtitle": latest_phase["to"] if latest_phase and latest_phase.get("to") else "orchestrator",
+            "status": "running" if any(sa["status"] == "running" for sa in subagents) else ("done" if latest_agent else "queued"),
             "model": OPENAI_MODEL,
             "detail": {
                 "systemPrompt": (
                     f"You are {ASSISTANT_NAME}. Two-phase loop: lightweight tool decision, "
                     "then full tool loop with subagent spawn. Chat filter applies SOUL.md voice."
                 ),
-                "reasoning": "Live session — see chat for current turn.",
-                "tokensIn": 0, "tokensOut": 0,
+                "reasoning": (
+                    latest_assistant_raw.get("reasoning_content")
+                    if latest_assistant_raw and latest_assistant_raw.get("reasoning_content")
+                    else latest_main_llm.get("response")
+                    if latest_main_llm and latest_main_llm.get("response")
+                    else latest_phase.get("detail")
+                    if latest_phase and latest_phase.get("detail")
+                    else "Session step completed."
+                ),
+                "tokensIn": main_tokens_in if main_tokens_in is not None else "—",
+                "tokensOut": main_tokens_out if main_tokens_out is not None else "—",
                 "model": OPENAI_MODEL, "temp": 0.2,
             },
         },
     ]
-    edges = [{"from": "n_user", "to": "n_main", "kind": "active"}]
+    edges = [{"from": user_id, "to": main_id, "kind": "active"}]
 
-    # Add subagents
+    tool_nodes, tool_edges = _build_tool_nodes_for_owner(
+        owner_node_id=main_id,
+        owner_title=f"main agent · {ASSISTANT_NAME}",
+        owner_x=main_x,
+        owner_y=main_y,
+        raw_messages=raw_msgs,
+        recent_events=recent_events,
+        caller_prefix="main_agent",
+        x=main_tool_x,
+        base_y=main_tool_base_y,
+    )
+    nodes.extend(tool_nodes)
+    edges.extend(tool_edges)
+
+    agent_node_ids: dict[str, str] = {}
+    subagent_bottoms: list[int] = []
+    subagent_y = subagent_base_y
     for i, sa in enumerate(subagents):
-        nid = f"n_sa_{i}"
+        nid = f"{prefix}n_sa_{i}"
+        agent_node_ids[sa["name"]] = nid
+        info = registry.get(sa["name"], {})
+        agent_messages = info.get("messages", [])
+        latest_subassistant = next((m for m in reversed(agent_messages) if m.get("role") == "assistant"), None)
+        sub_tokens_in, sub_tokens_out = _usage_totals(agent_messages)
+        sub_tool_count = _count_tool_nodes_for_owner(
+            raw_messages=agent_messages,
+            recent_events=recent_events,
+            caller_prefix=f"subagent_{sa['name']}",
+        )
         nodes.append({
             "id": nid, "kind": "subagent",
-            "x": 660, "y": 40 + i * 140,
+            "x": subagent_x, "y": subagent_y,
             "title": f"subagent · {sa['name']}",
             "subtitle": sa["task"][:30],
             "status": sa["status"],
@@ -499,18 +806,59 @@ def _build_live_flow(messages: list[dict], subagents: list[dict]) -> dict:
                 "name": sa["name"],
                 "task": sa["task"],
                 "parent": "main agent",
-                "spawnedAt": "—",
-                "tokensIn": 0,
-                "tokensOut": 0,
+                "spawnedAt": sa.get("createdAt", "—"),
+                "tokensIn": sub_tokens_in if sub_tokens_in is not None else "—",
+                "tokensOut": sub_tokens_out if sub_tokens_out is not None else "—",
                 "model": OPENAI_MODEL,
+                "reasoning": latest_subassistant.get("reasoning_content") if latest_subassistant else "",
+                "result": sa.get("result", ""),
             },
         })
         edges.append({
-            "from": "n_main", "to": nid,
+            "from": main_id, "to": nid,
             "kind": "active" if sa["status"] == "running" else None,
         })
 
-    return {"nodes": nodes, "edges": edges}
+        sub_nodes, sub_edges = _build_tool_nodes_for_owner(
+            owner_node_id=nid,
+            owner_title=f"subagent · {sa['name']}",
+            owner_x=subagent_x,
+            owner_y=subagent_y,
+            raw_messages=agent_messages,
+            recent_events=recent_events,
+            caller_prefix=f"subagent_{sa['name']}",
+            x=subagent_tool_x,
+            base_y=subagent_y,
+        )
+        nodes.extend(sub_nodes)
+        edges.extend(sub_edges)
+        lane_height = _agent_lane_height(sub_tool_count)
+        subagent_bottoms.append(subagent_y + lane_height)
+        subagent_y += lane_height + subagent_gap_y
+
+    edges.extend(_build_comm_edges(agent_node_ids, round_id=round_id))
+
+    output_content = latest_agent["body"] if latest_agent else ""
+    output_status = "done" if output_content else ("running" if subagents else "queued")
+    if output_content or subagents:
+        flow_bottom = max(subagent_bottoms) if subagent_bottoms else (main_tool_base_y + _agent_lane_height(max(1, len(tool_nodes))))
+        output_y = y_offset + 90 if not subagents else max(y_offset + 90, int((main_y + flow_bottom) / 2) - 43)
+        nodes.append({
+            "id": output_id, "kind": "output", "x": output_x, "y": output_y,
+            "title": "response", "status": output_status,
+            "detail": {
+                "kind": "Output",
+                "content": output_content or "Waiting for subagent synthesis…",
+            },
+        })
+        edges.append({
+            "from": main_id,
+            "to": output_id,
+            "kind": "active" if output_status == "running" else None,
+        })
+
+    bottom = max((node["y"] + 86) for node in nodes) if nodes else y_offset
+    return nodes, edges, bottom
 
 
 def _empty_session() -> dict:
@@ -805,16 +1153,82 @@ def _build_config() -> dict:
 
 
 def _load_messages() -> list[dict]:
+    msgs = _load_state_messages()
+    if msgs:
+        result = []
+        for m in msgs:
+            role = m.get("role", "")
+            if role not in ("user", "assistant"):
+                continue
+            content = m.get("content", "")
+            if not content or not content.strip():
+                continue
+            result.append({"role": role, "content": content})
+        if result:
+            return result
+
     archive_msgs = _parse_conversation_archive()
     if archive_msgs:
         return archive_msgs
+
+    return []
+
+
+def _load_state_messages() -> list[dict]:
     if not STATE_FILE.exists():
         return []
     try:
         data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        msgs = data.get("messages", [])
+        return data.get("messages", []) or []
     except Exception:
         return []
+
+
+def _infer_subagent_entries(raw_msgs: list[dict], registry: dict[str, dict]) -> dict[str, dict]:
+    entries: dict[str, dict] = {
+        agent_id: dict(info)
+        for agent_id, info in registry.items()
+    }
+    for entry in entries.values():
+        entry.setdefault("messages", [])
+
+    spawned: dict[str, dict[str, str]] = {}
+    for msg in raw_msgs:
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            if fn.get("name") != "spawn_subagent":
+                continue
+            args = _safe_json_loads(fn.get("arguments") or "{}")
+            if not isinstance(args, dict):
+                continue
+            agent_id = str(args.get("agent_id") or "").strip()
+            if not agent_id:
+                continue
+            spawned[agent_id] = {"task": str(args.get("task") or "")}
+
+    for agent_id, meta in spawned.items():
+        entry = entries.setdefault(agent_id, {})
+        entry.setdefault("task", meta["task"])
+        entry.setdefault("status", "done")
+        entry.setdefault("result", "")
+        entry.setdefault("messages", [])
+        entry.setdefault("created_at", None)
+        entry.setdefault("updated_at", None)
+
+    inbox_meta = _scan_inbox_agents()
+    for agent_id, meta in inbox_meta.items():
+        entry = entries.setdefault(agent_id, {})
+        entry.setdefault("task", spawned.get(agent_id, {}).get("task", "Discuss with other subagents"))
+        entry.setdefault("status", "done")
+        entry.setdefault("result", "")
+        if not entry.get("messages"):
+            entry["messages"] = [{}] * int(meta.get("message_count") or 0)
+        if meta.get("created_at") and not entry.get("created_at"):
+            entry["created_at"] = meta["created_at"]
+        if meta.get("updated_at") and not entry.get("updated_at"):
+            entry["updated_at"] = meta["updated_at"]
+
+    return entries
     result = []
     for m in msgs:
         role = m.get("role", "")
@@ -881,3 +1295,270 @@ def _format_duration(seconds: float) -> str:
     if h:
         return f"{h}h {m:02d}m"
     return f"{m:02d}:{s:02d}"
+
+
+def _status_progress(status: str) -> float:
+    return {
+        "running": 0.45,
+        "resumed": 0.65,
+        "waiting": 0.82,
+        "done": 1.0,
+        "timeout": 1.0,
+    }.get(status, 0.5)
+
+
+def _short_time(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime("%H:%M:%S")
+    except Exception:
+        return "—"
+
+
+def _elapsed_since(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(value)
+        return _format_duration((datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds())
+    except Exception:
+        return "—"
+
+
+def _safe_json_loads(value: str) -> dict[str, Any] | list[Any] | None:
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def _summarize_text(value: str, limit: int = 96) -> str:
+    text = re.sub(r"\s+", " ", (value or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
+
+
+def _tool_output_map(raw_messages: list[dict]) -> dict[str, str]:
+    outputs: dict[str, str] = {}
+    for msg in raw_messages:
+        if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            outputs[str(msg["tool_call_id"])] = str(msg.get("content") or "")
+    return outputs
+
+
+def _usage_totals(raw_messages: list[dict]) -> tuple[int | None, int | None]:
+    prompt_total = 0
+    completion_total = 0
+    found = False
+    for msg in raw_messages:
+        usage = msg.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+        if isinstance(prompt, int):
+            prompt_total += prompt
+            found = True
+        if isinstance(completion, int):
+            completion_total += completion
+            found = True
+    if not found:
+        return None, None
+    return prompt_total, completion_total
+
+
+def _build_tool_nodes_for_owner(
+    owner_node_id: str,
+    owner_title: str,
+    owner_x: int,
+    owner_y: int,
+    raw_messages: list[dict],
+    recent_events: list[dict],
+    caller_prefix: str,
+    x: int,
+    base_y: int,
+) -> tuple[list[dict], list[dict]]:
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    tool_outputs = _tool_output_map(raw_messages)
+    tool_index = 0
+
+    for msg_index, msg in enumerate(raw_messages):
+        tool_calls = msg.get("tool_calls") or []
+        for call_index, tc in enumerate(tool_calls):
+            fn = tc.get("function", {})
+            raw_args = fn.get("arguments") or "{}"
+            parsed_args = _safe_json_loads(raw_args) if isinstance(raw_args, str) else raw_args
+            output = tool_outputs.get(str(tc.get("id")), "")
+            status = "done" if output else "running"
+            nid = f"{owner_node_id}_tool_{msg_index}_{call_index}"
+            nodes.append({
+                "id": nid,
+                "kind": "tool",
+                "x": x,
+                "y": base_y + tool_index * 112,
+                "title": fn.get("name", "tool"),
+                "subtitle": _summarize_text(str(raw_args), 36) if raw_args else "",
+                "status": status,
+                "detail": {
+                    "name": fn.get("name", "tool"),
+                    "owner": owner_title,
+                    "input": parsed_args if parsed_args is not None else raw_args,
+                    "output": output or "Running…",
+                    "duration": "—",
+                },
+            })
+            edges.append({
+                "from": owner_node_id,
+                "to": nid,
+                "kind": "active" if status == "running" else None,
+            })
+            tool_index += 1
+
+    overlay_events = [
+        event for event in recent_events
+        if event.get("type") == "tool_call" and str(event.get("caller", "")).startswith(caller_prefix)
+    ][-6:]
+    for event_index, event in enumerate(overlay_events):
+        key = f"{event.get('tool')}::{json.dumps(event.get('args', {}), ensure_ascii=False, sort_keys=True)}"
+        if any(node["detail"].get("name") == event.get("tool") and json.dumps(node["detail"].get("input", {}), ensure_ascii=False, sort_keys=True) == json.dumps(event.get("args", {}), ensure_ascii=False, sort_keys=True) for node in nodes):
+            continue
+        nid = f"{owner_node_id}_live_tool_{event_index}"
+        nodes.append({
+            "id": nid,
+            "kind": "tool",
+            "x": x,
+            "y": base_y + tool_index * 112,
+            "title": event.get("tool", "tool"),
+            "subtitle": _summarize_text(json.dumps(event.get("args", {}), ensure_ascii=False), 36),
+            "status": "running",
+            "detail": {
+                "name": event.get("tool", "tool"),
+                "owner": owner_title,
+                "input": event.get("args", {}),
+                "output": event.get("result_preview", "Running…"),
+                "duration": "live",
+                "eventKey": key,
+            },
+        })
+        edges.append({"from": owner_node_id, "to": nid, "kind": "active"})
+        tool_index += 1
+
+    return nodes, edges
+
+
+def _count_tool_nodes_for_owner(
+    raw_messages: list[dict],
+    recent_events: list[dict],
+    caller_prefix: str,
+) -> int:
+    count = sum(len(msg.get("tool_calls") or []) for msg in raw_messages)
+    message_keys = {
+        (
+            tc.get("function", {}).get("name", "tool"),
+            json.dumps(
+                _safe_json_loads(tc.get("function", {}).get("arguments") or "{}")
+                if isinstance(tc.get("function", {}).get("arguments"), str)
+                else (tc.get("function", {}).get("arguments") or {}),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        for msg in raw_messages
+        for tc in (msg.get("tool_calls") or [])
+    }
+    overlay_events = [
+        event for event in recent_events
+        if event.get("type") == "tool_call" and str(event.get("caller", "")).startswith(caller_prefix)
+    ][-6:]
+    overlay_count = 0
+    for event in overlay_events:
+        event_key = (
+            event.get("tool", "tool"),
+            json.dumps(event.get("args", {}), ensure_ascii=False, sort_keys=True),
+        )
+        if event_key in message_keys:
+            continue
+        overlay_count += 1
+    return count + overlay_count
+
+
+def _agent_lane_height(tool_count: int) -> int:
+    base_height = 86
+    if tool_count <= 0:
+        return base_height
+    return max(base_height, base_height + (tool_count - 1) * 112)
+
+
+def _build_comm_edges(agent_node_ids: dict[str, str], round_id: str = "") -> list[dict]:
+    edges: list[dict] = []
+    if not agent_node_ids:
+        return edges
+    seen: set[tuple[str, str, str]] = set()
+    for agent_name, target_node_id in agent_node_ids.items():
+        inbox_dir = DATA_DIR / "inbox" / agent_name
+        if not inbox_dir.exists():
+            continue
+        for msg_file in sorted(inbox_dir.glob("msg_*.json")):
+            try:
+                payload = json.loads(msg_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            from_agent = str(payload.get("from", ""))
+            to_agent = str(payload.get("to", ""))
+            if round_id and str(payload.get("round_id", "")) != round_id:
+                continue
+            if from_agent not in agent_node_ids or to_agent not in agent_node_ids:
+                continue
+            edge_key = (from_agent, to_agent, str(payload.get("message_id", msg_file.stem)))
+            if edge_key in seen:
+                continue
+            seen.add(edge_key)
+            body = str(payload.get("content", ""))
+            edges.append({
+                "from": agent_node_ids[from_agent],
+                "to": agent_node_ids[to_agent],
+                "kind": "comm",
+                "label": payload.get("type", "chat"),
+                "message": {
+                    "time": _short_time(payload.get("timestamp")),
+                    "summary": _summarize_text(body, 90),
+                    "body": body,
+                },
+            })
+    return edges
+
+
+def _scan_inbox_agents() -> dict[str, dict[str, Any]]:
+    agents: dict[str, dict[str, Any]] = {}
+    inbox_root = DATA_DIR / "inbox"
+    if not inbox_root.exists():
+        return agents
+
+    for inbox_dir in sorted(path for path in inbox_root.iterdir() if path.is_dir()):
+        agent_id = inbox_dir.name
+        timestamps: list[str] = []
+        msg_count = 0
+        for msg_file in sorted(inbox_dir.glob("msg_*.json")):
+            try:
+                payload = json.loads(msg_file.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            msg_count += 1
+            timestamp = payload.get("timestamp")
+            if isinstance(timestamp, str) and timestamp:
+                timestamps.append(timestamp)
+
+        if msg_count == 0:
+            continue
+
+        timestamps.sort()
+        agents[agent_id] = {
+            "message_count": msg_count,
+            "created_at": timestamps[0] if timestamps else None,
+            "updated_at": timestamps[-1] if timestamps else None,
+        }
+
+    return agents

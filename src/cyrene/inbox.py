@@ -96,6 +96,7 @@ def send_message(
     to_agent: str,
     msg_type: str,
     content: str,
+    round_id: str = "",
 ) -> str:
     """Send a message to *to_agent*'s inbox.
 
@@ -116,6 +117,8 @@ def send_message(
                 "content": content,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
+            if round_id:
+                message["round_id"] = round_id
             msg_path = _inbox_path(to_agent) / f"{msg_id}.json"
             msg_path.write_text(
                 json.dumps(message, ensure_ascii=False, indent=2),

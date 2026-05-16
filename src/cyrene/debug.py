@@ -5,6 +5,7 @@ Activated by `python -m cyrene.local_cli --verbose`.
 
 import json
 import logging
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -122,6 +123,7 @@ def get_log_path() -> str:
 import asyncio
 
 _event_queue: asyncio.Queue | None = None
+_recent_events: deque[dict] = deque(maxlen=500)
 
 
 def enable_event_bus() -> None:
@@ -133,6 +135,9 @@ def enable_event_bus() -> None:
 
 async def publish_event(event: dict) -> None:
     """发布一条事件（由 agent.py 调用）。自动初始化事件总线。"""
+    if "timestamp" not in event:
+        event = {**event, "timestamp": datetime.now(timezone.utc).isoformat()}
+    _recent_events.append(event)
     if _event_queue is None:
         enable_event_bus()
     q = _event_queue
@@ -160,3 +165,10 @@ async def subscribe():
             yield event
         except asyncio.TimeoutError:
             yield {"type": "heartbeat", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+def get_recent_events(limit: int = 200) -> list[dict]:
+    """Return a copy of the most recent runtime events for live UI overlays."""
+    if limit <= 0:
+        return []
+    return list(_recent_events)[-limit:]

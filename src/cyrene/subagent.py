@@ -17,7 +17,10 @@ _run_subagent 原本在 agent.py 中，移到此处避免 tools.py 与 agent.py 
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
+
+from cyrene import debug
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +36,40 @@ _registry: dict[str, dict] = {}
 _lock = asyncio.Lock()
 
 
-async def register(agent_id: str, task: str) -> None:
+async def _publish_registry_event(agent_id: str) -> None:
+    """Publish the latest subagent snapshot for live UI updates."""
+    async with _lock:
+        entry = dict(_registry.get(agent_id, {}))
+    if not entry:
+        return
+    await debug.publish_event({
+        "type": "subagent_update",
+        "agent_id": agent_id,
+        "task": entry.get("task", ""),
+        "status": entry.get("status", ""),
+        "result_preview": str(entry.get("result", "") or "")[:200],
+        "message_count": len(entry.get("messages", [])),
+        "created_at": entry.get("created_at"),
+        "updated_at": entry.get("updated_at"),
+        "round_id": entry.get("round_id", ""),
+    })
+
+
+async def register(agent_id: str, task: str, round_id: str = "") -> None:
     """注册一个子 agent。"""
     async with _lock:
-        _registry[agent_id] = {"task": task, "status": RUNNING, "result": "", "messages": []}
+        now = datetime.now(timezone.utc).isoformat()
+        _registry[agent_id] = {
+            "task": task,
+            "status": RUNNING,
+            "result": "",
+            "messages": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+        if round_id:
+            _registry[agent_id]["round_id"] = round_id
+    await _publish_registry_event(agent_id)
 
 
 async def save_messages(agent_id: str, messages: list) -> None:
@@ -44,6 +77,8 @@ async def save_messages(agent_id: str, messages: list) -> None:
     async with _lock:
         if agent_id in _registry:
             _registry[agent_id]["messages"] = messages
+            _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _publish_registry_event(agent_id)
 
 
 async def mark_done(agent_id: str, result: str = "") -> None:
@@ -55,12 +90,14 @@ async def mark_done(agent_id: str, result: str = "") -> None:
     async with _lock:
         if agent_id in _registry:
             _registry[agent_id]["status"] = DONE
+            _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
             existing = _registry[agent_id].get("result", "") or ""
             if result and result != existing:
                 if existing:
                     _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:2000]
                 else:
                     _registry[agent_id]["result"] = result[:2000]
+    await _publish_registry_event(agent_id)
 
 
 async def reactivate(agent_id: str) -> bool:
@@ -74,8 +111,14 @@ async def reactivate(agent_id: str) -> bool:
             return False
         if entry["status"] in (DONE, TIMEOUT):
             entry["status"] = RESUMED
-            return True
-        return False
+            entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+            should_publish = True
+        else:
+            should_publish = False
+    if should_publish:
+        await _publish_registry_event(agent_id)
+        return True
+    return False
 
 
 async def get_raw_messages(agent_id: str) -> list:
@@ -98,6 +141,13 @@ async def get_task(agent_id: str) -> str:
         return entry["task"] if entry else ""
 
 
+async def get_round_id(agent_id: str) -> str:
+    """获取 agent 所属轮次 ID。"""
+    async with _lock:
+        entry = _registry.get(agent_id)
+        return str(entry.get("round_id", "")) if entry else ""
+
+
 async def set_waiting(agent_id: str, result: str = "") -> None:
     """标记 agent 活干完了，等待其他人。
 
@@ -107,8 +157,10 @@ async def set_waiting(agent_id: str, result: str = "") -> None:
     async with _lock:
         if agent_id in _registry and _registry[agent_id]["status"] == RUNNING:
             _registry[agent_id]["status"] = WAITING
+            _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
             if result:
                 _registry[agent_id]["result"] = result[:1000]
+    await _publish_registry_event(agent_id)
 
 
 async def set_resumed(agent_id: str) -> None:
@@ -116,6 +168,8 @@ async def set_resumed(agent_id: str) -> None:
     async with _lock:
         if agent_id in _registry and _registry[agent_id]["status"] == WAITING:
             _registry[agent_id]["status"] = RESUMED
+            _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _publish_registry_event(agent_id)
 
 
 async def can_receive(agent_id: str) -> bool:
@@ -263,11 +317,13 @@ async def _run_subagent(
 
     Uses lazy imports from agent.py to avoid circular dependencies.
     """
-    from cyrene.agent import _call_llm, _caller_type, _current_agent_id, _MAX_TOOL_ROUNDS
+    from cyrene.agent import _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
     from cyrene.llm import _assistant_text, _truncate
     from cyrene.tools import TOOL_DEFS, _execute_tool
 
     _caller_type.set(f"subagent_{agent_id}")
+    round_id = await get_round_id(agent_id)
+    round_token = _current_round_id.set(round_id) if round_id else None
     from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
 
     subagent_prompt = f"""You are a sub-agent, ID: {agent_id}. Your job is to complete the assigned task.
@@ -280,6 +336,8 @@ You can:
 Rules:
 - Search max 3 times. If still no useful results, use your existing knowledge and tag the output with `[fallback to model knowledge]`.
 - When you call quit, include your findings or analysis in the text. Do not quit empty-handed.
+- Your final quit text is automatically collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
+- When you choose people to message, only use agent IDs that appear in the current `[活跃子 agent]` list or in your inbox messages. If an ID is not currently visible there, treat it as unavailable.
 """
 
     if resume_messages:
@@ -323,6 +381,8 @@ Rules:
                 entry["reasoning_content"] = response["reasoning_content"]
             if response.get("tool_calls"):
                 entry["tool_calls"] = response["tool_calls"]
+            if response.get("usage"):
+                entry["usage"] = response["usage"]
             messages.append(entry)
 
             # Save messages to registry for WebUI display
@@ -380,6 +440,9 @@ Rules:
     except Exception as e:
         logger.exception("Sub-agent %s crashed", agent_id)
         final_text = f"Sub-agent crashed: {e}"
+    finally:
+        if round_token is not None:
+            _current_round_id.reset(round_token)
 
     await mark_done(agent_id, final_text)
     return final_text

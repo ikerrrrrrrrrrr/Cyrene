@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # 当前 agent ID，用于 send_agent_message 识别发送者
 _current_agent_id: ContextVar[str] = ContextVar("_current_agent_id", default="main")
+# 当前对话轮次 ID，用于隔离多轮 flow / inbox 通信
+_current_round_id: ContextVar[str] = ContextVar("_current_round_id", default="")
 # 当前调用者类型，用于 debug 日志
 _caller_type: ContextVar[str] = ContextVar("_caller_type", default="main_agent")
 _agent_lock = asyncio.Lock()
@@ -104,6 +106,12 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
             trimmed = trimmed[:i]
             break
     STATE_FILE.write_text(json.dumps({"messages": trimmed}, ensure_ascii=False, indent=2), encoding="utf-8")
+    await debug.publish_event({
+        "type": "session_update",
+        "message_count": len(trimmed),
+        "last_role": trimmed[-1].get("role") if trimmed else "",
+        "round_id": next((str(m.get("round_id", "")).strip() for m in reversed(trimmed) if m.get("round_id")), ""),
+    })
 
     # 如果原始消息超过阈值，后台压缩
     if len(messages) >= _MAX_HISTORY_MESSAGES + 5:
@@ -241,6 +249,8 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
             resp.raise_for_status()
         data = resp.json()
         msg = data["choices"][0]["message"]
+        if data.get("usage"):
+            msg["usage"] = data["usage"]
         if debug.VERBOSE:
             debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
         await debug.publish_event({
@@ -249,6 +259,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
             "response": _assistant_text(msg)[:200],
             "tool_calls": [{"name": tc["function"]["name"], "args": tc["function"].get("arguments", "")[:100]}
                           for tc in (msg.get("tool_calls") or [])],
+            "usage": data.get("usage") or {},
             "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
         })
         return msg
@@ -269,7 +280,11 @@ _LIGHT_TOOL_DEFS = [
 async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str) -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
     _caller_type.set("main_agent")
-    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
+    round_id = _current_round_id.get()
+    user_entry = {"role": "user", "content": user_message}
+    if round_id:
+        user_entry["round_id"] = round_id
+    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry]
 
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
     response = await _call_llm(messages, tools=_LIGHT_TOOL_DEFS)
@@ -279,6 +294,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
     assistant_entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
     if response.get("tool_calls"):
         assistant_entry["tool_calls"] = response["tool_calls"]
+    if response.get("usage"):
+        assistant_entry["usage"] = response["usage"]
+    if round_id:
+        assistant_entry["round_id"] = round_id
     messages.append(assistant_entry)
 
     # 如果 LLM 调了 use_tools → 进入重循环（含全部工具）
@@ -300,7 +319,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
             "detail": f"Phase 1 decided to use tools. Task: {user_message[:120]}",
         })
         # Phase 2: 重循环 — 全部工具。使用原始用户消息，不用 LLM 编的 task
-        messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, {"role": "user", "content": user_message}]
+        user_entry = {"role": "user", "content": user_message}
+        if round_id:
+            user_entry["round_id"] = round_id
+        messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry]
 
         for _ in range(_MAX_TOOL_ROUNDS):
             response = await _call_llm(messages, tools=TOOL_DEFS)
@@ -309,6 +331,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                 entry["reasoning_content"] = response["reasoning_content"]
             if response.get("tool_calls"):
                 entry["tool_calls"] = response["tool_calls"]
+            if response.get("usage"):
+                entry["usage"] = response["usage"]
+            if round_id:
+                entry["round_id"] = round_id
             messages.append(entry)
 
             tcs = response.get("tool_calls") or []
@@ -332,7 +358,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                     result = await _execute_tool(t["function"]["name"], args, bot, chat_id, db_path, None)
                 except Exception as e:
                     result = f"Tool failed: {e}"
-                messages.append({"role": "tool", "tool_call_id": t["id"], "content": _truncate(result)})
+                tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": t["id"], "content": _truncate(result)}
+                if round_id:
+                    tool_entry["round_id"] = round_id
+                messages.append(tool_entry)
                 if t.get("function", {}).get("name") == "spawn_subagent":
                     spawned = True
 
@@ -401,7 +430,12 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                     {"role": "user", "content": f"Task: {user_message}\n\nExpert findings:\n{summary}"}
                 ], tools=None)
                 final_text = _assistant_text(synthesis) or summary
-                messages.append({"role": "assistant", "content": final_text})
+                synthesis_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
+                if synthesis.get("usage"):
+                    synthesis_entry["usage"] = synthesis["usage"]
+                if round_id:
+                    synthesis_entry["round_id"] = round_id
+                messages.append(synthesis_entry)
                 # 清空 registry，避免下一轮 spawn 把旧结果混入新 context
                 await _sub_clear()
                 await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
@@ -474,6 +508,8 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
             assistant_entry["tool_calls"] = response["tool_calls"]
         if response.get("reasoning_content"):
             assistant_entry["reasoning_content"] = response["reasoning_content"]
+        if response.get("usage"):
+            assistant_entry["usage"] = response["usage"]
         messages.append(assistant_entry)
 
         tool_calls = response.get("tool_calls") or []
@@ -513,35 +549,42 @@ async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> 
 
 async def _run_chat_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
     """Coordinator: main agent -> chat filter."""
-    history = _load_session_messages()
+    import time as _time
 
-    # 如果 history 为空（session 被重置），注入短期记忆
-    if not history:
-        st = get_context(max_chars=5000)
-        if st:
-            history = [{"role": "system", "content": "[Restored context]\n" + st}]
+    round_id = f"round_{int(_time.time() * 1000)}"
+    round_token = _current_round_id.set(round_id)
+    try:
+        history = _load_session_messages()
 
-    # 读取 SOUL.md人格设定（仅给 Chat Filter 使用，不污染主 Agent）
-    from cyrene.soul import read_shallow_memory
-    soul_context = read_shallow_memory()[:3000] if read_shallow_memory() else ""
+        # 如果 history 为空（session 被重置），注入短期记忆
+        if not history:
+            st = get_context(max_chars=5000)
+            if st:
+                history = [{"role": "system", "content": "[Restored context]\n" + st}]
 
-    # ====== Step 1: 主 Agent（助理语气 + 全部工具，不关心人格）=======
-    main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
+        # 读取 SOUL.md人格设定（仅给 Chat Filter 使用，不污染主 Agent）
+        from cyrene.soul import read_shallow_memory
+        soul_context = read_shallow_memory()[:3000] if read_shallow_memory() else ""
 
-    await debug.publish_event({
-        "type": "phase_transition",
-        "from": "main_agent",
-        "to": "chat_filter",
-        "detail": "Applying SOUL.md persona voice",
-    })
-    # ====== Step 2: Chat Filter 根据 SOUL.md 翻译成角色语气 =======
-    if main_text and main_text != "Done.":
-        friend_text = await _run_chat_filter(main_text, soul_context)
-    else:
-        friend_text = main_text or "Done."
+        # ====== Step 1: 主 Agent（助理语气 + 全部工具，不关心人格）=======
+        main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
 
-    await debug.publish_event({"type": "chat_message"})
-    return friend_text
+        await debug.publish_event({
+            "type": "phase_transition",
+            "from": "main_agent",
+            "to": "chat_filter",
+            "detail": "Applying SOUL.md persona voice",
+        })
+        # ====== Step 2: Chat Filter 根据 SOUL.md 翻译成角色语气 =======
+        if main_text and main_text != "Done.":
+            friend_text = await _run_chat_filter(main_text, soul_context)
+        else:
+            friend_text = main_text or "Done."
+
+        await debug.publish_event({"type": "chat_message"})
+        return friend_text
+    finally:
+        _current_round_id.reset(round_token)
 
 
 # ---------------------------------------------------------------------------
