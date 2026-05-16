@@ -608,7 +608,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                         break
                     except asyncio.TimeoutError:
                         pass
-                    snap = await _sub_snapshot()
+                    snap = await _sub_snapshot(round_id=round_id)
                     if not snap:
                         break
 
@@ -625,7 +625,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                                 resurrected = True
 
                     # 2) 真正退出条件：所有 agent 都 DONE/TIMEOUT 且没有未读消息
-                    snap2 = await _sub_snapshot()
+                    snap2 = await _sub_snapshot(round_id=round_id)
                     all_truly_done = all(
                         info["status"] in ("done", "timeout") and _inbox_unread(aid) == 0
                         for aid, info in snap2.items()
@@ -641,7 +641,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                     return "[Sub-agents are still working in the background. You can continue the conversation.]"
                 # 等 quiescent 后，收集结果
                 await asyncio.sleep(2)  # 给 subagent 一点时间写 registry
-                summary = await _sub_collect()
+                summary = await _sub_collect(round_id=round_id)
                 await _publish_runtime_event({
                     "type": "phase_transition",
                     "from": "subagent_monitoring",
@@ -661,7 +661,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                     synthesis_entry["round_id"] = round_id
                 messages.append(synthesis_entry)
                 # 清空 registry，避免下一轮 spawn 把旧结果混入新 context
-                await _sub_clear()
+                await _sub_clear(round_id=round_id)
                 await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return final_text
 

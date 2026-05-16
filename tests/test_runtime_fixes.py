@@ -86,6 +86,29 @@ async def test_send_agent_message_redirects_main_alias():
     assert "quit response" in result
 
 
+async def test_send_agent_message_rejects_cross_round_target():
+    from cyrene import agent
+    from cyrene import subagent
+    from cyrene import tools
+
+    await subagent.clear()
+    await subagent.register("alice", "task A", round_id="round_old")
+    round_token = agent._current_round_id.set("round_new")
+    try:
+        result = await tools._tool_send_agent_message(
+            {"to": "alice", "content": "status?"},
+            None,
+            0,
+            "db.sqlite3",
+            None,
+        )
+    finally:
+        agent._current_round_id.reset(round_token)
+
+    assert "current round" in result
+    assert "round_new" in result
+
+
 def test_inbox_send_message_is_serialized():
     from cyrene import inbox
     import tempfile
@@ -134,6 +157,53 @@ async def test_subagent_registry_emits_update_events(monkeypatch):
     assert statuses[-1] == "done"
     assert seen[-1]["round_id"] == "round_live"
     assert seen[-1]["message_count"] == 1
+
+
+async def test_run_subagent_persists_quit_tool_messages_before_resume(monkeypatch):
+    from cyrene import agent
+    from cyrene import subagent
+
+    llm_inputs = []
+    responses = iter([
+        {
+            "content": "initial finding",
+            "tool_calls": [{"id": "q1", "function": {"name": "quit", "arguments": "{}"}}],
+        },
+        {
+            "content": "final finding",
+            "tool_calls": [{"id": "q2", "function": {"name": "quit", "arguments": "{}"}}],
+        },
+    ])
+    wait_results = iter([
+        "[from host_moderator] (chat) 请补充一条后勤建议",
+        "",
+    ])
+
+    async def fake_call_llm(messages, tools=None):
+        snapshot = json.loads(json.dumps(messages, ensure_ascii=False))
+        llm_inputs.append(snapshot)
+        if len(llm_inputs) == 2:
+            assert any(
+                msg.get("role") == "tool" and msg.get("tool_call_id") == "q1"
+                for msg in snapshot
+            ), "Resumed subagent history must include the prior quit tool response"
+        return next(responses)
+
+    async def fake_wait_for_others(agent_id, inbox_check_func, mark_read_func=None, max_wait=600, result=""):
+        return next(wait_results)
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(subagent, "wait_for_others", fake_wait_for_others)
+
+    await subagent.clear()
+    await subagent.register("alice", "research topic")
+
+    result = await subagent._run_subagent("alice", "research topic", None, 0, "db.sqlite3")
+    raw = await subagent.get_raw_messages("alice")
+
+    assert result == "final finding"
+    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "q1" for msg in raw)
+    assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "q2" for msg in raw)
 
 
 def test_live_flow_contains_tool_nodes_and_comm_edges(tmp_path, monkeypatch):

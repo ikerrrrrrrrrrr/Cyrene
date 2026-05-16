@@ -115,6 +115,29 @@ async def test_wait_for_others_returns_when_others_waiting():
     print("PASS test_wait_for_others_returns_when_others_waiting")
 
 
+async def test_wait_for_others_ignores_other_rounds():
+    """其他 round 仍在 RUNNING 时，不应阻塞当前 round 的共同退出。"""
+    from cyrene import subagent
+
+    await subagent.clear()
+    await subagent.register("a1", "task A", round_id="round_1")
+    await subagent.register("a2", "task B", round_id="round_1")
+    await subagent.register("b1", "task C", round_id="round_2")
+
+    def empty_inbox(_aid: str) -> str:
+        return ""
+
+    results = await asyncio.gather(
+        subagent.wait_for_others("a1", empty_inbox, mark_read_func=None, max_wait=30, result="A done"),
+        subagent.wait_for_others("a2", empty_inbox, mark_read_func=None, max_wait=30, result="B done"),
+    )
+    assert results == ["", ""], (
+        f"Current round should unlock even if another round is still running, got {results}"
+    )
+    assert await subagent.get_status("b1") == "running"
+    print("PASS test_wait_for_others_ignores_other_rounds")
+
+
 async def test_inbox_mark_all_read():
     """Bug 3 fix: mark_all_read should reset the unread counter so subsequent
     get_inbox_context calls don't re-inject old messages."""
@@ -270,6 +293,7 @@ async def main():
     await test_all_willing_to_quit_unlocks_with_all_waiting()
     await test_all_willing_to_quit_blocks_with_one_running()
     await test_wait_for_others_returns_when_others_waiting()
+    await test_wait_for_others_ignores_other_rounds()
     await test_inbox_mark_all_read()
     await test_inbox_context_keeps_long_messages()
     await test_register_clears_stale_inbox_messages()
@@ -277,7 +301,7 @@ async def main():
     await test_reactivate_dormant_agent()
     await test_mark_done_accumulates_result()
     await test_get_raw_messages_returns_full_history()
-    print("\nAll 12 tests passed.")
+    print("\nAll 13 tests passed.")
 
 
 if __name__ == "__main__":
