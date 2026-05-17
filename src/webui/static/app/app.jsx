@@ -192,6 +192,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
                 e.stopPropagation();
                 if (!confirm("Start a new session? Current conversation will be compressed.")) return;
                 try {
+                  if (window.resetChatRuntime) window.resetChatRuntime({ abort: true });
                   const r = await fetch("/api/sessions", { method: "POST" });
                   if (!r.ok) throw new Error("HTTP " + r.status);
                   const data = await r.json();

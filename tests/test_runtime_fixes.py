@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 async def test_execution_agent_returns_quit_text(monkeypatch):
     from cyrene import agent
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         return {
             "content": "scheduled task completed",
             "tool_calls": [{"id": "q1", "function": {"name": "quit", "arguments": "{}"}}],
@@ -240,7 +240,7 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -286,7 +286,7 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -333,7 +333,7 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
         await agent._append_session_message({
             "role": "user",
             "content": "queued guidance",
@@ -364,6 +364,59 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
     assert saved[-1]["queued_guidance_id"] == "guide_1"
 
 
+async def test_save_session_messages_replaces_live_round_block_without_duplication(monkeypatch, tmp_path):
+    from cyrene import agent
+
+    base_messages = [
+        {"role": "user", "content": "previous question", "round_id": "round_0"},
+        {"role": "assistant", "content": "previous reply", "round_id": "round_0"},
+    ]
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
+
+    round_token = agent._current_round_id.set("round_1")
+    base_token = agent._persist_base_messages.set(None)
+    merge_token = agent._persist_merge_live_state.set(True)
+    prefix_token = agent._persist_history_prefix_len.set(len(base_messages))
+    insert_token = agent._persist_insert_at.set(len(base_messages))
+    try:
+        await agent._append_session_message({
+            "role": "user",
+            "content": "current request",
+            "round_id": "round_1",
+        })
+        await agent._append_session_message({
+            "role": "user",
+            "content": "queued guidance",
+            "round_id": "round_2",
+            "queued_guidance_id": "guide_1",
+        })
+        await agent._save_session_messages([
+            *base_messages,
+            {"role": "user", "content": "current request", "round_id": "round_1"},
+            {"role": "assistant", "content": "raw reply", "round_id": "round_1"},
+        ])
+    finally:
+        agent._persist_insert_at.reset(insert_token)
+        agent._persist_history_prefix_len.reset(prefix_token)
+        agent._persist_merge_live_state.reset(merge_token)
+        agent._persist_base_messages.reset(base_token)
+        agent._current_round_id.reset(round_token)
+
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert [msg["content"] for msg in saved] == [
+        "previous question",
+        "previous reply",
+        "current request",
+        "raw reply",
+        "queued guidance",
+    ]
+    assert saved[-1]["queued_guidance_id"] == "guide_1"
+
+
 async def test_run_chat_agent_history_override_visible_reply_update_does_not_duplicate_messages(monkeypatch, tmp_path):
     from cyrene import agent
 
@@ -379,7 +432,7 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -481,9 +534,10 @@ async def test_run_subagent_persists_quit_tool_messages_before_resume(monkeypatc
         "",
     ])
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         snapshot = json.loads(json.dumps(messages, ensure_ascii=False))
         llm_inputs.append(snapshot)
+        assert max_tokens is None
         if len(llm_inputs) == 2:
             assert any(
                 msg.get("role") == "tool" and msg.get("tool_call_id") == "q1"
@@ -617,7 +671,7 @@ def test_build_current_session_uses_live_shell_snapshots(monkeypatch, tmp_path):
     assert len(session["shells"]) == 1
 
 
-def test_build_sessions_skips_today_archive_when_live_session_exists(tmp_path, monkeypatch):
+def test_build_sessions_includes_today_archive_when_live_session_exists(tmp_path, monkeypatch):
     from webui import routes
 
     monkeypatch.setattr(routes, "CONVERSATIONS_DIR", tmp_path / "conversations")
@@ -638,7 +692,7 @@ def test_build_sessions_skips_today_archive_when_live_session_exists(tmp_path, m
     ids = [session["id"] for session in sessions]
 
     assert ids[0] == "run_live"
-    assert f"day_{today}" not in ids
+    assert f"day_{today}" in ids
 
 
 def test_build_current_session_recovers_subagents_from_state_and_inbox(tmp_path, monkeypatch):
@@ -1132,7 +1186,7 @@ async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
@@ -1157,7 +1211,7 @@ async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
@@ -1267,7 +1321,7 @@ async def test_run_main_agent_returns_background_notice_when_monitoring_is_inter
     ])
     saved = []
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         return next(responses)
 
     async def fake_execute_tool(name, args, bot, chat_id, db_path, notify_state):
@@ -1316,7 +1370,7 @@ async def test_run_main_agent_retries_invalid_phase1_tool_and_returns_model_expl
     ])
     saved = []
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         calls.append(tools)
         return next(responses)
 
@@ -1345,7 +1399,7 @@ async def test_refresh_session_labels_persists_titles(monkeypatch, tmp_path):
         {"role": "assistant", "content": "ok", "round_id": "round_1"},
     ])
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         return {"content": '{"round_title":"加密货币辩论","session_title":"加密货币多代理讨论"}'}
 
     monkeypatch.setattr(agent, "_call_llm", fake_call_llm)

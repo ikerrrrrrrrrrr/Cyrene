@@ -135,6 +135,19 @@ def _trim_session_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
     return trimmed
 
 
+def _is_replaceable_live_message(entry: dict[str, Any], round_id: str) -> bool:
+    """Return True for persisted messages that belong to the active live run.
+
+    Queued guidance messages are intentionally excluded so they stay behind the
+    current run transcript instead of being replaced by incremental saves.
+    """
+    if not round_id:
+        return False
+    if str(entry.get("round_id", "")).strip() != round_id:
+        return False
+    return not str(entry.get("queued_guidance_id", "")).strip()
+
+
 async def _write_session_messages_locked(state: dict[str, Any], messages: list[dict[str, Any]]) -> None:
     trimmed = _trim_session_messages(messages)
     state["messages"] = trimmed
@@ -164,7 +177,18 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
         if base_messages is None and _persist_merge_live_state.get():
             current = state.get("messages", [])
             base_messages = list(current) if isinstance(current, list) else []
-        if base_messages is not None:
+            prefix_len = max(0, min(_persist_history_prefix_len.get(), len(messages)))
+            insert_at = _persist_insert_at.get()
+            if insert_at is None:
+                insert_at = len(base_messages)
+            insert_at = max(0, min(insert_at, len(base_messages)))
+            suffix = messages[prefix_len:]
+            round_id = str(_current_round_id.get() or "").strip()
+            replace_end = insert_at
+            while replace_end < len(base_messages) and _is_replaceable_live_message(base_messages[replace_end], round_id):
+                replace_end += 1
+            effective_messages = [*base_messages[:insert_at], *suffix, *base_messages[replace_end:]]
+        elif base_messages is not None:
             prefix_len = max(0, min(_persist_history_prefix_len.get(), len(messages)))
             insert_at = _persist_insert_at.get()
             if insert_at is None:
@@ -748,7 +772,7 @@ TOOL_HANDLERS["quit"] = _tool_quit
 # ---------------------------------------------------------------------------
 
 
-async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
+async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens: int | None = 32000) -> dict:
     _t0 = __import__("time").monotonic()
     _phase = "phase1" if tools is _LIGHT_TOOL_DEFS else ("phase2" if tools else "no_tools")
     _model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
@@ -757,8 +781,9 @@ async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
     payload = {
         "model": _model,
         "messages": messages,
-        "max_tokens": 32000,
     }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     if "deepseek" in _model:
         payload["thinking"] = {"type": "enabled"}
     if tools:
@@ -816,6 +841,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
     user_entry = {"role": "user", "content": user_message}
     if round_id:
         user_entry["round_id"] = round_id
+    await _append_session_message(user_entry)
     effective_system = system_prompt or _MAIN_AGENT_PROMPT
     phase1_messages = [{"role": "system", "content": effective_system}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
 
@@ -914,6 +940,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                 messages.append(tool_entry)
                 if t.get("function", {}).get("name") == "spawn_subagent":
                     spawned = True
+            await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
 
             # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部安静
             if spawned:

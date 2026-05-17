@@ -14,6 +14,7 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
       : `Delete archive "${sess ? sess.title : id}"? This permanently removes the markdown file.`;
     if (!confirm(msg)) return;
     try {
+      if (isLive && window.resetChatRuntime) window.resetChatRuntime({ abort: true });
       const r = await fetch("/api/sessions/" + encodeURIComponent(id), { method: "DELETE" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
@@ -76,6 +77,7 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
                   onClick={async () => {
                     if (!confirm("Start a new session? The current conversation will be compressed into short-term memory and the active context window will be cleared.")) return;
                     try {
+                      if (window.resetChatRuntime) window.resetChatRuntime({ abort: true });
                       const r = await fetch("/api/sessions", { method: "POST" });
                       if (!r.ok) throw new Error("HTTP " + r.status);
                       const data = await r.json();

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
@@ -88,17 +89,36 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "guide_request_id": item.get("id", ""),
             }
 
-        response = await run_agent(message, _bot, _CHAT_ID, _db_path)
-        labels = get_session_labels()
-        await archive_exchange(
-            message,
-            response,
-            _CHAT_ID,
-            session_title=labels.get("session_title", ""),
-            round_title=labels.get("round_title", ""),
-            round_id=labels.get("round_id", ""),
-        )
-        return {"response": response}
+        try:
+            response = await run_agent(message, _bot, _CHAT_ID, _db_path)
+            labels = get_session_labels()
+            await archive_exchange(
+                message,
+                response,
+                _CHAT_ID,
+                session_title=labels.get("session_title", ""),
+                round_title=labels.get("round_title", ""),
+                round_id=labels.get("round_id", ""),
+            )
+            return {"response": response}
+        except httpx.TimeoutException as exc:
+            logger.exception("Chat request timed out while calling upstream model")
+            return JSONResponse(
+                {"error": "upstream model timed out", "detail": str(exc)},
+                status_code=504,
+            )
+        except httpx.HTTPError as exc:
+            logger.exception("Chat request failed while calling upstream model")
+            return JSONResponse(
+                {"error": "upstream model request failed", "detail": str(exc)},
+                status_code=502,
+            )
+        except Exception as exc:
+            logger.exception("Chat request crashed")
+            return JSONResponse(
+                {"error": "internal server error", "detail": str(exc)},
+                status_code=500,
+            )
 
     @router.get("/api/chat/history")
     async def api_chat_history():
@@ -383,10 +403,7 @@ def _build_sessions() -> list[dict]:
         sessions.append(current)
 
     # 2. Historical sessions from conversation archives (one per day, most recent first)
-    skip_dates: set[str] = set()
-    if current and current.get("chat", {}).get("messages"):
-        skip_dates.add(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-    archive_sessions = _build_archive_sessions(skip_dates=skip_dates)
+    archive_sessions = _build_archive_sessions()
     sessions.extend(archive_sessions)
 
     return sessions

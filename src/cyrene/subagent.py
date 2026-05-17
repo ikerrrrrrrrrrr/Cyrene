@@ -388,7 +388,7 @@ async def _run_subagent(
 
     Uses lazy imports from agent.py to avoid circular dependencies.
     """
-    from cyrene.agent import _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
+    from cyrene.agent import _MAIN_AGENT_PROMPT, _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
     from cyrene.llm import _assistant_text, _truncate
     from cyrene.tools import get_active_tool_defs, _execute_tool
 
@@ -397,19 +397,17 @@ async def _run_subagent(
     round_token = _current_round_id.set(round_id) if round_id else None
     from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
 
-    subagent_prompt = f"""You are a sub-agent, ID: {agent_id}. Your job is to complete the assigned task.
+    subagent_prompt = (
+        _MAIN_AGENT_PROMPT
+        + f"""
 
-You can:
-- Use tools (files, search, bash, etc.)
-- Communicate with other agents via the send_agent_message tool
-- Check who else is active via the context at the top
-
-Rules:
-- Search max 3 times. If still no useful results, use your existing knowledge and tag the output with `[fallback to model knowledge]`.
-- When you call quit, include your findings or analysis in the text. Do not quit empty-handed.
-- Your final quit text is automatically collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
-- When you choose people to message, only use agent IDs that appear in the current `[活跃子 agent]` list or in your inbox messages. If an ID is not currently visible there, treat it as unavailable.
+## Sub-agent Context
+- You are a sub-agent, ID: {agent_id}. Complete the assigned task directly.
+- You can use the full toolset, including `send_agent_message`, to coordinate with other sub-agents.
+- Active sub-agents and inbox context may be injected as separate user messages before each turn.
+- Your final text is collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
 """
+    )
 
     if resume_messages:
         # 被唤醒：从已有历史续跑，注入一条提示让 LLM 知道发生了什么
@@ -424,9 +422,6 @@ Rules:
     await set_running(agent_id)
 
     final_text = ""
-    empty_quit_count = 0
-    _MAX_EMPTY_QUIT_RETRIES = 2
-
     async def _save_if_registered() -> None:
         """Keep registry messages resumable after any local history mutation."""
         await save_messages(agent_id, messages)
@@ -452,7 +447,7 @@ Rules:
                 # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
                 await _mark_inbox_read(agent_id)
 
-            response = await _call_llm(messages, tools=get_active_tool_defs())
+            response = await _call_llm(messages, tools=get_active_tool_defs(), max_tokens=None)
 
             entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):
@@ -483,21 +478,6 @@ Rules:
 
                 final_text = _assistant_text(response).strip() or "Done."
 
-                # 验证 quit 是否附带了有效结果
-                if final_text in ("Done.", "Interaction ended.", ""):
-                    empty_quit_count += 1
-                    if empty_quit_count >= _MAX_EMPTY_QUIT_RETRIES:
-                        # 多次空 quit，强制退出避免死循环。结果写入 registry。
-                        final_text = "[未输出有效结果 — quit 多次为空]"
-                        break
-                    from cyrene.inbox import send_message as _send_feedback
-                    await _send_feedback("validator", agent_id, "quit_quality",
-                        f"[quit 质量反馈] 你的 quit 没有附带任何结果。请重新 quit，并在 quit 的文字中说明：做了哪些工作、找到了什么信息、或者为什么没找到。即使没有找到结果也要说明原因。")
-                    await set_resumed(agent_id)
-                    messages.append({"role": "user", "content": f"[系统] quit 质量检查未通过 (重试 {empty_quit_count}/{_MAX_EMPTY_QUIT_RETRIES})。"})
-                    await _save_if_registered()
-                    continue
-
                 # 标记 willing_to_quit（带 result），等别人（每 5 秒检查 inbox）
                 from cyrene.inbox import get_inbox_context as _inbox_ctx
                 inbox_msg = await wait_for_others(agent_id, _inbox_ctx, mark_read_func=_mark_inbox_read, result=final_text)
@@ -508,7 +488,6 @@ Rules:
                 else:
                     # 有新消息，标记 RESUMED，继续干活
                     await set_resumed(agent_id)
-                    empty_quit_count = 0  # 收到新消息，重置空 quit 计数
                     messages.append({"role": "user", "content": f"[等待期间收到新消息]\n{inbox_msg}"})
                     await _save_if_registered()
                     continue

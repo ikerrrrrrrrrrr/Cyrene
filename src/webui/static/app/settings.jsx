@@ -317,10 +317,6 @@ function SettingsPage({ tweaks, setTweak }) {
               </div>
             </div>
             <div className="field">
-              <div className="label">Subagent token budget<small>Per-subagent context cap.</small></div>
-              <input className="input" defaultValue="32000" style={{ maxWidth: 160 }} />
-            </div>
-            <div className="field">
               <div className="label">Spawn policy<small>When the main agent is allowed to delegate.</small></div>
               <select className="select" style={{ maxWidth: 240 }} defaultValue="conservative">
                 <option value="aggressive">aggressive — delegate often</option>

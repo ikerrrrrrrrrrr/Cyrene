@@ -33,7 +33,7 @@ async def test_phase1_retry_with_unified_system_prompt():
         },
     ])
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         calls.append((messages, tools))
         return next(responses)
 
@@ -80,7 +80,7 @@ async def test_phase2_prefix_matches_phase1():
         },
     ])
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         nonlocal phase1_done
         if not phase1_done:
             phase1_done = True
@@ -117,10 +117,11 @@ async def test_subagent_stable_system_prompt():
         },
     ])
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         # Capture clean copies of messages
         saved = [{"role": m["role"], "content": str(m.get("content", ""))[:200]} for m in messages]
         llm_inputs.append(saved)
+        assert max_tokens is None
         return next(responses)
 
     async def fake_wait(agent_id, inbox_check_func, mark_read_func=None, max_wait=600, result=""):
@@ -168,8 +169,8 @@ async def test_subagent_stable_system_prompt():
     print("PASS: test_subagent_stable_system_prompt")
 
 
-async def test_subagent_quit_feedback_not_filtered():
-    """Quit quality feedback messages are NOT stripped as context."""
+async def test_subagent_empty_quit_exits_without_feedback_retry():
+    """Subagent no longer retries empty quit with validator feedback."""
     from cyrene import subagent, agent, tools, inbox
 
     llm_inputs = []
@@ -178,20 +179,15 @@ async def test_subagent_quit_feedback_not_filtered():
             "content": "Done.",
             "tool_calls": [{"id": "q1", "function": {"name": "quit", "arguments": "{}"}}],
         },
-        {
-            "content": "Real finding: X was found",
-            "tool_calls": [{"id": "q2", "function": {"name": "quit", "arguments": "{}"}}],
-        },
     ])
-    wait_results = iter(["", ""])
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         saved = [{"role": m["role"], "content": str(m.get("content", ""))[:200]} for m in messages]
         llm_inputs.append(saved)
         return next(responses)
 
     async def fake_wait(agent_id, inbox_check_func, mark_read_func=None, max_wait=600, result=""):
-        return next(wait_results)
+        return ""
 
     _orig_llm = _patch(agent, "_call_llm", fake_call_llm)
     _orig_exec = _patch(tools, "_execute_tool", AsyncMock(return_value="ok"))
@@ -219,15 +215,9 @@ async def test_subagent_quit_feedback_not_filtered():
         _patch(inbox, "mark_all_read", _orig_mark)
         _patch(inbox, "send_message", _orig_send)
 
-    # Check that quit quality feedback persisted across calls
-    feedback_msgs = []
-    for call_msgs in llm_inputs:
-        for m in call_msgs:
-            if m["role"] == "user" and "quit" in str(m.get("content", "")).lower():
-                feedback_msgs.append(m["content"])
-
-    assert len(feedback_msgs) > 0, "Quit quality feedback should not be filtered"
-    print("PASS: test_subagent_quit_feedback_not_filtered")
+    assert result == "Done."
+    assert len(llm_inputs) == 1
+    print("PASS: test_subagent_empty_quit_exits_without_feedback_retry")
 
 
 async def test_subagent_resume_strips_old_context():
@@ -249,7 +239,7 @@ async def test_subagent_resume_strips_old_context():
         },
     ])
 
-    async def fake_call_llm(messages, tools=None):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
         saved = [{"role": m["role"], "content": str(m.get("content", ""))[:200]} for m in messages]
         llm_inputs.append(saved)
         return next(responses)
@@ -300,7 +290,7 @@ async def main():
     await test_phase1_retry_with_unified_system_prompt()
     await test_phase2_prefix_matches_phase1()
     await test_subagent_stable_system_prompt()
-    await test_subagent_quit_feedback_not_filtered()
+    await test_subagent_empty_quit_exits_without_feedback_retry()
     await test_subagent_resume_strips_old_context()
     print("\nAll 5 cache-fix verification tests passed.")
 

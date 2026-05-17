@@ -62,14 +62,14 @@ function messageKey(msg) {
   ].join("::");
 }
 
-function unmatchedRetainedMessages(sessionMessages, retainedMessages) {
+function unmatchedMessages(existingMessages, transientMessages) {
   const counts = new Map();
-  (sessionMessages || []).forEach(function (msg) {
+  (existingMessages || []).forEach(function (msg) {
     const key = messageKey(msg);
     counts.set(key, (counts.get(key) || 0) + 1);
   });
   const visible = [];
-  (retainedMessages || []).forEach(function (msg) {
+  (transientMessages || []).forEach(function (msg) {
     const key = messageKey(msg);
     const remaining = counts.get(key) || 0;
     if (remaining > 0) {
@@ -183,6 +183,30 @@ function clearChatRuntimeSseSubscription() {
   runtime.sseHandler = null;
 }
 
+function resetChatRuntime(options) {
+  const runtime = getChatRuntime();
+  const shouldAbort = !options || options.abort !== false;
+  if (shouldAbort) {
+    Object.values(runtime.requests || {}).forEach(function (requestMeta) {
+      if (requestMeta && requestMeta.controller) requestMeta.controller.abort();
+    });
+  }
+  runtime.requests = {};
+  runtime.requestSeq = 0;
+  updateChatRuntime({
+    sending: false,
+    startedAt: 0,
+    pendingMessages: [],
+    retainedMessages: [],
+    liveProgress: [],
+    activeRequest: null,
+    watchRequestId: "",
+  });
+  clearChatRuntimeSseSubscription();
+}
+
+window.resetChatRuntime = resetChatRuntime;
+
 function ChatPage({ selectedSessionId, onSelectSession }) {
   useDataVersion(); // re-render when DATA refreshes
 
@@ -224,7 +248,12 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const scrollRef = useRef(null);
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
-  const retainedMessages = unmatchedRetainedMessages(session.chat.messages, runtimeState.retainedMessages || []);
+  const retainedMessages = isLiveSession
+    ? unmatchedMessages(session.chat.messages, runtimeState.retainedMessages || [])
+    : [];
+  const visiblePendingMessages = isLiveSession
+    ? unmatchedMessages((session.chat.messages || []).concat(retainedMessages), pendingMessages || [])
+    : [];
   const liveProgress = runtimeState.liveProgress;
   const activeRequest = runtimeState.activeRequest;
   const selectedGuideRound = liveRounds.find(function (round) { return round.id === selectedGuideRoundId; }) || null;
@@ -237,10 +266,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     : currentGuideRoundTitle;
   const watchingGuidance = Boolean(activeRequest && activeRequest.guideRoundId);
   const liveElapsed = runtimeState.startedAt ? formatElapsedMs(elapsedNow - runtimeState.startedAt) : "00:00";
+  const visibleSending = isLiveSession && sending;
+  const visibleNotice = isLiveSession ? notice : "";
+  const visibleLiveProgress = isLiveSession ? liveProgress : [];
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [session.chat.messages.length, pendingMessages.length, liveProgress.length, sending, notice]);
+  }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
   useEffect(() => {
     const runtime = getChatRuntime();
@@ -250,11 +282,12 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   }, []);
 
   useEffect(function () {
+    if (!isLiveSession) return;
     if (!runtimeState.retainedMessages || runtimeState.retainedMessages.length === 0) return;
-    const nextRetained = unmatchedRetainedMessages(session.chat.messages, runtimeState.retainedMessages);
+    const nextRetained = unmatchedMessages(session.chat.messages, runtimeState.retainedMessages);
     if (nextRetained.length === runtimeState.retainedMessages.length) return;
     updateChatRuntime({ retainedMessages: nextRetained });
-  }, [session.chat.messages.length, runtimeState.retainedMessages]);
+  }, [isLiveSession, session.id, session.chat.messages.length, runtimeState.retainedMessages]);
 
   useEffect(function () {
     if (!selectedGuideRound || !selectedGuideRound.title) return;
@@ -452,24 +485,19 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     }
   }
 
-  const allMessages = [...session.chat.messages, ...retainedMessages, ...pendingMessages];
+  const allMessages = isLiveSession
+    ? [...session.chat.messages, ...retainedMessages, ...visiblePendingMessages]
+    : session.chat.messages;
 
   async function newSession() {
     if (!confirm("Start a new session? The current conversation will be compressed into short-term memory.")) return;
     try {
-      const runtime = getChatRuntime();
-      Object.values(runtime.requests || {}).forEach(function (requestMeta) {
-        if (requestMeta && requestMeta.controller) requestMeta.controller.abort();
-      });
-      runtime.requests = {};
-      runtime.requestSeq = 0;
+      resetChatRuntime({ abort: true });
       const r = await fetch("/api/sessions", { method: "POST" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
       onSelectSession && onSelectSession(null);
-      updateChatRuntime({ pendingMessages: [], retainedMessages: [], sending: false, startedAt: 0, liveProgress: [], activeRequest: null, watchRequestId: "" });
-      clearChatRuntimeSseSubscription();
     } catch (e) {
       alert("Failed: " + e.message);
     }
@@ -510,7 +538,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
             </div>
           )}
           {allMessages.map((m) => <Message key={m.id} msg={m} assistantName={DATA.assistantName} />)}
-          {sending && (
+          {visibleSending && (
             <div className="msg agent">
               <div className="msg-meta">
                 <span className="msg-role agent">● {DATA.assistantName}</span>
@@ -530,8 +558,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                         <span className="progress-text">Target round: {activeGuideRoundTitle || activeRequest.guideRoundId}</span>
                       </div>
                     )}
-                    {liveProgress.length === 0 && <div className="progress-entry"><span className="progress-icon">◎</span><span className="progress-text">{watchingGuidance ? "Queueing follow-up…" : "Thinking..."}</span></div>}
-                    {liveProgress.map(function (p, i) {
+                    {visibleLiveProgress.length === 0 && <div className="progress-entry"><span className="progress-icon">◎</span><span className="progress-text">{watchingGuidance ? "Queueing follow-up…" : "Thinking..."}</span></div>}
+                    {visibleLiveProgress.map(function (p, i) {
                       return <div key={i} className="progress-entry"><span className="progress-icon">{p.icon}</span><span className="progress-text">{p.text}</span></div>;
                     })}
                   </div>
@@ -539,13 +567,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               </details>
             </div>
           )}
-          {notice && (
+          {visibleNotice && (
             <div className="msg system">
               <div className="msg-meta">
                 <span className="msg-role system">system</span>
                 <span className="msg-time">—</span>
               </div>
-              <div className="msg-body">{notice}</div>
+              <div className="msg-body">{visibleNotice}</div>
             </div>
           )}
         </div>
@@ -627,23 +655,23 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>
                 {session.model}
               </span>
-              {sending && (
+              {visibleSending && (
                 <button className="send secondary" disabled={!draft.trim()} onClick={openNextDialogue}>
                   {hasSelectedGuideRound ? "guide" : "new dialogue"}
                 </button>
               )}
               <button
-                className={"send" + (sending ? " stop" : "")}
-                disabled={!sending && !draft.trim()}
-                onClick={sending ? stopActiveRun : send}
+                className={"send" + (visibleSending ? " stop" : "")}
+                disabled={!visibleSending && !draft.trim()}
+                onClick={visibleSending ? stopActiveRun : send}
               >
-                {sending ? "stop" : <>{hasSelectedGuideRound ? "guide" : "send"} <span className="kbd">⌘↵</span></>}
+                {visibleSending ? "stop" : <>{hasSelectedGuideRound ? "guide" : "send"} <span className="kbd">⌘↵</span></>}
               </button>
             </div>
           </div>
           <div className="composer-hint">
             <span>
-              {sending
+              {visibleSending
                 ? (hasSelectedGuideRound
                     ? "Watching the current run. Type the next message, then click guide to send it to the selected round without waiting."
                     : "Watching the current run. Type the next message, then click new dialogue to send it without waiting.")
@@ -652,7 +680,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 : DATA.assistantName + " plans, then acts. Subagents spawn for parallel work."}
             </span>
             <span>
-              {sending ? "running · " : ""}
+              {visibleSending ? "running · " : ""}
               {runningSubagents} active subagent(s)
             </span>
           </div>
