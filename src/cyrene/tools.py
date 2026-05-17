@@ -25,9 +25,6 @@ from croniter import croniter
 from cyrene import db
 from cyrene.config import (
     DATA_DIR,
-    OPENAI_API_KEY,
-    OPENAI_BASE_URL,
-    OPENAI_MODEL,
     STATE_FILE,
     WORKSPACE_DIR,
 )

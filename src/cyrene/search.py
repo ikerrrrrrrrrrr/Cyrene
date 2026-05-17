@@ -8,6 +8,7 @@ Architecture:
 
 import asyncio
 import logging
+import os
 import re
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -16,7 +17,6 @@ import requests
 
 from cyrene import debug
 from cyrene.config import (
-    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
     SEARCH_PROXY, SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT, SEARXNG_URL,
 )
 from cyrene.settings_store import get as get_web_setting
@@ -46,18 +46,19 @@ async def _call_llm(messages: list[dict]) -> str:
     Uses httpx.AsyncHTTPTransport(retries=1) to avoid HTTP/2 issues.
     """
     payload: dict = {
-        "model": OPENAI_MODEL,
+        "model": os.environ.get("OPENAI_MODEL", "deepseek-chat"),
         "messages": messages,
     }
 
     headers = {"Content-Type": "application/json"}
-    if OPENAI_API_KEY and OPENAI_API_KEY.lower() not in ("lmstudio", "dummy", ""):
-        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
+    _api_key = os.environ.get("OPENAI_API_KEY", "")
+    if _api_key and _api_key.lower() not in ("lmstudio", "dummy", ""):
+        headers["Authorization"] = f"Bearer {_api_key}"
 
     _t0 = __import__("time").monotonic()
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
-            f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+            f"{os.environ.get('OPENAI_BASE_URL', 'https://api.deepseek.com/v1').rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
         )

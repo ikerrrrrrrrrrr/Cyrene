@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -9,7 +10,7 @@ import httpx
 
 from contextvars import ContextVar
 
-from cyrene.config import ASSISTANT_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, DATA_DIR, STATE_FILE
+from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
 from cyrene import debug
@@ -750,25 +751,28 @@ TOOL_HANDLERS["quit"] = _tool_quit
 async def _call_llm(messages: list[dict], tools: list | None = None) -> dict:
     _t0 = __import__("time").monotonic()
     _phase = "phase1" if tools is _LIGHT_TOOL_DEFS else ("phase2" if tools else "no_tools")
+    _model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
+    _base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    _api_key = os.environ.get("OPENAI_API_KEY", "")
     payload = {
-        "model": OPENAI_MODEL,
+        "model": _model,
         "messages": messages,
         "max_tokens": 32000,
     }
-    if "deepseek" in OPENAI_MODEL:
+    if "deepseek" in _model:
         payload["thinking"] = {"type": "enabled"}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
     headers = {"Content-Type": "application/json"}
-    if OPENAI_API_KEY and OPENAI_API_KEY.lower() not in ("lmstudio", "dummy", ""):
-        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
+    if _api_key and _api_key.lower() not in ("lmstudio", "dummy", ""):
+        headers["Authorization"] = f"Bearer {_api_key}"
 
     transport = httpx.AsyncHTTPTransport(retries=1)
     async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
         resp = await client.post(
-            f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+            f"{_base_url.rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
         )
