@@ -36,7 +36,7 @@ Phase 1 (lightweight: use_tools + quit)
             ▼
     Phase 2 (all tools, subagent support)
     │   ├── Write/Read/Edit/Bash/Grep/Glob
-    │   ├── WebSearch/WebFetch (SearxNG)
+    │   ├── WebSearch/WebFetch (SearXNG, built-in)
     │   ├── spawn_subagent → parallel sub-agents with inbox
     │   └── quit → return
     │
@@ -72,8 +72,8 @@ User hears
 - No RAG — structured event extraction
 
 ### Search
-- Prioritizes SearxNG (self-hosted, no rate limits)
-- Automatic fallback across engines with per-engine rate limiting
+- Built-in SearXNG via SimpleXNG — no Docker required, auto-starts on launch
+- Falls back to DDG/Bing/Baidu if SearXNG is unavailable
 
 ### Controls
 - `/h` — Help menu (relogin, clear context, reset personality, system status)
@@ -94,7 +94,8 @@ src/
 │   ├── agent.py          # Agent loop: Phase 1/2, chat filter, session
 │   ├── tools.py          # 17 tool handlers + definitions
 │   ├── subagent.py       # Sub-agent lifecycle + inbox + quit validator
-│   ├── search.py         # Multi-engine search (SearxNG first)
+│   ├── search.py         # Multi-engine search (SearXNG first)
+│   ├── searxng_manager.py # SearXNG subprocess lifecycle
 │   ├── soul.py           # SOUL.md personality system
 │   ├── short_term.py     # Memory management
 │   ├── scheduler.py      # Heartbeat + lottery + steward
@@ -124,16 +125,22 @@ See `.env.example`. Key variables:
 | `OPENAI_API_KEY` | LLM API key (OpenAI/DeepSeek) | — |
 | `OPENAI_BASE_URL` | API endpoint | `https://api.deepseek.com/v1` |
 | `OPENAI_MODEL` | Model name | `deepseek-v4-flash` |
-| `SEARXNG_URL` | Self-hosted SearxNG | — |
+| `SEARXNG_URL` | SearXNG URL (override auto-start) | — |
+| `SEARXNG_AUTO_START` | Auto-launch SearXNG on startup | `1` (enabled) |
+| `SEARXNG_PORT` | SearXNG listen port | `8888` |
 | `WEB_PORT` | Web UI port | `4242` |
 
-## SearxNG (Recommended)
+## SearXNG (Built-in, no Docker)
+
+SearXNG is now built-in via [SimpleXNG](https://github.com/jlevy/simplexng) — a standalone, Docker-free package of SearXNG.
 
 ```bash
-docker run -d -p 8888:8080 searxng/searxng:latest
+pip install simplexng
 ```
 
-Then set `SEARXNG_URL=http://localhost:8888` in `.env`.
+Cyrene auto-starts SearXNG on launch (default port 8888). No manual config needed.
+
+To disable auto-start, set `SEARXNG_AUTO_START=0` in `.env`. You can also point to an external SearXNG instance with `SEARXNG_URL=http://...`.
 
 ## License
 

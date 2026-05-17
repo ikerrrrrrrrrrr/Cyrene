@@ -26,6 +26,7 @@ from cyrene import db
 from cyrene.agent import run_steward_agent, run_task_agent
 from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STEWARD_INTERVAL
 from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
+from cyrene.short_term import clear_old_entries
 from cyrene.soul import apply_soul_update, read_soul
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ _STEWARD_TICK_INTERVAL = max(1, STEWARD_INTERVAL // SCHEDULER_INTERVAL)
 
 _heartbeat_tick: int = 0
 _steward_tick: int = 0
+_cleanup_tick: int = 0
+_CLEANUP_TICK_INTERVAL = max(1, 86400 // SCHEDULER_INTERVAL)  # once a day
 
 
 def _load_lottery_state() -> None:
@@ -399,6 +402,12 @@ async def _heartbeat(bot, db_path: str) -> None:
         if _steward_tick >= _STEWARD_TICK_INTERVAL:
             _steward_tick = 0
             await _run_steward_if_needed(bot, db_path)
+
+        # -- Short-term memory cleanup (daily) --
+        _cleanup_tick += 1
+        if _cleanup_tick >= _CLEANUP_TICK_INTERVAL:
+            _cleanup_tick = 0
+            clear_old_entries(days=7)
     except Exception:
         logger.exception("Heartbeat error")
 

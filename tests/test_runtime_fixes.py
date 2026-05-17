@@ -238,7 +238,6 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
-    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
@@ -251,7 +250,6 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
         return "raw reply"
 
     monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
-    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result=text))
 
     result = await agent._run_chat_agent(
         "guided follow-up",
@@ -276,7 +274,6 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
 
 async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_place(monkeypatch, tmp_path):
     from cyrene import agent
-    from cyrene import soul
 
     base_messages = [
         {"role": "user", "content": "round one question", "round_id": "round_1"},
@@ -287,7 +284,6 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
-    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
@@ -300,7 +296,6 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
         return "reply to current guidance"
 
     monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
-    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result=text))
 
     result = await agent._run_chat_agent(
         "current queued guidance",
@@ -336,7 +331,6 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
-    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
@@ -355,7 +349,6 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
         return "raw reply"
 
     monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
-    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result=text))
 
     result = await agent._run_chat_agent("current request", None, 0, "db.sqlite3", forced_round_id="round_1")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
@@ -373,7 +366,6 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
 
 async def test_run_chat_agent_history_override_visible_reply_update_does_not_duplicate_messages(monkeypatch, tmp_path):
     from cyrene import agent
-    from cyrene import soul
 
     base_messages = [
         {"role": "user", "content": "round one question", "round_id": "round_1"},
@@ -385,7 +377,6 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
-    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
@@ -398,7 +389,6 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
         return "raw reply"
 
     monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
-    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result="visible reply"))
 
     result = await agent._run_chat_agent(
         "guided follow-up",
@@ -410,14 +400,14 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
     )
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
 
-    assert result == "visible reply"
+    assert result == "raw reply"
     assert [msg["content"] for msg in saved] == [
         "round one question",
         "round one reply",
         "other round question",
         "other round reply",
         "guided follow-up",
-        "visible reply",
+        "raw reply",
     ]
 
 
@@ -1135,14 +1125,12 @@ def test_convert_messages_keeps_assistant_entries_with_thinking_or_tools():
     assert ui_msgs[2]["tools"][0]["name"] == "spawn_subagent"
 
 
-async def test_run_chat_agent_persists_user_visible_reply(monkeypatch, tmp_path):
+async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_path):
     from cyrene import agent
-    from cyrene import soul
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
-    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
         round_id = agent._current_round_id.get()
@@ -1152,28 +1140,22 @@ async def test_run_chat_agent_persists_user_visible_reply(monkeypatch, tmp_path)
         ])
         return "raw final"
 
-    async def fake_chat_filter(text, soul_context=""):
-        return "styled final"
-
     monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
-    monkeypatch.setattr(agent, "_run_chat_filter", fake_chat_filter)
 
     result = await agent._run_chat_agent("hi", None, 0, "db.sqlite3")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
 
-    assert result == "styled final"
+    assert result == "raw final"
     assert saved[-1]["role"] == "assistant"
-    assert saved[-1]["content"] == "styled final"
+    assert saved[-1]["content"] == "raw final"
 
 
-async def test_run_chat_agent_appends_visible_reply_when_internal_trace_has_no_final_message(monkeypatch, tmp_path):
+async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final_message(monkeypatch, tmp_path):
     from cyrene import agent
-    from cyrene import soul
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
-    monkeypatch.setattr(soul, "read_shallow_memory", lambda: "")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path):
         round_id = agent._current_round_id.get()
@@ -1189,14 +1171,14 @@ async def test_run_chat_agent_appends_visible_reply_when_internal_trace_has_no_f
         return "[Sub-agents are still working in the background. You can continue the conversation.]"
 
     monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
-    monkeypatch.setattr(agent, "_run_chat_filter", lambda text, soul_context="": asyncio.sleep(0, result=text))
 
     result = await agent._run_chat_agent("keep going", None, 0, "db.sqlite3")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
 
     assert result.startswith("[Sub-agents are still working in the background.")
     assert saved[-1]["role"] == "assistant"
-    assert saved[-1]["content"] == result
+    assert saved[-1]["content"] == ""
+    assert "tool_calls" in saved[-1]
 
 
 async def test_tool_bash_returns_early_when_interrupted(monkeypatch):

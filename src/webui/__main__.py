@@ -3,7 +3,10 @@
 import asyncio
 import logging
 
-from cyrene.config import DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR
+from cyrene.config import (
+    DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR,
+    SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,
+)
 from cyrene.db import init_db
 from cyrene.inbox import ensure_inbox
 from cyrene.short_term import init_short_term
@@ -29,6 +32,14 @@ async def main() -> None:
     init_short_term(DATA_DIR)
     enable_event_bus()
 
+    if SEARXNG_AUTO_START:
+        from cyrene.searxng_manager import start_searxng
+        try:
+            url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+            logger.info("SearXNG auto-started at %s", url)
+        except Exception as exc:
+            logger.warning("SearXNG auto-start failed: %s", exc)
+
     bot = WebBot()
     scheduler = setup_scheduler(bot, str(DB_PATH))
     scheduler.start()
@@ -43,4 +54,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    finally:
+        from cyrene.searxng_manager import stop_searxng
+        stop_searxng()

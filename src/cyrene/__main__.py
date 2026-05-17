@@ -4,6 +4,7 @@ import logging
 from cyrene.bot import setup_bot
 from cyrene.config import (
     ASSISTANT_NAME, DATA_DIR, DB_PATH, INBOX_DIR,
+    SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,
     SOUL_PATH, STORE_DIR, WORKSPACE_DIR,
 )
 from cyrene.db import init_db
@@ -40,6 +41,15 @@ async def _prepare_runtime() -> None:
     init_short_term(DATA_DIR)
     logger.info("Short-term memory initialized at %s", DATA_DIR / "short_term.json")
 
+    # 自动启动 SearXNG
+    if SEARXNG_AUTO_START:
+        from cyrene.searxng_manager import start_searxng
+        try:
+            url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+            logger.info("SearXNG auto-started at %s", url)
+        except Exception as exc:
+            logger.warning("SearXNG auto-start failed: %s", exc)
+
     # 人格设置检测（Telegram 模式跳过交互，提示用户先运行 CLI）
     from cyrene.setup import init_setup_flag, is_setup_done
     init_setup_flag()
@@ -66,3 +76,6 @@ if __name__ == "__main__":
         logger.info("Shutting down...")
     except Exception:
         logger.exception("Fatal error")
+    finally:
+        from cyrene.searxng_manager import stop_searxng
+        stop_searxng()

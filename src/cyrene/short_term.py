@@ -56,9 +56,16 @@ def touch_entry(content_keyword: str, metadata: dict | None = None) -> None:
     entries = load_entries()
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    kw_lower = content_keyword.lower()
     found = False
     for entry in entries:
-        if content_keyword.lower() in entry.get("content", "").lower():
+        entry_content = entry.get("content", "").lower()
+        # Exact match or one is a near-complete substring of the other
+        if kw_lower == entry_content or (
+            len(kw_lower) >= len(entry_content) * 0.7 and kw_lower in entry_content
+        ) or (
+            len(entry_content) >= len(kw_lower) * 0.7 and entry_content in kw_lower
+        ):
             entry["last_mentioned"] = now
             entry["mention_count"] = entry.get("mention_count", 1) + 1
             found = True

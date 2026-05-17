@@ -98,6 +98,7 @@ function App() {
                                     setPage("agents");
                                   }} />}
         {page === "skills"   && <SkillsPage />}
+        {page === "memory"   && <MemoryPage />}
         {page === "status"   && <StatusPage />}
         {page === "settings" && <SettingsPage tweaks={t} setTweak={setTweak} />}
       </div>
@@ -143,8 +144,9 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
     { id: "agents",   label: "Agents",   icon: "⌘", key: "2" },
     { id: "sessions", label: "Sessions", icon: "≡", key: "3", badge: sessionCount > 0 ? String(sessionCount) : null },
     { id: "skills",   label: "Skills",   icon: "✸", key: "4" },
-    { id: "status",   label: "Status",   icon: "◉", key: "5" },
-    { id: "settings", label: "Settings", icon: "✱", key: "6" },
+    { id: "memory",   label: "Memory",   icon: "▤", key: "5" },
+    { id: "status",   label: "Status",   icon: "◉", key: "6" },
+    { id: "settings", label: "Settings", icon: "✱", key: "7" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
@@ -275,6 +277,7 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
     page === "agents" ? <>Agents<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "sessions" ? <>Sessions<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "skills" ? <>Skills<span className="crumb-sep">/</span><b>library</b></> :
+    page === "memory" ? <>Memory<span className="crumb-sep">/</span><b>pipeline</b></> :
     page === "status" ? <>Status<span className="crumb-sep">/</span><b>overview</b></> :
     <>Settings<span className="crumb-sep">/</span><b>workspace</b></>;
 

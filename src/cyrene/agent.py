@@ -9,11 +9,12 @@ import httpx
 
 from contextvars import ContextVar
 
-from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, DATA_DIR, STATE_FILE
+from cyrene.config import ASSISTANT_NAME, OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, DATA_DIR, STATE_FILE
+from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
 from cyrene import debug
 from cyrene.llm import _assistant_text, _truncate
-from cyrene.tools import TOOL_DEFS, TOOL_HANDLERS, _execute_tool
+from cyrene.tools import get_active_tool_defs, TOOL_HANDLERS, _execute_tool
 from cyrene.subagent import (
     clear as _clear_subagents,
 )
@@ -72,21 +73,6 @@ _PHASE1_DECISION_PROMPT = """Decision phase rules:
 - Never call concrete tools such as `WebSearch`, `Bash`, `Read`, or `spawn_subagent` directly in this phase.
 - If you need any real tool work, call `use_tools` with the user's exact original message.
 - If neither available tool fits, say clearly that there is no suitable tool in this phase.
-"""
-
-_CHAT_FILTER_PROMPT = """You are a character voice translator. Your ONLY job is to rewrite assistant text using a character's voice.
-
-Below you may receive a personality profile (SOUL.md) describing how to speak. Use it to match the character's: verbal tics, catchphrases, sentence patterns, tone, and vocabulary.
-
-If no profile is given, use a casual friendly tone.
-
-Rules:
-- Keep ALL essential information; nothing can be lost.
-- Preserve code blocks, file paths, error messages, URLs, and numbered references as-is. Do not rewrite technical content.
-- Only rewrite conversational text into the character's voice.
-- Use the character's specific speech patterns from the personality profile.
-- Never add information that wasn't in the original.
-- Never use emoji unless the character's profile explicitly demonstrates that they use them.
 """
 
 _EXECUTION_SYSTEM_PROMPT = """You are a capable execution agent. Your job is to complete tasks using tools.
@@ -167,11 +153,6 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
         task.add_done_callback(_pending_compressors.discard)
 
 
-async def _save_full_session_messages(messages: list[dict[str, Any]]) -> None:
-    async with _session_state_lock:
-        state = _load_session_state()
-        await _write_session_messages_locked(state, messages)
-
 
 async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     """保存 session 消息。如果超过上限，触发后台压缩。"""
@@ -221,45 +202,6 @@ def _assistant_entry_from_response(response: dict[str, Any], round_id: str, incl
     if round_id:
         entry["round_id"] = round_id
     return entry
-
-
-async def _persist_user_visible_reply(main_text: str, visible_text: str, round_id: str) -> None:
-    """Update the current round so the session shows the user-facing assistant reply."""
-    if not visible_text:
-        return
-
-    messages = _load_session_messages()
-    target_index = None
-    fallback_index = None
-
-    for idx in range(len(messages) - 1, -1, -1):
-        msg = messages[idx]
-        if msg.get("role") != "assistant":
-            continue
-        if round_id and msg.get("round_id") != round_id:
-            continue
-
-        content = (msg.get("content") or "").strip()
-        if main_text and content == main_text.strip():
-            target_index = idx
-            break
-        if fallback_index is None and content and not msg.get("tool_calls"):
-            fallback_index = idx
-
-    if target_index is None:
-        target_index = fallback_index
-
-    if target_index is None:
-        entry: dict[str, Any] = {"role": "assistant", "content": visible_text}
-        if round_id:
-            entry["round_id"] = round_id
-        messages.append(entry)
-    else:
-        if (messages[target_index].get("content") or "") == visible_text:
-            return
-        messages[target_index] = {**messages[target_index], "content": visible_text}
-
-    await _save_full_session_messages(messages)
 
 
 def _fallback_label(text: str, limit: int = 48) -> str:
@@ -704,7 +646,7 @@ async def _compress_old_messages(all_messages: list[dict]) -> None:
     # 格式化成文本
     lines = []
     for m in to_compress:
-        role = "User" if m["role"] == "user" else "Cyrene"
+        role = "User" if m["role"] == "user" else ASSISTANT_NAME
         content = m.get("content", "")[:200]
         lines.append(f"{role}: {content}")
     text = "\n".join(lines)
@@ -863,14 +805,15 @@ _LIGHT_TOOL_DEFS = [
 ]
 
 
-async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str) -> str:
+async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str, system_prompt: str = "") -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
     _caller_type.set("main_agent")
     round_id = _current_round_id.get()
     user_entry = {"role": "user", "content": user_message}
     if round_id:
         user_entry["round_id"] = round_id
-    phase1_messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
+    effective_system = system_prompt or _MAIN_AGENT_PROMPT
+    phase1_messages = [{"role": "system", "content": effective_system}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
 
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
     response = await _call_llm(phase1_messages, tools=_LIGHT_TOOL_DEFS)
@@ -899,7 +842,7 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         ]
         response = await _call_llm(retry_messages, tools=_LIGHT_TOOL_DEFS)
     tool_calls = response.get("tool_calls") or []
-    messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry]
+    messages = [{"role": "system", "content": effective_system}, *history, user_entry]
     assistant_entry = _assistant_entry_from_response(response, round_id)
     messages.append(assistant_entry)
 
@@ -925,10 +868,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         user_entry = {"role": "user", "content": user_message}
         if round_id:
             user_entry["round_id"] = round_id
-        messages = [{"role": "system", "content": _MAIN_AGENT_PROMPT}, *history, user_entry]
+        messages = [{"role": "system", "content": effective_system}, *history, user_entry]
 
         for _ in range(_MAX_TOOL_ROUNDS):
-            response = await _call_llm(messages, tools=TOOL_DEFS)
+            response = await _call_llm(messages, tools=get_active_tool_defs())
             entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):
                 entry["reasoning_content"] = response["reasoning_content"]
@@ -1073,32 +1016,6 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
     return _assistant_text(response).strip() or "Done."
 
 
-async def _run_chat_filter(text: str, soul_context: str = "") -> str:
-    """根据 SOUL.md 人格设定，将助理腔翻译成角色语气。轻量 LLM 调用，无工具。"""
-    if not text or len(text) < 10:
-        return text
-
-    _caller_type.set("chat_filter")
-    import time as _time
-    _t0 = _time.monotonic()
-    system_prompt = _CHAT_FILTER_PROMPT
-    if soul_context:
-        system_prompt = f"{_CHAT_FILTER_PROMPT}\n\n参考以下人格设定，用该角色的语气和说话方式改写：\n{soul_context}"
-
-    try:
-        response = await _call_llm([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": text}
-        ], tools=None)
-        result = _assistant_text(response) or text
-        result = re.sub(r'[\U0001F300-\U0010FFFF]', '', result).strip()
-        debug.log_chat_filter(text, result, (_time.monotonic() - _t0) * 1000)
-        await _publish_runtime_event({"type": "chat_filter", "input": text[:200], "output": result[:200]})
-        return result
-    except Exception:
-        return text  # 失败时 fallback 到原文
-
-
 # ---------------------------------------------------------------------------
 # Execution agent (internal, all tools)
 # ---------------------------------------------------------------------------
@@ -1114,7 +1031,7 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 
     final_text = "Done."
     for _ in range(_MAX_TOOL_ROUNDS):
-        response = await _call_llm(messages, tools=TOOL_DEFS)
+        response = await _call_llm(messages, tools=get_active_tool_defs())
 
         assistant_entry: dict[str, Any] = {"role": "assistant"}
         if response.get("content"):
@@ -1159,7 +1076,7 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 
 
 async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
-    """Main entry point. Main agent (assistant tone + full tools) -> Chat filter (friend-style)."""
+    """Main entry point. Runs the main agent loop with full tools."""
     if _agent_lock.locked():
         interrupt_active_run()
     async with _agent_lock:
@@ -1198,7 +1115,7 @@ async def _run_chat_agent(
     persist_base_messages: list[dict[str, Any]] | None = None,
     persist_insert_at: int | None = None,
 ) -> str:
-    """Coordinator: main agent -> chat filter."""
+    """Coordinator: main agent loop."""
     import time as _time
 
     round_id = str(forced_round_id or "").strip() or f"round_{int(_time.time() * 1000)}"
@@ -1231,29 +1148,18 @@ async def _run_chat_agent(
         if ephemeral_system:
             history = [*history, {"role": "system", "content": ephemeral_system}]
 
-        # 读取 SOUL.md人格设定（仅给 Chat Filter 使用，不污染主 Agent）
-        from cyrene.soul import read_shallow_memory
-        soul_context = read_shallow_memory()[:3000] if read_shallow_memory() else ""
+        # 组装记忆上下文注入主 Agent 的 system prompt
+        memory_context = get_memory_context()
+        main_system = _MAIN_AGENT_PROMPT
+        if memory_context:
+            main_system = _MAIN_AGENT_PROMPT + "\n\n## Memory Context\n" + memory_context
 
-        # ====== Step 1: 主 Agent（助理语气 + 全部工具，不关心人格）=======
-        main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path)
+        # ====== 主 Agent ======
+        main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path, main_system)
 
-        await _publish_runtime_event({
-            "type": "phase_transition",
-            "from": "main_agent",
-            "to": "chat_filter",
-            "detail": "Applying SOUL.md persona voice",
-        })
-        # ====== Step 2: Chat Filter 根据 SOUL.md 翻译成角色语气 =======
-        if main_text and main_text != "Done.":
-            friend_text = await _run_chat_filter(main_text, soul_context)
-        else:
-            friend_text = main_text or "Done."
-
-        await _persist_user_visible_reply(main_text, friend_text, round_id)
         await _refresh_session_labels(user_message, round_id)
         await _publish_runtime_event({"type": "chat_message"})
-        return friend_text
+        return main_text or "Done."
     finally:
         _persist_insert_at.reset(insert_token)
         _persist_history_prefix_len.reset(prefix_token)

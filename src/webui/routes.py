@@ -21,14 +21,18 @@ from cyrene.config import (
     DB_PATH,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
+    SEARXNG_HOST,
+    SEARXNG_PORT,
     SOUL_PATH,
     STATE_FILE,
     WORKSPACE_DIR,
 )
 from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange
 from cyrene.scheduler import reset_lottery
+from cyrene.settings_store import get_all as get_web_settings
 from cyrene.shells import list_shells as list_live_shells
 from cyrene.short_term import load_entries
+from cyrene.soul import read_soul, get_soul_path
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +200,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_status():
         return await _build_status()
 
+    # ---- Memory API ----
+
+    @router.get("/api/memory")
+    async def api_memory():
+        return await _build_memory()
+
     # ---- Skills API ----
 
     @router.get("/api/skills")
@@ -214,9 +224,98 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         SOUL_PATH.write_text(body.get("content", ""), encoding="utf-8")
         return {"ok": True}
 
+    @router.get("/api/settings/keys")
+    async def api_get_keys():
+        from cyrene.config import get_env_keys_meta
+        return {"keys": get_env_keys_meta()}
+
+    @router.put("/api/settings/keys")
+    async def api_update_keys(request: Request):
+        from cyrene.config import write_env_keys, _EDITABLE_KEYS
+        body = await request.json()
+        updates = {}
+        for key, meta in _EDITABLE_KEYS.items():
+            value = body.get(key, "")
+            if not value:
+                continue
+            # 跳过未修改的 masked 值（全为 • 或太短）
+            if meta["masked"] and (value.startswith("••") or len(value) <= 8):
+                continue
+            updates[key] = value
+        if not updates:
+            return JSONResponse({"error": "no valid keys provided"}, status_code=400)
+        write_env_keys(updates)
+        return {"ok": True, "updated": list(updates.keys())}
+
+    @router.get("/api/settings/models")
+    async def api_get_models():
+        from cyrene.settings_store import get_models
+        from cyrene.config import OPENAI_MODEL, OPENAI_BASE_URL
+        return {"models": get_models(), "active": OPENAI_MODEL, "base_url": OPENAI_BASE_URL}
+
+    @router.put("/api/settings/models")
+    async def api_update_models(request: Request):
+        from cyrene.settings_store import save_models
+        from cyrene.config import write_env_keys
+        body = await request.json()
+        models = body.get("models")
+        selected = body.get("selected")
+        base_url = (body.get("base_url") or "").strip()
+        if not isinstance(models, list) or len(models) == 0:
+            return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
+        save_models(models)
+        updates = {}
+        if selected:
+            updates["OPENAI_MODEL"] = selected
+        if base_url:
+            updates["OPENAI_BASE_URL"] = base_url
+        if updates:
+            write_env_keys(updates)
+        return {"ok": True, "models": models, "active": selected, "base_url": base_url}
+
+    @router.get("/api/settings/tools")
+    async def api_get_tools():
+        from cyrene.settings_store import get_enabled_tools
+        from cyrene.tools import TOOL_DEFS
+        enabled = get_enabled_tools()
+        tools = []
+        for td in TOOL_DEFS:
+            name = td["function"]["name"]
+            tools.append({
+                "name": name,
+                "desc": td["function"]["description"],
+                "enabled": enabled.get(name, True),
+            })
+        return {"tools": tools}
+
+    @router.put("/api/settings/tools")
+    async def api_update_tools(request: Request):
+        from cyrene.settings_store import save_enabled_tools
+        body = await request.json()
+        updates = body.get("tools", {})
+        if not isinstance(updates, dict) or len(updates) == 0:
+            return JSONResponse({"error": "tools must be a non-empty dict"}, status_code=400)
+        save_enabled_tools(updates)
+        return {"ok": True, "updated": list(updates.keys())}
+
     @router.get("/api/settings/config")
     async def api_get_config():
         return _build_config()
+
+    @router.get("/api/settings/search")
+    async def api_get_search():
+        return {"search": _build_search_config()}
+
+    @router.put("/api/settings/search")
+    async def api_update_search(request: Request):
+        from cyrene.settings_store import set_ as set_setting
+        body = await request.json()
+        changed = []
+        for key in ("search_mode", "search_external_url"):
+            if key in body:
+                set_setting(key, body[key])
+                changed.append(key)
+        return {"ok": True, "changed": changed}
 
     app.include_router(router)
 
@@ -1186,6 +1285,95 @@ async def _build_status() -> dict:
     }
 
 
+async def _build_memory() -> dict:
+    """Assemble full memory state for the Memory page."""
+    import re
+    from datetime import datetime, timezone
+
+    # --- SOUL.md ---
+    soul_content = read_soul()
+    soul_exists = bool(soul_content)
+    sections: list[dict] = []
+    current_section: dict | None = None
+    temporary_count = 0
+    temporary_expired = 0
+    now = datetime.now(timezone.utc)
+
+    for line in soul_content.splitlines() if soul_content else []:
+        trimmed = line.strip()
+        if trimmed.startswith("## ") and not trimmed.startswith("### "):
+            if current_section:
+                sections.append(current_section)
+            name = trimmed[3:].strip()
+            current_section = {"name": name, "entries": [], "entry_count": 0}
+        elif current_section is not None:
+            if trimmed and not trimmed.startswith("<!--"):
+                current_section["entries"].append(trimmed)
+                current_section["entry_count"] += 1
+                if current_section["name"] == "TEMPORARY":
+                    temporary_count += 1
+                    date_match = re.search(r"(\d{4}-\d{2}-\d{2})", trimmed)
+                    if date_match:
+                        try:
+                            item_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                            if (now - item_date).days >= 1:
+                                temporary_expired += 1
+                        except ValueError:
+                            pass
+    if current_section:
+        sections.append(current_section)
+
+    # --- Short-term memory ---
+    st_entries = load_entries()
+    short_term = {
+        "entries": sorted(st_entries, key=lambda e: e.get("last_mentioned", ""), reverse=True),
+        "total": len(st_entries),
+    }
+
+    # --- Context window ---
+    session_msgs: list = []
+    if STATE_FILE.exists():
+        try:
+            session_msgs = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("messages", [])
+        except Exception:
+            session_msgs = []
+    context_window = {
+        "messages": len(session_msgs),
+        "max": 40,
+    }
+
+    # --- Conversation archive ---
+    archive_days = 0
+    today_exchanges = 0
+    if CONVERSATIONS_DIR.exists():
+        archive_files = sorted(CONVERSATIONS_DIR.glob("*.md"))
+        archive_days = len(archive_files)
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_file = CONVERSATIONS_DIR / f"{today_str}.md"
+        if today_file.exists():
+            try:
+                raw = today_file.read_text(encoding="utf-8")
+                today_exchanges = raw.count("## ") - 1
+            except Exception:
+                pass
+
+    return {
+        "soul": {
+            "exists": soul_exists,
+            "path": str(get_soul_path()),
+            "sections": sections,
+            "temporary_count": temporary_count,
+            "temporary_expired": temporary_expired,
+        },
+        "short_term": short_term,
+        "context_window": context_window,
+        "archive": {
+            "days": archive_days,
+            "today_exchanges": max(0, today_exchanges),
+        },
+    }
+
+
 def _read_recent_logs() -> list[dict]:
     """Read the most recent debug log file and convert to status log rows."""
     from cyrene.config import DATA_DIR
@@ -1217,8 +1405,6 @@ def _read_recent_logs() -> list[dict]:
             caller = entry.get("caller", "?")
             tool = entry.get("tool", "?")
             rows.append({"t": ts, "lvl": "ok", "msg": f"{caller} → {tool}"})
-        elif kind == "chat_filter":
-            rows.append({"t": ts, "lvl": "info", "msg": "chat filter applied"})
         elif kind == "session_start":
             rows.append({"t": ts, "lvl": "info", "msg": "session started"})
     return list(reversed(rows[-20:]))
@@ -1261,12 +1447,12 @@ def _build_skills() -> list[dict]:
         },
         {
             "id": "search", "name": "Web search", "icon": "◐",
-            "desc": "Search engines via SearxNG (priority) + Google/Bing fallback.",
+            "desc": "Built-in SearXNG (auto-start, no Docker) + DDG/Bing/Baidu fallback.",
             "enabled": True, "installed": True, "hotkey": "S",
             "version": "1.0.0", "author": "Cyrene core",
             "invocations": 0, "successRate": 0.95, "avgDuration": "—", "lastUsed": "—",
             "tools": ["web_search", "web_fetch"],
-            "prompt": "Prefer SearxNG. Falls back across engines on rate limits.",
+            "prompt": "Built-in SearXNG via SimpleXNG. Auto-starts on launch. Falls back to DDG/Bing/Baidu.",
             "tags": ["core", "web"],
             "recent": [],
         },
@@ -1325,6 +1511,7 @@ def _build_settings_meta() -> dict:
             {"id": "models", "label": "Models"},
             {"id": "agents", "label": "Agents"},
             {"id": "tools", "label": "Tools"},
+            {"id": "search", "label": "Search"},
             {"id": "keys", "label": "API keys"},
             {"id": "appearance", "label": "Appearance"},
             {"id": "danger", "label": "Danger zone"},
@@ -1343,6 +1530,7 @@ def _build_settings_meta() -> dict:
 
 
 def _build_config() -> dict:
+    settings = get_web_settings()
     return {
         "model": OPENAI_MODEL,
         "base_url": OPENAI_BASE_URL,
@@ -1350,6 +1538,20 @@ def _build_config() -> dict:
         "soul_path": str(SOUL_PATH),
         "workspace_dir": str(WORKSPACE_DIR),
         "soul_content": _read_soul(),
+        "search_mode": settings.get("search_mode", "builtin"),
+        "search_external_url": settings.get("search_external_url", ""),
+        "search_port": str(SEARXNG_PORT),
+        "search_host": SEARXNG_HOST,
+    }
+
+
+def _build_search_config() -> dict:
+    settings = get_web_settings()
+    return {
+        "search_mode": settings.get("search_mode", "builtin"),
+        "search_external_url": settings.get("search_external_url", ""),
+        "auto_start_enabled": os.getenv("SEARXNG_AUTO_START", "1") not in ("0", "false", "no"),
+        "env_searxng_url": os.getenv("SEARXNG_URL", ""),
     }
 
 

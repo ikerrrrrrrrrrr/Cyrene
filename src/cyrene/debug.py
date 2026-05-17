@@ -84,19 +84,6 @@ def log_tool_call(caller: str, tool_name: str, args: dict, result: str, duration
     _write_entry(entry)
 
 
-def log_chat_filter(text: str, result: str, duration_ms: float) -> None:
-    """Log chat filter translation."""
-    if not VERBOSE:
-        return
-    entry = {
-        "type": "chat_filter",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "input_preview": text[:200],
-        "output_preview": result[:200],
-        "duration_ms": round(duration_ms, 1),
-    }
-    _write_entry(entry)
-
 
 def _clean_for_json(obj):
     """Recursively clean an object for JSON serialization."""

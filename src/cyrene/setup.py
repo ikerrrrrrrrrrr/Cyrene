@@ -77,7 +77,7 @@ async def _setup_from_name(name: str) -> None:
     """搜索人物信息 + 生成行为人格文件。"""
     print(f"\n正在搜索 {name} 的信息...")
 
-    # 1. 用 SearxNG 搜索（模型内部知识可能不准或缺少最新信息）
+    # 1. 用内置 SearXNG 搜索（模型内部知识可能不准或缺少最新信息）
     from cyrene.search import deep_search
     bio = await deep_search(f"{name} 生平 人物经历 背景")
     style = await deep_search(f"{name} 说话方式 语录 口头禅 名场面 梗")

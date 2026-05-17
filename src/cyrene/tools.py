@@ -694,6 +694,20 @@ TOOL_HANDLERS: dict[str, Any] = {
 }
 
 
+def get_active_tool_defs() -> list[dict]:
+    """Return TOOL_DEFS filtered by the user's enabled/disabled tool settings.
+
+    Protected tools (quit) are always included.  The result is cached until
+    the settings file changes.
+    """
+    from cyrene.settings_store import is_tool_enabled
+
+    return [
+        td for td in TOOL_DEFS
+        if is_tool_enabled(td["function"]["name"])
+    ]
+
+
 async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None) -> str:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:

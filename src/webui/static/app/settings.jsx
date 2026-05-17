@@ -4,7 +4,6 @@ const { useState: useStateSet } = React;
 function SettingsPage({ tweaks, setTweak }) {
   useDataVersion();
   const [section, setSection] = useStateSet("general");
-  const [model, setModel] = useStateSet("current");
   const [config, setConfig] = useStateSet({
     model: "—", base_url: "—", assistant_name: "—",
     soul_path: "—", workspace_dir: "—", soul_content: "",
@@ -12,13 +11,24 @@ function SettingsPage({ tweaks, setTweak }) {
   const [soulDraft, setSoulDraft] = useStateSet("");
   const [soulStatus, setSoulStatus] = useStateSet("");
   const [toggles, setToggles] = useStateSet({
-    autoSpawn: true,
     sandboxedShell: true,
     networkAllowlist: false,
     redactSecrets: true,
     streamThinking: true,
     desktopNotif: false,
   });
+  const [searchMode, setSearchMode] = useStateSet("builtin");
+  const [searchExternalUrl, setSearchExternalUrl] = useStateSet("");
+  const [searchSaved, setSearchSaved] = useStateSet("");
+  const [keys, setKeys] = useStateSet({});
+  const [keysSaved, setKeysSaved] = useStateSet("");
+  const [models, setModels] = useStateSet([]);
+  const [activeModel, setActiveModel] = useStateSet("");
+  const [baseUrl, setBaseUrl] = useStateSet("");
+  const [newModel, setNewModel] = useStateSet({ name: "", desc: "", ctx: "", price: "" });
+  const [modelsSaved, setModelsSaved] = useStateSet("");
+  const [toolList, setToolList] = useStateSet([]);
+  const [toolsSaved, setToolsSaved] = useStateSet("");
 
   function t(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
 
@@ -26,6 +36,21 @@ function SettingsPage({ tweaks, setTweak }) {
     fetch("/api/settings/config").then((r) => r.json()).then((c) => {
       setConfig(c);
       setSoulDraft(c.soul_content || "");
+      if (c.search_mode) setSearchMode(c.search_mode);
+      if (c.search_external_url !== undefined) setSearchExternalUrl(c.search_external_url);
+    }).catch(() => {});
+    fetch("/api/settings/keys").then((r) => r.json()).then((data) => {
+      const map = {};
+      (data.keys || []).forEach((k) => { map[k.key] = k.value || ""; });
+      setKeys(map);
+    }).catch(() => {});
+    fetch("/api/settings/models").then((r) => r.json()).then((data) => {
+      setModels(data.models || []);
+      setActiveModel(data.active || "");
+      setBaseUrl(data.base_url || "");
+    }).catch(() => {});
+    fetch("/api/settings/tools").then((r) => r.json()).then((data) => {
+      setToolList(data.tools || []);
     }).catch(() => {});
   }, []);
 
@@ -43,6 +68,101 @@ function SettingsPage({ tweaks, setTweak }) {
     } catch (e) {
       setSoulStatus("error: " + e.message);
     }
+  }
+
+  async function saveSearch() {
+    setSearchSaved("saving…");
+    try {
+      const r = await fetch("/api/settings/search", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ search_mode: searchMode, search_external_url: searchExternalUrl }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      setSearchSaved("saved ✓");
+      setTimeout(() => setSearchSaved(""), 1500);
+    } catch (e) {
+      setSearchSaved("error: " + e.message);
+    }
+  }
+
+  async function saveKeys() {
+    setKeysSaved("saving…");
+    try {
+      const r = await fetch("/api/settings/keys", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(keys),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      setKeysSaved("saved " + (data.updated || []).join(", ") + " ✓");
+      setTimeout(() => setKeysSaved(""), 2500);
+    } catch (e) {
+      setKeysSaved("error: " + e.message);
+    }
+  }
+
+  async function saveModels() {
+    setModelsSaved("saving…");
+    try {
+      const r = await fetch("/api/settings/models", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models: models, selected: activeModel, base_url: baseUrl }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      setModelsSaved("saved ✓");
+      setTimeout(() => setModelsSaved(""), 1500);
+    } catch (e) {
+      setModelsSaved("error: " + e.message);
+    }
+  }
+
+  function selectModel(id) {
+    setActiveModel(id);
+    setModels(models.map(function(m) { return { ...m, _active: m.id === id }; }));
+  }
+
+  function addModel() {
+    var name = (newModel.name || "").trim();
+    if (!name) return;
+    var id = name.toLowerCase().replace(/\s+/g, "-");
+    var added = { id: id, name: name, desc: newModel.desc || "", ctx: newModel.ctx || "—", price: newModel.price || "—" };
+    setModels(models.concat(added));
+    setActiveModel(id);
+    setNewModel({ name: "", desc: "", ctx: "", price: "" });
+  }
+
+  function deleteModel(id) {
+    if (models.length <= 1) return;
+    var next = models.filter(function(m) { return m.id !== id; });
+    setModels(next);
+    if (activeModel === id) setActiveModel(next[0] ? next[0].id : "");
+  }
+
+  async function saveTools() {
+    setToolsSaved("saving…");
+    try {
+      var map = {};
+      toolList.forEach(function(tl) { map[tl.name] = tl.enabled; });
+      const r = await fetch("/api/settings/tools", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tools: map }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      setToolsSaved("saved ✓");
+      setTimeout(() => setToolsSaved(""), 1500);
+    } catch (e) {
+      setToolsSaved("error: " + e.message);
+    }
+  }
+
+  function toggleTool(name) {
+    setToolList(toolList.map(function(tl) {
+      return tl.name === name ? { ...tl, enabled: !tl.enabled } : tl;
+    }));
   }
 
   async function clearSession() {
@@ -105,31 +225,62 @@ function SettingsPage({ tweaks, setTweak }) {
         {section === "models" && (
           <>
             <h2>Models</h2>
-            <p className="subtitle">Pick the default model for new runs. Subagents inherit unless overridden.</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {DATA.settings.models.map((m) => (
-                <div key={m.id}
-                     className={"model-card " + (model === m.id ? "active" : "")}
-                     onClick={() => setModel(m.id)}>
-                  <div className="model-radio"></div>
-                  <div style={{ minWidth: 0 }}>
-                    <div className="model-name">{m.name}</div>
-                    <div className="model-desc">{m.desc}</div>
+            <p className="subtitle">Manage available models. Click a model to select it — changes apply to new LLM calls immediately.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {models.map(function(m) {
+                var isActive = m.id === activeModel;
+                return (
+                  <div key={m.id}
+                       className={"model-card" + (isActive ? " active" : "")}
+                       onClick={function() { selectModel(m.id); }}
+                       style={{ cursor: "pointer" }}>
+                    <div className="model-radio" style={isActive ? { background: "var(--accent)", borderColor: "var(--accent)" } : {}}></div>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div className="model-name">{m.name}</div>
+                      <div className="model-desc">{m.desc}</div>
+                    </div>
+                    <div className="model-meta">
+                      <div>{m.ctx}</div>
+                      <div style={{ color: "var(--text-3)" }}>{m.price} <span style={{ color: "var(--text-4)" }}>/ M tok</span></div>
+                    </div>
+                    <button className="iconbtn"
+                            title={"Delete " + m.name}
+                            onClick={function(e) { e.stopPropagation(); deleteModel(m.id); }}
+                            style={{ marginLeft: 8, color: "var(--text-4)", opacity: models.length <= 1 ? 0.3 : 1 }}
+                            disabled={models.length <= 1}>
+                      <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+                        <path d="M5 5 L15 15 M15 5 L5 15" />
+                      </svg>
+                    </button>
                   </div>
-                  <div className="model-meta">
-                    <div>{m.ctx}</div>
-                    <div style={{ color: "var(--text-3)" }}>{m.price} <span style={{ color: "var(--text-4)" }}>/ M tok</span></div>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div className="field" style={{ marginTop: 8 }}>
-              <div className="label">Temperature<small>Lower = more deterministic. Default 0.2.</small></div>
-              <input className="input" defaultValue="0.2" style={{ maxWidth: 120 }} />
+              <div className="label">API endpoint<small>OPENAI_BASE_URL — OpenAI-compatible API base.</small></div>
+              <input className="input mono" value={baseUrl}
+                     onChange={function(e) { setBaseUrl(e.target.value); }}
+                     placeholder="https://api.deepseek.com/v1" style={{ maxWidth: 480 }} />
             </div>
-            <div className="field">
-              <div className="label">Max output tokens</div>
-              <input className="input" defaultValue="4096" style={{ maxWidth: 120 }} />
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+              <button className="btn primary" onClick={saveModels}>save & apply</button>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{modelsSaved}</span>
+            </div>
+            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>Add model</h3>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <input className="input mono" placeholder="name" value={newModel.name}
+                     onChange={function(e) { setNewModel({ ...newModel, name: e.target.value }); }}
+                     style={{ maxWidth: 180 }} />
+              <input className="input mono" placeholder="desc" value={newModel.desc}
+                     onChange={function(e) { setNewModel({ ...newModel, desc: e.target.value }); }}
+                     style={{ maxWidth: 200 }} />
+              <input className="input mono" placeholder="ctx" value={newModel.ctx}
+                     onChange={function(e) { setNewModel({ ...newModel, ctx: e.target.value }); }}
+                     style={{ maxWidth: 80 }} />
+              <input className="input mono" placeholder="price" value={newModel.price}
+                     onChange={function(e) { setNewModel({ ...newModel, price: e.target.value }); }}
+                     style={{ maxWidth: 100 }} />
+              <button className="btn" onClick={addModel}>add</button>
             </div>
           </>
         )}
@@ -166,16 +317,6 @@ function SettingsPage({ tweaks, setTweak }) {
               </div>
             </div>
             <div className="field">
-              <div className="label">Auto-spawn subagents<small>Let the main agent fan out parallelizable work.</small></div>
-              <div className={"toggle " + (toggles.autoSpawn ? "on" : "")} onClick={() => t("autoSpawn")}></div>
-            </div>
-            <div className="field">
-              <div className="label">Max concurrent subagents<small>Hard cap on parallel workers per run.</small></div>
-              <select className="select" style={{ maxWidth: 160 }} defaultValue="4">
-                <option>1</option><option>2</option><option>4</option><option>8</option><option>16</option>
-              </select>
-            </div>
-            <div className="field">
               <div className="label">Subagent token budget<small>Per-subagent context cap.</small></div>
               <input className="input" defaultValue="32000" style={{ maxWidth: 160 }} />
             </div>
@@ -193,28 +334,79 @@ function SettingsPage({ tweaks, setTweak }) {
         {section === "tools" && (
           <>
             <h2>Tools</h2>
-            <p className="subtitle">Toggle what the agent is allowed to call.</p>
-            {[
-              { k: "shell", n: "shell.exec", d: "Run shell commands in the sandbox." },
-              { k: "fs",    n: "fs.read / fs.write", d: "Read and write files in the working directory." },
-              { k: "git",   n: "git.*", d: "Inspect history, branches, diffs (read-only by default)." },
-              { k: "web",   n: "web.fetch", d: "Fetch HTTP(S) — see allowlist below." },
-              { k: "code",  n: "code.search", d: "Ripgrep-style search across the project." },
-              { k: "ai",    n: "agent.spawn", d: "Spawn subagents." },
-            ].map((tl) => (
-              <div className="field" key={tl.k}>
-                <div className="label">{tl.n}<small>{tl.d}</small></div>
-                <div className={"toggle " + (toggles[tl.k] !== false ? "on" : "")}
-                     onClick={() => setToggles({ ...toggles, [tl.k]: toggles[tl.k] === false ? true : false })}></div>
-              </div>
-            ))}
-            <div className="field">
-              <div className="label">Sandbox shell<small>Run shell.exec inside an isolated container.</small></div>
-              <div className={"toggle " + (toggles.sandboxedShell ? "on" : "")} onClick={() => t("sandboxedShell")}></div>
+            <p className="subtitle">Enable or disable tools the agent can call. Changes take effect on the next agent turn. <b>quit</b> is always enabled.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {toolList.map(function(tl) {
+                return (
+                  <div className="field" key={tl.name}>
+                    <div className="label">
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent)" }}>{tl.name}</span>
+                      <small>{tl.desc}</small>
+                    </div>
+                    <div className={"toggle " + (tl.enabled ? "on" : "")}
+                         onClick={function() { toggleTool(tl.name); }}></div>
+                  </div>
+                );
+              })}
             </div>
+            <div style={{ marginTop: 12 }}>
+              <button className="btn primary" onClick={saveTools}>save tools</button>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{toolsSaved}</span>
+            </div>
+          </>
+        )}
+
+        {section === "search" && (
+          <>
+            <h2>Web Search</h2>
+            <p className="subtitle">Choose how the agent searches the web. Save to apply changes.</p>
             <div className="field">
-              <div className="label">Network allowlist<small>If on, web.fetch is restricted to listed domains.</small></div>
-              <div className={"toggle " + (toggles.networkAllowlist ? "on" : "")} onClick={() => t("networkAllowlist")}></div>
+              <div className="label">Search backend<small>Built-in uses SimpleXNG (auto-started, no Docker). External points to your own SearXNG instance. Fallback uses DDG/Bing/Baidu scraping only.</small></div>
+              <div className="seg">
+                <button
+                  className={"seg-btn " + (searchMode === "builtin" ? "active" : "")}
+                  onClick={() => setSearchMode("builtin")}>
+                  built-in
+                </button>
+                <button
+                  className={"seg-btn " + (searchMode === "external" ? "active" : "")}
+                  onClick={() => setSearchMode("external")}>
+                  external
+                </button>
+                <button
+                  className={"seg-btn " + (searchMode === "fallback" ? "active" : "")}
+                  onClick={() => setSearchMode("fallback")}>
+                  fallback only
+                </button>
+              </div>
+            </div>
+            {searchMode === "external" && (
+              <div className="field">
+                <div className="label">External SearXNG URL<small>e.g. http://localhost:8888 or https://search.example.com</small></div>
+                <input
+                  className="input mono"
+                  value={searchExternalUrl}
+                  onChange={(e) => setSearchExternalUrl(e.target.value)}
+                  placeholder="http://localhost:8888"
+                  style={{ maxWidth: 400 }}
+                />
+              </div>
+            )}
+            {searchMode === "builtin" && (
+              <div className="field">
+                <div className="label">Built-in status<small>SimpleXNG auto-starts on port {config.search_port || "8888"}. Make sure <code>pip install simplexng</code> is done.</small></div>
+                <input className="input mono" value="Auto-started on launch — no config needed" readOnly style={{ maxWidth: 420 }} />
+              </div>
+            )}
+            {searchMode === "fallback" && (
+              <div className="field">
+                <div className="label">Fallback engines<small>DuckDuckGo, Bing, and Baidu HTML scraping. Rate-limited and less reliable.</small></div>
+                <input className="input mono" value="DDG → Bing → Baidu (no SearXNG)" readOnly style={{ maxWidth: 420 }} />
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+              <button className="btn primary" onClick={saveSearch}>save search settings</button>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{searchSaved}</span>
             </div>
           </>
         )}
@@ -222,24 +414,38 @@ function SettingsPage({ tweaks, setTweak }) {
         {section === "keys" && (
           <>
             <h2>API keys</h2>
-            <p className="subtitle">Edit your .env file directly — keys are not stored by the UI.</p>
+            <p className="subtitle">Edit your .env file from the UI. Changes take effect immediately for LLM calls. Telegram token requires restart.</p>
             <div className="field">
-              <div className="label">LLM endpoint<small>OPENAI_BASE_URL — set to any OpenAI-compatible API (DeepSeek, OpenAI, LMStudio).</small></div>
-              <input className="input mono" value={config.base_url} readOnly />
+              <div className="label">LLM endpoint<small>OPENAI_BASE_URL — OpenAI-compatible API (DeepSeek, OpenAI, LMStudio).</small></div>
+              <input className="input mono" value={keys.OPENAI_BASE_URL || config.base_url || ""}
+                     onChange={(e) => setKeys({ ...keys, OPENAI_BASE_URL: e.target.value })}
+                     placeholder="https://api.deepseek.com/v1" style={{ maxWidth: 480 }} />
             </div>
             <div className="field">
-              <div className="label">Active model<small>OPENAI_MODEL.</small></div>
-              <input className="input mono" value={config.model} readOnly />
+              <div className="label">Model name<small>OPENAI_MODEL — e.g. deepseek-chat, claude-sonnet-4-7.</small></div>
+              <input className="input mono" value={keys.OPENAI_MODEL || config.model || ""}
+                     onChange={(e) => setKeys({ ...keys, OPENAI_MODEL: e.target.value })}
+                     placeholder="deepseek-chat" style={{ maxWidth: 320 }} />
             </div>
             <div className="field">
-              <div className="label">OPENAI_API_KEY<small>Stored in .env at project root. Edit there.</small></div>
-              <input className="input mono" placeholder="(hidden — check .env)" readOnly />
+              <div className="label">API key<small>OPENAI_API_KEY — bearer token for LLM authentication.</small></div>
+              <input className="input mono" type="password"
+                     value={keys.OPENAI_API_KEY || ""}
+                     onChange={(e) => setKeys({ ...keys, OPENAI_API_KEY: e.target.value })}
+                     placeholder="sk-…" style={{ maxWidth: 480 }} />
             </div>
             <div className="field">
-              <div className="label">Telegram bot token<small>Optional. Required only for the Telegram interface.</small></div>
-              <input className="input mono" placeholder="(hidden — check .env for TELEGRAM_BOT_TOKEN)" readOnly />
+              <div className="label">Telegram bot token<small>TELEGRAM_BOT_TOKEN — optional, for Telegram interface. Requires restart to take effect.</small></div>
+              <input className="input mono" type="password"
+                     value={keys.TELEGRAM_BOT_TOKEN || ""}
+                     onChange={(e) => setKeys({ ...keys, TELEGRAM_BOT_TOKEN: e.target.value })}
+                     placeholder="(optional)" style={{ maxWidth: 480 }} />
             </div>
-            <div className="field">
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+              <button className="btn primary" onClick={saveKeys}>save API keys</button>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{keysSaved}</span>
+            </div>
+            <div className="field" style={{ marginTop: 16 }}>
               <div className="label">Redact secrets from logs<small>Mask API keys + bearer tokens before they hit disk.</small></div>
               <div className={"toggle " + (toggles.redactSecrets ? "on" : "")} onClick={() => t("redactSecrets")}></div>
             </div>

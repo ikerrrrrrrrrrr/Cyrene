@@ -7,7 +7,6 @@ Architecture:
 """
 
 import asyncio
-import json
 import logging
 import re
 from urllib.parse import parse_qs, quote, urlparse
@@ -16,7 +15,11 @@ import httpx
 import requests
 
 from cyrene import debug
-from cyrene.config import OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL, SEARCH_PROXY, SEARXNG_URL
+from cyrene.config import (
+    OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL,
+    SEARCH_PROXY, SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT, SEARXNG_URL,
+)
+from cyrene.settings_store import get as get_web_setting
 
 logger = logging.getLogger(__name__)
 
@@ -266,11 +269,31 @@ async def _search_baidu(query: str) -> list[dict]:
     return results[:5]
 
 
+def _get_searxng_url() -> str:
+    """Resolve the SearXNG base URL from Web UI settings, env vars, or auto-start."""
+    search_mode = get_web_setting("search_mode", "builtin")
+
+    if search_mode == "fallback":
+        return ""
+
+    if search_mode == "external":
+        url = get_web_setting("search_external_url", "") or SEARXNG_URL
+        return url
+
+    # "builtin" mode
+    if SEARXNG_URL:
+        return SEARXNG_URL
+    if SEARXNG_AUTO_START:
+        return f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"
+    return ""
+
+
 async def _search_searxng(query: str) -> list[dict]:
     """Search via local SearxNG instance. No rate limits, clean JSON API."""
-    if not SEARXNG_URL:
+    base_url = _get_searxng_url()
+    if not base_url:
         return []
-    url = f"{SEARXNG_URL.rstrip('/')}/search"
+    url = f"{base_url.rstrip('/')}/search"
     headers = {"Accept": "application/json"}
 
     def _fetch() -> list[dict]:
@@ -588,8 +611,9 @@ async def deep_search(topic: str) -> str:
             else:
                 return await _search_bing(q)
 
-    # 只看 SearxNG（如果配置了）。手搓的 DDG/Bing/Baidu 限流严重，不可靠。
-    if SEARXNG_URL:
+    # SearxNG 优先（配置了 URL 或自动启动）。手搓的 DDG/Bing/Baidu 限流严重，不可靠。
+    _search_url = _get_searxng_url()
+    if _search_url:
         search_tasks = [_limited_search(q, "searxng") for q in queries]
     else:
         search_tasks = [_limited_search(q, "ddg") for q in queries]
@@ -603,7 +627,7 @@ async def deep_search(topic: str) -> str:
         if isinstance(sr, list):
             all_results.extend(sr)
 
-    engine = "SearxNG" if SEARXNG_URL else "DDG+Bing+Baidu"
+    engine = "SearxNG" if _search_url else "DDG+Bing+Baidu"
     logger.info("Stage 2 search complete: %d raw results (%s)", len(all_results), engine)
 
     if not all_results:

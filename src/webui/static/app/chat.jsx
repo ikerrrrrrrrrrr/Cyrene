@@ -92,8 +92,6 @@ function formatProgressEvent(event) {
     }
     case "llm_call":
       return { icon: "◎", text: (event.caller || "agent") + " · " + (event.phase || "thinking") };
-    case "chat_filter":
-      return { icon: "✱", text: "Applying persona voice..." };
     default:
       return null;
   }

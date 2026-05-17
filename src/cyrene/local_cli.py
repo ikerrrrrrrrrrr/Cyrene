@@ -2,7 +2,10 @@ import asyncio
 import logging
 
 from cyrene.agent import clear_session_id, run_agent
-from cyrene.config import ASSISTANT_NAME, DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR
+from cyrene.config import (
+    ASSISTANT_NAME, DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR,
+    SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,
+)
 from cyrene.db import init_db
 from cyrene.inbox import ensure_inbox
 from cyrene.short_term import init_short_term
@@ -19,6 +22,14 @@ async def _prepare_cli() -> None:
     ensure_soul()
     ensure_inbox("cyrene")
     init_short_term(DATA_DIR)
+
+    if SEARXNG_AUTO_START:
+        from cyrene.searxng_manager import start_searxng
+        try:
+            url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+            logger.info("SearXNG auto-started at %s", url)
+        except Exception as exc:
+            logger.warning("SearXNG auto-start failed: %s", exc)
 
 
 def _show_help():
@@ -142,6 +153,14 @@ def _run_web_mode() -> None:
         init_short_term(DATA_DIR)
         enable_event_bus()
 
+        if SEARXNG_AUTO_START:
+            from cyrene.searxng_manager import start_searxng
+            try:
+                url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+                logger.info("SearXNG auto-started at %s", url)
+            except Exception as exc:
+                logger.warning("SearXNG auto-start failed: %s", exc)
+
         bot = WebBot()
         scheduler = setup_scheduler(bot, str(DB_PATH))
         scheduler.start()
@@ -154,7 +173,11 @@ def _run_web_mode() -> None:
         finally:
             scheduler.shutdown()
 
-    asyncio.run(_start())
+    try:
+        asyncio.run(_start())
+    finally:
+        from cyrene.searxng_manager import stop_searxng
+        stop_searxng()
 
 
 def main() -> None:
@@ -178,7 +201,11 @@ def main() -> None:
     if not is_setup_done():
         asyncio.run(run_setup())
 
-    asyncio.run(_cli_loop())
+    try:
+        asyncio.run(_cli_loop())
+    finally:
+        from cyrene.searxng_manager import stop_searxng
+        stop_searxng()
 
 
 if __name__ == "__main__":

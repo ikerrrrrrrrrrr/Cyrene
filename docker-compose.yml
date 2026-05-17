@@ -1,22 +1,3 @@
-version: "3.8"
-
-services:
-  searxng:
-    image: searxng/searxng:latest
-    container_name: searxng
-    ports:
-      - "8888:8080"
-    volumes:
-      - searxng-data:/etc/searxng:rw
-    environment:
-      - SEARXNG_BASE_URL=http://localhost:8888/
-    restart: unless-stopped
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETGID
-      - SETUID
-
-volumes:
-  searxng-data:
+# SearXNG is now built-in via SimpleXNG (pip install simplexng).
+# No Docker required — Cyrene auto-starts SearXNG on launch.
+# See README for details.

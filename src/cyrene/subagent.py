@@ -390,7 +390,7 @@ async def _run_subagent(
     """
     from cyrene.agent import _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
     from cyrene.llm import _assistant_text, _truncate
-    from cyrene.tools import TOOL_DEFS, _execute_tool
+    from cyrene.tools import get_active_tool_defs, _execute_tool
 
     _caller_type.set(f"subagent_{agent_id}")
     round_id = await get_round_id(agent_id)
@@ -452,7 +452,7 @@ Rules:
                 # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
                 await _mark_inbox_read(agent_id)
 
-            response = await _call_llm(messages, tools=TOOL_DEFS)
+            response = await _call_llm(messages, tools=get_active_tool_defs())
 
             entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):
