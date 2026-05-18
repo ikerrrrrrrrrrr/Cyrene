@@ -141,7 +141,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
   const activeRecentSessionId = selectedSessionId || DATA.sessions[0]?.id || null;
   const items = [
     { id: "chat",     label: "Chat",     icon: "▸", key: "1" },
-    { id: "agents",   label: "Agents",   icon: "⌘", key: "2" },
+    { id: "agents",   label: "Agent flow",   icon: "⌘", key: "2" },
     { id: "sessions", label: "Sessions", icon: "≡", key: "3", badge: sessionCount > 0 ? String(sessionCount) : null },
     { id: "skills",   label: "Skills",   icon: "✸", key: "4" },
     { id: "memory",   label: "Memory",   icon: "▤", key: "5" },
@@ -154,7 +154,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
       <div className="sidebar-brand">
         <div className="brand-mark"></div>
         <div className="brand-name">{brandName}</div>
-        <div className="brand-version">v0.1.0</div>
+        <div className="brand-version">{DATA.appVersion || "v0.1.1"}</div>
       </div>
 
       <div className="nav-section">Workspace</div>
@@ -223,7 +223,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
         <div className="avatar">{DATA.user.initials}</div>
         <div className="who">
           {DATA.user.name}
-          <small>@{DATA.user.handle}</small>
+          <small>@{DATA.user.handle} · {DATA.appVersion || "v0.1.1"}</small>
         </div>
         <button className="iconbtn" title="Account">▾</button>
       </div>
@@ -275,7 +275,7 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
   const runningSubagents = (session.subagents || []).filter((s) => s.status === "running").length;
   const title =
     page === "chat" ? <>Chat<span className="crumb-sep">/</span><b>{session.title}</b></> :
-    page === "agents" ? <>Agents<span className="crumb-sep">/</span><b>{session.title}</b></> :
+    page === "agents" ? <>Agent flow<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "sessions" ? <>Sessions<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "skills" ? <>Skills<span className="crumb-sep">/</span><b>library</b></> :
     page === "memory" ? <>Memory<span className="crumb-sep">/</span><b>pipeline</b></> :

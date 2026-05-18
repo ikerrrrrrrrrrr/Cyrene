@@ -40,6 +40,18 @@ function roundName(nodes, fallback) {
   return inputNode && String(inputNode.title).trim() ? String(inputNode.title).trim() : fallback;
 }
 
+function edgeSelectionKey(edge) {
+  const msg = edge && edge.message ? edge.message : {};
+  return [
+    edge && edge.kind ? edge.kind : "",
+    edge && edge.from ? edge.from : "",
+    edge && edge.to ? edge.to : "",
+    edge && edge.label ? edge.label : "",
+    msg.ts || "",
+    msg.body || "",
+  ].join("::");
+}
+
 function buildAgentRounds(session) {
   const rounds = [];
   const flow = session && session.flow ? session.flow : EMPTY_FLOW;
@@ -110,12 +122,26 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
     sessionDuration: "—",
     flow: EMPTY_FLOW,
   };
-  const [selectedNode, setSelectedNode] = useStateAg("n_main");
-  const [selectedEdgeIdx, setSelectedEdgeIdx] = useStateAg(null);
+  const [selectedNode, setSelectedNode] = useStateAg(round.flow.nodes[0]?.id || null);
+  const [selectedEdgeKey, setSelectedEdgeKey] = useStateAg(null);
   const [zoom, setZoom] = useStateAg(0.85);
   const [pan, setPan] = useStateAg({ x: 20, y: 20 });
   const [viewport, setViewport] = useStateAg({ width: 1400, height: 900 });
   const wrapRef = useRefAg(null);
+  const lastRoundRef = useRefAg(selectedRound);
+  const selectionMemoryRef = useRefAg({});
+
+  function selectNodeForRound(nodeId) {
+    selectionMemoryRef.current[selectedRound] = { nodeId, edgeKey: null };
+    setSelectedNode(nodeId);
+    setSelectedEdgeKey(null);
+  }
+
+  function selectEdgeForRound(edgeKey) {
+    selectionMemoryRef.current[selectedRound] = { nodeId: null, edgeKey };
+    setSelectedEdgeKey(edgeKey);
+    setSelectedNode(null);
+  }
 
   useEffectAg(() => {
     if (!rounds.some((item) => item.id === selectedRound)) {
@@ -124,8 +150,21 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
   }, [rounds, selectedRound]);
 
   useEffectAg(() => {
+    if (lastRoundRef.current === selectedRound) return;
+    lastRoundRef.current = selectedRound;
+    const saved = selectionMemoryRef.current[selectedRound];
+    if (saved && saved.edgeKey && round.flow.edges.some((edge) => edgeSelectionKey(edge) === saved.edgeKey)) {
+      setSelectedEdgeKey(saved.edgeKey);
+      setSelectedNode(null);
+      return;
+    }
+    if (saved && saved.nodeId && round.flow.nodes.some((node) => node.id === saved.nodeId)) {
+      setSelectedNode(saved.nodeId);
+      setSelectedEdgeKey(null);
+      return;
+    }
     setSelectedNode(round.flow.nodes[0]?.id || null);
-    setSelectedEdgeIdx(null);
+    setSelectedEdgeKey(null);
   }, [selectedRound, round.flow.nodes]);
 
   // Reset pan when orientation changes
@@ -137,6 +176,39 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
     setPan({ x: 20, y: 20 });
     setZoom(0.85);
   }, [selectedRound]);
+
+  useEffectAg(() => {
+    const saved = selectionMemoryRef.current[selectedRound];
+    const savedEdgeKey = saved && saved.edgeKey &&
+      round.flow.edges.some((edge) => edgeSelectionKey(edge) === saved.edgeKey)
+      ? saved.edgeKey
+      : null;
+    const savedNodeId = saved && saved.nodeId &&
+      round.flow.nodes.some((node) => node.id === saved.nodeId)
+      ? saved.nodeId
+      : null;
+    if (savedEdgeKey && (selectedEdgeKey !== savedEdgeKey || selectedNode !== null)) {
+      setSelectedEdgeKey(savedEdgeKey);
+      setSelectedNode(null);
+      return;
+    }
+    if (savedNodeId && (selectedNode !== savedNodeId || selectedEdgeKey !== null)) {
+      setSelectedNode(savedNodeId);
+      setSelectedEdgeKey(null);
+      return;
+    }
+    const nodeExists = selectedNode && round.flow.nodes.some((node) => node.id === selectedNode);
+    const edgeExists = selectedEdgeKey && round.flow.edges.some((edge) => edgeSelectionKey(edge) === selectedEdgeKey);
+    if (nodeExists || edgeExists) return;
+    if (selectedEdgeKey) {
+      setSelectedEdgeKey(null);
+      return;
+    }
+    const firstNodeId = round.flow.nodes[0]?.id || null;
+    if (selectedNode !== firstNodeId) {
+      setSelectedNode(firstNodeId);
+    }
+  }, [round.flow.nodes, round.flow.edges, selectedNode, selectedEdgeKey]);
 
   useEffectAg(() => {
     const el = wrapRef.current;
@@ -159,6 +231,9 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
 
   const { nodes, edges } = round.flow;
   const sel = nodes.find((n) => n.id === selectedNode);
+  const selectedEdge = selectedEdgeKey
+    ? edges.find((edge) => edgeSelectionKey(edge) === selectedEdgeKey) || null
+    : null;
 
   // Drag-to-pan
   const dragRef = useRefAg(null);
@@ -369,12 +444,13 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
               </marker>
             </defs>
             {edges.map((e, i) => {
+              const edgeKey = edgeSelectionKey(e);
               const cls =
                 "edge " +
                 (e.kind === "active" ? "active" :
                  e.kind === "dashed" ? "dashed" :
                  e.kind === "comm"   ? "comm" : "") +
-                (selectedEdgeIdx === i ? " selected" : "");
+                (selectedEdgeKey === edgeKey ? " selected" : "");
               const marker =
                 e.kind === "active" ? "url(#arrow-active)" :
                 e.kind === "comm"   ? "url(#arrow-comm)" :
@@ -382,20 +458,20 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
               const clickable = e.kind === "comm" && e.message;
               const lp = edgeLabelPos(e);
               return (
-                <g key={i} style={{ pointerEvents: clickable ? "auto" : "none" }}>
+                <g key={edgeKey || i} style={{ pointerEvents: clickable ? "auto" : "none" }}>
                   {clickable && (
                     <path d={edgePath(e)} stroke="transparent" strokeWidth="14" fill="none"
                           style={{ cursor: "pointer" }}
-                          onClick={() => { setSelectedEdgeIdx(i); setSelectedNode(null); }} />
+                          onClick={() => selectEdgeForRound(edgeKey)} />
                   )}
                   <path d={edgePath(e)} className={cls} markerEnd={marker}
                         style={{ cursor: clickable ? "pointer" : "default" }}
-                        onClick={clickable ? () => { setSelectedEdgeIdx(i); setSelectedNode(null); } : undefined} />
+                        onClick={clickable ? () => selectEdgeForRound(edgeKey) : undefined} />
                   {e.label && (
                     <text className={"edge-label" + (e.kind === "comm" ? " comm" : "")}
                           x={lp.x} y={lp.y} textAnchor="middle"
                           style={{ cursor: clickable ? "pointer" : "default" }}
-                          onClick={clickable ? () => { setSelectedEdgeIdx(i); setSelectedNode(null); } : undefined}>
+                          onClick={clickable ? () => selectEdgeForRound(edgeKey) : undefined}>
                       {e.label}
                     </text>
                   )}
@@ -408,7 +484,7 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
             <FlowNode key={n.id} node={n}
                       pos={nodeRects[n.id]}
                       selected={n.id === selectedNode}
-                      onClick={() => { setSelectedNode(n.id); setSelectedEdgeIdx(null); }} />
+                      onClick={() => selectNodeForRound(n.id)} />
           ))}
         </div>
 
@@ -435,9 +511,9 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
         </div>
       </div>
 
-      <Inspector node={sel} edge={selectedEdgeIdx != null ? edges[selectedEdgeIdx] : null}
+      <Inspector node={sel} edge={selectedEdge}
                  flow={round.flow}
-                 onSelectNode={(id) => { setSelectedNode(id); setSelectedEdgeIdx(null); }} />
+                 onSelectNode={(id) => selectNodeForRound(id)} />
     </div>
   );
 }

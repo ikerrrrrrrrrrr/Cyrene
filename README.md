@@ -14,133 +14,190 @@ pip install -e .
 cp .env.example .env
 # Edit .env with your API key and model
 
-# 3. Launch (Web UI + CLI)
-python -m cyrene.local_cli
+# 3. Launch with Web UI (default)
+python -m cyrene --web
 
 #   or headless CLI only:
-python -m cyrene.local_cli --headless
+python -m cyrene --headless
 ```
 
-On first launch, a personality setup wizard will guide you through injecting a personality (real or fictional) into the agent.
+On first launch, a personality setup wizard will guide you through injecting a personality (real or fictional) into the agent. Open `http://localhost:4242` for the web UI.
 
 ## Architecture
+
+Cyrene uses a **two-phase agent loop** to minimize LLM calls for simple chat while enabling full tool use when needed:
 
 ```
 User Message
     │
     ▼
-Phase 1 (lightweight: use_tools + quit)
+Phase 1 (lightweight: only use_tools + quit)
     ├── Pure chat → return directly (1 LLM call)
     └── Needs tools → Phase 2
             │
             ▼
-    Phase 2 (all tools, subagent support)
-    │   ├── Write/Read/Edit/Bash/Grep/Glob
-    │   ├── WebSearch/WebFetch (SearXNG, built-in)
-    │   ├── spawn_subagent → parallel sub-agents with inbox
-    │   └── quit → return
+    Phase 2 (full tool set, up to 12 rounds)
+    │   ├── File ops: Read/Write/Edit/Glob/Grep
+    │   ├── Shell: Bash + persistent interactive shells
+    │   ├── Search: WebSearch/WebFetch (SearXNG built-in)
+    │   ├── Subagents: spawn_subagent → parallel agents with inbox
+    │   ├── Tasks: schedule/list/pause/resume/cancel
+    │   └── quit → end interaction
     │
     ▼
-Chat Filter (reads SOUL.md → translates to character voice)
-    │
-    ▼
-User hears
+Response returned to user
 ```
 
 ## Key Features
 
-### Web UI + Real-Time Timeline
-- Web UI at `http://localhost:4242` (default), with real-time agent activity visualization
-- Every LLM call, tool execution, and subagent spawn rendered as SVG timeline
-- Inbox messages shown as directed arrows between agents
-- CLI and Web UI share the same session via SSE events
+### Web UI
+- Real-time chat at `http://localhost:4242` with Markdown rendering
+- **Agent Timeline** — SVG flowchart visualizing every LLM call, tool execution, subagent spawn, and inbox message in real time
+- **Live Rounds** — monitor running agent rounds, send guidance to in-progress rounds
+- **Memory Visualization** — view the full memory pipeline: SOUL.md, short-term memory, context window, and conversation archive
+- **Settings Editor** — edit API keys, models, tools, search mode, and appearance from the UI at runtime
+- **Sessions** — browse, switch, and delete conversation sessions (live + archived)
+- SSE event stream for real-time updates across all components
+- Dark/light themes, adjustable density and font size
 
 ### Personality System
-- Inject any personality (real person, fictional character) via SOUL.md
-- Chat Filter translates assistant output into the character's voice
-- Non-biography behavior profiles: speech patterns, verbal tics, catchphrases, contradictions
+- Inject any personality (real person, fictional character) via `workspace/SOUL.md`
+- Structured sections: identity, beliefs, relationship dynamics, memory, patterns
+- **Steward Agent** runs periodically (every ~30 min) to review conversations and update SOUL.md via APPEND/ERASE/MERGE commands
+- Temporary memory entries auto-expire after 24 hours
+- Chat filter translates assistant output into the character's voice
 
 ### Multi-Agent Orchestration
 - Spawn sub-agents for parallel research, debate, or complex tasks
-- Sub-agents have full tool access and communicate via inbox
-- Lifecycle states: running → waiting → resumed → done
-- Quit validator: rejects empty quits, sends feedback to agent inbox
+- Sub-agents have full tool access and communicate via a **file-based inbox** system
+- Lifecycle state machine: `running → waiting → resumed → done / timeout`
+- Sub-agents wait for siblings, process inbox messages, and coordinate results
+- The main agent collects and synthesizes sub-agent outputs
 
-### Memory System
-- Three-layer: context window (≤40 turns) → short-term (compressed summary) → long-term
-- Compressor triggers at 45+ messages, extracts facts/preferences
-- No RAG — structured event extraction
+### Memory System (Three Layers)
+1. **Context Window** — last ~40 messages in the active conversation
+2. **Short-Term Memory** — compressed summaries with emotional valence tracking, auto-extracted when context exceeds 45 messages
+3. **Long-Term Memory** — `workspace/SOUL.md`, a living personality document maintained by the steward agent
+
+### Task Scheduler
+- Create cron, interval, or one-shot tasks via the `schedule_task` tool
+- Heartbeat runs every 60s to check and execute due tasks
+- Tasks persist in SQLite, with execution history and run logs
+- Lottery system for probabilistic proactive messages from the agent
 
 ### Search
-- Built-in SearXNG via SimpleXNG — no Docker required, auto-starts on launch
-- Falls back to DDG/Bing/Baidu if SearXNG is unavailable
+- Built-in SearXNG via [SimpleXNG](https://github.com/jlevy/simplexng) — no Docker required, auto-starts on launch (port 8888)
+- Falls back to DDG → Bing → Baidu if SearXNG is unavailable
+- Deep search pipeline: query generation (LLM) → parallel search → filtering (LLM) → synthesis (LLM)
 
-### Controls
-- `/h` — Help menu (relogin, clear context, reset personality, system status)
-- `/clear` — Reset session context
-- `quit` — Exit
+### Telegram Bot (Optional)
+- Set `TELEGRAM_BOT_TOKEN` and `OWNER_ID` in `.env` to enable
+- The scheduler heartbeat and proactive messages work through the bot
+- In web-only mode, a `WebBot` adapter simulates the bot interface
+
+### Conversation Archive
+- All exchanges archived to `workspace/conversations/YYYY-MM-DD.md`
+- Markdown format with metadata (session title, round ID, timestamps)
+- Searchable by date and text content
+
+### Persistent Shells
+- Long-running interactive shell sessions via `StartShell`/`SendShell` tools
+- Maintain separate working directories and environment per shell
+- Ideal for multi-step development workflows within a single agent run
 
 ### Debugging
 ```bash
-python -m cyrene.local_cli --headless --verbose
+python -m cyrene --headless --verbose
 ```
-Logs every LLM call (full prompt, tools, response, duration) to `data/debug_*.jsonl`.
+Logs every LLM call (full prompt, tools, response, duration) to `data/debug_*.jsonl`. The web UI also shows live debug logs on the Status page.
 
 ## Project Structure
 
 ```
 src/
 ├── cyrene/
-│   ├── agent.py          # Agent loop: Phase 1/2, chat filter, session
-│   ├── tools.py          # 17 tool handlers + definitions
-│   ├── subagent.py       # Sub-agent lifecycle + inbox + quit validator
-│   ├── search.py         # Multi-engine search (SearXNG first)
-│   ├── searxng_manager.py # SearXNG subprocess lifecycle
-│   ├── soul.py           # SOUL.md personality system
-│   ├── short_term.py     # Memory management
-│   ├── scheduler.py      # Heartbeat + lottery + steward
-│   ├── setup.py          # Personality setup wizard
-│   ├── inbox.py          # Agent inbox communication
-│   ├── debug.py          # Verbose logging + SSE event bus
-│   ├── llm.py            # LLM call helpers
-│   ├── local_cli.py      # CLI + web launcher
-│   └── bot.py            # Telegram interface
+│   ├── agent.py            # Two-phase agent loop, session management, live rounds
+│   ├── tools.py            # 22 tool definitions, execution, and filtering
+│   ├── subagent.py         # Sub-agent lifecycle, registry, inbox coordination
+│   ├── inbox.py            # File-based inter-agent message passing
+│   ├── search.py           # Multi-engine deep search pipeline
+│   ├── searxng_manager.py  # SearXNG subprocess lifecycle (auto-start/stop)
+│   ├── scheduler.py        # Heartbeat, cron tasks, lottery, steward trigger
+│   ├── soul.py             # SOUL.md read/write, steward command processing
+│   ├── short_term.py       # Short-term memory compression and cleanup
+│   ├── memory.py           # Memory context assembly for LLM prompts
+│   ├── shells.py           # Persistent interactive shell sessions
+│   ├── conversations.py    # Conversation archiving and search
+│   ├── db.py               # SQLite database (tasks + run logs)
+│   ├── debug.py            # Verbose JSONL logging + SSE event bus
+│   ├── llm.py              # LLM call helpers, output truncation
+│   ├── config.py           # Environment config, path constants
+│   ├── settings_store.py   # Runtime settings persistence
+│   ├── setup.py            # First-run personality setup wizard
+│   ├── bot.py              # Telegram bot interface
+│   ├── local_cli.py        # Entry point: CLI, web, and headless modes
+│   └── __main__.py         # python -m cyrene support
 ├── webui/
-│   ├── server.py         # FastAPI app + WebBot adapter
-│   ├── routes.py         # Routes + SSE events endpoint
-│   └── templates/        # Jinja2 + timeline SVG
+│   ├── server.py           # FastAPI app factory + WebBot adapter
+│   ├── routes.py           # REST API + SSE event stream
+│   └── static/app/
+│       ├── index.html      # SPA entry point
+│       ├── app.jsx         # App shell, sidebar, theme, navigation
+│       ├── chat.jsx        # Chat UI with Markdown, live rounds, guidance
+│       ├── agents.jsx      # SVG agent timeline visualization
+│       ├── data.jsx        # Data layer (bootstrap + polling)
+│       ├── sessions.jsx    # Session browser (live + archived)
+│       ├── memory.jsx      # Memory pipeline viewer + SOUL.md editor
+│       ├── settings.jsx    # Settings: models, tools, search, API keys, appearance
+│       ├── skills.jsx      # Skill/tool library browser
+│       ├── status.jsx      # System metrics, workers, health, logs
+│       ├── tweaks-panel.jsx # Theme/density/font/direction overrides
+│       └── styles.css      # Component styles, dark/light themes
 └── pyproject.toml
 
-workspace/             # Runtime files (SOUL.md, conversations/)
-data/                  # Runtime data (state, memories, debug logs)
-store/                 # SQLite database
+workspace/                  # Runtime: SOUL.md, conversations/
+data/                       # Runtime: state.json, short_term.json, inbox/, debug logs
+store/                      # SQLite database (cyrene.db)
+tests/                      # Test suite (runtime fixes, subagent fixes, cache fixes)
 ```
 
 ## Configuration
 
-See `.env.example`. Key variables:
+Copy `.env.example` to `.env` and configure:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENAI_API_KEY` | LLM API key (OpenAI/DeepSeek) | — |
+| `OPENAI_API_KEY` | LLM API key (OpenAI/DeepSeek compatible) | — |
 | `OPENAI_BASE_URL` | API endpoint | `https://api.deepseek.com/v1` |
 | `OPENAI_MODEL` | Model name | `deepseek-v4-flash` |
-| `SEARXNG_URL` | SearXNG URL (override auto-start) | — |
+| `ASSISTANT_NAME` | Agent display name | `Cyrene` |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token (optional) | — |
+| `OWNER_ID` | Telegram user ID for heartbeat messages | — |
+| `SCHEDULER_INTERVAL` | Heartbeat interval in seconds | `60` |
 | `SEARXNG_AUTO_START` | Auto-launch SearXNG on startup | `1` (enabled) |
 | `SEARXNG_PORT` | SearXNG listen port | `8888` |
+| `SEARXNG_URL` | External SearXNG URL (overrides auto-start) | — |
 | `WEB_PORT` | Web UI port | `4242` |
+
+Most settings can also be edited at runtime through the Web UI Settings page.
+
+## In-Conversation Commands
+
+| Command | Action |
+|---------|--------|
+| `/h` | Help menu (clear context, reset personality, system status) |
+| `/clear` | Reset session context |
+| `quit` | End the interaction |
 
 ## SearXNG (Built-in, no Docker)
 
-SearXNG is now built-in via [SimpleXNG](https://github.com/jlevy/simplexng) — a standalone, Docker-free package of SearXNG.
+SearXNG is built-in via [SimpleXNG](https://github.com/jlevy/simplexng) — a standalone, Docker-free package of SearXNG.
 
 ```bash
 pip install simplexng
 ```
 
-Cyrene auto-starts SearXNG on launch (default port 8888). No manual config needed.
-
-To disable auto-start, set `SEARXNG_AUTO_START=0` in `.env`. You can also point to an external SearXNG instance with `SEARXNG_URL=http://...`.
+Cyrene auto-starts SearXNG on launch (default port 8888). To disable, set `SEARXNG_AUTO_START=0` in `.env`. You can also point to an external SearXNG instance with `SEARXNG_URL=http://...`.
 
 ## License
 

@@ -185,6 +185,30 @@ async def test_inbox_context_keeps_long_messages():
     print("PASS test_inbox_context_keeps_long_messages")
 
 
+async def test_inbox_mark_read_count_advances_fifo_cursor():
+    """main inbox worker 逐条 ack 时，应保持 FIFO 未读窗口。"""
+    from cyrene import inbox
+
+    with tempfile.TemporaryDirectory() as tmp:
+        inbox.INBOX_DIR = Path(tmp) / "inbox"
+
+        await inbox.send_message("sender", "receiver", "guidance", "first")
+        await inbox.send_message("sender", "receiver", "guidance", "second")
+        await inbox.send_message("sender", "receiver", "guidance", "third")
+
+        unread = await inbox.read_unread_messages("receiver")
+        assert [msg["content"] for msg in unread] == ["first", "second", "third"]
+
+        await inbox.mark_read_count("receiver", 1)
+        unread = await inbox.read_unread_messages("receiver")
+        assert [msg["content"] for msg in unread] == ["second", "third"]
+
+        await inbox.send_message("sender", "receiver", "guidance", "fourth")
+        unread = await inbox.read_unread_messages("receiver")
+        assert [msg["content"] for msg in unread] == ["second", "third", "fourth"]
+    print("PASS test_inbox_mark_read_count_advances_fifo_cursor")
+
+
 async def test_register_clears_stale_inbox_messages():
     """同名 agent 重新注册时，不应继承上一次残留的 inbox。"""
     from cyrene import inbox

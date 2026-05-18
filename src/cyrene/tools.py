@@ -328,7 +328,7 @@ async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: in
     current_round_id = _current_round_id.get()
     if not await can_receive(target, round_id=current_round_id):
         if target.lower() in {"main", "main_agent", "cyrene", "danny", "host", "coordinator", "parent"}:
-            return "Main agent does not receive inbox messages. Put your final conclusion in your next quit response; the parent agent will collect it automatically."
+            return "The main-agent inbox is reserved for user guidance. Put your final conclusion in your next quit response; the parent agent will collect it automatically."
         if current_round_id:
             return f"Cannot deliver: agent '{target}' is not available in the current round ({current_round_id})."
         return f"Cannot deliver: agent '{target}' is not available (finished or timed out)."

@@ -73,24 +73,32 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         body = await request.json()
         message = (body.get("message") or "").strip()
         guide_round_id = str(body.get("guide_round_id") or "").strip()
+        client_request_id = str(body.get("client_request_id") or "").strip()
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
 
         reset_lottery()
         if guide_round_id:
             try:
-                item = await queue_round_guidance(guide_round_id, message, _bot, _CHAT_ID, _db_path)
+                item = await queue_round_guidance(
+                    guide_round_id,
+                    message,
+                    _bot,
+                    _CHAT_ID,
+                    _db_path,
+                    client_request_id=client_request_id,
+                )
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             return {
-                "response": f"Queued guidance for {guide_round_id}. It will run after the current main-agent output finishes.",
+                "response": f"Sent to the main-agent inbox for {guide_round_id}. It will run after the current main-agent output finishes.",
                 "queued": True,
                 "guide_round_id": guide_round_id,
                 "guide_request_id": item.get("id", ""),
             }
 
         try:
-            response = await run_agent(message, _bot, _CHAT_ID, _db_path)
+            response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id)
             labels = get_session_labels()
             await archive_exchange(
                 message,
@@ -99,6 +107,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 session_title=labels.get("session_title", ""),
                 round_title=labels.get("round_title", ""),
                 round_id=labels.get("round_id", ""),
+                archive_session_id=labels.get("archive_session_id", ""),
             )
             return {"response": response}
         except httpx.TimeoutException as exc:
@@ -195,19 +204,28 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         """Delete a session.
 
         - run_live: same as create (clear current state).
-        - day_YYYY-MM-DD: deletes the corresponding archive file.
+        - archive_YYYY-MM-DD_<session_id>: deletes one archived session from that day.
         """
         if session_id == "run_live":
             await clear_session_id()
             return {"ok": True, "sessions": _build_sessions()}
 
-        if session_id.startswith("day_"):
-            date_str = session_id[len("day_"):]
+        if session_id.startswith("archive_"):
+            suffix = session_id[len("archive_"):]
+            date_str, _, archive_session_id = suffix.partition("_")
             filepath = CONVERSATIONS_DIR / f"{date_str}.md"
             if not filepath.exists():
                 return JSONResponse({"error": "session not found"}, status_code=404)
             try:
-                filepath.unlink()
+                content = filepath.read_text(encoding="utf-8")
+                sections = _parse_archive_sections(content)
+                kept_sections = [
+                    section for section in sections
+                    if str(section.get("archive_session_id", "")).strip() != archive_session_id
+                ]
+                if len(kept_sections) == len(sections):
+                    return JSONResponse({"error": "session not found"}, status_code=404)
+                _write_archive_sections(filepath, date_str, kept_sections)
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
             return {"ok": True, "sessions": _build_sessions()}
@@ -513,7 +531,7 @@ def _build_current_session() -> dict | None:
 
 
 def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
-    """Build session entries from conversation archives (one per day)."""
+    """Build session entries from conversation archives (one per archived session)."""
     if not CONVERSATIONS_DIR.exists():
         return []
 
@@ -527,48 +545,66 @@ def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
             content = filepath.read_text(encoding="utf-8")
         except Exception:
             continue
-        messages = _parse_archive_file(content)
-        if not messages:
+        sections = _parse_archive_sections(content)
+        if not sections:
             continue
 
-        last_user = next((m for m in messages if m["role"] == "user"), None)
-        session_title = _parse_archive_session_title(content)
-        title = session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
-        preview = messages[-1].get("body", "")[:80] if messages else ""
-        current_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
-        current_round_title = next(
-            (
-                str(m.get("round_title", "")).strip()
-                for m in reversed(messages)
-                if str(m.get("round_id", "")).strip() == current_round_id and m.get("round_title")
-            ),
-            "",
-        )
+        file_session_title = _parse_archive_session_title(content)
+        groups: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        for index, section in enumerate(sections):
+            archive_session_id = str(section.get("archive_session_id", "")).strip() or f"legacy_{date_str}"
+            if archive_session_id not in groups:
+                groups[archive_session_id] = []
+                order.append(archive_session_id)
+            groups[archive_session_id].append({**section, "_order": index})
 
-        sessions.append({
-            "id": f"day_{date_str}",
-            "title": title,
-            "status": "done",
-            "started": date_str,
-            "dur": "—",
-            "preview": preview,
-            "model": OPENAI_MODEL,
-            "currentRoundId": current_round_id,
-            "currentRoundTitle": current_round_title,
-            "summary": {
-                "tokens": f"{len(messages)} msgs",
-                "spend": "—",
-                "toolCalls": 0,
-            },
-            "chat": {
-                "contextChips": [{"icon": "📅", "label": date_str}],
-                "messages": messages,
-            },
-            "liveRounds": [],
-            "shells": [],
-            "subagents": [],
-            "flow": _build_simple_flow(messages),
-        })
+        for archive_session_id in reversed(order):
+            group_sections = groups[archive_session_id]
+            messages = _messages_from_archive_sections(group_sections)
+            if not messages:
+                continue
+            last_user = next((m for m in messages if m["role"] == "user"), None)
+            group_session_title = next(
+                (str(section.get("session_title", "")).strip() for section in group_sections if section.get("session_title")),
+                "",
+            )
+            title = group_session_title or file_session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
+            preview = messages[-1].get("body", "")[:80] if messages else ""
+            current_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
+            current_round_title = next(
+                (
+                    str(m.get("round_title", "")).strip()
+                    for m in reversed(messages)
+                    if str(m.get("round_id", "")).strip() == current_round_id and m.get("round_title")
+                ),
+                "",
+            )
+
+            sessions.append({
+                "id": f"archive_{date_str}_{archive_session_id}",
+                "title": title,
+                "status": "done",
+                "started": date_str,
+                "dur": "—",
+                "preview": preview,
+                "model": OPENAI_MODEL,
+                "currentRoundId": current_round_id,
+                "currentRoundTitle": current_round_title,
+                "summary": {
+                    "tokens": f"{len(messages)} msgs",
+                    "spend": "—",
+                    "toolCalls": 0,
+                },
+                "chat": {
+                    "contextChips": [{"icon": "📅", "label": date_str}],
+                    "messages": messages,
+                },
+                "liveRounds": [],
+                "shells": [],
+                "subagents": [],
+                "flow": _build_simple_flow(messages),
+            })
     return sessions
 
 
@@ -581,10 +617,11 @@ def _parse_archive_session_title(content: str) -> str:
     return _parse_archive_meta(content, "session_title")
 
 
-def _parse_archive_file(content: str) -> list[dict]:
-    """Parse a conversations/YYYY-MM-DD.md file into UI-formatted messages."""
-    messages: list[dict] = []
+def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
+    """Parse a conversations/YYYY-MM-DD.md file into archive sections with metadata."""
+    sections_out: list[dict[str, Any]] = []
     sections = re.split(r"\n---\s*\n", content)
+    file_session_title = _parse_archive_session_title(content)
     round_index = 0
 
     for section in sections:
@@ -601,25 +638,75 @@ def _parse_archive_file(content: str) -> list[dict]:
         assistant_body = assistant_match.group(1).strip()
         round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
         round_title = _parse_archive_meta(section, "round_title")
-
-        messages.append({
-            "id": f"m{round_index}u",
-            "role": "user",
-            "time": ts,
-            "body": user_body,
+        archive_session_id = _parse_archive_meta(section, "archive_session_id")
+        session_title = _parse_archive_meta(section, "session_title") or file_session_title
+        body_start = section.find("## ")
+        raw_entry = section[body_start:].strip() if body_start >= 0 else section.strip()
+        sections_out.append({
+            "timestamp": ts,
+            "user_body": user_body,
+            "assistant_body": assistant_body,
             "round_id": round_id,
             "round_title": round_title,
-        })
-        messages.append({
-            "id": f"m{round_index}a",
-            "role": "agent",
-            "time": ts,
-            "body": assistant_body,
-            "round_id": round_id,
-            "round_title": round_title,
+            "archive_session_id": archive_session_id,
+            "session_title": session_title,
+            "raw_entry": raw_entry,
         })
         round_index += 1
+    return sections_out
+
+
+def _messages_from_archive_sections(sections: list[dict[str, Any]]) -> list[dict]:
+    messages: list[dict] = []
+    for index, section in enumerate(sections):
+        messages.append({
+            "id": f"m{index}u",
+            "role": "user",
+            "time": section["timestamp"],
+            "body": section["user_body"],
+            "round_id": section["round_id"],
+            "round_title": section["round_title"],
+        })
+        messages.append({
+            "id": f"m{index}a",
+            "role": "agent",
+            "time": section["timestamp"],
+            "body": section["assistant_body"],
+            "round_id": section["round_id"],
+            "round_title": section["round_title"],
+        })
     return messages
+
+
+def _parse_archive_file(content: str) -> list[dict]:
+    """Parse a conversations/YYYY-MM-DD.md file into UI-formatted messages."""
+    return _messages_from_archive_sections(_parse_archive_sections(content))
+
+
+def _write_archive_sections(filepath: Path, date_str: str, sections: list[dict[str, Any]]) -> None:
+    if not sections:
+        if filepath.exists():
+            filepath.unlink()
+        return
+    first_session_title = next((str(section.get("session_title", "")).strip() for section in sections if section.get("session_title")), "")
+    content = _upsert_archive_session_title(f"# Conversations - {date_str}\n\n", date_str, first_session_title)
+    content += "\n---\n\n".join(section["raw_entry"] for section in sections if section.get("raw_entry")) + "\n\n---\n"
+    filepath.write_text(content, encoding="utf-8")
+
+
+def _upsert_archive_session_title(content: str, date_str: str, session_title: str) -> str:
+    header = f"# Conversations - {date_str}\n\n"
+    if not content:
+        content = header
+    elif not content.startswith("# Conversations - "):
+        content = header + content
+    if not session_title:
+        return content
+    marker = f"<!-- session_title: {session_title} -->\n\n"
+    pattern = re.compile(r"^(# Conversations - .*?\n\n)(?:<!-- session_title: .*? -->\n\n)?", re.DOTALL)
+    if pattern.search(content):
+        return pattern.sub(lambda match: match.group(1) + marker, content, count=1)
+    return header + marker + content[len(header):]
 
 
 def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
@@ -636,15 +723,25 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
         if role == "assistant" and not content and not has_live_detail:
             continue
         ui_role = "user" if role == "user" else "agent"
-        ui_msg = {"id": f"m{i}", "role": ui_role, "time": "—"}
+        message_id = str(m.get("message_id", "")).strip() or f"m{i}"
+        ui_msg = {"id": message_id, "messageId": message_id, "role": ui_role, "time": "—"}
         if content:
             ui_msg["body"] = content
         round_id = str(m.get("round_id", "")).strip()
         if round_id:
             ui_msg["roundId"] = round_id
+        client_request_id = str(m.get("client_request_id", "")).strip()
+        if client_request_id:
+            ui_msg["clientRequestId"] = client_request_id
         queued_guidance_id = str(m.get("queued_guidance_id", "")).strip()
         if queued_guidance_id:
             ui_msg["queuedGuidanceId"] = queued_guidance_id
+        guidance_ack_for_guidance_id = str(m.get("guidance_ack_for_guidance_id", "")).strip()
+        if guidance_ack_for_guidance_id:
+            ui_msg["guidanceAckForGuidanceId"] = guidance_ack_for_guidance_id
+        in_reply_to_guidance_id = str(m.get("in_reply_to_guidance_id", "")).strip()
+        if in_reply_to_guidance_id:
+            ui_msg["inReplyToGuidanceId"] = in_reply_to_guidance_id
         if m.get("reasoning_content"):
             ui_msg["thinking"] = m["reasoning_content"]
         if m.get("tool_calls"):
@@ -662,7 +759,51 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
                 })
             ui_msg["tools"] = tools
         out.append(ui_msg)
-    return out
+    return _merge_adjacent_trace_only_messages(out)
+
+
+def _is_trace_only_agent_message(msg: dict[str, Any]) -> bool:
+    return (
+        msg.get("role") == "agent"
+        and not str(msg.get("body", "")).strip()
+        and (bool(msg.get("thinking")) or bool(msg.get("tools")))
+    )
+
+
+def _merge_adjacent_trace_only_messages(messages: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    for msg in messages:
+        if not merged:
+            merged.append(msg)
+            continue
+        prev = merged[-1]
+        if (
+            _is_trace_only_agent_message(prev)
+            and _is_trace_only_agent_message(msg)
+            and str(prev.get("roundId", "")).strip() == str(msg.get("roundId", "")).strip()
+            and not str(prev.get("clientRequestId", "")).strip()
+            and not str(msg.get("clientRequestId", "")).strip()
+            and not str(prev.get("queuedGuidanceId", "")).strip()
+            and not str(msg.get("queuedGuidanceId", "")).strip()
+            and not str(prev.get("guidanceAckForGuidanceId", "")).strip()
+            and not str(msg.get("guidanceAckForGuidanceId", "")).strip()
+            and not str(prev.get("inReplyToGuidanceId", "")).strip()
+            and not str(msg.get("inReplyToGuidanceId", "")).strip()
+        ):
+            prev_thinking = str(prev.get("thinking", "")).strip()
+            next_thinking = str(msg.get("thinking", "")).strip()
+            if next_thinking:
+                if prev_thinking and next_thinking != prev_thinking:
+                    prev["thinking"] = prev_thinking + "\n\n" + next_thinking
+                elif not prev_thinking:
+                    prev["thinking"] = next_thinking
+            prev_tools = list(prev.get("tools") or [])
+            next_tools = list(msg.get("tools") or [])
+            if next_tools:
+                prev["tools"] = prev_tools + next_tools
+            continue
+        merged.append(msg)
+    return merged
 
 
 def _count_tool_calls(raw_msgs: list[dict]) -> int:
@@ -835,18 +976,28 @@ def _synthetic_live_round(registry: dict[str, dict], recent_events: list[dict]) 
 def _split_raw_rounds(raw_msgs: list[dict]) -> list[list[dict]]:
     rounds: list[list[dict]] = []
     current: list[dict] = []
+    current_key = ""
+    anonymous_round_index = 0
     for msg in raw_msgs:
-        if msg.get("round_id") and current:
-            current_round_id = current[0].get("round_id")
-            if current_round_id and msg.get("round_id") != current_round_id:
-                rounds.append(current)
-                current = []
-        if msg.get("role") == "user":
-            if current:
-                rounds.append(current)
+        round_id = str(msg.get("round_id", "")).strip()
+        if round_id:
+            next_key = f"round:{round_id}"
+        elif msg.get("role") == "user":
+            anonymous_round_index += 1
+            next_key = f"anon:{anonymous_round_index}"
+        else:
+            next_key = current_key or f"anon:{max(anonymous_round_index, 1)}"
+
+        if current and next_key != current_key:
+            rounds.append(current)
+            current = []
+
+        if not current:
+            current_key = next_key
             current = [msg]
-        elif current:
-            current.append(msg)
+            continue
+
+        current.append(msg)
     if current:
         rounds.append(current)
     return rounds
@@ -1044,6 +1195,25 @@ def _build_live_flow_round(
     main_id = f"{prefix}n_main"
     user_id = f"{prefix}n_user"
     output_id = f"{prefix}n_out"
+    main_completed = bool(latest_agent)
+
+    tool_nodes, tool_edges = _build_tool_nodes_for_owner(
+        owner_node_id=main_id,
+        owner_title=f"main agent · {ASSISTANT_NAME}",
+        owner_x=main_x,
+        owner_y=main_y,
+        raw_messages=raw_msgs,
+        recent_events=recent_events,
+        caller_prefix="main_agent",
+        x=main_tool_x,
+        base_y=main_tool_base_y,
+        owner_completed=main_completed,
+    )
+    main_status = (
+        "running"
+        if any(sa["status"] == "running" for sa in subagents) or any(node["status"] == "running" for node in tool_nodes)
+        else ("done" if main_completed else "queued")
+    )
 
     nodes = [
         {
@@ -1060,7 +1230,7 @@ def _build_live_flow_round(
             "id": main_id, "kind": "main", "x": main_x, "y": main_y,
             "title": f"main agent · {ASSISTANT_NAME}",
             "subtitle": latest_phase["to"] if latest_phase and latest_phase.get("to") else "orchestrator",
-            "status": "running" if any(sa["status"] == "running" for sa in subagents) else ("done" if latest_agent else "queued"),
+            "status": main_status,
             "model": OPENAI_MODEL,
             "detail": {
                 "systemPrompt": (
@@ -1082,19 +1252,7 @@ def _build_live_flow_round(
             },
         },
     ]
-    edges = [{"from": user_id, "to": main_id, "kind": "active"}]
-
-    tool_nodes, tool_edges = _build_tool_nodes_for_owner(
-        owner_node_id=main_id,
-        owner_title=f"main agent · {ASSISTANT_NAME}",
-        owner_x=main_x,
-        owner_y=main_y,
-        raw_messages=raw_msgs,
-        recent_events=recent_events,
-        caller_prefix="main_agent",
-        x=main_tool_x,
-        base_y=main_tool_base_y,
-    )
+    edges = [{"from": user_id, "to": main_id, "kind": "active" if main_status == "running" else None}]
     nodes.extend(tool_nodes)
     edges.extend(tool_edges)
 
@@ -1146,6 +1304,7 @@ def _build_live_flow_round(
             caller_prefix=f"subagent_{sa['name']}",
             x=subagent_tool_x,
             base_y=subagent_y,
+            owner_completed=sa["status"] in {"done", "err"},
         )
         nodes.extend(sub_nodes)
         edges.extend(sub_edges)
@@ -1791,6 +1950,23 @@ def _tool_output_map(raw_messages: list[dict]) -> dict[str, str]:
     return outputs
 
 
+def _tool_output_ids(raw_messages: list[dict]) -> set[str]:
+    return {
+        str(msg["tool_call_id"])
+        for msg in raw_messages
+        if msg.get("role") == "tool" and msg.get("tool_call_id")
+    }
+
+
+def _tool_args_signature(value: Any) -> str:
+    parsed = _safe_json_loads(value) if isinstance(value, str) else value
+    normalized = parsed if parsed is not None else value
+    try:
+        return json.dumps(normalized, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return json.dumps(str(normalized), ensure_ascii=False)
+
+
 def _usage_totals(raw_messages: list[dict]) -> tuple[int | None, int | None]:
     prompt_total = 0
     completion_total = 0
@@ -1919,10 +2095,12 @@ def _build_tool_nodes_for_owner(
     caller_prefix: str,
     x: int,
     base_y: int,
+    owner_completed: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     nodes: list[dict] = []
     edges: list[dict] = []
     tool_outputs = _tool_output_map(raw_messages)
+    tool_output_ids = _tool_output_ids(raw_messages)
     tool_index = 0
 
     for msg_index, msg in enumerate(raw_messages):
@@ -1931,8 +2109,20 @@ def _build_tool_nodes_for_owner(
             fn = tc.get("function", {})
             raw_args = fn.get("arguments") or "{}"
             parsed_args = _safe_json_loads(raw_args) if isinstance(raw_args, str) else raw_args
-            output = tool_outputs.get(str(tc.get("id")), "")
-            status = "done" if output else "running"
+            tool_call_id = str(tc.get("id") or "")
+            output = tool_outputs.get(tool_call_id, "")
+            has_output = tool_call_id in tool_output_ids
+            has_followup = any(
+                later.get("role") in {"assistant", "tool", "user"}
+                for later in raw_messages[msg_index + 1:]
+            )
+            status = "done" if has_output or has_followup or owner_completed else "running"
+            if has_output:
+                output_detail = output or "Completed with no captured output."
+            elif status == "done":
+                output_detail = "Completed after follow-up activity; no tool output was captured."
+            else:
+                output_detail = "Running…"
             nid = f"{owner_node_id}_tool_{msg_index}_{call_index}"
             nodes.append({
                 "id": nid,
@@ -1946,7 +2136,7 @@ def _build_tool_nodes_for_owner(
                     "name": fn.get("name", "tool"),
                     "owner": owner_title,
                     "input": parsed_args if parsed_args is not None else raw_args,
-                    "output": output or "Running…",
+                    "output": output_detail,
                     "duration": "—",
                 },
             })
@@ -1962,8 +2152,12 @@ def _build_tool_nodes_for_owner(
         if event.get("type") == "tool_call" and str(event.get("caller", "")).startswith(caller_prefix)
     ][-6:]
     for event_index, event in enumerate(overlay_events):
-        key = f"{event.get('tool')}::{json.dumps(event.get('args', {}), ensure_ascii=False, sort_keys=True)}"
-        if any(node["detail"].get("name") == event.get("tool") and json.dumps(node["detail"].get("input", {}), ensure_ascii=False, sort_keys=True) == json.dumps(event.get("args", {}), ensure_ascii=False, sort_keys=True) for node in nodes):
+        event_signature = _tool_args_signature(event.get("args", {}))
+        if any(
+            node["detail"].get("name") == event.get("tool")
+            and _tool_args_signature(node["detail"].get("input", {})) == event_signature
+            for node in nodes
+        ):
             continue
         nid = f"{owner_node_id}_live_tool_{event_index}"
         nodes.append({
@@ -1973,17 +2167,17 @@ def _build_tool_nodes_for_owner(
             "y": base_y + tool_index * 112,
             "title": event.get("tool", "tool"),
             "subtitle": _summarize_text(json.dumps(event.get("args", {}), ensure_ascii=False), 36),
-            "status": "running",
+            "status": "done",
             "detail": {
                 "name": event.get("tool", "tool"),
                 "owner": owner_title,
                 "input": event.get("args", {}),
-                "output": event.get("result_preview", "Running…"),
-                "duration": "live",
-                "eventKey": key,
+                "output": event.get("result_preview", "Completed."),
+                "duration": "recent",
+                "eventKey": f"{event.get('tool')}::{event_signature}",
             },
         })
-        edges.append({"from": owner_node_id, "to": nid, "kind": "active"})
+        edges.append({"from": owner_node_id, "to": nid})
         tool_index += 1
 
     return nodes, edges

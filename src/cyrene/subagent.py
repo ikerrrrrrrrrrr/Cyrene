@@ -31,6 +31,9 @@ WAITING = "waiting"          # 活干完了，等别人消息
 RESUMED = "resumed"          # 等待期间收到新消息，继续干活
 DONE = "done"                # 真正完成
 TIMEOUT = "timeout"          # 超时退出
+_MAX_WAITING_RESULT_CHARS = 6000
+_MAX_FINAL_RESULT_CHARS = 16000
+_MAX_COLLECT_RESULT_CHARS = 12000
 
 # 全局注册表
 _registry: dict[str, dict] = {}
@@ -108,11 +111,11 @@ async def mark_done(agent_id: str, result: str = "") -> None:
                     # 如果 existing 是 result 的前缀（说明是 set_waiting 截断的版本），
                     # 直接用完整 result，避免重复拼接。
                     if result.startswith(existing):
-                        _registry[agent_id]["result"] = result[:2000]
+                        _registry[agent_id]["result"] = result[:_MAX_FINAL_RESULT_CHARS]
                     else:
-                        _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:2000]
+                        _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:_MAX_FINAL_RESULT_CHARS]
                 else:
-                    _registry[agent_id]["result"] = result[:2000]
+                    _registry[agent_id]["result"] = result[:_MAX_FINAL_RESULT_CHARS]
     await _publish_registry_event(agent_id)
 
 
@@ -175,7 +178,7 @@ async def set_waiting(agent_id: str, result: str = "") -> None:
             _registry[agent_id]["status"] = WAITING
             _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
             if result:
-                _registry[agent_id]["result"] = result[:1000]
+                _registry[agent_id]["result"] = result[:_MAX_WAITING_RESULT_CHARS]
     await _publish_registry_event(agent_id)
 
 
@@ -309,11 +312,21 @@ async def collect_results(round_id: str = "") -> str:
         for aid, info in _registry.items():
             if not _matches_round(info, round_id):
                 continue
+            task = str(info.get("task", "") or "").strip()
+            status = str(info.get("status", "") or "").strip()
             result = info.get("result", "")
             if result:
-                lines.append(f"[{aid}]: {result[:1000]}")
+                lines.append(
+                    f"[{aid}] task: {task or '—'}\n"
+                    f"status: {status or 'unknown'}\n"
+                    f"result:\n{str(result)[:_MAX_COLLECT_RESULT_CHARS]}"
+                )
             else:
-                lines.append(f"[{aid}]: 无结果")
+                lines.append(
+                    f"[{aid}] task: {task or '—'}\n"
+                    f"status: {status or 'unknown'}\n"
+                    "result:\n无结果"
+                )
         return "\n\n".join(lines) if lines else "无 subagent 结果。"
 
 

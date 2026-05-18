@@ -53,8 +53,14 @@ function isAbortError(error) {
 }
 
 function messageKey(msg) {
+  const clientRequestId = String(msg && msg.clientRequestId || "");
+  if (clientRequestId) return "request::" + clientRequestId + "::" + String(msg && msg.role || "");
   const queuedGuidanceId = String(msg && msg.queuedGuidanceId || "");
   if (queuedGuidanceId) return "guide::" + queuedGuidanceId;
+  const guidanceAckForGuidanceId = String(msg && msg.guidanceAckForGuidanceId || "");
+  if (guidanceAckForGuidanceId) return "guidance-ack::" + guidanceAckForGuidanceId;
+  const messageId = String(msg && msg.messageId || msg && msg.id || "");
+  if (messageId) return "message::" + messageId;
   return [
     String(msg && msg.role || ""),
     String(msg && msg.roundId || ""),
@@ -79,6 +85,91 @@ function unmatchedMessages(existingMessages, transientMessages) {
     visible.push(msg);
   });
   return visible;
+}
+
+function mergeMessagesWithAnchors(baseMessages, anchoredMessages) {
+  const merged = (baseMessages || []).slice();
+  (anchoredMessages || []).forEach(function (msg) {
+    const anchorKey = String(msg && msg.insertAfterKey || "");
+    if (!anchorKey) {
+      merged.push(msg);
+      return;
+    }
+    let anchorIndex = -1;
+    for (let i = 0; i < merged.length; i += 1) {
+      if (messageKey(merged[i]) === anchorKey) anchorIndex = i;
+    }
+    if (anchorIndex < 0) {
+      merged.push(msg);
+      return;
+    }
+    merged.splice(anchorIndex + 1, 0, msg);
+  });
+  return merged;
+}
+
+function runtimeTraceDescriptor(activeRequest) {
+  const isGuidance = Boolean(activeRequest && activeRequest.guideRoundId);
+  const guidanceAccepted = Boolean(isGuidance && activeRequest && activeRequest.guidanceAccepted);
+  if (isGuidance && !guidanceAccepted) {
+    return {
+      timeLabel: "guiding…",
+      summary: "details · main inbox",
+      head: "queue",
+      empty: "Sending to main inbox…",
+    };
+  }
+  if (guidanceAccepted) {
+    return {
+      timeLabel: "…",
+      summary: "details · after guidance",
+      head: "processing",
+      empty: "Continuing with the accepted guidance…",
+    };
+  }
+  return {
+    timeLabel: "…",
+    summary: "details · processing",
+    head: "processing",
+    empty: "Thinking...",
+  };
+}
+
+function snapshotRuntimeTrace(state, options) {
+  if (!state || !state.startedAt) return null;
+  const activeRequest = options && options.activeRequest ? options.activeRequest : state.activeRequest;
+  const descriptor = runtimeTraceDescriptor(activeRequest);
+  const traceEntries = state.liveProgress && state.liveProgress.length
+    ? state.liveProgress.slice()
+    : [{ icon: "◎", text: descriptor.empty }];
+  if (!traceEntries.length) return null;
+  const endedAt = options && options.endedAt ? options.endedAt : Date.now();
+  const traceId = String(options && options.traceId || ("runtime_trace_" + endedAt + "_" + Math.random().toString(36).slice(2, 8)));
+  return {
+    id: traceId,
+    messageId: traceId,
+    role: "agent",
+    time: new Date(endedAt).toLocaleTimeString(),
+    runtimeTrace: true,
+    traceSummary: descriptor.summary,
+    traceHead: descriptor.head,
+    traceEntries,
+    traceElapsed: formatElapsedMs(endedAt - state.startedAt),
+    insertAfterKey: String(options && options.insertAfterKey || ""),
+  };
+}
+
+function guidanceAckMessage(guidanceId, body, insertAfterKey) {
+  const safeGuidanceId = String(guidanceId || "");
+  const text = String(body || "已接受引导。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。");
+  return {
+    id: "guidance_ack_" + (safeGuidanceId || Date.now()),
+    role: "agent",
+    time: new Date().toLocaleTimeString(),
+    body: text,
+    guidanceAckForGuidanceId: safeGuidanceId,
+    insertAfterKey: String(insertAfterKey || ""),
+  };
 }
 
 function formatProgressEvent(event) {
@@ -167,6 +258,63 @@ function ensureChatRuntimeSseSubscription() {
   const runtime = getChatRuntime();
   if (runtime.sseHandler) return;
   runtime.sseHandler = function (event) {
+    const eventGuidanceId = String(event && event.guidance_id || "");
+    const eventRequestId = String(event && event.client_request_id || "");
+    if (event && event.type === "guidance_acknowledged" && eventRequestId && runtime.watchRequestId === eventRequestId) {
+      const queueAnchorKey = eventGuidanceId
+        ? "guide::" + eventGuidanceId
+        : (runtime.activeRequest && runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "");
+      const queueTraceId = eventGuidanceId ? "guidance_queue_trace_" + eventGuidanceId : "";
+      const frozenQueueTrace = snapshotRuntimeTrace(runtime, {
+        insertAfterKey: queueAnchorKey,
+        traceId: queueTraceId || undefined,
+      });
+      const ackMsg = guidanceAckMessage(
+        eventGuidanceId,
+        event && event.ack_text,
+        frozenQueueTrace ? messageKey(frozenQueueTrace) : queueAnchorKey
+      );
+      updateChatRuntime({
+        retainedMessages: runtime.retainedMessages
+          .concat(frozenQueueTrace ? [frozenQueueTrace] : [])
+          .concat([ackMsg]),
+        startedAt: Date.now(),
+        liveProgress: [],
+        activeRequest: runtime.activeRequest
+          ? {
+              ...runtime.activeRequest,
+              guidanceAccepted: true,
+              guidanceId: eventGuidanceId,
+              finalTraceAnchorKey: eventGuidanceId ? "guidance-ack::" + eventGuidanceId : messageKey(ackMsg),
+            }
+          : null,
+      });
+      return;
+    }
+    if (event && event.type === "chat_message" && eventRequestId && runtime.watchRequestId === eventRequestId) {
+      const frozenFinalTrace = runtime.activeRequest && runtime.activeRequest.guideRoundId
+        ? snapshotRuntimeTrace(runtime, {
+            insertAfterKey: String(
+              runtime.activeRequest.finalTraceAnchorKey
+              || (runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "")
+            ),
+          })
+        : null;
+      delete runtime.requests[eventRequestId];
+      updateChatRuntime({
+        sending: false,
+        liveProgress: [],
+        startedAt: 0,
+        activeRequest: null,
+        watchRequestId: "",
+        pendingMessages: [],
+        retainedMessages: frozenFinalTrace
+          ? runtime.retainedMessages.concat([frozenFinalTrace])
+          : runtime.retainedMessages.slice(),
+      });
+      clearChatRuntimeSseSubscription();
+      return;
+    }
     const entry = formatProgressEvent(event);
     if (!entry) return;
     updateChatRuntime(function (state) {
@@ -264,7 +412,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const activeGuideRoundTitle = activeRequest && activeRequest.guideRoundTitle
     ? activeRequest.guideRoundTitle
     : currentGuideRoundTitle;
-  const watchingGuidance = Boolean(activeRequest && activeRequest.guideRoundId);
+  const watchingGuidance = Boolean(activeRequest && activeRequest.guideRoundId && !activeRequest.guidanceAccepted);
+  const activeTraceDescriptor = runtimeTraceDescriptor(activeRequest);
   const liveElapsed = runtimeState.startedAt ? formatElapsedMs(elapsedNow - runtimeState.startedAt) : "00:00";
   const visibleSending = isLiveSession && sending;
   const visibleNotice = isLiveSession ? notice : "";
@@ -309,7 +458,48 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     syncTextareaHeight(taRef.current);
   }
 
-  async function send() {
+  function completeWatchedRequest(requestId) {
+    const runtime = getChatRuntime();
+    delete runtime.requests[requestId];
+    if (runtime.watchRequestId !== requestId) return;
+    const frozenFinalTrace = runtime.activeRequest && runtime.activeRequest.guideRoundId
+      ? snapshotRuntimeTrace(runtime, {
+          insertAfterKey: String(
+            runtime.activeRequest.finalTraceAnchorKey
+            || (runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "")
+          ),
+        })
+      : null;
+    updateChatRuntime({
+      sending: false,
+      liveProgress: [],
+      startedAt: 0,
+      activeRequest: null,
+      watchRequestId: "",
+      pendingMessages: [],
+      retainedMessages: frozenFinalTrace
+        ? runtime.retainedMessages.concat([frozenFinalTrace])
+        : runtime.retainedMessages.slice(),
+    });
+    clearChatRuntimeSseSubscription();
+    setNotice("");
+  }
+
+  useEffect(function () {
+    if (!isLiveSession) return;
+    const requestId = runtimeState.watchRequestId;
+    if (!requestId) return;
+    const hasAssistantReply = (session.chat.messages || []).some(function (msg) {
+      return msg
+        && msg.role === "agent"
+        && String(msg.clientRequestId || "") === requestId;
+    });
+    if (!hasAssistantReply) return;
+    completeWatchedRequest(requestId);
+  }, [isLiveSession, session.id, session.chat.messages, runtimeState.watchRequestId]);
+
+  async function send(options) {
+    const preserveProgress = Boolean(options && options.preserveProgress);
     const text = draft.trim();
     const runtime = getChatRuntime();
     if (!text) return;
@@ -330,17 +520,21 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       role: "user", time: new Date().toLocaleTimeString(),
       body: text,
       roundId: selectedGuideRoundId || "",
+      clientRequestId: requestId,
     };
     updateChatRuntime({
       sending: true,
       startedAt: Date.now(),
       pendingMessages: [userMsg],
-      liveProgress: [],
+      liveProgress: preserveProgress ? runtime.liveProgress.slice() : [],
       activeRequest: {
         id: requestId,
         message: text,
         guideRoundId: requestMeta.guideRoundId,
         guideRoundTitle: requestMeta.guideRoundTitle,
+        guideRequestId: "",
+        guidanceAccepted: false,
+        finalTraceAnchorKey: "",
       },
       watchRequestId: requestId,
     });
@@ -348,6 +542,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     setDraft("");
     syncTextareaHeight(taRef.current);
 
+    let keepWatching = false;
     try {
       const r = await fetch("/api/chat", {
         method: "POST",
@@ -356,26 +551,42 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         body: JSON.stringify({
           message: text,
           guide_round_id: selectedGuideRoundId || undefined,
+          client_request_id: requestId,
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
       const isWatching = getChatRuntime().watchRequestId === requestId;
       if (data.queued) {
+        keepWatching = true;
+        if (runtime.requests[requestId]) {
+          runtime.requests[requestId].guideRequestId = data.guide_request_id || "";
+          runtime.requests[requestId].queued = true;
+        }
         if (window.refreshSessions) {
           await window.refreshSessions();
         }
         if (isWatching) {
           updateChatRuntime(function (state) {
+            const queuedProgress = {
+              icon: "↳",
+              text: "Guidance accepted. Waiting for the current round to reach the main agent.",
+            };
             return {
-              pendingMessages: [],
-              retainedMessages: state.retainedMessages.concat([{
-                ...userMsg,
-                queuedGuidanceId: data.guide_request_id || "",
-              }]),
+              pendingMessages: state.pendingMessages.map(function (msg) {
+                if (String(msg.clientRequestId || "") !== requestId) return msg;
+                return { ...msg, queuedGuidanceId: data.guide_request_id || "" };
+              }),
+              activeRequest: state.activeRequest && state.activeRequest.id === requestId
+                ? {
+                    ...state.activeRequest,
+                    guideRequestId: data.guide_request_id || "",
+                    queued: true,
+                  }
+                : state.activeRequest,
+              liveProgress: state.liveProgress.concat([queuedProgress]).slice(-30),
             };
           });
-          setNotice(data.response || "Guidance queued.");
         }
         return;
       }
@@ -383,6 +594,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         id: "pending_agent_" + Date.now(),
         role: "agent", time: new Date().toLocaleTimeString(),
         body: data.response || "(no response)",
+        clientRequestId: requestId,
       };
       if (isWatching) {
         updateChatRuntime(function (state) {
@@ -411,16 +623,18 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         });
       }
     } finally {
-      delete runtime.requests[requestId];
-      if (getChatRuntime().watchRequestId === requestId) {
-        updateChatRuntime({
-          sending: false,
-          liveProgress: [],
-          startedAt: 0,
-          activeRequest: null,
-          watchRequestId: "",
-        });
-        clearChatRuntimeSseSubscription();
+      if (!keepWatching) {
+        delete runtime.requests[requestId];
+        if (getChatRuntime().watchRequestId === requestId) {
+          updateChatRuntime({
+            sending: false,
+            liveProgress: [],
+            startedAt: 0,
+            activeRequest: null,
+            watchRequestId: "",
+          });
+          clearChatRuntimeSseSubscription();
+        }
       }
     }
   }
@@ -445,6 +659,22 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
 
   function openNextDialogue() {
     if (!sending || !draft.trim()) return;
+    if (hasSelectedGuideRound) {
+      updateChatRuntime(function (state) {
+        const preservedPending = state.pendingMessages.slice();
+        const anchorKey = preservedPending.length
+          ? messageKey(preservedPending[preservedPending.length - 1])
+          : (allMessages.length ? messageKey(allMessages[allMessages.length - 1]) : "");
+        const frozenCurrentTrace = snapshotRuntimeTrace(state, { insertAfterKey: anchorKey });
+        return {
+          retainedMessages: state.retainedMessages
+            .concat(preservedPending)
+            .concat(frozenCurrentTrace ? [frozenCurrentTrace] : []),
+        };
+      });
+      send();
+      return;
+    }
     releaseWatchedRequest(
       hasSelectedGuideRound
         ? "The current run is continuing in the background while this guidance is sent."
@@ -486,7 +716,10 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   }
 
   const allMessages = isLiveSession
-    ? [...session.chat.messages, ...retainedMessages, ...visiblePendingMessages]
+    ? mergeMessagesWithAnchors(
+        [...session.chat.messages, ...visiblePendingMessages],
+        retainedMessages
+      )
     : session.chat.messages;
 
   async function newSession() {
@@ -525,7 +758,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           </div>
           {!isLiveSession && (
             <div className="archive-banner">
-              <span>Viewing archive · {session.id.replace("day_", "")}</span>
+              <span>Viewing archive · {session.started}</span>
               <span className="archive-banner-action"
                     onClick={function () { onSelectSession && onSelectSession(null); }}>
                 ← return to live session
@@ -542,23 +775,23 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
             <div className="msg agent">
               <div className="msg-meta">
                 <span className="msg-role agent">● {DATA.assistantName}</span>
-                <span className="msg-time">{watchingGuidance ? "guiding…" : "…"}</span>
+                <span className="msg-time">{activeTraceDescriptor.timeLabel}</span>
               </div>
               <details className="msg-trace only-trace runtime-trace">
                 <summary className="msg-trace-summary">
                   <span className="msg-trace-caret">▸</span>
-                  <span>{watchingGuidance ? "details · queued guidance" : "details · processing"} · {liveElapsed}</span>
+                  <span>{activeTraceDescriptor.summary} · {liveElapsed}</span>
                 </summary>
                 <div className="msg-trace-body">
                   <div className="thinking">
-                    <div className="thinking-head">{watchingGuidance ? "queue" : "processing"}</div>
+                    <div className="thinking-head">{activeTraceDescriptor.head}</div>
                     {watchingGuidance && (
                       <div className="progress-entry">
                         <span className="progress-icon">↳</span>
                         <span className="progress-text">Target round: {activeGuideRoundTitle || activeRequest.guideRoundId}</span>
                       </div>
                     )}
-                    {visibleLiveProgress.length === 0 && <div className="progress-entry"><span className="progress-icon">◎</span><span className="progress-text">{watchingGuidance ? "Queueing follow-up…" : "Thinking..."}</span></div>}
+                    {visibleLiveProgress.length === 0 && <div className="progress-entry"><span className="progress-icon">◎</span><span className="progress-text">{activeTraceDescriptor.empty}</span></div>}
                     {visibleLiveProgress.map(function (p, i) {
                       return <div key={i} className="progress-entry"><span className="progress-icon">{p.icon}</span><span className="progress-text">{p.text}</span></div>;
                     })}
@@ -676,7 +909,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                     ? "Watching the current run. Type the next message, then click guide to send it to the selected round without waiting."
                     : "Watching the current run. Type the next message, then click new dialogue to send it without waiting.")
                 : hasSelectedGuideRound
-                ? "Guidance mode: this message will queue behind the selected round's current main-agent output."
+                ? "Guidance mode: this message will be sent to the selected round's main-agent inbox."
                 : DATA.assistantName + " plans, then acts. Subagents spawn for parallel work."}
             </span>
             <span>
@@ -697,7 +930,8 @@ function Message({ msg, assistantName }) {
   const markdownBody = (msg.role === "agent" || msg.role === "system") && msg.body
     ? renderMarkdown(msg.body)
     : "";
-  const hasTrace = Boolean(msg.thinking || (msg.tools && msg.tools.length));
+  const isRuntimeTrace = Boolean(msg.runtimeTrace);
+  const hasTrace = isRuntimeTrace || Boolean(msg.thinking || (msg.tools && msg.tools.length));
   return (
     <div className={"msg " + msg.role}>
       <div className="msg-meta">
@@ -710,19 +944,32 @@ function Message({ msg, assistantName }) {
       </div>
 
       {hasTrace && (
-        <details className={"msg-trace" + (!msg.body ? " only-trace" : "")}>
+        <details className={"msg-trace" + (!msg.body ? " only-trace" : "") + (isRuntimeTrace ? " runtime-trace" : "")}>
           <summary className="msg-trace-summary">
             <span className="msg-trace-caret">▸</span>
-            <span>{traceSummary(msg)}</span>
+            <span>{isRuntimeTrace ? (msg.traceSummary + (msg.traceElapsed ? " · " + msg.traceElapsed : "")) : traceSummary(msg)}</span>
           </summary>
           <div className="msg-trace-body">
-            {msg.thinking && (
+            {isRuntimeTrace && (
+              <div className="thinking">
+                <div className="thinking-head">{msg.traceHead || "processing"}</div>
+                {(msg.traceEntries || []).map(function (entry, index) {
+                  return (
+                    <div key={index} className="progress-entry">
+                      <span className="progress-icon">{entry.icon}</span>
+                      <span className="progress-text">{entry.text}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {!isRuntimeTrace && msg.thinking && (
               <div className="thinking">
                 <div className="thinking-head">reasoning</div>
                 {msg.thinking}
               </div>
             )}
-            {msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
+            {!isRuntimeTrace && msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
           </div>
         </details>
       )}

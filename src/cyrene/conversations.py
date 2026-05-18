@@ -47,6 +47,7 @@ async def archive_exchange(
     session_title: str = "",
     round_title: str = "",
     round_id: str = "",
+    archive_session_id: str = "",
 ) -> None:
     """Archive a single user-assistant exchange to today's conversation file.
 
@@ -65,6 +66,10 @@ async def archive_exchange(
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     meta_lines = []
+    if archive_session_id:
+        meta_lines.append(f"<!-- archive_session_id: {archive_session_id} -->")
+    if session_title:
+        meta_lines.append(f"<!-- session_title: {session_title} -->")
     if round_id:
         meta_lines.append(f"<!-- round_id: {round_id} -->")
     if round_title:

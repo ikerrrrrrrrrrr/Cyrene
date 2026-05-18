@@ -2,9 +2,12 @@
 // Loads real data from the FastAPI backend before the React tree mounts.
 // Static fallback values keep the UI usable if the backend is unreachable.
 
+const APP_VERSION = "v0.1.2";
+
 const DATA = {
   user: { name: "loading…", handle: "loading", initials: "…" },
   assistantName: "Cyrene",
+  appVersion: APP_VERSION,
 
   sessions: [
     {
@@ -60,7 +63,7 @@ const DATA = {
     sections: [
       { id: "general", label: "General" },
       { id: "models", label: "Models" },
-      { id: "agents", label: "Agents" },
+      { id: "agents", label: "Agent flow" },
       { id: "tools", label: "Tools" },
       { id: "search", label: "Search" },
       { id: "keys", label: "API keys" },
@@ -172,6 +175,7 @@ function connectEvents() {
 
         if ([
           "chat_message",
+          "guidance_acknowledged",
           "tool_call",
           "llm_call",
           "phase_transition",

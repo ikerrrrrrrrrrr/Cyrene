@@ -13,7 +13,7 @@ Message format::
         "message_id": "msg_001",
         "from": "agent_a",
         "to": "agent_b",
-        "type": "message" | "task_result" | "question",
+        "type": "message" | "task_result" | "question" | "guidance",
         "content": "...",
         "timestamp": "2026-05-11T12:00:00"
     }
@@ -85,6 +85,28 @@ def _write_unread(agent_name: str, count: int) -> None:
 
 def _iter_message_files(agent_name: str) -> Iterable[Path]:
     return sorted(_inbox_path(agent_name).glob("msg_*.json"))
+
+
+def _load_messages_from_files(msg_files: Iterable[Path]) -> list[dict]:
+    messages: list[dict] = []
+    for msg_file in msg_files:
+        try:
+            data = json.loads(msg_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                messages.append(data)
+        except Exception:
+            logger.exception("Failed to read inbox message %s", msg_file.name)
+    return messages
+
+
+def _read_unread_messages(agent_name: str) -> list[dict]:
+    unread_count = max(0, _read_unread(agent_name))
+    if unread_count == 0:
+        return []
+    msg_files = list(_iter_message_files(agent_name))
+    if not msg_files:
+        return []
+    return _load_messages_from_files(msg_files[-unread_count:])
 
 
 def _truncate_for_context(text: str, limit: int = _MAX_CONTEXT_MESSAGE_CHARS) -> str:
@@ -166,6 +188,20 @@ async def mark_all_read(agent_name: str) -> None:
         _write_unread(agent_name, 0)
 
 
+async def mark_read_count(agent_name: str, count: int = 1) -> None:
+    """Acknowledge the oldest unread inbox messages for *agent_name*.
+
+    Unread messages are always interpreted as the oldest entries inside the
+    trailing unread tail. Decrementing the unread counter therefore advances
+    the read cursor without mutating message log files on disk.
+    """
+    if count <= 0:
+        return
+    async with _INBOX_LOCK:
+        current = _read_unread(agent_name)
+        _write_unread(agent_name, max(0, current - count))
+
+
 async def clear_inbox(agent_name: str) -> None:
     """Delete all message files and reset unread state for one inbox."""
     async with _INBOX_LOCK:
@@ -208,22 +244,33 @@ async def read_messages(agent_name: str, mark_read: bool = True) -> list[dict]:
     """
     async with _INBOX_LOCK:
         ensure_inbox(agent_name)
-        messages: list[dict] = []
         try:
-            msg_files = _iter_message_files(agent_name)
-            for f in msg_files:
-                try:
-                    data = json.loads(f.read_text(encoding="utf-8"))
-                    messages.append(data)
-                except Exception:
-                    logger.exception("Failed to read inbox message %s", f.name)
+            messages = _load_messages_from_files(_iter_message_files(agent_name))
         except Exception:
             logger.exception("Failed to list inbox for %s", agent_name)
+            messages = []
 
         if mark_read:
             _write_unread(agent_name, 0)
 
     return messages
+
+
+async def read_unread_messages(agent_name: str) -> list[dict]:
+    """Read unread messages in FIFO order without acknowledging them."""
+    async with _INBOX_LOCK:
+        ensure_inbox(agent_name)
+        return _read_unread_messages(agent_name)
+
+
+def get_unread_messages(agent_name: str) -> list[dict]:
+    """Return unread messages in FIFO order without mutating inbox state."""
+    try:
+        ensure_inbox(agent_name)
+        return _read_unread_messages(agent_name)
+    except Exception:
+        logger.exception("Failed to read unread inbox messages for %s", agent_name)
+        return []
 
 
 def get_inbox_context(agent_name: str) -> str:
@@ -232,35 +279,30 @@ def get_inbox_context(agent_name: str) -> str:
 
     Returns an empty string when there are no unread messages.
     """
-    count = get_unread_count(agent_name)
+    unread_messages = get_unread_messages(agent_name)
+    count = len(unread_messages)
     if count == 0:
         return ""
 
     summaries: list[str] = []
     total_chars = 0
     try:
-        msg_files = _iter_message_files(agent_name)
-        # Only show the latest `count` messages
-        for f in msg_files[-count:]:
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                from_ = data.get("from", "unknown")
-                typ = data.get("type", "message")
-                content = _truncate_for_context(str(data.get("content", "")))
-                rendered = f"[from {from_}] ({typ}) {content}"
-                if total_chars + len(rendered) > _MAX_CONTEXT_TOTAL_CHARS:
-                    remaining = _MAX_CONTEXT_TOTAL_CHARS - total_chars
-                    if remaining <= 0:
-                        summaries.append("[older unread content omitted]")
-                        break
-                    rendered = _truncate_for_context(rendered, remaining)
-                    summaries.append(rendered)
+        for data in unread_messages:
+            from_ = data.get("from", "unknown")
+            typ = data.get("type", "message")
+            content = _truncate_for_context(str(data.get("content", "")))
+            rendered = f"[from {from_}] ({typ}) {content}"
+            if total_chars + len(rendered) > _MAX_CONTEXT_TOTAL_CHARS:
+                remaining = _MAX_CONTEXT_TOTAL_CHARS - total_chars
+                if remaining <= 0:
                     summaries.append("[older unread content omitted]")
                     break
+                rendered = _truncate_for_context(rendered, remaining)
                 summaries.append(rendered)
-                total_chars += len(rendered)
-            except Exception:
-                pass
+                summaries.append("[older unread content omitted]")
+                break
+            summaries.append(rendered)
+            total_chars += len(rendered)
     except Exception:
         pass
 

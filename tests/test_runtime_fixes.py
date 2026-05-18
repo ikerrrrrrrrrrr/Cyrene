@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -82,7 +83,7 @@ async def test_send_agent_message_redirects_main_alias():
         None,
     )
 
-    assert "Main agent does not receive inbox messages" in result
+    assert "main-agent inbox is reserved for user guidance" in result
     assert "quit response" in result
 
 
@@ -122,16 +123,15 @@ async def test_query_round_tool_reports_live_round():
     assert "research topic" in result
 
 
-async def test_queue_round_guidance_drains_in_background(monkeypatch, tmp_path):
+async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypatch, tmp_path):
     from cyrene import agent
-    from cyrene import subagent
+    from cyrene import debug
+    from cyrene import inbox
     import cyrene.conversations as conversations
-
-    await subagent.clear()
-    await subagent.register("alice", "research topic", round_id="round_1")
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
     agent.STATE_FILE.write_text(
         json.dumps({
             "session_title": "session label",
@@ -146,6 +146,11 @@ async def test_queue_round_guidance_drains_in_background(monkeypatch, tmp_path):
     )
 
     seen = {}
+    monkeypatch.setattr(
+        agent,
+        "get_live_rounds",
+        lambda: [{"id": "round_1", "status": "running", "title": "round one", "pendingGuidance": 0, "runningSubagents": 0, "subagentCount": 0}],
+    )
 
     async def fake_run_chat_agent(
         user_message,
@@ -157,6 +162,7 @@ async def test_queue_round_guidance_drains_in_background(monkeypatch, tmp_path):
         history_override=None,
         persist_base_messages=None,
         persist_insert_at=None,
+        client_request_id="",
     ):
         seen["user_message"] = user_message
         seen["ephemeral_system"] = ephemeral_system
@@ -164,38 +170,55 @@ async def test_queue_round_guidance_drains_in_background(monkeypatch, tmp_path):
         seen["history_override"] = history_override
         seen["persist_base_messages"] = persist_base_messages
         seen["persist_insert_at"] = persist_insert_at
+        seen["client_request_id"] = client_request_id
         return "guided reply"
 
-    async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id=""):
+    async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
         seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
 
     monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
+    events = []
+    monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
 
-    item = await agent.queue_round_guidance("round_1", "please continue with logistics", None, 0, "db.sqlite3")
+    item = await agent.queue_round_guidance("round_1", "please continue with logistics", None, 0, "db.sqlite3", client_request_id="req_1")
     await asyncio.sleep(0.05)
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
 
     assert item["target_round_id"] == "round_1"
     assert seen["user_message"] == "please continue with logistics"
-    assert "Target round id: round_1" in seen["ephemeral_system"]
+    assert "main-agent inbox" in seen["ephemeral_system"]
     assert seen["forced_round_id"] == "round_1"
     assert [msg["content"] for msg in seen["history_override"]] == ["round one question", "round one reply"]
     assert [msg["content"] for msg in seen["persist_base_messages"]] == ["round one question", "round one reply", "other round question", "other round reply"]
     assert seen["persist_insert_at"] == 4
+    assert seen["client_request_id"] == "req_1"
     assert seen["archived"][0] == "please continue with logistics"
     assert seen["archived"][2:] == ("session label", "round one", "round_1")
-    assert not agent._round_guidance_queues.get("round_1")
+    assert saved[4]["content"] == "please continue with logistics"
+    assert saved[4]["queued_guidance_id"] == item["id"]
+    assert saved[5]["content"] == agent._guidance_ack_text()
+    assert saved[5]["guidance_ack_for_guidance_id"] == item["id"]
+    assert inbox.get_unread_count(agent._MAIN_INBOX_AGENT_ID) == 0
+    assert any(
+        event.get("type") == "guidance_acknowledged"
+        and event.get("client_request_id") == "req_1"
+        and event.get("ack_text") == agent._guidance_ack_text()
+        for event in events
+    )
 
 
 async def test_queue_round_guidance_persists_user_message_immediately(monkeypatch, tmp_path):
     from cyrene import agent
     from cyrene import subagent
+    from cyrene import inbox
 
     await subagent.clear()
     await subagent.register("alice", "research topic", round_id="round_1")
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
     agent.STATE_FILE.write_text(
         json.dumps({
             "messages": [
@@ -206,22 +229,202 @@ async def test_queue_round_guidance_persists_user_message_immediately(monkeypatc
         encoding="utf-8",
     )
 
-    gate = asyncio.Event()
+    monkeypatch.setattr(agent, "_ensure_main_inbox_worker", lambda *_args, **_kwargs: None)
 
-    async def fake_drain(*_args, **_kwargs):
-        await gate.wait()
-
-    monkeypatch.setattr(agent, "_drain_round_guidance", fake_drain)
-
-    item = await agent.queue_round_guidance("round_1", "queued follow-up", None, 0, "db.sqlite3")
+    item = await agent.queue_round_guidance("round_1", "queued follow-up", None, 0, "db.sqlite3", client_request_id="req_queued")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
 
     assert saved[-1]["role"] == "user"
     assert saved[-1]["content"] == "queued follow-up"
     assert saved[-1]["round_id"] == "round_1"
     assert saved[-1]["round_title"] == "round one"
+    assert saved[-1]["client_request_id"] == "req_queued"
     assert saved[-1]["queued_guidance_id"] == item["id"]
-    gate.set()
+    assert item["id"].startswith("msg_")
+    assert inbox.get_unread_count(agent._MAIN_INBOX_AGENT_ID) == 1
+
+
+async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+    from cyrene import inbox
+    from cyrene import subagent
+    import cyrene.conversations as conversations
+
+    await subagent.clear()
+    await subagent.register("alice", "research topic", round_id="round_1")
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
+    agent.STATE_FILE.write_text(
+        json.dumps({
+            "session_title": "session label",
+            "messages": [
+                {"role": "user", "content": "round one question", "round_id": "round_1", "round_title": "round one"},
+                {"role": "assistant", "content": "round one reply", "round_id": "round_1", "round_title": "round one"},
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    seen = {}
+
+    async def fake_fan_out(round_id, content, bot, chat_id, db_path):
+        seen["fanout"] = (round_id, content)
+        return ["alice"]
+
+    async def fake_wait(round_id, bot, chat_id, db_path):
+        seen["wait"] = round_id
+        return False, "[alice] task: research topic\nstatus: done\nresult:\nDetailed finding"
+
+    async def fake_synth(task, summary, round_title="", guidance="", round_history=None):
+        seen["synth"] = (task, summary, round_title, guidance, [m["content"] for m in (round_history or [])])
+        return "expanded reply"
+
+    async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
+        seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
+
+    async def fail_run_chat_agent(*_args, **_kwargs):
+        raise AssertionError("_run_chat_agent should not run when the round already has subagents")
+
+    monkeypatch.setattr(agent, "_fan_out_guidance_to_subagents", fake_fan_out)
+    monkeypatch.setattr(agent, "_wait_for_subagent_round", fake_wait)
+    monkeypatch.setattr(agent, "_synthesize_subagent_results", fake_synth)
+    monkeypatch.setattr(agent, "_run_chat_agent", fail_run_chat_agent)
+    monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
+    events = []
+    monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
+
+    item = await agent.queue_round_guidance("round_1", "please expand section B", None, 0, "db.sqlite3", client_request_id="req_sub")
+    await asyncio.sleep(0.05)
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert item["target_round_id"] == "round_1"
+    assert seen["fanout"] == ("round_1", "please expand section B")
+    assert seen["wait"] == "round_1"
+    assert seen["synth"][0] == "please expand section B"
+    assert seen["synth"][2] == "round one"
+    assert saved[-3]["content"] == "please expand section B"
+    assert saved[-3]["queued_guidance_id"] == item["id"]
+    assert saved[-2]["content"] == agent._guidance_ack_text()
+    assert saved[-2]["guidance_ack_for_guidance_id"] == item["id"]
+    assert saved[-1]["content"] == "expanded reply"
+    assert saved[-1]["client_request_id"] == "req_sub"
+    assert saved[-1]["in_reply_to_guidance_id"] == item["id"]
+    assert seen["archived"] == ("please expand section B", "expanded reply", "session label", "round one", "round_1")
+    assert any(
+        event.get("type") == "guidance_acknowledged"
+        and event.get("client_request_id") == "req_sub"
+        and event.get("ack_text") == agent._guidance_ack_text()
+        for event in events
+    )
+    assert any(
+        event.get("type") == "chat_message" and event.get("client_request_id") == "req_sub"
+        for event in events
+    )
+
+
+async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+    from cyrene import inbox
+    import cyrene.conversations as conversations
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
+    agent.STATE_FILE.write_text(
+        json.dumps({
+            "session_title": "session label",
+            "messages": [
+                {"role": "user", "content": "round one question", "round_id": "round_1", "round_title": "round one"},
+                {"role": "assistant", "content": "round one reply", "round_id": "round_1", "round_title": "round one"},
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        agent,
+        "get_live_rounds",
+        lambda: [{"id": "round_1", "status": "running", "title": "round one", "pendingGuidance": 0, "runningSubagents": 0, "subagentCount": 0}],
+    )
+
+    seen = {}
+
+    async def boom_run_chat_agent(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
+        seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
+
+    monkeypatch.setattr(agent, "_run_chat_agent", boom_run_chat_agent)
+    monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
+    events = []
+    monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
+
+    item = await agent.queue_round_guidance("round_1", "please retry with details", None, 0, "db.sqlite3", client_request_id="req_fail")
+    await asyncio.sleep(0.05)
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert saved[-3]["content"] == "please retry with details"
+    assert saved[-3]["queued_guidance_id"] == item["id"]
+    assert saved[-2]["content"] == agent._guidance_ack_text()
+    assert saved[-2]["guidance_ack_for_guidance_id"] == item["id"]
+    assert saved[-1]["role"] == "assistant"
+    assert "Guidance could not be applied because an internal error occurred" in saved[-1]["content"]
+    assert saved[-1]["client_request_id"] == "req_fail"
+    assert saved[-1]["in_reply_to_guidance_id"] == item["id"]
+    assert seen["archived"][0] == "please retry with details"
+    assert seen["archived"][2:] == ("session label", "round one", "round_1")
+    assert any(
+        event.get("type") == "guidance_acknowledged"
+        and event.get("client_request_id") == "req_fail"
+        and event.get("ack_text") == agent._guidance_ack_text()
+        for event in events
+    )
+    assert any(
+        event.get("type") == "chat_message" and event.get("client_request_id") == "req_fail"
+        for event in events
+    )
+
+
+async def test_run_chat_agent_persists_client_request_ids(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
+    monkeypatch.setattr(agent, "get_memory_context", lambda: "")
+    events = []
+    monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+        round_id = agent._current_round_id.get()
+        await agent._save_session_messages([
+            *history,
+            {"role": "user", "content": user_message, "round_id": round_id, "client_request_id": client_request_id},
+            {"role": "assistant", "content": "raw reply", "round_id": round_id, "client_request_id": client_request_id},
+        ])
+        return "raw reply"
+
+    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+
+    result = await agent._run_chat_agent("current request", None, 0, "db.sqlite3", client_request_id="req_live")
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert result == "raw reply"
+    assert saved[-2]["client_request_id"] == "req_live"
+    assert saved[-1]["client_request_id"] == "req_live"
+    assert saved[-2]["message_id"].startswith("msg_")
+    assert saved[-1]["message_id"].startswith("msg_")
+    assert any(
+        event.get("type") == "chat_message" and event.get("client_request_id") == "req_live"
+        for event in events
+    )
 
 
 async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatch, tmp_path):
@@ -237,10 +440,11 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -283,10 +487,11 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -330,10 +535,11 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
         await agent._append_session_message({
             "role": "user",
             "content": "queued guidance",
@@ -429,10 +635,11 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -637,6 +844,75 @@ def test_live_flow_contains_tool_nodes_and_comm_edges(tmp_path, monkeypatch):
     assert alice_node["detail"]["tokensOut"] == 7
 
 
+def test_live_flow_marks_empty_tool_outputs_done(monkeypatch):
+    from cyrene import debug
+    from webui import routes
+
+    monkeypatch.setattr(debug, "get_recent_events", lambda limit=200: [])
+    raw_msgs = [
+        {"role": "user", "content": "run command"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t1", "function": {"name": "bash", "arguments": json.dumps({"cmd": "true"})}},
+        ]},
+        {"role": "tool", "tool_call_id": "t1", "content": ""},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    flow = routes._build_live_flow(raw_msgs, routes._convert_messages(raw_msgs), [], {})
+    tool = next(node for node in flow["nodes"] if node["kind"] == "tool")
+
+    assert tool["status"] == "done"
+    assert tool["detail"]["output"] == "Completed with no captured output."
+
+
+def test_live_flow_marks_tool_without_captured_output_done_after_followup(monkeypatch):
+    from cyrene import debug
+    from webui import routes
+
+    monkeypatch.setattr(debug, "get_recent_events", lambda limit=200: [])
+    raw_msgs = [
+        {"role": "user", "content": "research"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t1", "function": {"name": "search", "arguments": json.dumps({"query": "alpha"})}},
+        ]},
+        {"role": "assistant", "content": "summary"},
+    ]
+
+    flow = routes._build_live_flow(raw_msgs, routes._convert_messages(raw_msgs), [], {})
+    tool = next(node for node in flow["nodes"] if node["kind"] == "tool")
+
+    assert tool["status"] == "done"
+    assert "no tool output was captured" in tool["detail"]["output"]
+
+
+def test_live_flow_marks_recent_overlay_tools_done(monkeypatch):
+    from cyrene import debug
+    from webui import routes
+
+    monkeypatch.setattr(debug, "get_recent_events", lambda limit=200: [
+        {
+            "type": "tool_call",
+            "caller": "main_agent",
+            "tool": "web_search",
+            "args": {"query": "latest"},
+            "result_preview": "search complete",
+            "round_id": "round_live",
+        }
+    ])
+    raw_msgs = [
+        {"role": "user", "content": "check latest", "round_id": "round_live"},
+        {"role": "assistant", "content": "working", "round_id": "round_live"},
+    ]
+
+    flow = routes._build_live_flow(raw_msgs, routes._convert_messages(raw_msgs), [], {})
+    tool = next(node for node in flow["nodes"] if node["kind"] == "tool")
+    tool_edge = next(edge for edge in flow["edges"] if edge["to"] == tool["id"])
+
+    assert tool["title"] == "web_search"
+    assert tool["status"] == "done"
+    assert tool_edge.get("kind") is None
+
+
 def test_build_current_session_uses_live_shell_snapshots(monkeypatch, tmp_path):
     from webui import routes
 
@@ -692,7 +968,7 @@ def test_build_sessions_includes_today_archive_when_live_session_exists(tmp_path
     ids = [session["id"] for session in sessions]
 
     assert ids[0] == "run_live"
-    assert f"day_{today}" in ids
+    assert f"archive_{today}_legacy_{today}" in ids
 
 
 def test_build_current_session_recovers_subagents_from_state_and_inbox(tmp_path, monkeypatch):
@@ -747,6 +1023,7 @@ async def test_clear_session_id_removes_live_flow_residue(tmp_path, monkeypatch)
     monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(routes, "DATA_DIR", tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
+    monkeypatch.setattr(agent, "_compress_old_messages", AsyncMock())
 
     agent.STATE_FILE.write_text(
         json.dumps({
@@ -911,6 +1188,31 @@ def test_live_flow_prunes_extra_user_only_tail_rounds(monkeypatch):
 
     assert input_ids == ["r0_n_user", "r1_n_user"]
     assert all(not node["id"].startswith("r2_") for node in flow["nodes"])
+
+
+def test_live_flow_keeps_guided_continuation_inside_same_round(monkeypatch):
+    from cyrene import debug
+    from webui import routes
+
+    monkeypatch.setattr(debug, "get_recent_events", lambda limit=200: [])
+    raw_msgs = [
+        {"role": "user", "content": "original task", "round_id": "round_1", "round_title": "round one"},
+        {"role": "assistant", "content": "first reply", "round_id": "round_1", "round_title": "round one"},
+        {"role": "user", "content": "please adjust the answer", "round_id": "round_1", "round_title": "round one", "queued_guidance_id": "guide_1"},
+        {"role": "assistant", "content": "已接受引导。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。", "round_id": "round_1", "round_title": "round one", "guidance_ack_for_guidance_id": "guide_1"},
+        {"role": "assistant", "content": "adjusted final reply", "round_id": "round_1", "round_title": "round one", "in_reply_to_guidance_id": "guide_1"},
+    ]
+
+    flow = routes._build_live_flow(raw_msgs, routes._convert_messages(raw_msgs), [], {})
+    input_nodes = [node for node in flow["nodes"] if node["kind"] == "input"]
+    main_nodes = [node for node in flow["nodes"] if node["kind"] == "main"]
+    output_nodes = [node for node in flow["nodes"] if node["kind"] == "output"]
+
+    assert len(input_nodes) == 1
+    assert len(main_nodes) == 1
+    assert len(output_nodes) == 1
+    assert input_nodes[0]["title"] == "round one"
+    assert output_nodes[0]["detail"]["content"] == "adjusted final reply"
 
 
 def test_live_flow_attaches_live_registry_to_latest_substantive_round(monkeypatch):
@@ -1172,11 +1474,30 @@ def test_convert_messages_keeps_assistant_entries_with_thinking_or_tools():
 
     ui_msgs = routes._convert_messages(raw_msgs)
 
-    assert len(ui_msgs) == 3
+    assert len(ui_msgs) == 2
     assert ui_msgs[1]["role"] == "agent"
     assert ui_msgs[1]["thinking"] == "thinking"
-    assert ui_msgs[2]["role"] == "agent"
-    assert ui_msgs[2]["tools"][0]["name"] == "spawn_subagent"
+    assert ui_msgs[1]["tools"][0]["name"] == "spawn_subagent"
+
+
+def test_convert_messages_merges_adjacent_trace_only_assistant_entries():
+    from webui import routes
+
+    raw_msgs = [
+        {"role": "assistant", "content": "", "reasoning_content": "first pass", "round_id": "round_1"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t1", "function": {"name": "search", "arguments": "{}"}}
+        ], "round_id": "round_1"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t2", "function": {"name": "fetch", "arguments": "{}"}}
+        ], "round_id": "round_1"},
+    ]
+
+    ui_msgs = routes._convert_messages(raw_msgs)
+
+    assert len(ui_msgs) == 1
+    assert ui_msgs[0]["thinking"] == "first pass"
+    assert [tool["name"] for tool in ui_msgs[0]["tools"]] == ["search", "fetch"]
 
 
 async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_path):
@@ -1184,9 +1505,10 @@ async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
@@ -1209,9 +1531,10 @@ async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
@@ -1500,3 +1823,49 @@ def test_build_archive_sessions_reads_titles_and_splits_rounds(tmp_path, monkeyp
 
     assert sessions[0]["title"] == "加密货币多代理讨论"
     assert input_titles == ["设计辩论角色", "让双方开始辩论"]
+
+
+def test_build_archive_sessions_splits_multiple_same_day_sessions_by_archive_session_id(tmp_path, monkeypatch):
+    from webui import routes
+
+    monkeypatch.setattr(routes, "CONVERSATIONS_DIR", tmp_path / "conversations")
+    monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
+    routes.CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    routes.STATE_FILE.write_text('{"messages":[]}', encoding="utf-8")
+
+    date_str = "2026-05-15"
+    (routes.CONVERSATIONS_DIR / f"{date_str}.md").write_text(
+        "# Conversations - 2026-05-15\n\n"
+        "## 08:00:00 UTC\n\n"
+        "<!-- archive_session_id: session_alpha -->\n"
+        "<!-- session_title: 第一场 -->\n"
+        "<!-- round_id: round_a -->\n"
+        "<!-- round_title: 设计角色 -->\n\n"
+        "**User**: 第一场开始\n\n"
+        "**Ape**: 好\n\n"
+        "---\n\n"
+        "## 08:05:00 UTC\n\n"
+        "<!-- archive_session_id: session_alpha -->\n"
+        "<!-- session_title: 第一场 -->\n"
+        "<!-- round_id: round_b -->\n"
+        "<!-- round_title: 继续讨论 -->\n\n"
+        "**User**: 第一场继续\n\n"
+        "**Ape**: 继续\n\n"
+        "---\n\n"
+        "## 09:00:00 UTC\n\n"
+        "<!-- archive_session_id: session_beta -->\n"
+        "<!-- session_title: 第二场 -->\n"
+        "<!-- round_id: round_c -->\n"
+        "<!-- round_title: 新话题 -->\n\n"
+        "**User**: 第二场开始\n\n"
+        "**Ape**: 开始\n\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    sessions = routes._build_archive_sessions()
+
+    assert [session["title"] for session in sessions] == ["第二场", "第一场"]
+    assert sessions[0]["id"] == "archive_2026-05-15_session_beta"
+    assert sessions[0]["chat"]["messages"][0]["body"] == "第二场开始"
+    assert [node["title"] for node in sessions[1]["flow"]["nodes"] if node["kind"] == "input"] == ["设计角色", "继续讨论"]

@@ -5,6 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -39,13 +40,13 @@ _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 12
 # 后台 compressor 任务，防止被事件循环 GC
 _pending_compressors: set[asyncio.Task] = set()
+_pending_label_refreshes: set[asyncio.Task] = set()
 _pending_interrupt_clearers: set[asyncio.Task] = set()
-_guidance_counter = 0
-_round_guidance_queues: dict[str, list[dict[str, Any]]] = {}
-_round_guidance_workers: dict[str, asyncio.Task] = {}
+_main_inbox_worker: asyncio.Task | None = None
 _active_main_round_id = ""
 _active_main_round_prompt = ""
 _active_main_round_started_at = 0.0
+_MAIN_INBOX_AGENT_ID = "main"
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -126,13 +127,30 @@ def _write_session_state(state: dict[str, Any]) -> None:
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _ensure_archive_session_id(state: dict[str, Any]) -> str:
+    archive_session_id = str(state.get("archive_session_id", "")).strip()
+    if not archive_session_id:
+        archive_session_id = f"session_{uuid4().hex[:12]}"
+        state["archive_session_id"] = archive_session_id
+    return archive_session_id
+
+
 def _trim_session_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(messages) <= _MAX_HISTORY_MESSAGES:
+        return messages
     trimmed = messages[-_MAX_HISTORY_MESSAGES:]
     # 移除截断处孤立的 tool_calls（DeepSeek 要求 tool_calls 必须有对应的 tool response）
     for i in range(len(trimmed) - 1, -1, -1):
         if trimmed[i].get("tool_calls") and (i + 1 >= len(trimmed) or trimmed[i + 1].get("role") != "tool"):
             return trimmed[:i]
     return trimmed
+
+
+def _schedule_memory_compression(messages: list[dict[str, Any]]) -> None:
+    """Compress older conversation state without blocking the active request path."""
+    task = asyncio.create_task(_compress_old_messages(list(messages)))
+    _pending_compressors.add(task)
+    task.add_done_callback(_pending_compressors.discard)
 
 
 def _is_replaceable_live_message(entry: dict[str, Any], round_id: str) -> bool:
@@ -149,6 +167,8 @@ def _is_replaceable_live_message(entry: dict[str, Any], round_id: str) -> bool:
 
 
 async def _write_session_messages_locked(state: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+    _ensure_archive_session_id(state)
+    messages = _ensure_message_identity(messages)
     trimmed = _trim_session_messages(messages)
     state["messages"] = trimmed
     if not str(state.get("session_title", "")).strip():
@@ -162,9 +182,7 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
     })
 
     if len(messages) >= _MAX_HISTORY_MESSAGES + 5:
-        task = asyncio.create_task(_compress_old_messages(messages))
-        _pending_compressors.add(task)
-        task.add_done_callback(_pending_compressors.discard)
+        _schedule_memory_compression(messages)
 
 
 
@@ -205,6 +223,7 @@ async def _append_session_message(entry: dict[str, Any]) -> None:
         messages = state.get("messages", [])
         full_messages = list(messages) if isinstance(messages, list) else []
         full_messages.append(entry)
+        _ensure_message_identity(full_messages)
         await _write_session_messages_locked(state, full_messages)
 
 
@@ -251,6 +270,15 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _ensure_message_identity(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if not str(message.get("message_id", "")).strip():
+            message["message_id"] = f"msg_{uuid4().hex}"
+    return messages
 
 
 def _round_epoch_ms(round_id: str) -> int | None:
@@ -313,6 +341,20 @@ def _session_round_entries() -> dict[str, dict[str, Any]]:
     return entries
 
 
+def _main_inbox_pending_by_round() -> dict[str, int]:
+    from cyrene.inbox import get_unread_messages
+
+    counts: dict[str, int] = {}
+    for message in get_unread_messages(_MAIN_INBOX_AGENT_ID):
+        if str(message.get("type", "")).strip() != "guidance":
+            continue
+        round_id = str(message.get("round_id", "")).strip()
+        if not round_id:
+            continue
+        counts[round_id] = counts.get(round_id, 0) + 1
+    return counts
+
+
 def get_live_rounds() -> list[dict[str, Any]]:
     """Return live round summaries for UI context selection and tooling."""
     entries = _session_round_entries()
@@ -348,7 +390,7 @@ def get_live_rounds() -> list[dict[str, Any]]:
         if info.get("created_at") and not entry.get("started_at"):
             entry["started_at"] = info.get("created_at")
 
-    for round_id, queue in _round_guidance_queues.items():
+    for round_id, pending_count in _main_inbox_pending_by_round().items():
         entry = entries.setdefault(round_id, {
             "id": round_id,
             "title": "",
@@ -362,12 +404,10 @@ def get_live_rounds() -> list[dict[str, Any]]:
             "started_at": _round_started_iso(round_id),
             "updated_at": _round_started_iso(round_id),
         })
-        entry["pending_guidance"] = len(queue)
-        if queue:
-            latest = queue[-1]
-            entry["updated_at"] = latest.get("created_at") or entry.get("updated_at")
-            if entry["status"] != "running":
-                entry["status"] = "queued"
+        entry["pending_guidance"] = pending_count
+        entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if entry["status"] != "running":
+            entry["status"] = "queued"
 
     if _active_main_round_id:
         entry = entries.setdefault(_active_main_round_id, {
@@ -459,110 +499,515 @@ async def _publish_round_guidance_update(target_round_id: str) -> None:
     })
 
 
-async def queue_round_guidance(target_round_id: str, content: str, bot: Any, chat_id: int, db_path: str) -> dict[str, Any]:
-    """Queue a follow-up question for a live round without interrupting current output."""
+def _guidance_error_text(exc: Exception) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        reason = "the upstream model timed out"
+    elif isinstance(exc, httpx.HTTPError):
+        reason = "the upstream model request failed"
+    else:
+        reason = "an internal error occurred while applying the guidance"
+    return f"Guidance could not be applied because {reason}."
+
+
+def _guidance_ack_text() -> str:
+    return "已接受引导。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。"
+
+
+def _schedule_session_label_refresh(current_user_message: str, round_id: str) -> None:
+    async def _runner() -> None:
+        try:
+            await _refresh_session_labels(current_user_message, round_id)
+        except Exception:
+            logger.warning("Async session naming failed for %s", round_id or "<unknown>", exc_info=True)
+
+    task = asyncio.create_task(_runner())
+    _pending_label_refreshes.add(task)
+    task.add_done_callback(_pending_label_refreshes.discard)
+
+
+def _guidance_round_context(target_round_id: str, guidance_id: str) -> dict[str, Any]:
+    full_messages = _load_session_messages()
+    queued_entry = next(
+        (
+            msg
+            for msg in full_messages
+            if str(msg.get("queued_guidance_id", "")).strip() == guidance_id
+        ),
+        {},
+    )
+    insert_at = next(
+        (
+            idx
+            for idx, msg in enumerate(full_messages)
+            if str(msg.get("queued_guidance_id", "")).strip() == guidance_id
+        ),
+        len(full_messages),
+    )
+    return {
+        "full_messages": full_messages,
+        "queued_entry": queued_entry,
+        "insert_at": insert_at,
+        "persist_base_messages": [
+            msg
+            for msg in full_messages
+            if str(msg.get("queued_guidance_id", "")).strip() != guidance_id
+        ],
+        "round_history": [
+            msg
+            for msg in full_messages
+            if str(msg.get("round_id", "")).strip() == target_round_id
+            and not str(msg.get("queued_guidance_id", "")).strip()
+        ],
+        "round_title": str(queued_entry.get("round_title", "")).strip(),
+        "client_request_id": str(queued_entry.get("client_request_id", "")).strip(),
+    }
+
+
+async def _insert_guidance_reply(
+    target_round_id: str,
+    guidance_id: str,
+    content: str,
+    round_title: str = "",
+    client_request_id: str = "",
+) -> None:
+    assistant_entry: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+        "round_id": target_round_id,
+        "in_reply_to_guidance_id": guidance_id,
+    }
+    if round_title:
+        assistant_entry["round_title"] = round_title
+    if client_request_id:
+        assistant_entry["client_request_id"] = client_request_id
+
+    async with _session_state_lock:
+        state = _load_session_state()
+        existing = state.get("messages", [])
+        full_messages = list(existing) if isinstance(existing, list) else []
+        _ensure_message_identity([assistant_entry])
+        replacement_index = next(
+            (
+                idx
+                for idx, msg in enumerate(full_messages)
+                if str(msg.get("in_reply_to_guidance_id", "")).strip() == guidance_id
+            ),
+            -1,
+        )
+        if replacement_index >= 0:
+            full_messages[replacement_index] = assistant_entry
+        else:
+            ack_index = next(
+                (
+                    idx
+                    for idx, msg in enumerate(full_messages)
+                    if str(msg.get("guidance_ack_for_guidance_id", "")).strip() == guidance_id
+                ),
+                -1,
+            )
+            insert_at = ack_index if ack_index >= 0 else next(
+                (
+                    idx
+                    for idx, msg in enumerate(full_messages)
+                    if str(msg.get("queued_guidance_id", "")).strip() == guidance_id
+                ),
+                len(full_messages) - 1,
+            )
+            full_messages.insert(max(0, insert_at + 1), assistant_entry)
+        await _write_session_messages_locked(state, full_messages)
+    await _publish_runtime_event({
+        "type": "chat_message",
+        "round_id": target_round_id,
+        "client_request_id": client_request_id,
+        "guidance_id": guidance_id,
+    })
+
+
+async def _insert_guidance_ack(
+    target_round_id: str,
+    guidance_id: str,
+    round_title: str = "",
+    client_request_id: str = "",
+) -> None:
+    assistant_entry: dict[str, Any] = {
+        "role": "assistant",
+        "content": _guidance_ack_text(),
+        "round_id": target_round_id,
+        "guidance_ack_for_guidance_id": guidance_id,
+    }
+    if round_title:
+        assistant_entry["round_title"] = round_title
+    async with _session_state_lock:
+        state = _load_session_state()
+        existing = state.get("messages", [])
+        full_messages = list(existing) if isinstance(existing, list) else []
+        _ensure_message_identity([assistant_entry])
+        replacement_index = next(
+            (
+                idx
+                for idx, msg in enumerate(full_messages)
+                if str(msg.get("guidance_ack_for_guidance_id", "")).strip() == guidance_id
+            ),
+            -1,
+        )
+        if replacement_index >= 0:
+            full_messages[replacement_index] = assistant_entry
+        else:
+            insert_at = next(
+                (
+                    idx
+                    for idx, msg in enumerate(full_messages)
+                    if str(msg.get("queued_guidance_id", "")).strip() == guidance_id
+                ),
+                len(full_messages) - 1,
+            )
+            full_messages.insert(max(0, insert_at + 1), assistant_entry)
+        await _write_session_messages_locked(state, full_messages)
+    await _publish_runtime_event({
+        "type": "guidance_acknowledged",
+        "round_id": target_round_id,
+        "client_request_id": client_request_id,
+        "guidance_id": guidance_id,
+        "ack_text": assistant_entry["content"],
+    })
+
+
+async def _fan_out_guidance_to_subagents(target_round_id: str, content: str, bot: Any, chat_id: int, db_path: str) -> list[str]:
+    from cyrene.inbox import send_message as _send_inbox
+    from cyrene.subagent import (
+        _run_subagent,
+        _spawn_subagent_task,
+        get_raw_messages as _sub_raw_msgs,
+        get_snapshot as _sub_snapshot,
+        reactivate as _sub_reactivate,
+    )
+
+    guidance_text = (
+        "Main agent received new user guidance for this round.\n"
+        "Adjust your work accordingly and revise your result if needed.\n\n"
+        f"User guidance:\n{content}"
+    )
+    snapshot = await _sub_snapshot(round_id=target_round_id)
+    if not snapshot:
+        return []
+
+    sent: list[str] = []
+    for agent_id in snapshot:
+        await _send_inbox(_MAIN_INBOX_AGENT_ID, agent_id, "guidance", guidance_text, round_id=target_round_id)
+        sent.append(agent_id)
+
+    for agent_id, info in snapshot.items():
+        if info.get("status") not in ("done", "timeout"):
+            continue
+        if await _sub_reactivate(agent_id):
+            raw_messages = await _sub_raw_msgs(agent_id)
+            _spawn_subagent_task(
+                _run_subagent(agent_id, str(info.get("task") or ""), bot, chat_id, db_path, resume_messages=raw_messages),
+                agent_id,
+            )
+    return sent
+
+
+async def _wait_for_subagent_round(round_id: str, bot: Any, chat_id: int, db_path: str) -> tuple[bool, str]:
+    from cyrene.inbox import get_unread_count as _inbox_unread
+    from cyrene.subagent import (
+        _run_subagent,
+        _spawn_subagent_task,
+        collect_results as _sub_collect,
+        get_raw_messages as _sub_raw_msgs,
+        get_snapshot as _sub_snapshot,
+        reactivate as _sub_reactivate,
+    )
+
+    _interrupt_event.clear()
+    interrupted = False
+    quiet_ticks = 0
+    for _ in range(120):
+        try:
+            await asyncio.wait_for(_interrupt_event.wait(), timeout=5)
+            _interrupt_event.clear()
+            interrupted = True
+            break
+        except asyncio.TimeoutError:
+            pass
+
+        snapshot = await _sub_snapshot(round_id=round_id)
+        if not snapshot:
+            break
+
+        resurrected = False
+        for agent_id, info in snapshot.items():
+            if info.get("status") not in ("done", "timeout") or _inbox_unread(agent_id) == 0:
+                continue
+            if await _sub_reactivate(agent_id):
+                raw_messages = await _sub_raw_msgs(agent_id)
+                _spawn_subagent_task(
+                    _run_subagent(agent_id, str(info.get("task") or ""), bot, chat_id, db_path, resume_messages=raw_messages),
+                    agent_id,
+                )
+                resurrected = True
+
+        snapshot = await _sub_snapshot(round_id=round_id)
+        all_truly_done = all(
+            info.get("status") in ("done", "timeout") and _inbox_unread(agent_id) == 0
+            for agent_id, info in snapshot.items()
+        )
+        if all_truly_done and not resurrected:
+            quiet_ticks += 1
+            if quiet_ticks >= 2:
+                break
+        else:
+            quiet_ticks = 0
+
+    if interrupted:
+        return True, ""
+
+    await asyncio.sleep(2)
+    return False, await _sub_collect(round_id=round_id)
+
+
+async def _synthesize_subagent_results(
+    task: str,
+    summary: str,
+    round_title: str = "",
+    guidance: str = "",
+    round_history: list[dict[str, Any]] | None = None,
+) -> str:
+    history_lines: list[str] = []
+    for message in (round_history or [])[-8:]:
+        role = str(message.get("role", "")).strip()
+        if role not in ("user", "assistant"):
+            continue
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        label = "User" if role == "user" else ASSISTANT_NAME
+        history_lines.append(f"{label}: {content[:1200]}")
+    history_block = "\n".join(history_lines) if history_lines else "—"
+    response = await _call_llm([
+        {
+            "role": "system",
+            "content": (
+                "You synthesize main-agent replies from multiple subagent findings.\n"
+                "Preserve concrete facts, code details, caveats, tradeoffs, and next steps.\n"
+                "Do not over-compress. If the experts covered distinct angles, carry each angle forward.\n"
+                "Prefer a complete answer over a terse summary."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Round title: {round_title or '—'}\n"
+                f"Task: {task}\n"
+                f"Latest user guidance: {guidance or '—'}\n\n"
+                f"Recent round history:\n{history_block}\n\n"
+                f"Expert findings:\n{summary}"
+            ),
+        },
+    ], tools=None, max_tokens=None)
+    return _assistant_text(response) or summary
+
+
+async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id: int, db_path: str) -> str:
+    from cyrene.subagent import clear as _sub_clear, get_snapshot as _sub_snapshot
+
+    target_round_id = str(message.get("round_id", "")).strip()
+    guidance_id = str(message.get("message_id", "")).strip()
+    content = str(message.get("content") or "").strip()
+    if not target_round_id or not guidance_id or not content:
+        return ""
+
+    context = _guidance_round_context(target_round_id, guidance_id)
+    live_round = next((live for live in get_live_rounds() if live.get("id") == target_round_id), None)
+    round_title = context["round_title"] or str((live_round or {}).get("title") or "").strip() or target_round_id
+    snapshot = await _sub_snapshot(round_id=target_round_id)
+    await _insert_guidance_ack(
+        target_round_id,
+        guidance_id,
+        round_title=round_title,
+        client_request_id=context["client_request_id"],
+    )
+    has_live_subagents = bool(
+        live_round
+        and (
+            int(live_round.get("subagentCount", 0) or 0) > 0
+            or int(live_round.get("runningSubagents", 0) or 0) > 0
+        )
+    )
+    if has_live_subagents or (live_round is None and snapshot):
+        await _publish_runtime_event({
+            "type": "phase_transition",
+            "round_id": target_round_id,
+            "from": "guidance_queue",
+            "to": "subagent_guidance",
+            "detail": f"Main agent is applying guidance to {len(snapshot)} subagent(s).",
+        })
+        await _fan_out_guidance_to_subagents(target_round_id, content, bot, chat_id, db_path)
+        interrupted, summary = await _wait_for_subagent_round(target_round_id, bot, chat_id, db_path)
+        if interrupted:
+            reply = "[Sub-agents are still working in the background. The guidance was delivered and the round is continuing.]"
+        else:
+            reply = await _synthesize_subagent_results(
+                task=content,
+                summary=summary,
+                round_title=round_title,
+                guidance=content,
+                round_history=context["round_history"],
+            )
+            await _sub_clear(round_id=target_round_id)
+        await _insert_guidance_reply(
+            target_round_id,
+            guidance_id,
+            reply,
+            round_title=round_title,
+            client_request_id=context["client_request_id"],
+        )
+        _schedule_session_label_refresh(content, target_round_id)
+        return reply
+
+    guidance_system = (
+        "This user message came from the main-agent inbox for an earlier round.\n"
+        f"Target round id: {target_round_id}\n"
+        f"Target round title: {round_title}\n"
+        "Treat it as steering or a follow-up for that round. Continue the round instead of starting a fresh topic."
+    )
+    await _publish_runtime_event({
+        "type": "phase_transition",
+        "round_id": target_round_id,
+        "from": "guidance_queue",
+        "to": "guided_round_continuation",
+        "detail": "Main agent is continuing the same round with the new guidance.",
+    })
+    return await _run_chat_agent(
+        content,
+        bot,
+        chat_id,
+        db_path,
+        ephemeral_system=guidance_system,
+        forced_round_id=target_round_id,
+        history_override=context["round_history"],
+        persist_base_messages=context["persist_base_messages"],
+        persist_insert_at=context["insert_at"],
+        client_request_id=context["client_request_id"],
+    )
+
+
+def _ensure_main_inbox_worker(bot: Any, chat_id: int, db_path: str) -> None:
+    global _main_inbox_worker
+    if _main_inbox_worker is None or _main_inbox_worker.done():
+        _main_inbox_worker = asyncio.create_task(_drain_main_inbox(bot, chat_id, db_path))
+
+
+async def queue_round_guidance(
+    target_round_id: str,
+    content: str,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    client_request_id: str = "",
+) -> dict[str, Any]:
+    """Send a follow-up question to the main-agent inbox for a live round."""
+    from cyrene.inbox import send_message as _send_inbox
+
     live = {item["id"]: item for item in get_live_rounds()}
     target = live.get(target_round_id)
     if target is None:
         raise ValueError(f"Round {target_round_id} is not live.")
 
-    global _guidance_counter
-    _guidance_counter += 1
+    created_at = datetime.now(timezone.utc).isoformat()
+    guidance_id = await _send_inbox("user", _MAIN_INBOX_AGENT_ID, "guidance", content, round_id=target_round_id)
+    if not guidance_id:
+        raise ValueError("Failed to send guidance to the main-agent inbox.")
     item = {
-        "id": f"guide_{_guidance_counter}",
+        "id": guidance_id,
         "target_round_id": target_round_id,
         "content": content,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": created_at,
     }
     labels = get_session_labels(target_round_id)
     queued_user_entry: dict[str, Any] = {
         "role": "user",
         "content": content,
         "round_id": target_round_id,
-        "queued_guidance_id": item["id"],
+        "queued_guidance_id": guidance_id,
     }
     if labels.get("round_title"):
         queued_user_entry["round_title"] = labels["round_title"]
+    if client_request_id:
+        queued_user_entry["client_request_id"] = client_request_id
     await _append_session_message(queued_user_entry)
-    _round_guidance_queues.setdefault(target_round_id, []).append(item)
     await _publish_round_guidance_update(target_round_id)
-
-    worker = _round_guidance_workers.get(target_round_id)
-    if worker is None or worker.done():
-        _round_guidance_workers[target_round_id] = asyncio.create_task(
-            _drain_round_guidance(target_round_id, bot, chat_id, db_path)
-        )
+    _ensure_main_inbox_worker(bot, chat_id, db_path)
     return item
 
 
-async def _drain_round_guidance(target_round_id: str, bot: Any, chat_id: int, db_path: str) -> None:
+async def _drain_main_inbox(bot: Any, chat_id: int, db_path: str) -> None:
     from cyrene.conversations import archive_exchange
+    from cyrene.inbox import get_unread_messages, mark_read_count
 
+    global _main_inbox_worker
     try:
-        while _round_guidance_queues.get(target_round_id):
-            item = _round_guidance_queues[target_round_id][0]
-            title = next((live["title"] for live in get_live_rounds() if live.get("id") == target_round_id), target_round_id)
-            full_messages = _load_session_messages()
-            insert_at = next(
-                (
-                    idx
-                    for idx, msg in enumerate(full_messages)
-                    if str(msg.get("queued_guidance_id", "")).strip() == str(item.get("id", "")).strip()
-                ),
-                len(full_messages),
-            )
-            persist_base_messages = [
-                msg
-                for msg in full_messages
-                if str(msg.get("queued_guidance_id", "")).strip() != str(item.get("id", "")).strip()
+        while True:
+            unread = [
+                message
+                for message in get_unread_messages(_MAIN_INBOX_AGENT_ID)
+                if str(message.get("type", "")).strip() == "guidance"
             ]
-            round_history = [
-                msg
-                for msg in full_messages
-                if str(msg.get("round_id", "")).strip() == target_round_id and not str(msg.get("queued_guidance_id", "")).strip()
-            ]
-            guidance_system = (
-                "This user message is queued guidance for a still-running earlier round.\n"
-                f"Target round id: {target_round_id}\n"
-                f"Target round title: {title}\n"
-                "Treat the user's message as steering or a remaining question for that background work. "
-                "Do not pretend the target round has already concluded unless the evidence in context shows that it has."
-            )
-            async with _agent_lock:
-                response = await _run_chat_agent(
+            if not unread:
+                break
+
+            item = unread[0]
+            target_round_id = str(item.get("round_id", "")).strip()
+            guidance_id = str(item.get("message_id", "")).strip()
+            response = ""
+            try:
+                await _publish_runtime_event({
+                    "type": "phase_transition",
+                    "round_id": target_round_id,
+                    "from": "queued_guidance",
+                    "to": "guidance_execution",
+                    "detail": "Main agent is now applying the queued guidance.",
+                })
+                async with _agent_lock:
+                    _interrupt_event.clear()
+                    response = await _process_main_inbox_message(item, bot, chat_id, db_path)
+            except Exception as exc:
+                logger.exception("Failed to process main inbox guidance for %s", target_round_id or "<unknown>")
+                if target_round_id and guidance_id:
+                    context = _guidance_round_context(target_round_id, guidance_id)
+                    round_title = context.get("round_title") or next(
+                        (live["title"] for live in get_live_rounds() if live.get("id") == target_round_id),
+                        target_round_id,
+                    )
+                    response = _guidance_error_text(exc)
+                    await _insert_guidance_reply(
+                        target_round_id,
+                        guidance_id,
+                        response,
+                        round_title=round_title,
+                        client_request_id=str(context.get("client_request_id") or ""),
+                    )
+            finally:
+                await mark_read_count(_MAIN_INBOX_AGENT_ID, 1)
+                if target_round_id:
+                    await _publish_round_guidance_update(target_round_id)
+            if response:
+                labels = get_session_labels(target_round_id)
+                await archive_exchange(
                     str(item.get("content") or ""),
-                    bot,
+                    response,
                     chat_id,
-                    db_path,
-                    ephemeral_system=guidance_system,
-                    forced_round_id=target_round_id,
-                    history_override=round_history,
-                    persist_base_messages=persist_base_messages,
-                    persist_insert_at=insert_at,
+                    session_title=labels.get("session_title", ""),
+                    round_title=labels.get("round_title", ""),
+                    round_id=labels.get("round_id", ""),
+                    archive_session_id=labels.get("archive_session_id", ""),
                 )
-            labels = get_session_labels(target_round_id)
-            await archive_exchange(
-                str(item.get("content") or ""),
-                response,
-                chat_id,
-                session_title=labels.get("session_title", ""),
-                round_title=labels.get("round_title", ""),
-                round_id=labels.get("round_id", ""),
-            )
-            queue = _round_guidance_queues.get(target_round_id, [])
-            if queue and queue[0].get("id") == item.get("id"):
-                queue.pop(0)
-            if not queue:
-                _round_guidance_queues.pop(target_round_id, None)
-            await _publish_round_guidance_update(target_round_id)
     except Exception:
-        logger.exception("Failed to drain guidance queue for %s", target_round_id)
+        logger.exception("Failed to drain main inbox")
     finally:
-        _round_guidance_workers.pop(target_round_id, None)
-        if _round_guidance_queues.get(target_round_id):
-            _round_guidance_workers[target_round_id] = asyncio.create_task(
-                _drain_round_guidance(target_round_id, bot, chat_id, db_path)
-            )
+        _main_inbox_worker = None
+        if get_live_rounds() and _main_inbox_pending_by_round():
+            _ensure_main_inbox_worker(bot, chat_id, db_path)
 
 
 def get_session_labels(round_id: str = "") -> dict[str, str]:
@@ -582,6 +1027,7 @@ def get_session_labels(round_id: str = "") -> dict[str, str]:
         "session_title": str(state.get("session_title", "")).strip(),
         "round_title": round_title,
         "round_id": target_round_id,
+        "archive_session_id": _ensure_archive_session_id(state),
     }
 
 
@@ -728,14 +1174,17 @@ async def clear_session_id() -> None:
     """Clear session, subagent registry, and compress conversation to short-term memory before discarding."""
     from cyrene.inbox import clear_all_inboxes
 
+    global _main_inbox_worker
     for task in list(_pending_interrupt_clearers):
         task.cancel()
     _pending_interrupt_clearers.clear()
-    _interrupt_event.clear()
-    for task in list(_round_guidance_workers.values()):
+    for task in list(_pending_label_refreshes):
         task.cancel()
-    _round_guidance_workers.clear()
-    _round_guidance_queues.clear()
+    _pending_label_refreshes.clear()
+    _interrupt_event.clear()
+    if _main_inbox_worker is not None:
+        _main_inbox_worker.cancel()
+        _main_inbox_worker = None
     global _active_main_round_id, _active_main_round_prompt, _active_main_round_started_at
     _active_main_round_id = ""
     _active_main_round_prompt = ""
@@ -747,7 +1196,9 @@ async def clear_session_id() -> None:
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             msgs = data.get("messages", [])
             if msgs:
-                await _compress_old_messages(msgs)
+                # Session reset should not block on a provider round-trip just to
+                # preserve memory. Queue compression and clear the live state now.
+                _schedule_memory_compression(msgs)
         except Exception:
             pass
         STATE_FILE.unlink()
@@ -834,13 +1285,23 @@ _LIGHT_TOOL_DEFS = [
 ]
 
 
-async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: int, db_path: str, system_prompt: str = "") -> str:
+async def _run_main_agent(
+    user_message: str,
+    history: list,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    system_prompt: str = "",
+    client_request_id: str = "",
+) -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
     _caller_type.set("main_agent")
     round_id = _current_round_id.get()
     user_entry = {"role": "user", "content": user_message}
     if round_id:
         user_entry["round_id"] = round_id
+    if client_request_id:
+        user_entry["client_request_id"] = client_request_id
     await _append_session_message(user_entry)
     effective_system = system_prompt or _MAIN_AGENT_PROMPT
     phase1_messages = [{"role": "system", "content": effective_system}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
@@ -883,6 +1344,8 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         if name == "use_tools":
             use_tools_call = tc
         elif name == "quit":
+            if client_request_id:
+                messages[-1]["client_request_id"] = client_request_id
             session_msgs = [m for m in messages[1:] if m["role"] != "system"]
             await _save_session_messages(session_msgs)
             return _assistant_text(response).strip() or "Done."
@@ -898,6 +1361,8 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         user_entry = {"role": "user", "content": user_message}
         if round_id:
             user_entry["round_id"] = round_id
+        if client_request_id:
+            user_entry["client_request_id"] = client_request_id
         messages = [{"role": "system", "content": effective_system}, *history, user_entry]
 
         for _ in range(_MAX_TOOL_ROUNDS):
@@ -921,9 +1386,13 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                     "to": "done",
                     "detail": "Agent called quit",
                 })
+                if client_request_id:
+                    messages[-1]["client_request_id"] = client_request_id
                 await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
             if not tcs:
+                if client_request_id:
+                    messages[-1]["client_request_id"] = client_request_id
                 await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
                 return _assistant_text(response).strip() or "Done."
 
@@ -1015,15 +1484,10 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
                     "to": "synthesis",
                     "detail": "All subagents done, synthesizing results",
                 })
-                # 用 LLM 综合结果
-                synthesis = await _call_llm([
-                    {"role": "system", "content": "You are a research synthesizer. Combine the following expert findings into a clear, structured answer. Preserve all factual claims and cite sources when provided."},
-                    {"role": "user", "content": f"Task: {user_message}\n\nExpert findings:\n{summary}"}
-                ], tools=None)
-                final_text = _assistant_text(synthesis) or summary
+                final_text = await _synthesize_subagent_results(task=user_message, summary=summary)
                 synthesis_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
-                if synthesis.get("usage"):
-                    synthesis_entry["usage"] = synthesis["usage"]
+                if client_request_id:
+                    synthesis_entry["client_request_id"] = client_request_id
                 if round_id:
                     synthesis_entry["round_id"] = round_id
                 messages.append(synthesis_entry)
@@ -1042,6 +1506,8 @@ async def _run_main_agent(user_message: str, history: list, bot: Any, chat_id: i
         "detail": "Phase 1 decided chat-only, no tools needed",
     })
     # Phase 1 结束：纯聊天，无工具需要
+    if client_request_id:
+        messages[-1]["client_request_id"] = client_request_id
     session_msgs = [m for m in messages[1:] if m["role"] != "system"]
     await _save_session_messages(session_msgs)
     return _assistant_text(response).strip() or "Done."
@@ -1106,12 +1572,14 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 # ---------------------------------------------------------------------------
 
 
-async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str) -> str:
+async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str, client_request_id: str = "") -> str:
     """Main entry point. Runs the main agent loop with full tools."""
     if _agent_lock.locked():
         interrupt_active_run()
     async with _agent_lock:
         _interrupt_event.clear()
+        if client_request_id:
+            return await _run_chat_agent(user_message, bot, chat_id, db_path, client_request_id=client_request_id)
         return await _run_chat_agent(user_message, bot, chat_id, db_path)
 
 
@@ -1145,6 +1613,7 @@ async def _run_chat_agent(
     history_override: list[dict[str, Any]] | None = None,
     persist_base_messages: list[dict[str, Any]] | None = None,
     persist_insert_at: int | None = None,
+    client_request_id: str = "",
 ) -> str:
     """Coordinator: main agent loop."""
     import time as _time
@@ -1186,10 +1655,21 @@ async def _run_chat_agent(
             main_system = _MAIN_AGENT_PROMPT + "\n\n## Memory Context\n" + memory_context
 
         # ====== 主 Agent ======
-        main_text = await _run_main_agent(user_message, history, bot, chat_id, db_path, main_system)
+        main_text = await _run_main_agent(
+            user_message,
+            history,
+            bot,
+            chat_id,
+            db_path,
+            main_system,
+            client_request_id=client_request_id,
+        )
 
         await _refresh_session_labels(user_message, round_id)
-        await _publish_runtime_event({"type": "chat_message"})
+        await _publish_runtime_event({
+            "type": "chat_message",
+            "client_request_id": client_request_id,
+        })
         return main_text or "Done."
     finally:
         _persist_insert_at.reset(insert_token)

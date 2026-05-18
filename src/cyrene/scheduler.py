@@ -386,7 +386,7 @@ async def _heartbeat(bot, db_path: str) -> None:
     3. On every Mth tick (M such that ``M * SCHEDULER_INTERVAL ~ STEWARD_INTERVAL``)
        run the steward agent auto-trigger.
     """
-    global _heartbeat_tick, _steward_tick
+    global _heartbeat_tick, _steward_tick, _cleanup_tick
 
     try:
         await _check_and_execute_tasks(bot, db_path)
@@ -423,6 +423,7 @@ def setup_scheduler(bot, db_path: str) -> AsyncIOScheduler:
     work without modification.
     """
     global _scheduler
+    _load_lottery_state()
     _scheduler = AsyncIOScheduler()
     _scheduler.add_job(
         _heartbeat,
