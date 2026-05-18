@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from cyrene.config import WORKSPACE_DIR
 from cyrene.conversations import CONVERSATIONS_DIR, ensure_conversations_dir
+from cyrene.short_term import get_context as get_short_term_context
 from cyrene.soul import ensure_soul, read_shallow_memory
 
 logger = logging.getLogger(__name__)
@@ -29,13 +30,14 @@ def ensure_workspace() -> None:
         logger.exception("Failed to initialize workspace")
 
 
-def get_memory_context() -> str:
+def get_memory_context(include_short_term: bool = True) -> str:
     """Assemble the memory context to inject into the LLM system prompt.
 
     Returns:
         A Markdown string containing:
           - Core SOUL.md sections (shallow memory, with expired temporaries
             filtered out).
+          - Short-term cross-session memory summaries.
           - A brief note about today's conversation activity.
     """
     parts: list[str] = []
@@ -48,7 +50,19 @@ def get_memory_context() -> str:
     except Exception:
         logger.exception("Failed to read shallow memory")
 
-    # 2. Today's conversation summary
+    # 2. Short-term cross-session memory
+    if include_short_term:
+        try:
+            short_term = get_short_term_context(
+                max_chars=2500,
+                header="[Short-term cross-session memory:]",
+            )
+            if short_term:
+                parts.append(short_term)
+        except Exception:
+            logger.exception("Failed to read short-term memory")
+
+    # 3. Today's conversation summary
     try:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         today_file = CONVERSATIONS_DIR / f"{today}.md"

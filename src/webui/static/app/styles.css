@@ -380,7 +380,11 @@ button { font-family: inherit; }
   border-bottom: 1px dashed var(--line);
 }
 
-.msg { margin: 18px 0; }
+.msg {
+  display: flex;
+  flex-direction: column;
+  margin: 18px 0;
+}
 .msg-meta {
   display: flex;
   align-items: baseline;
@@ -389,6 +393,7 @@ button { font-family: inherit; }
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-3);
+  order: 0;
 }
 .msg-role {
   color: var(--text-2);
@@ -405,6 +410,10 @@ button { font-family: inherit; }
   color: var(--text);
   white-space: pre-wrap;
   line-height: 1.55;
+  order: 2;
+}
+.msg-trace + .msg-body {
+  margin-top: 14px;
 }
 .msg-body.markdown {
   white-space: normal;
@@ -539,6 +548,7 @@ button { font-family: inherit; }
   border-radius: var(--r-m);
   background: var(--bg-1);
   overflow: hidden;
+  order: 1;
 }
 .msg-trace.only-trace {
   margin-top: 6px;

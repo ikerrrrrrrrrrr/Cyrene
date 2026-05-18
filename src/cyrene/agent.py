@@ -37,7 +37,7 @@ _agent_lock = asyncio.Lock()
 _session_state_lock = asyncio.Lock()
 _interrupt_event = asyncio.Event()
 _MAX_HISTORY_MESSAGES = 40
-_MAX_TOOL_ROUNDS = 12
+_MAX_TOOL_ROUNDS = 16
 # 后台 compressor 任务，防止被事件循环 GC
 _pending_compressors: set[asyncio.Task] = set()
 _pending_label_refreshes: set[asyncio.Task] = set()
@@ -512,6 +512,45 @@ def _guidance_error_text(exc: Exception) -> str:
     return f"Guidance could not be applied because {reason}."
 
 
+def format_httpx_error(exc: Exception) -> str:
+    parts: list[str] = [type(exc).__name__]
+    detail = str(exc or "").strip()
+    if detail:
+        parts.append(detail)
+
+    request = getattr(exc, "request", None)
+    if request is not None:
+        method = str(getattr(request, "method", "") or "").strip()
+        url = str(getattr(request, "url", "") or "").strip()
+        request_part = "request="
+        if method:
+            request_part += method
+        if url:
+            request_part += f" {url}" if method else url
+        parts.append(request_part)
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        parts.append(f"status={response.status_code}")
+        try:
+            body = str(response.text or "").strip()
+        except Exception:
+            body = ""
+        if body:
+            body_preview = re.sub(r"\s+", " ", body)[:500]
+            parts.append(f"body={body_preview}")
+
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        cause_text = str(cause or "").strip()
+        if cause_text:
+            parts.append(f"cause={type(cause).__name__}: {cause_text}")
+        else:
+            parts.append(f"cause={type(cause).__name__}")
+
+    return " | ".join(parts)
+
+
 def _guidance_ack_text() -> str:
     return "已接受引导。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。"
 
@@ -563,6 +602,32 @@ def _guidance_round_context(target_round_id: str, guidance_id: str) -> dict[str,
         ],
         "round_title": str(queued_entry.get("round_title", "")).strip(),
         "client_request_id": str(queued_entry.get("client_request_id", "")).strip(),
+    }
+
+
+def _guidance_persist_context_after_ack(guidance_id: str) -> dict[str, Any]:
+    full_messages = _load_session_messages()
+    ack_index = next(
+        (
+            idx
+            for idx, msg in enumerate(full_messages)
+            if str(msg.get("guidance_ack_for_guidance_id", "")).strip() == guidance_id
+        ),
+        -1,
+    )
+    queued_index = next(
+        (
+            idx
+            for idx, msg in enumerate(full_messages)
+            if str(msg.get("queued_guidance_id", "")).strip() == guidance_id
+        ),
+        len(full_messages) - 1,
+    )
+    insert_at = ack_index + 1 if ack_index >= 0 else queued_index + 1
+    insert_at = max(0, min(insert_at, len(full_messages)))
+    return {
+        "persist_base_messages": full_messages,
+        "persist_insert_at": insert_at,
     }
 
 
@@ -881,6 +946,7 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
         "to": "guided_round_continuation",
         "detail": "Main agent is continuing the same round with the new guidance.",
     })
+    persist_context = _guidance_persist_context_after_ack(guidance_id)
     return await _run_chat_agent(
         content,
         bot,
@@ -889,9 +955,10 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
         ephemeral_system=guidance_system,
         forced_round_id=target_round_id,
         history_override=context["round_history"],
-        persist_base_messages=context["persist_base_messages"],
-        persist_insert_at=context["insert_at"],
+        persist_base_messages=persist_context["persist_base_messages"],
+        persist_insert_at=persist_context["persist_insert_at"],
         client_request_id=context["client_request_id"],
+        persist_user_message=False,
     )
 
 
@@ -1305,6 +1372,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
     _model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
     _base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
     _api_key = os.environ.get("OPENAI_API_KEY", "")
+    endpoint = f"{_base_url.rstrip('/')}/chat/completions"
     safe_messages = _sanitize_messages_for_llm(messages)
     payload = {
         "model": _model,
@@ -1323,31 +1391,61 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
         headers["Authorization"] = f"Bearer {_api_key}"
 
     transport = httpx.AsyncHTTPTransport(retries=1)
-    async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
-        resp = await client.post(
-            f"{_base_url.rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
+    try:
+        async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
+            resp = await client.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+            )
+            if resp.status_code != 200:
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    logger.error(
+                        "Upstream LLM returned non-200 [caller=%s phase=%s model=%s]: %s",
+                        _caller_type.get(),
+                        _phase,
+                        _model,
+                        format_httpx_error(exc),
+                    )
+                    raise
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            if data.get("usage"):
+                msg["usage"] = data["usage"]
+            if debug.VERBOSE:
+                debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
+            await _publish_runtime_event({
+                "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
+                "tools": [t.get("function", {}).get("name") for t in (tools or [])],
+                "response": _assistant_text(msg)[:200],
+                "tool_calls": [{"name": tc["function"]["name"], "args": tc["function"].get("arguments", "")[:100]}
+                              for tc in (msg.get("tool_calls") or [])],
+                "usage": data.get("usage") or {},
+                "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
+            })
+            return msg
+    except httpx.TimeoutException as exc:
+        logger.exception(
+            "Upstream LLM timeout [caller=%s phase=%s model=%s endpoint=%s]: %s",
+            _caller_type.get(),
+            _phase,
+            _model,
+            endpoint,
+            format_httpx_error(exc),
         )
-        if resp.status_code != 200:
-            logger.error("LLM API error %s: %s", resp.status_code, resp.text[:500])
-            resp.raise_for_status()
-        data = resp.json()
-        msg = data["choices"][0]["message"]
-        if data.get("usage"):
-            msg["usage"] = data["usage"]
-        if debug.VERBOSE:
-            debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
-        await _publish_runtime_event({
-            "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
-            "tools": [t.get("function", {}).get("name") for t in (tools or [])],
-            "response": _assistant_text(msg)[:200],
-            "tool_calls": [{"name": tc["function"]["name"], "args": tc["function"].get("arguments", "")[:100]}
-                          for tc in (msg.get("tool_calls") or [])],
-            "usage": data.get("usage") or {},
-            "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
-        })
-        return msg
+        raise
+    except httpx.HTTPError as exc:
+        logger.exception(
+            "Upstream LLM HTTP error [caller=%s phase=%s model=%s endpoint=%s]: %s",
+            _caller_type.get(),
+            _phase,
+            _model,
+            endpoint,
+            format_httpx_error(exc),
+        )
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1370,6 +1468,7 @@ async def _run_main_agent(
     db_path: str,
     system_prompt: str = "",
     client_request_id: str = "",
+    persist_user_message: bool = True,
 ) -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
     _caller_type.set("main_agent")
@@ -1379,9 +1478,17 @@ async def _run_main_agent(
         user_entry["round_id"] = round_id
     if client_request_id:
         user_entry["client_request_id"] = client_request_id
-    await _append_session_message(user_entry)
+    if persist_user_message:
+        await _append_session_message(user_entry)
     effective_system = system_prompt or _MAIN_AGENT_PROMPT
     phase1_messages = [{"role": "system", "content": effective_system}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
+
+    def _session_messages_to_save(current_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            message
+            for message in current_messages[1:]
+            if message["role"] != "system" and (persist_user_message or message is not user_entry)
+        ]
 
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
     response = await _call_llm(phase1_messages, tools=_LIGHT_TOOL_DEFS)
@@ -1423,8 +1530,7 @@ async def _run_main_agent(
         elif name == "quit":
             if client_request_id:
                 messages[-1]["client_request_id"] = client_request_id
-            session_msgs = [m for m in messages[1:] if m["role"] != "system"]
-            await _save_session_messages(session_msgs)
+            await _save_session_messages(_session_messages_to_save(messages))
             return _assistant_text(response).strip() or "Done."
 
     if use_tools_call:
@@ -1465,12 +1571,12 @@ async def _run_main_agent(
                 })
                 if client_request_id:
                     messages[-1]["client_request_id"] = client_request_id
-                await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                await _save_session_messages(_session_messages_to_save(messages))
                 return _assistant_text(response).strip() or "Done."
             if not tcs:
                 if client_request_id:
                     messages[-1]["client_request_id"] = client_request_id
-                await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                await _save_session_messages(_session_messages_to_save(messages))
                 return _assistant_text(response).strip() or "Done."
 
             spawned = False
@@ -1486,7 +1592,7 @@ async def _run_main_agent(
                 messages.append(tool_entry)
                 if t.get("function", {}).get("name") == "spawn_subagent":
                     spawned = True
-            await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+            await _save_session_messages(_session_messages_to_save(messages))
 
             # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部安静
             if spawned:
@@ -1550,7 +1656,7 @@ async def _run_main_agent(
                     else:
                         quiet_ticks = 0
                 if interrupted:
-                    await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                    await _save_session_messages(_session_messages_to_save(messages))
                     return "[Sub-agents are still working in the background. You can continue the conversation.]"
                 # 等 quiescent 后，收集结果
                 await asyncio.sleep(2)  # 给 subagent 一点时间写 registry
@@ -1570,10 +1676,10 @@ async def _run_main_agent(
                 messages.append(synthesis_entry)
                 # 清空 registry，避免下一轮 spawn 把旧结果混入新 context
                 await _sub_clear(round_id=round_id)
-                await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+                await _save_session_messages(_session_messages_to_save(messages))
                 return final_text
 
-        await _save_session_messages([m for m in messages[1:] if m["role"] != "system"])
+        await _save_session_messages(_session_messages_to_save(messages))
         return "Stopped after hitting the tool loop limit."
 
     await _publish_runtime_event({
@@ -1585,8 +1691,7 @@ async def _run_main_agent(
     # Phase 1 结束：纯聊天，无工具需要
     if client_request_id:
         messages[-1]["client_request_id"] = client_request_id
-    session_msgs = [m for m in messages[1:] if m["role"] != "system"]
-    await _save_session_messages(session_msgs)
+    await _save_session_messages(_session_messages_to_save(messages))
     return _assistant_text(response).strip() or "Done."
 
 
@@ -1691,6 +1796,7 @@ async def _run_chat_agent(
     persist_base_messages: list[dict[str, Any]] | None = None,
     persist_insert_at: int | None = None,
     client_request_id: str = "",
+    persist_user_message: bool = True,
 ) -> str:
     """Coordinator: main agent loop."""
     import time as _time
@@ -1718,15 +1824,22 @@ async def _run_chat_agent(
     insert_token = _persist_insert_at.set(merge_insert_at if (merge_base is not None or merge_live_state) else None)
     try:
         # 如果 history 为空（session 被重置），注入短期记忆
+        restored_short_term = False
         if not history:
             st = get_context(max_chars=5000)
             if st:
                 history = [{"role": "system", "content": "[Restored context]\n" + st}]
+                restored_short_term = True
         if ephemeral_system:
             history = [*history, {"role": "system", "content": ephemeral_system}]
 
         # 组装记忆上下文注入主 Agent 的 system prompt
-        memory_context = get_memory_context()
+        try:
+            memory_context = get_memory_context(include_short_term=not restored_short_term)
+        except TypeError as exc:
+            if "include_short_term" not in str(exc):
+                raise
+            memory_context = get_memory_context()
         main_system = _MAIN_AGENT_PROMPT
         if memory_context:
             main_system = _MAIN_AGENT_PROMPT + "\n\n## Memory Context\n" + memory_context
@@ -1740,6 +1853,7 @@ async def _run_chat_agent(
             db_path,
             main_system,
             client_request_id=client_request_id,
+            persist_user_message=persist_user_message,
         )
 
         await _refresh_session_labels(user_message, round_id)

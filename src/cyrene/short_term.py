@@ -84,7 +84,7 @@ def touch_entry(content_keyword: str, metadata: dict | None = None) -> None:
     save_entries(entries)
 
 
-def get_context(max_chars: int = 5000) -> str:
+def get_context(max_chars: int = 5000, header: str = "[Previous context:]") -> str:
     """
     格式化短期记忆条目为一个字符串，用于注入 context。
     按 last_mentioned 倒序（最近的最靠前）。
@@ -97,7 +97,7 @@ def get_context(max_chars: int = 5000) -> str:
     # 按 last_mentioned 倒序
     sorted_entries = sorted(entries, key=lambda e: e.get("last_mentioned", ""), reverse=True)
 
-    parts: list[str] = ["[Previous context:]"]
+    parts: list[str] = [header]
     chars_used = len(parts[0])
 
     for entry in sorted_entries:

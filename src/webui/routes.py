@@ -15,7 +15,15 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from cyrene import debug
-from cyrene.agent import clear_session_id, get_live_rounds, get_session_labels, interrupt_active_run, queue_round_guidance, run_agent
+from cyrene.agent import (
+    clear_session_id,
+    format_httpx_error,
+    get_live_rounds,
+    get_session_labels,
+    interrupt_active_run,
+    queue_round_guidance,
+    run_agent,
+)
 from cyrene.config import (
     ASSISTANT_NAME,
     DATA_DIR,
@@ -111,13 +119,19 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             )
             return {"response": response}
         except httpx.TimeoutException as exc:
-            logger.exception("Chat request timed out while calling upstream model")
+            logger.exception(
+                "Chat request timed out while calling upstream model: %s",
+                format_httpx_error(exc),
+            )
             return JSONResponse(
                 {"error": "upstream model timed out", "detail": str(exc)},
                 status_code=504,
             )
         except httpx.HTTPError as exc:
-            logger.exception("Chat request failed while calling upstream model")
+            logger.exception(
+                "Chat request failed while calling upstream model: %s",
+                format_httpx_error(exc),
+            )
             return JSONResponse(
                 {"error": "upstream model request failed", "detail": str(exc)},
                 status_code=502,
@@ -628,14 +642,13 @@ def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
         if "**User**:" not in section:
             continue
         ts_match = re.search(r"##\s*(\S+\s+UTC)", section)
-        user_match = re.search(r"\*\*User\*\*:\s*(.*?)(?=\n+\*\*[^*]+\*\*:|\Z)", section, re.DOTALL)
-        assistant_match = re.search(r"\n\*\*[^*]+\*\*:\s*(.*)\Z", section, re.DOTALL)
-        if not ts_match or not user_match or not assistant_match:
+        dialogue_match = re.search(r"\*\*User\*\*:\s*(.*?)\n+\*\*[^*]+\*\*:\s*(.*)\Z", section, re.DOTALL)
+        if not ts_match or not dialogue_match:
             continue
 
         ts = ts_match.group(1).strip()
-        user_body = user_match.group(1).strip()
-        assistant_body = assistant_match.group(1).strip()
+        user_body = dialogue_match.group(1).strip()
+        assistant_body = dialogue_match.group(2).strip()
         round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
         round_title = _parse_archive_meta(section, "round_title")
         archive_session_id = _parse_archive_meta(section, "archive_session_id")
@@ -759,7 +772,9 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
                 })
             ui_msg["tools"] = tools
         out.append(ui_msg)
-    return _merge_adjacent_trace_only_messages(out)
+    return _collapse_duplicate_user_messages(
+        _merge_adjacent_trace_only_messages(_dedupe_repeated_messages(out))
+    )
 
 
 def _is_trace_only_agent_message(msg: dict[str, Any]) -> bool:
@@ -770,6 +785,20 @@ def _is_trace_only_agent_message(msg: dict[str, Any]) -> bool:
     )
 
 
+def _dedupe_repeated_messages(messages: list[dict]) -> list[dict]:
+    deduped: list[dict] = []
+    seen_ids: set[tuple[str, str]] = set()
+    for msg in messages:
+        message_id = str(msg.get("messageId", "")).strip() or str(msg.get("id", "")).strip()
+        if message_id:
+            dedupe_key = (str(msg.get("role", "")).strip(), message_id)
+            if dedupe_key in seen_ids:
+                continue
+            seen_ids.add(dedupe_key)
+        deduped.append(msg)
+    return deduped
+
+
 def _merge_adjacent_trace_only_messages(messages: list[dict]) -> list[dict]:
     merged: list[dict] = []
     for msg in messages:
@@ -777,18 +806,28 @@ def _merge_adjacent_trace_only_messages(messages: list[dict]) -> list[dict]:
             merged.append(msg)
             continue
         prev = merged[-1]
-        if (
-            _is_trace_only_agent_message(prev)
-            and _is_trace_only_agent_message(msg)
-            and str(prev.get("roundId", "")).strip() == str(msg.get("roundId", "")).strip()
-            and not str(prev.get("clientRequestId", "")).strip()
-            and not str(msg.get("clientRequestId", "")).strip()
-            and not str(prev.get("queuedGuidanceId", "")).strip()
+        prev_request_id = str(prev.get("clientRequestId", "")).strip()
+        next_request_id = str(msg.get("clientRequestId", "")).strip()
+        compatible_request = (
+            not prev_request_id
+            or not next_request_id
+            or prev_request_id == next_request_id
+        )
+        compatible_round = str(prev.get("roundId", "")).strip() == str(msg.get("roundId", "")).strip()
+        compatible_guidance = (
+            not str(prev.get("queuedGuidanceId", "")).strip()
             and not str(msg.get("queuedGuidanceId", "")).strip()
             and not str(prev.get("guidanceAckForGuidanceId", "")).strip()
             and not str(msg.get("guidanceAckForGuidanceId", "")).strip()
             and not str(prev.get("inReplyToGuidanceId", "")).strip()
             and not str(msg.get("inReplyToGuidanceId", "")).strip()
+        )
+        if (
+            _is_trace_only_agent_message(prev)
+            and _is_trace_only_agent_message(msg)
+            and compatible_round
+            and compatible_request
+            and compatible_guidance
         ):
             prev_thinking = str(prev.get("thinking", "")).strip()
             next_thinking = str(msg.get("thinking", "")).strip()
@@ -802,8 +841,65 @@ def _merge_adjacent_trace_only_messages(messages: list[dict]) -> list[dict]:
             if next_tools:
                 prev["tools"] = prev_tools + next_tools
             continue
+        if (
+            _is_trace_only_agent_message(prev)
+            and msg.get("role") == "agent"
+            and compatible_round
+            and compatible_request
+            and compatible_guidance
+            and (
+                str(msg.get("body", "")).strip()
+                or str(msg.get("thinking", "")).strip()
+                or bool(msg.get("tools"))
+            )
+        ):
+            merged_msg = dict(msg)
+            prev_thinking = str(prev.get("thinking", "")).strip()
+            next_thinking = str(merged_msg.get("thinking", "")).strip()
+            if prev_thinking:
+                if next_thinking and next_thinking != prev_thinking:
+                    merged_msg["thinking"] = prev_thinking + "\n\n" + next_thinking
+                elif not next_thinking:
+                    merged_msg["thinking"] = prev_thinking
+            prev_tools = list(prev.get("tools") or [])
+            next_tools = list(merged_msg.get("tools") or [])
+            if prev_tools or next_tools:
+                merged_msg["tools"] = prev_tools + next_tools
+            if not str(merged_msg.get("clientRequestId", "")).strip() and prev_request_id:
+                merged_msg["clientRequestId"] = prev_request_id
+            merged[-1] = merged_msg
+            continue
         merged.append(msg)
     return merged
+
+
+def _collapse_duplicate_user_messages(messages: list[dict]) -> list[dict]:
+    collapsed: list[dict] = []
+    index = 0
+    while index < len(messages):
+        msg = messages[index]
+        if msg.get("role") != "user":
+            collapsed.append(msg)
+            index += 1
+            continue
+
+        block_end = index
+        while block_end < len(messages) and messages[block_end].get("role") == "user":
+            block_end += 1
+
+        block = messages[index:block_end]
+        seen_bodies: set[str] = set()
+        kept_reversed: list[dict] = []
+        for block_msg in reversed(block):
+            body = str(block_msg.get("body", "")).strip()
+            if body and body in seen_bodies:
+                continue
+            if body:
+                seen_bodies.add(body)
+            kept_reversed.append(block_msg)
+        collapsed.extend(reversed(kept_reversed))
+        index = block_end
+    return collapsed
 
 
 def _count_tool_calls(raw_msgs: list[dict]) -> int:

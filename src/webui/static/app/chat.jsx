@@ -108,6 +108,19 @@ function mergeMessagesWithAnchors(baseMessages, anchoredMessages) {
   return merged;
 }
 
+function renderMessageEntries(messages) {
+  const counts = new Map();
+  return (messages || []).map(function (msg) {
+    const baseKey = messageKey(msg);
+    const occurrence = (counts.get(baseKey) || 0) + 1;
+    counts.set(baseKey, occurrence);
+    return {
+      msg,
+      renderKey: baseKey + "::" + occurrence,
+    };
+  });
+}
+
 function runtimeTraceDescriptor(activeRequest) {
   const isGuidance = Boolean(activeRequest && activeRequest.guideRoundId);
   const guidanceAccepted = Boolean(isGuidance && activeRequest && activeRequest.guidanceAccepted);
@@ -170,6 +183,49 @@ function guidanceAckMessage(guidanceId, body, insertAfterKey) {
     guidanceAckForGuidanceId: safeGuidanceId,
     insertAfterKey: String(insertAfterKey || ""),
   };
+}
+
+function isTraceOnlyAssistantMessage(msg) {
+  return Boolean(
+    msg
+    && msg.role === "agent"
+    && !msg.body
+    && !msg.runtimeTrace
+    && (msg.thinking || (msg.tools && msg.tools.length))
+  );
+}
+
+function buildAttachedRuntime(activeTraceDescriptor, liveElapsed, visibleLiveProgress, watchingGuidance, activeGuideRoundTitle, activeRequest) {
+  const entries = [];
+  if (watchingGuidance) {
+    entries.push({
+      icon: "↳",
+      text: "Target round: " + (activeGuideRoundTitle || (activeRequest && activeRequest.guideRoundId) || ""),
+    });
+  }
+  if (visibleLiveProgress.length === 0) {
+    entries.push({ icon: "◎", text: activeTraceDescriptor.empty });
+  } else {
+    entries.push(...visibleLiveProgress);
+  }
+  return {
+    summary: activeTraceDescriptor.summary,
+    head: activeTraceDescriptor.head,
+    elapsed: liveElapsed,
+    timeLabel: activeTraceDescriptor.timeLabel,
+    entries,
+  };
+}
+
+function canAttachRuntimeToLastMessage(msg, activeRequest, session) {
+  if (!isTraceOnlyAssistantMessage(msg)) return false;
+  if (msg.guidanceAckForGuidanceId || msg.inReplyToGuidanceId || msg.queuedGuidanceId) return false;
+  const activeRequestId = String(activeRequest && activeRequest.id || "");
+  const messageRequestId = String(msg && msg.clientRequestId || "");
+  if (activeRequestId && messageRequestId && activeRequestId === messageRequestId) return true;
+  const currentRoundId = String(session && session.currentRoundId || "");
+  const messageRoundId = String(msg && msg.roundId || "");
+  return Boolean(!messageRequestId && currentRoundId && messageRoundId && currentRoundId === messageRoundId);
 }
 
 function formatProgressEvent(event) {
@@ -721,6 +777,22 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         retainedMessages
       )
     : session.chat.messages;
+  const lastMessage = allMessages.length ? allMessages[allMessages.length - 1] : null;
+  const runtimeAttachedToLastMessage = visibleSending && canAttachRuntimeToLastMessage(lastMessage, activeRequest, session);
+  const renderedMessages = runtimeAttachedToLastMessage
+    ? allMessages.slice(0, -1).concat([{
+        ...lastMessage,
+        attachedRuntime: buildAttachedRuntime(
+          activeTraceDescriptor,
+          liveElapsed,
+          visibleLiveProgress,
+          watchingGuidance,
+          activeGuideRoundTitle,
+          activeRequest
+        ),
+      }])
+    : allMessages;
+  const renderedMessageEntries = renderMessageEntries(renderedMessages);
 
   async function newSession() {
     if (!confirm("Start a new session? The current conversation will be compressed into short-term memory.")) return;
@@ -765,13 +837,19 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               </span>
             </div>
           )}
-          {allMessages.length === 0 && (
+          {renderedMessages.length === 0 && (
             <div style={{ padding: "40px 0", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
               No messages yet. Say hello to {DATA.assistantName}.
             </div>
           )}
-          {allMessages.map((m) => <Message key={m.id} msg={m} assistantName={DATA.assistantName} />)}
-          {visibleSending && (
+          {renderedMessageEntries.map((entry) => (
+            <Message
+              key={entry.renderKey}
+              msg={entry.msg}
+              assistantName={DATA.assistantName}
+            />
+          ))}
+          {visibleSending && !runtimeAttachedToLastMessage && (
             <div className="msg agent">
               <div className="msg-meta">
                 <span className="msg-role agent">● {DATA.assistantName}</span>
@@ -931,7 +1009,14 @@ function Message({ msg, assistantName }) {
     ? renderMarkdown(msg.body)
     : "";
   const isRuntimeTrace = Boolean(msg.runtimeTrace);
+  const attachedRuntime = msg.attachedRuntime || null;
   const hasTrace = isRuntimeTrace || Boolean(msg.thinking || (msg.tools && msg.tools.length));
+  const traceLabel = isRuntimeTrace
+    ? (msg.traceSummary + (msg.traceElapsed ? " · " + msg.traceElapsed : ""))
+    : traceSummary(msg);
+  const runtimeSuffix = attachedRuntime
+    ? " · " + attachedRuntime.summary.replace(/^details\s·\s/, "") + " · " + attachedRuntime.elapsed
+    : "";
   return (
     <div className={"msg " + msg.role}>
       <div className="msg-meta">
@@ -940,14 +1025,14 @@ function Message({ msg, assistantName }) {
            msg.role === "agent" ? "● " + (assistantName || "agent") :
            msg.role}
         </span>
-        <span className="msg-time">{msg.time}</span>
+        <span className="msg-time">{attachedRuntime ? attachedRuntime.timeLabel : msg.time}</span>
       </div>
 
       {hasTrace && (
         <details className={"msg-trace" + (!msg.body ? " only-trace" : "") + (isRuntimeTrace ? " runtime-trace" : "")}>
           <summary className="msg-trace-summary">
             <span className="msg-trace-caret">▸</span>
-            <span>{isRuntimeTrace ? (msg.traceSummary + (msg.traceElapsed ? " · " + msg.traceElapsed : "")) : traceSummary(msg)}</span>
+            <span>{traceLabel + runtimeSuffix}</span>
           </summary>
           <div className="msg-trace-body">
             {isRuntimeTrace && (
@@ -970,6 +1055,19 @@ function Message({ msg, assistantName }) {
               </div>
             )}
             {!isRuntimeTrace && msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
+            {attachedRuntime && (
+              <div className="thinking">
+                <div className="thinking-head">{attachedRuntime.head}</div>
+                {attachedRuntime.entries.map(function (entry, index) {
+                  return (
+                    <div key={index} className="progress-entry">
+                      <span className="progress-icon">{entry.icon}</span>
+                      <span className="progress-text">{entry.text}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </details>
       )}

@@ -177,3 +177,103 @@ async def search_conversations(keyword: str, path: str | None = None) -> str:
             break
 
     return "\n".join(matches) if matches else "No matches found."
+
+
+def _parse_archive_meta(section: str, key: str) -> str:
+    match = re.search(rf"<!--\s*{re.escape(key)}:\s*(.*?)\s*-->", section)
+    return match.group(1).strip() if match else ""
+
+
+def _parse_archive_sections(content: str, date_str: str) -> list[dict[str, str]]:
+    sections_out: list[dict[str, str]] = []
+    sections = re.split(r"\n---\s*\n", content)
+    file_session_title = _parse_archive_meta(content, "session_title")
+    round_index = 0
+
+    for section in sections:
+        if "**User**:" not in section:
+            continue
+        ts_match = re.search(r"##\s*(\S+\s+UTC)", section)
+        dialogue_match = re.search(r"\*\*User\*\*:\s*(.*?)\n+\*\*[^*]+\*\*:\s*(.*)\Z", section, re.DOTALL)
+        if not ts_match or not dialogue_match:
+            continue
+
+        archive_session_id = _parse_archive_meta(section, "archive_session_id")
+        session_title = _parse_archive_meta(section, "session_title") or file_session_title
+        round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
+        round_title = _parse_archive_meta(section, "round_title")
+        sections_out.append({
+            "date": date_str,
+            "timestamp": ts_match.group(1).strip(),
+            "archive_session_id": archive_session_id,
+            "session_title": session_title,
+            "round_id": round_id,
+            "round_title": round_title,
+            "user_body": dialogue_match.group(1).strip(),
+            "assistant_body": dialogue_match.group(2).strip(),
+            "raw_entry": section.strip(),
+        })
+        round_index += 1
+
+    return sections_out
+
+
+def recall_conversations(
+    query: str = "",
+    session_id: str = "",
+    date: str = "",
+    limit: int = 5,
+) -> list[dict[str, str]]:
+    """Return archived conversation entries matching the given filters.
+
+    Results are ordered from newest to oldest and are intended for agent recall,
+    not for exact full-history replay.
+    """
+    ensure_conversations_dir()
+
+    normalized_query = query.strip().lower()
+    normalized_session_id = session_id.strip()
+    if normalized_session_id.startswith("archive_"):
+        _, _, normalized_session_id = normalized_session_id.partition("_")
+        date_prefix, sep, archive_suffix = normalized_session_id.partition("_")
+        if sep and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_prefix):
+            if not date:
+                date = date_prefix
+            normalized_session_id = archive_suffix
+
+    files: list[Path]
+    if date:
+        files = [CONVERSATIONS_DIR / f"{date}.md"]
+    else:
+        files = sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)
+
+    matches: list[dict[str, str]] = []
+    for filepath in files:
+        if not filepath.exists():
+            continue
+        date_str = filepath.stem
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to read conversation file %s", filepath)
+            continue
+
+        sections = _parse_archive_sections(content, date_str)
+        for section in reversed(sections):
+            if normalized_session_id and section.get("archive_session_id", "").strip() != normalized_session_id:
+                continue
+            if normalized_query:
+                haystack = "\n".join([
+                    section.get("session_title", ""),
+                    section.get("round_title", ""),
+                    section.get("user_body", ""),
+                    section.get("assistant_body", ""),
+                    section.get("raw_entry", ""),
+                ]).lower()
+                if normalized_query not in haystack:
+                    continue
+            matches.append(section)
+            if len(matches) >= max(1, limit):
+                return matches
+
+    return matches

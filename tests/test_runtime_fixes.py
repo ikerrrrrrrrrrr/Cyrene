@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -19,6 +20,56 @@ async def test_execution_agent_returns_quit_text(monkeypatch):
     monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
     result = await agent._run_execution_agent("do something", None, 0, "db.sqlite3")
     assert result == "scheduled task completed"
+
+
+def test_get_memory_context_includes_short_term_by_default(tmp_path, monkeypatch):
+    from cyrene import memory
+    from cyrene import short_term
+
+    short_term.init_short_term(tmp_path)
+    short_term.save_entries([
+        {
+            "content": "user prefers concise replies",
+            "type": "preference",
+            "first_seen": "2026-05-18",
+            "last_mentioned": "2026-05-19",
+            "mention_count": 2,
+            "emotional_valence": 0,
+        }
+    ])
+    monkeypatch.setattr(memory, "read_shallow_memory", lambda: "## SELF:IDENTITY\n- test memory")
+    monkeypatch.setattr(memory, "CONVERSATIONS_DIR", tmp_path / "conversations")
+
+    context = memory.get_memory_context()
+
+    assert "SELF:IDENTITY" in context
+    assert "Short-term cross-session memory" in context
+    assert "user prefers concise replies" in context
+
+
+def test_get_memory_context_can_skip_short_term(tmp_path, monkeypatch):
+    from cyrene import memory
+    from cyrene import short_term
+
+    short_term.init_short_term(tmp_path)
+    short_term.save_entries([
+        {
+            "content": "user likes jasmine tea",
+            "type": "fact",
+            "first_seen": "2026-05-18",
+            "last_mentioned": "2026-05-19",
+            "mention_count": 1,
+            "emotional_valence": 0,
+        }
+    ])
+    monkeypatch.setattr(memory, "read_shallow_memory", lambda: "## SELF:BELIEFS\n- test belief")
+    monkeypatch.setattr(memory, "CONVERSATIONS_DIR", tmp_path / "conversations")
+
+    context = memory.get_memory_context(include_short_term=False)
+
+    assert "SELF:BELIEFS" in context
+    assert "Short-term cross-session memory" not in context
+    assert "user likes jasmine tea" not in context
 
 
 async def test_execute_tool_awaits_event_publish(monkeypatch):
@@ -47,6 +98,96 @@ async def test_execute_tool_awaits_event_publish(monkeypatch):
     tools.TOOL_HANDLERS.pop("__test_tool__", None)
 
 
+async def test_recall_memory_tool_returns_archived_matches_and_persisted_memory(tmp_path, monkeypatch):
+    from cyrene import conversations
+    from cyrene import short_term
+    from cyrene import tools
+
+    conversations_dir = tmp_path / "conversations"
+    conversations_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(conversations, "CONVERSATIONS_DIR", conversations_dir)
+
+    (conversations_dir / "2026-05-19.md").write_text(
+        "# Conversations - 2026-05-19\n\n"
+        "<!-- session_title: 第一场 -->\n\n"
+        "## 09:00:00 UTC\n\n"
+        "<!-- archive_session_id: session_alpha -->\n"
+        "<!-- session_title: 第一场 -->\n"
+        "<!-- round_id: round_1 -->\n"
+        "<!-- round_title: 设计角色 -->\n\n"
+        "**User**: 先聊角色设定\n\n"
+        "**Ape**: 角色偏冷静理性。\n\n"
+        "---\n\n"
+        "## 10:00:00 UTC\n\n"
+        "<!-- archive_session_id: session_beta -->\n"
+        "<!-- session_title: 第二场 -->\n"
+        "<!-- round_id: round_2 -->\n"
+        "<!-- round_title: 偏好总结 -->\n\n"
+        "**User**: 记住我偏好简洁回答\n\n"
+        "**Ape**: 已记录你偏好简洁回答。\n\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    short_term.init_short_term(tmp_path)
+    short_term.save_entries([
+        {
+            "content": "user prefers concise replies",
+            "type": "preference",
+            "first_seen": "2026-05-19",
+            "last_mentioned": "2026-05-19",
+            "mention_count": 1,
+            "emotional_valence": 0,
+        }
+    ])
+    monkeypatch.setattr(tools, "read_shallow_memory", lambda: "## RELATIONSHIP:USER\n- Trust level: warm")
+
+    result = await tools._tool_recall_memory(
+        {"session_id": "archive_2026-05-19_session_beta", "limit": 2},
+        None,
+        0,
+        "db.sqlite3",
+        None,
+    )
+    payload = json.loads(result)
+
+    assert payload["matches"][0]["archive_session_id"] == "session_beta"
+    assert payload["matches"][0]["session_title"] == "第二场"
+    assert payload["matches"][0]["assistant"] == "已记录你偏好简洁回答。"
+    assert "user prefers concise replies" in payload["short_term_memory"]
+    assert "Trust level: warm" in payload["soul_memory"]
+
+
+async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_prompt(monkeypatch, tmp_path):
+    from cyrene import agent
+
+    seen: dict[str, Any] = {}
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "[Previous context:]\n- remembers tea")
+
+    def fake_get_memory_context(include_short_term: bool = True):
+        seen["include_short_term"] = include_short_term
+        return "## Memory Context\n- stable trait"
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+        seen["history"] = history
+        seen["system_prompt"] = system_prompt
+        return "ok"
+
+    monkeypatch.setattr(agent, "get_memory_context", fake_get_memory_context)
+    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+
+    result = await agent._run_chat_agent("hello", None, 0, "db.sqlite3")
+
+    assert result == "ok"
+    assert seen["include_short_term"] is False
+    assert seen["history"][0]["content"].startswith("[Restored context]")
+    assert "stable trait" in seen["system_prompt"]
+
+
 async def test_save_session_messages_emits_session_update(tmp_path, monkeypatch):
     from cyrene import agent
     from cyrene import debug
@@ -70,6 +211,25 @@ async def test_save_session_messages_emits_session_update(tmp_path, monkeypatch)
     assert seen[-1]["message_count"] == 2
     assert seen[-1]["last_role"] == "assistant"
     assert seen[-1]["round_id"] == "round_1"
+
+
+def test_format_httpx_error_includes_request_response_and_cause():
+    import httpx
+    from cyrene import agent
+
+    request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+    response = httpx.Response(502, request=request, text='{"error":"upstream exploded"}')
+    cause = ConnectionError("socket closed")
+    exc = httpx.HTTPStatusError("Bad Gateway", request=request, response=response)
+    exc.__cause__ = cause
+
+    detail = agent.format_httpx_error(exc)
+
+    assert "HTTPStatusError" in detail
+    assert "request=POST https://example.test/v1/chat/completions" in detail
+    assert "status=502" in detail
+    assert 'body={"error":"upstream exploded"}' in detail
+    assert "cause=ConnectionError: socket closed" in detail
 
 
 async def test_send_agent_message_redirects_main_alias():
@@ -163,6 +323,7 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
         persist_base_messages=None,
         persist_insert_at=None,
         client_request_id="",
+        persist_user_message=True,
     ):
         seen["user_message"] = user_message
         seen["ephemeral_system"] = ephemeral_system
@@ -171,6 +332,7 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
         seen["persist_base_messages"] = persist_base_messages
         seen["persist_insert_at"] = persist_insert_at
         seen["client_request_id"] = client_request_id
+        seen["persist_user_message"] = persist_user_message
         return "guided reply"
 
     async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
@@ -190,9 +352,17 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
     assert "main-agent inbox" in seen["ephemeral_system"]
     assert seen["forced_round_id"] == "round_1"
     assert [msg["content"] for msg in seen["history_override"]] == ["round one question", "round one reply"]
-    assert [msg["content"] for msg in seen["persist_base_messages"]] == ["round one question", "round one reply", "other round question", "other round reply"]
-    assert seen["persist_insert_at"] == 4
+    assert [msg["content"] for msg in seen["persist_base_messages"]] == [
+        "round one question",
+        "round one reply",
+        "other round question",
+        "other round reply",
+        "please continue with logistics",
+        agent._guidance_ack_text(),
+    ]
+    assert seen["persist_insert_at"] == 6
     assert seen["client_request_id"] == "req_1"
+    assert seen["persist_user_message"] is False
     assert seen["archived"][0] == "please continue with logistics"
     assert seen["archived"][2:] == ("session label", "round one", "round_1")
     assert saved[4]["content"] == "please continue with logistics"
@@ -390,6 +560,79 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
     )
 
 
+async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+    from cyrene import inbox
+    import cyrene.conversations as conversations
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
+    monkeypatch.setattr(agent, "get_memory_context", lambda: "")
+    agent.STATE_FILE.write_text(
+        json.dumps({
+            "session_title": "session label",
+            "messages": [
+                {"role": "user", "content": "round one question", "round_id": "round_1", "round_title": "round one"},
+                {"role": "assistant", "content": "round one reply", "round_id": "round_1", "round_title": "round one"},
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        agent,
+        "get_live_rounds",
+        lambda: [{"id": "round_1", "status": "running", "title": "round one", "pendingGuidance": 0, "runningSubagents": 0, "subagentCount": 0}],
+    )
+
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+        return {
+            "content": "adjusted final reply",
+            "reasoning_content": "guided reasoning",
+            "tool_calls": [],
+        }
+
+    async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
+        return None
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
+    events = []
+    monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
+
+    item = await agent.queue_round_guidance("round_1", "please adjust the answer", None, 0, "db.sqlite3", client_request_id="req_guided")
+    await asyncio.sleep(0.05)
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    guided_users = [msg for msg in saved if msg.get("role") == "user" and msg.get("client_request_id") == "req_guided"]
+    ack_index = next(i for i, msg in enumerate(saved) if msg.get("guidance_ack_for_guidance_id") == item["id"])
+    reply_index = next(i for i, msg in enumerate(saved) if msg.get("role") == "assistant" and msg.get("client_request_id") == "req_guided")
+
+    assert len(guided_users) == 1
+    assert guided_users[0]["content"] == "please adjust the answer"
+    assert guided_users[0]["queued_guidance_id"] == item["id"]
+    assert saved[ack_index]["content"] == agent._guidance_ack_text()
+    assert ack_index == 3
+    assert saved[reply_index]["content"] == "adjusted final reply"
+    assert reply_index == 4
+    assert saved[reply_index]["reasoning_content"] == "guided reasoning"
+    assert saved[reply_index]["round_id"] == "round_1"
+    assert any(
+        event.get("type") == "guidance_acknowledged"
+        and event.get("client_request_id") == "req_guided"
+        for event in events
+    )
+    assert any(
+        event.get("type") == "chat_message"
+        and event.get("client_request_id") == "req_guided"
+        for event in events
+    )
+
+
 async def test_run_chat_agent_persists_client_request_ids(monkeypatch, tmp_path):
     from cyrene import agent
     from cyrene import debug
@@ -402,7 +645,7 @@ async def test_run_chat_agent_persists_client_request_ids(monkeypatch, tmp_path)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -444,7 +687,7 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -491,7 +734,7 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -539,7 +782,7 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
         await agent._append_session_message({
             "role": "user",
             "content": "queued guidance",
@@ -639,7 +882,7 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -1500,6 +1743,106 @@ def test_convert_messages_merges_adjacent_trace_only_assistant_entries():
     assert [tool["name"] for tool in ui_msgs[0]["tools"]] == ["search", "fetch"]
 
 
+def test_convert_messages_merges_adjacent_trace_only_entries_with_same_client_request_id():
+    from webui import routes
+
+    raw_msgs = [
+        {"role": "assistant", "content": "", "reasoning_content": "first", "round_id": "round_1", "client_request_id": "req_1"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t1", "function": {"name": "search", "arguments": "{}"}}
+        ], "round_id": "round_1", "client_request_id": "req_1"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t2", "function": {"name": "fetch", "arguments": "{}"}}
+        ], "round_id": "round_1", "client_request_id": "req_1"},
+    ]
+
+    ui_msgs = routes._convert_messages(raw_msgs)
+
+    assert len(ui_msgs) == 1
+    assert ui_msgs[0]["clientRequestId"] == "req_1"
+    assert ui_msgs[0]["thinking"] == "first"
+    assert [tool["name"] for tool in ui_msgs[0]["tools"]] == ["search", "fetch"]
+
+
+def test_convert_messages_merges_trace_only_assistant_into_following_body_reply():
+    from webui import routes
+
+    raw_msgs = [
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "thinking before tool",
+            "tool_calls": [{"id": "t1", "function": {"name": "search", "arguments": "{}"}}],
+            "round_id": "round_1",
+        },
+        {
+            "role": "assistant",
+            "content": "final answer",
+            "reasoning_content": "thinking after tool",
+            "round_id": "round_1",
+            "client_request_id": "req_1",
+        },
+    ]
+
+    ui_msgs = routes._convert_messages(raw_msgs)
+
+    assert len(ui_msgs) == 1
+    assert ui_msgs[0]["body"] == "final answer"
+    assert ui_msgs[0]["clientRequestId"] == "req_1"
+    assert ui_msgs[0]["thinking"] == "thinking before tool\n\nthinking after tool"
+    assert [tool["name"] for tool in ui_msgs[0]["tools"]] == ["search"]
+
+
+def test_convert_messages_collapses_consecutive_duplicate_user_messages():
+    from webui import routes
+
+    raw_msgs = [
+        {"role": "user", "content": "介绍你自己和你能做的事", "round_id": "round_1", "client_request_id": "req_1"},
+        {"role": "user", "content": "介绍你自己和你能做的事", "round_id": "round_2", "client_request_id": "req_2"},
+        {"role": "assistant", "content": "ok", "round_id": "round_2", "client_request_id": "req_2"},
+    ]
+
+    ui_msgs = routes._convert_messages(raw_msgs)
+
+    assert len(ui_msgs) == 2
+    assert ui_msgs[0]["role"] == "user"
+    assert ui_msgs[0]["clientRequestId"] == "req_2"
+    assert ui_msgs[1]["role"] == "agent"
+
+
+def test_convert_messages_dedupes_repeated_message_ids_even_when_not_adjacent():
+    from webui import routes
+
+    raw_msgs = [
+        {"role": "user", "content": "same prompt", "message_id": "u1", "round_id": "round_1", "client_request_id": "req_1"},
+        {"role": "assistant", "content": "reply", "message_id": "a1", "round_id": "round_1", "client_request_id": "req_1"},
+        {"role": "user", "content": "same prompt", "message_id": "u1", "round_id": "round_1", "client_request_id": "req_1"},
+    ]
+
+    ui_msgs = routes._convert_messages(raw_msgs)
+
+    assert len(ui_msgs) == 2
+    assert [msg["messageId"] for msg in ui_msgs] == ["u1", "a1"]
+
+
+def test_convert_messages_collapses_repeated_user_bodies_within_one_user_block():
+    from webui import routes
+
+    raw_msgs = [
+        {"role": "user", "content": "check", "message_id": "u1"},
+        {"role": "user", "content": "现在先看看多伦多的天气", "message_id": "u2"},
+        {"role": "user", "content": "check", "message_id": "u3"},
+        {"role": "user", "content": "现在先看看多伦多的天气", "message_id": "u4"},
+        {"role": "assistant", "content": "ok", "message_id": "a1"},
+    ]
+
+    ui_msgs = routes._convert_messages(raw_msgs)
+
+    assert len(ui_msgs) == 3
+    assert [msg["messageId"] for msg in ui_msgs] == ["u3", "u4", "a1"]
+    assert [msg["body"] for msg in ui_msgs[:2]] == ["check", "现在先看看多伦多的天气"]
+
+
 async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_path):
     from cyrene import agent
 
@@ -1508,7 +1851,7 @@ async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_
     monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
@@ -1534,7 +1877,7 @@ async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final
     monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
