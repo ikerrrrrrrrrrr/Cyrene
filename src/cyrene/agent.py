@@ -139,7 +139,10 @@ def _trim_session_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
     if len(messages) <= _MAX_HISTORY_MESSAGES:
         return messages
     trimmed = messages[-_MAX_HISTORY_MESSAGES:]
-    # 移除截断处孤立的 tool_calls（DeepSeek 要求 tool_calls 必须有对应的 tool response）
+    # Strip orphan tool messages from the start (their tool_calls were trimmed off)
+    while trimmed and trimmed[0].get("role") == "tool":
+        trimmed = trimmed[1:]
+    # Strip orphan tool_calls from the end (their tool responses were trimmed off)
     for i in range(len(trimmed) - 1, -1, -1):
         if trimmed[i].get("tool_calls") and (i + 1 >= len(trimmed) or trimmed[i + 1].get("role") != "tool"):
             return trimmed[:i]
@@ -1223,15 +1226,89 @@ TOOL_HANDLERS["quit"] = _tool_quit
 # ---------------------------------------------------------------------------
 
 
+def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
+    """Ensure valid tool_calls/tool message pairing with unique tool_call_ids.
+
+    Handles three classes of corruption that cause LLM APIs to reject the
+    conversation history:
+    1. Duplicate tool_call_ids (e.g. after a retry round) — regenerated uniquely.
+    2. Orphan tool_calls (assistant tool_calls without matching tool responses).
+    3. Orphan tool messages (tool messages without a preceding tool_calls).
+    """
+    import uuid as _uuid
+
+    seen_ids: set[str] = set()
+    result: list[dict[str, Any]] = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        role = str(msg.get("role", ""))
+
+        if role == "assistant" and msg.get("tool_calls"):
+            tc_list = msg["tool_calls"]
+            all_valid = True
+            for j, tc in enumerate(tc_list):
+                idx = i + 1 + j
+                if idx >= len(messages):
+                    all_valid = False
+                    break
+                tm = messages[idx]
+                if tm.get("role") != "tool" or tm.get("tool_call_id") != tc.get("id", ""):
+                    all_valid = False
+                    break
+
+            if all_valid:
+                old_ids = [tc.get("id", "") for tc in tc_list]
+                has_dupes = any(oid in seen_ids for oid in old_ids)
+
+                if has_dupes:
+                    new_msg = dict(msg)
+                    new_tc_list = []
+                    new_ids = []
+                    for tc in tc_list:
+                        new_tc = dict(tc)
+                        new_id = f"call_{_uuid.uuid4().hex[:12]}"
+                        new_tc["id"] = new_id
+                        new_tc_list.append(new_tc)
+                        new_ids.append(new_id)
+                        seen_ids.add(new_id)
+                    new_msg["tool_calls"] = new_tc_list
+                    result.append(new_msg)
+                    for j, new_id in enumerate(new_ids):
+                        tool_msg = dict(messages[i + 1 + j])
+                        tool_msg["tool_call_id"] = new_id
+                        result.append(tool_msg)
+                else:
+                    for oid in old_ids:
+                        seen_ids.add(oid)
+                    result.append(msg)
+                    for j in range(len(tc_list)):
+                        result.append(messages[i + 1 + j])
+
+                i += 1 + len(tc_list)
+            else:
+                # Orphan tool_calls — skip this assistant message
+                i += 1
+        elif role == "tool":
+            # Orphan tool message — skip
+            i += 1
+        else:
+            result.append(msg)
+            i += 1
+
+    return result
+
+
 async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens: int | None = 32000) -> dict:
     _t0 = __import__("time").monotonic()
     _phase = "phase1" if tools is _LIGHT_TOOL_DEFS else ("phase2" if tools else "no_tools")
     _model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
     _base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
     _api_key = os.environ.get("OPENAI_API_KEY", "")
+    safe_messages = _sanitize_messages_for_llm(messages)
     payload = {
         "model": _model,
-        "messages": messages,
+        "messages": safe_messages,
     }
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens

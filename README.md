@@ -15,10 +15,10 @@ cp .env.example .env
 # Edit .env with your API key and model
 
 # 3. Launch with Web UI (default)
-python -m cyrene --web
+PYTHONPATH=src python -m cyrene.local_cli --web
 
 #   or headless CLI only:
-python -m cyrene --headless
+PYTHONPATH=src python -m cyrene.local_cli --headless
 ```
 
 On first launch, a personality setup wizard will guide you through injecting a personality (real or fictional) into the agent. Open `http://localhost:4242` for the web UI.
@@ -107,7 +107,7 @@ Response returned to user
 
 ### Debugging
 ```bash
-python -m cyrene --headless --verbose
+PYTHONPATH=src python -m cyrene.local_cli --headless --verbose
 ```
 Logs every LLM call (full prompt, tools, response, duration) to `data/debug_*.jsonl`. The web UI also shows live debug logs on the Status page.
 
