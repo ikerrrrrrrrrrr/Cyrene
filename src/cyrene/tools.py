@@ -796,23 +796,57 @@ TOOL_HANDLERS: dict[str, Any] = {
 
 
 def get_active_tool_defs() -> list[dict]:
-    """Return TOOL_DEFS filtered by the user's enabled/disabled tool settings.
+    """Return TOOL_DEFS filtered by enabled tools, plus MCP tools from connected servers.
 
-    Protected tools (quit) are always included.  The result is cached until
-    the settings file changes.
+    Protected tools (quit) are always included.
     """
     from cyrene.settings_store import is_tool_enabled
 
-    return [
+    defs = [
         td for td in TOOL_DEFS
         if is_tool_enabled(td["function"]["name"])
     ]
+
+    # Append MCP tools from connected servers
+    try:
+        from cyrene.mcp_manager import get_manager as _get_mcp_mgr
+
+        manager = _get_mcp_mgr()
+        for mcp_td in manager.get_tool_defs():
+            name = mcp_td["function"]["name"]
+            if is_tool_enabled(name):
+                defs.append(mcp_td)
+    except Exception:
+        logger.warning("Failed to fetch MCP tool defs", exc_info=True)
+
+    return defs
 
 
 async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None) -> str:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
-        raise ValueError(f"Unknown tool: {name}")
+        # Fallback: try MCP tool
+        from cyrene import debug as _debug
+        from cyrene.agent import _caller_type, _current_round_id
+        from cyrene.mcp_manager import get_manager as _get_mcp_mgr
+
+        _t0 = __import__("time").monotonic()
+        try:
+            manager = _get_mcp_mgr()
+            result = await manager.execute_tool(name, arguments)
+            if _debug.VERBOSE:
+                _debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
+            await _debug.publish_event({
+                "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
+                "result_preview": str(result)[:200],
+                "round_id": _current_round_id.get(),
+            })
+            return result
+        except ValueError:
+            raise ValueError(f"Unknown tool: {name}")
+        except Exception as e:
+            return f"Tool {name} failed: {e}"
+
     _t0 = __import__("time").monotonic()
     result = await handler(arguments, bot, chat_id, db_path, notify_state)
     from cyrene import debug

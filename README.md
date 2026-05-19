@@ -8,20 +8,31 @@ Cyrene is an open-source AI agent framework with a pluggable personality system,
 # 1. Set up environment
 conda create -n cyrene python=3.12 -y
 conda activate cyrene
-pip install -e .
 
-# 2. Configure LLM API
+# 2. Install dependencies
+#    Linux/macOS:
+pip install -e .
+#    Windows (uvloop is Unix-only, skip it):
+pip install aiosqlite apscheduler croniter fastapi httpx jinja2 python-dotenv python-telegram-bot requests sniffio uvicorn "mcp>=1.27.0"
+pip install simplexng --no-deps
+pip install -e . --no-build-isolation
+#    Or install all at once:
+pip install -e . && pip install simplexng --no-deps  # Linux/macOS
+
+# 3. Configure LLM API
 cp .env.example .env
 # Edit .env with your API key and model
 
-# 3. Launch with Web UI (default)
+# 4. Launch with Web UI (default)
 PYTHONPATH=src python -m cyrene.local_cli --web
 
-#   or headless CLI only:
+#    or headless CLI only:
 PYTHONPATH=src python -m cyrene.local_cli --headless
 ```
 
 On first launch, a personality setup wizard will guide you through injecting a personality (real or fictional) into the agent. Open `http://localhost:4242` for the web UI.
+
+> **Windows note:** `simplexng` (built-in SearXNG) depends on `uvloop` which does not support Windows ([tracking issue](https://github.com/MagicStack/uvloop/issues/14)). Use `pip install simplexng --no-deps` to skip uvloop — SearXNG auto-start will be unavailable, but all other features work normally. Alternatively, set `SEARXNG_URL` in `.env` to point to an external SearXNG instance.
 
 ## Architecture
 

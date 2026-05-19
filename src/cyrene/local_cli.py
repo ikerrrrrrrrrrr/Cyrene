@@ -31,6 +31,14 @@ async def _prepare_cli() -> None:
         except Exception as exc:
             logger.warning("SearXNG auto-start failed: %s", exc)
 
+    # Start MCP servers
+    from cyrene.mcp_manager import start_mcp as _start_mcp
+    try:
+        await _start_mcp()
+        logger.info("MCP manager started")
+    except Exception as exc:
+        logger.warning("MCP manager start failed: %s", exc)
+
 
 def _show_help():
     print()
@@ -161,6 +169,14 @@ def _run_web_mode() -> None:
             except Exception as exc:
                 logger.warning("SearXNG auto-start failed: %s", exc)
 
+        # Start MCP servers
+        from cyrene.mcp_manager import start_mcp as _start_mcp
+        try:
+            await _start_mcp()
+            logger.info("MCP manager started")
+        except Exception as exc:
+            logger.warning("MCP manager start failed: %s", exc)
+
         bot = WebBot()
         scheduler = setup_scheduler(bot, str(DB_PATH))
         scheduler.start()
@@ -178,6 +194,8 @@ def _run_web_mode() -> None:
     finally:
         from cyrene.searxng_manager import stop_searxng
         stop_searxng()
+        from cyrene.mcp_manager import stop_mcp as _stop_mcp
+        _stop_mcp()
 
 
 def main() -> None:

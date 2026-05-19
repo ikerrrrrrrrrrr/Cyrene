@@ -29,6 +29,10 @@ function SettingsPage({ tweaks, setTweak }) {
   const [modelsSaved, setModelsSaved] = useStateSet("");
   const [toolList, setToolList] = useStateSet([]);
   const [toolsSaved, setToolsSaved] = useStateSet("");
+  const [mcpServers, setMcpServers] = useStateSet([]);
+  const [mcpConfigs, setMcpConfigs] = useStateSet([]);
+  const [mcpSaved, setMcpSaved] = useStateSet("");
+  const [newMcpServer, setNewMcpServer] = useStateSet({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
 
   function t(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
 
@@ -51,6 +55,10 @@ function SettingsPage({ tweaks, setTweak }) {
     }).catch(() => {});
     fetch("/api/settings/tools").then((r) => r.json()).then((data) => {
       setToolList(data.tools || []);
+    }).catch(() => {});
+    fetch("/api/settings/mcp").then((r) => r.json()).then((data) => {
+      setMcpServers(data.servers || []);
+      setMcpConfigs(data.configs || []);
     }).catch(() => {});
   }, []);
 
@@ -139,6 +147,52 @@ function SettingsPage({ tweaks, setTweak }) {
     var next = models.filter(function(m) { return m.id !== id; });
     setModels(next);
     if (activeModel === id) setActiveModel(next[0] ? next[0].id : "");
+  }
+
+  function addMcpServer() {
+    var name = (newMcpServer.name || "").trim();
+    if (!name) return;
+    var server = {
+      name: name,
+      transport: newMcpServer.transport || "stdio",
+      command: newMcpServer.command || "",
+      args: (newMcpServer.args || "").split(" ").filter(Boolean),
+      url: newMcpServer.url || "",
+      enabled: newMcpServer.enabled !== false,
+    };
+    setMcpConfigs(mcpConfigs.concat(server));
+    setNewMcpServer({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
+  }
+
+  function removeMcpServer(name) {
+    setMcpConfigs(mcpConfigs.filter(function(s) { return s.name !== name; }));
+  }
+
+  function toggleMcpServer(name) {
+    setMcpConfigs(mcpConfigs.map(function(s) {
+      return s.name === name ? { ...s, enabled: !s.enabled } : s;
+    }));
+  }
+
+  async function saveMcpServers() {
+    setMcpSaved("saving…");
+    try {
+      const r = await fetch("/api/settings/mcp", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ servers: mcpConfigs }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      setMcpSaved("saved ✓");
+      // Refresh status
+      fetch("/api/settings/mcp").then(function(resp) { return resp.json(); }).then(function(data) {
+        setMcpServers(data.servers || []);
+        setMcpConfigs(data.configs || []);
+      }).catch(function() {});
+      setTimeout(function() { setMcpSaved(""); }, 1500);
+    } catch (e) {
+      setMcpSaved("error: " + e.message);
+    }
   }
 
   async function saveTools() {
@@ -403,6 +457,79 @@ function SettingsPage({ tweaks, setTweak }) {
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
               <button className="btn primary" onClick={saveSearch}>save search settings</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{searchSaved}</span>
+            </div>
+          </>
+        )}
+
+        {section === "mcp" && (
+          <>
+            <h2>MCP Servers</h2>
+            <p className="subtitle">Model Context Protocol servers expose tools that the agent can call. Configure stdio (local subprocess) or SSE (remote HTTP) servers.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {mcpConfigs.map(function(s) {
+                var live = mcpServers.find(function(ls) { return ls.name === s.name; });
+                var statusText = live ? live.status : "disconnected";
+                var toolCount = live ? live.tool_count : 0;
+                return (
+                  <div key={s.name} className="model-card" style={{ flexWrap: "wrap" }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div className="model-name">
+                        {s.name}
+                        <span style={{ fontSize: 10, marginLeft: 6, color: "var(--text-4)" }}>
+                          ({s.transport})
+                        </span>
+                      </div>
+                      <div className="model-desc">
+                        {s.transport === "stdio" ? s.command + " " + (s.args || []).join(" ") : s.url}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 11, color: statusText === "connected" ? "var(--green)" : "var(--text-4)" }}>
+                        {statusText}{toolCount > 0 ? " · " + toolCount + " tools" : ""}
+                      </span>
+                      <div className={"toggle " + (s.enabled !== false ? "on" : "")}
+                           onClick={function() { toggleMcpServer(s.name); }}></div>
+                      <button className="iconbtn" title={"Remove " + s.name}
+                              onClick={function() { removeMcpServer(s.name); }}
+                              style={{ color: "var(--text-4)" }}>
+                        <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+                          <path d="M5 5 L15 15 M15 5 L5 15" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <button className="btn primary" onClick={saveMcpServers}>save & restart MCP</button>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{mcpSaved}</span>
+            </div>
+            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>Add MCP server</h3>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+              <input className="input mono" placeholder="name" value={newMcpServer.name}
+                     onChange={function(e) { setNewMcpServer({ ...newMcpServer, name: e.target.value }); }}
+                     style={{ maxWidth: 140 }} />
+              <select className="select" style={{ maxWidth: 100 }} value={newMcpServer.transport}
+                      onChange={function(e) { setNewMcpServer({ ...newMcpServer, transport: e.target.value }); }}>
+                <option value="stdio">stdio</option>
+                <option value="sse">SSE</option>
+              </select>
+              {newMcpServer.transport === "stdio" ? (
+                <>
+                  <input className="input mono" placeholder="command (e.g. npx)" value={newMcpServer.command}
+                         onChange={function(e) { setNewMcpServer({ ...newMcpServer, command: e.target.value }); }}
+                         style={{ maxWidth: 140 }} />
+                  <input className="input mono" placeholder="args (space-separated)" value={newMcpServer.args}
+                         onChange={function(e) { setNewMcpServer({ ...newMcpServer, args: e.target.value }); }}
+                         style={{ maxWidth: 240 }} />
+                </>
+              ) : (
+                <input className="input mono" placeholder="URL (e.g. http://localhost:3000/mcp)" value={newMcpServer.url}
+                       onChange={function(e) { setNewMcpServer({ ...newMcpServer, url: e.target.value }); }}
+                       style={{ maxWidth: 360 }} />
+              )}
+              <button className="btn" onClick={addMcpServer}>add</button>
             </div>
           </>
         )}
