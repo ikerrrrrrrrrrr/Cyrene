@@ -59,6 +59,29 @@ const DATA = {
 
   skills: [],
 
+  onboarding: {
+    needsOnboarding: false,
+    isAbsoluteFreshStart: false,
+    activeStep: "done",
+    completedAt: "",
+    llm: {
+      configured: false,
+      hasApiKey: false,
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      completedAt: "",
+    },
+    personality: {
+      configured: false,
+      completedAt: "",
+      mode: "",
+      label: "",
+      isDefaultSoul: true,
+      path: "",
+      currentContent: "",
+    },
+  },
+
   settings: {
     sections: [
       { id: "general", label: "General" },
@@ -105,6 +128,7 @@ async function bootstrapData() {
     if (fresh.status) DATA.status = fresh.status;
     if (Array.isArray(fresh.skills) && fresh.skills.length) DATA.skills = fresh.skills;
     if (fresh.settings) DATA.settings = { ...DATA.settings, ...fresh.settings };
+    if (fresh.onboarding) DATA.onboarding = fresh.onboarding;
     bumpData();
   } catch (e) {
     console.warn("Cyrene: failed to load /api/ui-data, using fallback data", e);
@@ -152,6 +176,7 @@ function scheduleRealtimeRefresh() {
 
 window.refreshSessions = refreshSessions;
 window.refreshStatus = refreshStatus;
+window.reloadUiData = bootstrapData;
 
 // ── Global SSE event bus for real-time chat progress ──
 // Stores recent events so chat.jsx can display live progress during sending.

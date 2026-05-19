@@ -16,6 +16,234 @@ const ACCENT_PRESETS = {
   light: ["#4a8a72", "#4a7fa8", "#7a5fa0", "#a8754a", "#b35858"],
 };
 
+function SetupWizard({ theme, onToggleTheme }) {
+  useDataVersion();
+  const onboarding = DATA.onboarding || {};
+  const [step, setStep] = useStateApp(onboarding.activeStep || "llm");
+  const [busy, setBusy] = useStateApp(false);
+  const [error, setError] = useStateApp("");
+  const [notice, setNotice] = useStateApp("");
+  const [llmForm, setLlmForm] = useStateApp({
+    api_key: "",
+    base_url: onboarding.llm?.baseUrl || "https://api.deepseek.com/v1",
+    model: onboarding.llm?.model || "deepseek-chat",
+  });
+  const [mode, setMode] = useStateApp(onboarding.personality?.mode || "name");
+  const [personalityName, setPersonalityName] = useStateApp(onboarding.personality?.label || "");
+  const [customSoul, setCustomSoul] = useStateApp(onboarding.personality?.currentContent || "");
+
+  React.useEffect(function () {
+    setStep(onboarding.activeStep || "done");
+    setLlmForm({
+      api_key: "",
+      base_url: onboarding.llm?.baseUrl || "https://api.deepseek.com/v1",
+      model: onboarding.llm?.model || "deepseek-chat",
+    });
+    setMode(onboarding.personality?.mode || "name");
+    setPersonalityName(onboarding.personality?.label || "");
+    setCustomSoul(onboarding.personality?.currentContent || "");
+  }, [onboarding.activeStep, onboarding.llm?.baseUrl, onboarding.llm?.model, onboarding.personality?.mode, onboarding.personality?.label, onboarding.personality?.currentContent]);
+
+  async function applyOnboardingResponse(r) {
+    const payload = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      throw new Error(payload.error || payload.detail || ("HTTP " + r.status));
+    }
+    if (payload.onboarding) {
+      DATA.onboarding = payload.onboarding;
+      window.bumpData && window.bumpData();
+    }
+    if (window.reloadUiData) await window.reloadUiData();
+    return payload;
+  }
+
+  async function saveLlm() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const payload = await applyOnboardingResponse(await fetch("/api/onboarding/llm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(llmForm),
+      }));
+      setNotice("LLM connection verified" + (payload.preview ? ": " + payload.preview : "."));
+      setStep((payload.onboarding && payload.onboarding.activeStep) || "personality");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePersonality() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const payload = await applyOnboardingResponse(await fetch("/api/onboarding/personality", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: mode,
+          name: personalityName,
+          content: customSoul,
+        }),
+      }));
+      setNotice("Personality applied to SOUL.md.");
+      setStep((payload.onboarding && payload.onboarding.activeStep) || "done");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const stepItems = [
+    { id: "llm", label: "LLM API", done: !!onboarding.llm?.configured },
+    { id: "personality", label: "Personality", done: !!onboarding.personality?.configured },
+  ];
+
+  return (
+    <div className="setup-shell" data-theme={theme}>
+      <div className="setup-topbar">
+        <div className="setup-brand">
+          <div className="brand-mark"></div>
+          <div>
+            <div className="brand-name">{(DATA.assistantName || "Cyrene").toUpperCase()}</div>
+            <div className="setup-kicker">First-run setup wizard</div>
+          </div>
+        </div>
+        <button className="iconbtn" title={theme === "dark" ? "Switch to light" : "Switch to dark"} onClick={onToggleTheme}>
+          {theme === "dark" ? "◐" : "◑"}
+        </button>
+      </div>
+
+      <div className="setup-hero">
+        <div className="setup-copy">
+          <div className="setup-eyebrow">{onboarding.isAbsoluteFreshStart ? "Fresh workspace detected" : "Setup incomplete"}</div>
+          <h1>Connect an LLM, then inject a persona before entering the workspace.</h1>
+          <p>
+            This wizard is shown only when the Web UI detects that the environment has not been fully initialized.
+            Browser refreshes do not retrigger it. Deleting the persisted setup state or starting from a blank workspace does.
+          </p>
+        </div>
+        <div className="setup-steps">
+          {stepItems.map((item, index) => (
+            <div key={item.id} className={"setup-step-card " + ((step === item.id && onboarding.needsOnboarding) ? "active" : "")}>
+              <div className="setup-step-index">{item.done ? "✓" : index + 1}</div>
+              <div>
+                <div className="setup-step-label">{item.label}</div>
+                <div className="setup-step-meta">{item.done ? "Configured" : "Required"}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="setup-panel">
+        {step === "llm" && (
+          <div className="setup-section">
+            <h2>LLM API</h2>
+            <p className="subtitle">Save the endpoint and model, then verify the connection with a live test request.</p>
+            <div className="field">
+              <div className="label">API key<small>Optional for local OpenAI-compatible endpoints. Required by hosted providers.</small></div>
+              <input
+                className="input"
+                type="password"
+                value={llmForm.api_key}
+                onChange={(e) => setLlmForm({ ...llmForm, api_key: e.target.value })}
+                placeholder="sk-..."
+              />
+            </div>
+            <div className="field">
+              <div className="label">Endpoint<small>Example: `https://api.deepseek.com/v1` or your local OpenAI-compatible base URL.</small></div>
+              <input
+                className="input mono"
+                value={llmForm.base_url}
+                onChange={(e) => setLlmForm({ ...llmForm, base_url: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <div className="label">Model<small>The exact model id sent to `/chat/completions`.</small></div>
+              <input
+                className="input mono"
+                value={llmForm.model}
+                onChange={(e) => setLlmForm({ ...llmForm, model: e.target.value })}
+              />
+            </div>
+            <div className="setup-actions">
+              <button className="btn primary" onClick={saveLlm} disabled={busy}>{busy ? "testing…" : "Save and test"}</button>
+            </div>
+          </div>
+        )}
+
+        {step === "personality" && (
+          <div className="setup-section">
+            <h2>Personality</h2>
+            <p className="subtitle">Choose how the initial `SOUL.md` should be seeded for this workspace.</p>
+            <div className="seg" style={{ marginBottom: 18 }}>
+              <button className={"seg-btn " + (mode === "name" ? "active" : "")} onClick={() => setMode("name")}>By name</button>
+              <button className={"seg-btn " + (mode === "custom" ? "active" : "")} onClick={() => setMode("custom")}>Custom SOUL.md</button>
+              <button className={"seg-btn " + (mode === "default" ? "active" : "")} onClick={() => setMode("default")}>Default</button>
+            </div>
+
+            {mode === "name" && (
+              <div className="field">
+                <div className="label">Personality name<small>Real or fictional. Cyrene will research the character and generate a behavior profile.</small></div>
+                <input
+                  className="input"
+                  value={personalityName}
+                  onChange={(e) => setPersonalityName(e.target.value)}
+                  placeholder="Lelouch Lamperouge / Steve Jobs / Sherlock Holmes"
+                />
+              </div>
+            )}
+
+            {mode === "custom" && (
+              <div className="field" style={{ display: "block" }}>
+                <div className="label" style={{ marginBottom: 8 }}>SOUL.md content<small>Paste the document you want persisted into `workspace/SOUL.md`.</small></div>
+                <textarea
+                  className="input mono"
+                  value={customSoul}
+                  onChange={(e) => setCustomSoul(e.target.value)}
+                  style={{ width: "100%", minHeight: 260, fontSize: 12, lineHeight: 1.5 }}
+                />
+              </div>
+            )}
+
+            {mode === "default" && (
+              <div className="setup-note">
+                The default persona keeps Cyrene neutral and companion-oriented. You can edit `SOUL.md` later from Settings.
+              </div>
+            )}
+
+            <div className="setup-actions">
+              <button className="btn primary" onClick={savePersonality} disabled={busy}>{busy ? "applying…" : "Apply personality"}</button>
+            </div>
+          </div>
+        )}
+
+        {step === "done" && (
+          <div className="setup-section">
+            <h2>Workspace ready</h2>
+            <p className="subtitle">The setup state is persisted. Future page refreshes and process restarts will skip this wizard unless the environment is reset back to a blank state.</p>
+            <div className="setup-actions">
+              <button className="btn primary" onClick={() => { DATA.onboarding = { ...DATA.onboarding, needsOnboarding: false }; window.bumpData && window.bumpData(); }}>Enter workspace</button>
+            </div>
+          </div>
+        )}
+
+        {(notice || error) && (
+          <div className={"setup-feedback " + (error ? "error" : "ok")}>
+            {error || notice}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   useDataVersion();
   const [page, setPage] = useStateApp("chat");
@@ -71,6 +299,12 @@ function App() {
     const nextAccent =
       presetIndex >= 0 ? ACCENT_PRESETS[next][presetIndex] : t.accent;
     setTweak({ theme: next, accent: nextAccent });
+  }
+
+  const needsOnboarding = !!(DATA.onboarding && DATA.onboarding.needsOnboarding);
+
+  if (needsOnboarding) {
+    return <SetupWizard theme={t.theme} onToggleTheme={toggleTheme} />;
   }
 
   return (
