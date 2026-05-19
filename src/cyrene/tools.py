@@ -903,7 +903,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
                 _debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
             await _debug.publish_event({
                 "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
-                "result_preview": str(result)[:200],
+                "result": str(result),
                 "round_id": _current_round_id.get(),
             })
             return result
@@ -921,7 +921,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     from cyrene.agent import _caller_type, _current_round_id
     await debug.publish_event({
         "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
-        "result_preview": str(result)[:200],
+        "result": str(result),
         "round_id": _current_round_id.get(),
     })
     return result

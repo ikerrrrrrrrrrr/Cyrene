@@ -14,7 +14,7 @@ OWNER_ID = int(os.environ["OWNER_ID"]) if os.getenv("OWNER_ID") else None
 # === LLM 配置 ===
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-chat")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-v4-flash")
 # 禁止使用 pro 型号（消耗太快）
 if "pro" in OPENAI_MODEL.lower():
     import logging

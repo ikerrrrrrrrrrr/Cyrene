@@ -344,6 +344,20 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_chat_history():
         return {"messages": _load_messages()}
 
+    @router.get("/api/chat/state")
+    async def api_chat_state():
+        """Return raw session state (with round_id, tool_calls, etc.)."""
+        from cyrene.config import STATE_FILE as _STATE_FILE
+        if _STATE_FILE.exists():
+            import json as _json
+            try:
+                data = _json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+                msgs = data.get("messages", [])
+                return {"messages": msgs if isinstance(msgs, list) else []}
+            except Exception:
+                pass
+        return {"messages": []}
+
     @router.post("/api/chat/interrupt")
     async def api_interrupt_chat():
         return {"ok": True, "interrupted": interrupt_active_run()}
@@ -392,6 +406,26 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    @router.get("/api/events/list")
+    async def api_events_list():
+        """List recent event IDs."""
+        from cyrene.debug import get_recent_events
+        events = get_recent_events(50)
+        result = []
+        for e in events:
+            eid = e.get("event_id", "")
+            if eid:
+                result.append({"id": eid, "type": e.get("type", "?"), "caller": e.get("caller", "?")})
+        return {"events": result}
+
+    @router.get("/api/events/{event_id}")
+    async def api_event_detail(event_id: str):
+        from cyrene.debug import get_full_event
+        event = get_full_event(event_id)
+        if event is None:
+            return JSONResponse({"error": "event not found"}, status_code=404)
+        return event
 
     # ---- Sessions API ----
 
@@ -650,6 +684,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         _stop_mcp()
         await _start_mcp()
         return {"ok": True}
+
+    @router.post("/api/shutdown")
+    async def api_shutdown():
+        """Shutdown the daemon."""
+        import os as _os
+        _os._exit(0)
 
     app.include_router(router)
 

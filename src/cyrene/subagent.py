@@ -489,7 +489,29 @@ async def _run_subagent(
                 if tcs:
                     await _save_if_registered()
 
-                final_text = _assistant_text(response).strip() or "Done."
+                # Include all sent agent messages in the final text so that
+                # creative output (poems, reviews, etc.) is preserved in the
+                # registry result and shown in the final synthesis.
+                sent_output: list[str] = []
+                for msg in messages:
+                    if msg.get("role") != "assistant":
+                        continue
+                    for tc in (msg.get("tool_calls") or []):
+                        fn = tc.get("function", {})
+                        if fn.get("name") == "send_agent_message":
+                            try:
+                                args = json.loads(fn.get("arguments", "{}"))
+                                content = args.get("content", "")
+                                target = args.get("to", "?")
+                                if content:
+                                    sent_output.append(f"[to {target}]\n{content}")
+                            except Exception:
+                                pass
+                agent_text = _assistant_text(response).strip() or "Done."
+                if sent_output:
+                    final_text = agent_text + "\n\n---\n\n" + "\n\n".join(sent_output)
+                else:
+                    final_text = agent_text
 
                 # 标记 willing_to_quit（带 result），等别人（每 5 秒检查 inbox）
                 from cyrene.inbox import get_inbox_context as _inbox_ctx

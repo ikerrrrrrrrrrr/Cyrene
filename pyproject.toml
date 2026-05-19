@@ -19,6 +19,9 @@ dependencies = [
     "uvicorn>=0.34.0",
 ]
 
+[project.scripts]
+cyrene = "cyrene.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

@@ -55,8 +55,13 @@ def log_llm_call(
     # Clean messages for JSON serialization (remove non-serializable fields)
     clean_messages = _clean_for_json(messages)
 
+    # Generate event_id so this entry is queryable via get_full_event()
+    import uuid as _uuid
+    event_id = f"evt_{_uuid.uuid4().hex[:12]}"
+
     entry = {
         "type": "llm_call",
+        "event_id": event_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "caller": caller,
         "phase": phase,
@@ -66,14 +71,19 @@ def log_llm_call(
         "duration_ms": round(duration_ms, 1),
     }
     _write_entry(entry)
+    # Also store in _full_events for fast lookup
+    _full_events[event_id] = dict(entry)
 
 
 def log_tool_call(caller: str, tool_name: str, args: dict, result: str, duration_ms: float) -> None:
     """Log one tool execution — FULL args and result."""
     if not VERBOSE:
         return
+    import uuid as _uuid
+    event_id = f"evt_{_uuid.uuid4().hex[:12]}"
     entry = {
         "type": "tool_call",
+        "event_id": event_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "caller": caller,
         "tool": tool_name,
@@ -82,6 +92,7 @@ def log_tool_call(caller: str, tool_name: str, args: dict, result: str, duration
         "duration_ms": round(duration_ms, 1),
     }
     _write_entry(entry)
+    _full_events[event_id] = dict(entry)
 
 
 
@@ -108,9 +119,12 @@ def get_log_path() -> str:
 # ---------------------------------------------------------------------------
 
 import asyncio
+import uuid as _uuid
 
 _event_queue: asyncio.Queue | None = None
 _recent_events: deque[dict] = deque(maxlen=500)
+_full_events: dict[str, dict] = {}
+_MAX_FULL_EVENTS = 1000
 
 
 def enable_event_bus() -> None:
@@ -121,9 +135,24 @@ def enable_event_bus() -> None:
 
 
 async def publish_event(event: dict) -> None:
-    """发布一条事件（由 agent.py 调用）。自动初始化事件总线。"""
+    """发布一条事件（由 agent.py 调用）。自动初始化事件总线。
+
+    为 llm_call 和 tool_call 事件生成唯一 event_id，并存储完整数据到 _full_events。
+    """
     if "timestamp" not in event:
         event = {**event, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+    # 为 llm_call 和 tool_call 生成 event_id 并保留完整数据
+    if event.get("type") in ("llm_call", "tool_call"):
+        event_id = f"evt_{_uuid.uuid4().hex[:12]}"
+        event["event_id"] = event_id
+        _full_events[event_id] = dict(event)
+        # 控制 _full_events 大小
+        if len(_full_events) > _MAX_FULL_EVENTS:
+            overflow = len(_full_events) - _MAX_FULL_EVENTS
+            for key in list(_full_events.keys())[:overflow]:
+                _full_events.pop(key, None)
+
     _recent_events.append(event)
     if _event_queue is None:
         enable_event_bus()
@@ -134,6 +163,46 @@ async def publish_event(event: dict) -> None:
         q.put_nowait(event)
     except asyncio.QueueFull:
         pass  # 队列满了就丢弃
+
+
+def _search_debug_logs(event_id: str) -> dict | None:
+    """Search all debug log files on disk for *event_id*."""
+    if not DATA_DIR.exists():
+        return None
+    log_files = sorted(DATA_DIR.glob("debug_*.jsonl"), reverse=True)
+    for log_file in log_files:
+        if not log_file.exists():
+            continue
+        try:
+            with open(log_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except Exception:
+                        continue
+                    if entry.get("event_id") == event_id:
+                        return entry
+        except Exception:
+            continue
+    return None
+
+
+def get_full_event(event_id: str) -> dict | None:
+    """Return the full event data for *event_id*.
+
+    Checks the in-memory _full_events dict first, then falls back to
+    all debug JSONL log files on disk for persistence across daemon restarts.
+    """
+    # 1) Check in-memory dict
+    event = _full_events.get(event_id)
+    if event is not None:
+        return event
+
+    # 2) Fall back to debug log files on disk
+    return _search_debug_logs(event_id)
 
 
 async def subscribe():
