@@ -49,6 +49,11 @@ _DEFAULT_SOUL = """# {name}'s Soul
 # ---------------------------------------------------------------------------
 
 
+def get_default_soul_content(name: str | None = None) -> str:
+    """Return the default SOUL.md template for the given assistant name."""
+    return _DEFAULT_SOUL.format(name=name or ASSISTANT_NAME)
+
+
 def get_soul_path() -> Path:
     """Return the path to SOUL.md."""
     return WORKSPACE_DIR / "SOUL.md"
@@ -61,7 +66,7 @@ def ensure_soul() -> None:
         return
     try:
         soul_path.parent.mkdir(parents=True, exist_ok=True)
-        soul_path.write_text(_DEFAULT_SOUL.format(name=ASSISTANT_NAME), encoding="utf-8")
+        soul_path.write_text(get_default_soul_content(), encoding="utf-8")
         logger.info("Created SOUL.md at %s", soul_path)
     except Exception:
         logger.exception("Failed to create SOUL.md")

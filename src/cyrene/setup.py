@@ -7,7 +7,7 @@ import asyncio
 import logging
 
 from cyrene.config import DATA_DIR
-from cyrene.soul import get_soul_path
+from cyrene.soul import get_default_soul_content, get_soul_path
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +28,9 @@ def is_setup_done() -> bool:
 
 def mark_setup_done() -> None:
     """Create the .setup_done flag file."""
+    global _SETUP_FLAG
     if _SETUP_FLAG is None:
-        return
+        _SETUP_FLAG = DATA_DIR / ".setup_done"
     try:
         _SETUP_FLAG.parent.mkdir(parents=True, exist_ok=True)
         _SETUP_FLAG.write_text("setup_complete", encoding="utf-8")
@@ -76,19 +77,9 @@ async def run_setup() -> None:
 async def _setup_from_name(name: str) -> None:
     """搜索人物信息 + 生成行为人格文件。"""
     print(f"\n正在搜索 {name} 的信息...")
-
-    # 1. 用内置 SearXNG 搜索（模型内部知识可能不准或缺少最新信息）
-    from cyrene.search import deep_search
-    bio = await deep_search(f"{name} 生平 人物经历 背景")
-    style = await deep_search(f"{name} 说话方式 语录 口头禅 名场面 梗")
-
-    # 2. 用搜索结果 + 模型知识生成行为档案
-    soul_content = await _generate_soul_profile(name, bio, style)
-
-    soul_path = get_soul_path()
-    soul_path.write_text(soul_content, encoding="utf-8")
+    await create_soul_profile_from_name(name)
     print(f"已为 {name} 创建人格文件！")
-    print(f"   文件: {soul_path}")
+    print(f"   文件: {get_soul_path()}")
 
 
 async def _generate_soul_profile(name: str, bio: str = "", style: str = "") -> str:
@@ -163,6 +154,17 @@ Write the ENTIRE profile in Chinese."""
 """
 
 
+async def create_soul_profile_from_name(name: str) -> str:
+    """Create and persist a generated SOUL.md for the given personality name."""
+    from cyrene.search import deep_search
+
+    bio = await deep_search(f"{name} 生平 人物经历 背景")
+    style = await deep_search(f"{name} 说话方式 语录 口头禅 名场面 梗")
+    soul_content = await _generate_soul_profile(name, bio, style)
+    get_soul_path().write_text(soul_content, encoding="utf-8")
+    return soul_content
+
+
 async def _setup_custom() -> None:
     """让用户自己提供 SOUL.md。"""
     print("\n请粘贴或输入 SOUL.md 的内容（输入完成后，在新的一行输入 END 并回车）：")
@@ -179,10 +181,17 @@ async def _setup_custom() -> None:
     content = "\n".join(lines).strip()
     if content:
         soul_path = get_soul_path()
-        # 确保有标题
-        if not content.startswith("# "):
-            content = "# Custom Soul\n\n" + content
-        soul_path.write_text(content, encoding="utf-8")
+        soul_path.write_text(normalize_custom_soul_content(content), encoding="utf-8")
         print(f"已写入自定义人格文件！")
     else:
         print("内容为空，使用默认人格。")
+
+
+def normalize_custom_soul_content(content: str) -> str:
+    """Normalize custom SOUL content into a valid markdown document."""
+    clean = content.strip()
+    if not clean:
+        return get_default_soul_content()
+    if not clean.startswith("# "):
+        clean = "# Custom Soul\n\n" + clean
+    return clean

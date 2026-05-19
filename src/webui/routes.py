@@ -37,6 +37,7 @@ from cyrene.config import (
     WORKSPACE_DIR,
 )
 from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange
+from cyrene.onboarding import get_onboarding_status, save_and_test_llm_setup, save_personality_setup
 from cyrene.scheduler import reset_lottery
 from cyrene.settings_store import get_all as get_web_settings
 from cyrene.shells import list_shells as list_live_shells
@@ -266,6 +267,54 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     # ---- Settings API ----
 
+    @router.get("/api/onboarding")
+    async def api_get_onboarding():
+        return {"onboarding": get_onboarding_status()}
+
+    @router.post("/api/onboarding/llm")
+    async def api_onboarding_llm(request: Request):
+        body = await request.json()
+        try:
+            return await save_and_test_llm_setup(
+                str(body.get("api_key") or ""),
+                str(body.get("base_url") or ""),
+                str(body.get("model") or ""),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except httpx.TimeoutException as exc:
+            return JSONResponse(
+                {"error": "upstream model timed out", "detail": str(exc)},
+                status_code=504,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": "upstream model request failed", "detail": format_httpx_error(exc)},
+                status_code=502,
+            )
+
+    @router.post("/api/onboarding/personality")
+    async def api_onboarding_personality(request: Request):
+        body = await request.json()
+        try:
+            return await save_personality_setup(
+                str(body.get("mode") or ""),
+                name=str(body.get("name") or ""),
+                content=str(body.get("content") or ""),
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except httpx.TimeoutException as exc:
+            return JSONResponse(
+                {"error": "upstream model timed out", "detail": str(exc)},
+                status_code=504,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": "upstream model request failed", "detail": format_httpx_error(exc)},
+                status_code=502,
+            )
+
     @router.get("/api/settings/soul")
     async def api_get_soul():
         return {"content": _read_soul()}
@@ -426,6 +475,7 @@ async def _build_ui_data() -> dict:
         "status": await _build_status(),
         "skills": _build_skills(),
         "settings": _build_settings_meta(),
+        "onboarding": get_onboarding_status(),
     }
 
 
