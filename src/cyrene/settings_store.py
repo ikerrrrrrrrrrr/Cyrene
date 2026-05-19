@@ -161,3 +161,13 @@ def is_workspace_active() -> bool:
 def set_workspace_active(active: bool) -> None:
     """Grant or revoke workspace file access."""
     set_("workspace_active", active)
+
+
+def is_soul_active() -> bool:
+    """Check if SOUL.md should be loaded into the agent context."""
+    return _load().get("soul_active", True)
+
+
+def set_soul_active(active: bool) -> None:
+    """Enable or disable SOUL.md loading without touching the file content."""
+    set_("soul_active", active)

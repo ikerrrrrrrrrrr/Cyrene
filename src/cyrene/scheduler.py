@@ -9,25 +9,32 @@ Responsibilities
 3. **Lottery** -- A probability-driven mechanism that occasionally prompts the
    assistant to send an unsolicited message to the user.  State is persisted
    to ``data/lottery_state.json`` so that it survives restarts.
+4. **Smart proactive context** -- When the lottery triggers, the agent now
+   receives short-term memory, recent conversation context, and relationship
+   state from SOUL.md so the proactive message can reference real events
+   instead of sending generic greetings.
 """
 
 import asyncio
 import json
 import logging
+import os
 import random
+import re as _re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from croniter import croniter
 
 from cyrene import db
 from cyrene.agent import run_steward_agent, run_task_agent
-from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STEWARD_INTERVAL
+from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STATE_FILE, STEWARD_INTERVAL
 from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
-from cyrene.short_term import clear_old_entries
-from cyrene.soul import apply_soul_update, read_soul
+from cyrene.short_term import clear_old_entries, get_context as get_short_term_context
+from cyrene.soul import apply_soul_update, read_shallow_memory, read_soul
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +138,259 @@ def _lottery_draw() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Silence detection — infer how long since the user last spoke
+# ---------------------------------------------------------------------------
+
+
+def _last_user_message_time() -> datetime | None:
+    """Infer the timestamp of the user's most recent message.
+
+    Tries ``state.json`` first (using the file modification time as a proxy),
+    then falls back to scanning today's conversation archive for the last
+    ``## HH:MM:SS UTC`` heading that precedes a ``**User**:`` entry.
+
+    Returns ``None`` when no user message can be found.
+    """
+    # 1. state.json: use file mtime as a rough proxy (messages carry no
+    #    per-message timestamp field).
+    try:
+        if STATE_FILE.exists():
+            mtime = STATE_FILE.stat().st_mtime
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            messages = data.get("messages", []) if isinstance(data, dict) else []
+            # Only trust mtime when there actually IS a user message
+            for msg in reversed(messages):
+                if msg.get("role") == "user" and str(msg.get("content", "")).strip():
+                    return datetime.fromtimestamp(mtime, tz=timezone.utc)
+    except Exception:
+        logger.debug("Could not read state.json for silence detection", exc_info=True)
+
+    # 2. Fallback: scan conversation archives for the most recent
+    #    ``**User**:`` entry with an explicit timestamp heading.
+    try:
+        if CONVERSATIONS_DIR.exists():
+            files = sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)
+            for filepath in files:
+                content = filepath.read_text(encoding="utf-8")
+                # Each exchange starts with "## HH:MM:SS UTC", then optional
+                # metadata comments, then "**User**: ..." — match lazily.
+                matches = _re.findall(
+                    r"## (\d{2}:\d{2}:\d{2} UTC)\n.*?\*\*User\*\*:",
+                    content,
+                    _re.DOTALL,
+                )
+                if matches:
+                    latest_ts = matches[-1]
+                    date_str = filepath.stem  # YYYY-MM-DD
+                    clean_ts = latest_ts.replace(" UTC", "")
+                    dt_str = f"{date_str} {clean_ts}"
+                    try:
+                        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S").replace(
+                            tzinfo=timezone.utc,
+                        )
+                    except ValueError:
+                        logger.debug(
+                            "Unparseable timestamp in %s: %s",
+                            filepath.name,
+                            latest_ts,
+                            exc_info=True,
+                        )
+                        continue
+    except Exception:
+        logger.debug(
+            "Could not scan conversation archives for silence detection",
+            exc_info=True,
+        )
+
+    return None
+
+
+def _silence_hours() -> float | None:
+    """Return hours since the user's last message, or *None* if unknown."""
+    last = _last_user_message_time()
+    if last is None:
+        return None
+    delta = datetime.now(timezone.utc) - last.astimezone(timezone.utc)
+    return delta.total_seconds() / 3600
+
+
+# ---------------------------------------------------------------------------
+# Proactive context assembly — memory + conversations + personality
+# ---------------------------------------------------------------------------
+
+
+async def _assemble_proactive_context() -> str:
+    """Gather memory, conversation, and personality context for a proactive
+    message so the agent can reference real events.
+
+    Returns a Markdown string assembled from three sources:
+
+    * SOUL.md — RELATIONSHIP:USER and PATTERN:USER sections.
+    * Short-term memory — recent facts, preferences, emotional patterns.
+    * Today's conversation archive — what the user just talked about.
+
+    Every source is best-effort; failures are logged and skipped.
+    """
+    parts: list[str] = []
+
+    # 1. SOUL.md shallow memory — relationship + observed patterns
+    try:
+        soul = read_shallow_memory()
+        if soul:
+            relevant_lines: list[str] = []
+            capture = False
+            for line in soul.splitlines():
+                if line.startswith("## RELATIONSHIP:USER") or line.startswith(
+                    "## PATTERN:USER",
+                ):
+                    capture = True
+                    relevant_lines.append(line)
+                elif line.startswith("## ") and capture:
+                    capture = False
+                elif capture:
+                    relevant_lines.append(line)
+            if relevant_lines:
+                parts.append(
+                    "## Your relationship with the user\n"
+                    + "\n".join(relevant_lines),
+                )
+    except Exception:
+        logger.debug(
+            "Could not read SOUL.md for proactive context",
+            exc_info=True,
+        )
+
+    # 2. Short-term memory — compressed facts / preferences / emotions
+    try:
+        st = get_short_term_context(
+            max_chars=1500,
+            header="## Recent memories about the user",
+        )
+        if st and st != "## Recent memories about the user":
+            parts.append(st)
+    except Exception:
+        logger.debug(
+            "Could not read short-term memory for proactive context",
+            exc_info=True,
+        )
+
+    # 3. Today's conversation — what the user just talked about
+    try:
+        conversations = await get_recent_conversations(days=1)
+        if conversations:
+            if len(conversations) > 3000:
+                # Keep the tail (most recent exchanges)
+                conversations = conversations[-3000:]
+                # Splice back onto a section boundary so we don't start
+                # mid-exchange.
+                boundary = conversations.find("\n=== ")
+                if boundary > 100:
+                    conversations = conversations[boundary + 1:]
+            parts.append("## Recent conversation\n" + conversations)
+    except Exception:
+        logger.debug(
+            "Could not read conversations for proactive context",
+            exc_info=True,
+        )
+
+    return "\n\n".join(parts).strip()
+
+
+def _build_proactive_system_prompt() -> str:
+    """System prompt for the proactive message generation LLM call."""
+    return (
+        "You are Cyrene, a personal AI companion. "
+        "Generate a brief proactive check-in message (1–3 sentences) "
+        "based on the provided context. "
+        "Reference specific recent events or memories when available. "
+        "Match the communication style described in the relationship section. "
+        "Write in the user's language (Chinese if they write in Chinese, "
+        "English if in English). "
+        "Return ONLY the message text — no explanations, no prefixes, no quotes."
+    )
+
+
+def _build_proactive_user_prompt(context: str, silence_hours: float | None) -> str:
+    """Build the user prompt with memory context and current situation."""
+    now = datetime.now().strftime("%H:%M")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    silence_note = ""
+    if silence_hours is not None:
+        if silence_hours < 2:
+            silence_note = ""
+        elif silence_hours < 12:
+            silence_note = (
+                "The user has been away for a few hours. "
+                "A warm reconnection is appropriate."
+            )
+        elif silence_hours < 48:
+            silence_note = (
+                "The user hasn't checked in for a while. "
+                "Show you notice their absence with warmth, not pressure."
+            )
+        else:
+            silence_note = (
+                "The user has been away for quite some time. "
+                "Be gentle — show you care, but don't overwhelm. "
+                "Keep it short."
+            )
+
+    silence_line = (
+        f"Hours since user's last message: {silence_hours:.0f}"
+        if silence_hours is not None
+        else "Unable to determine when the user last messaged"
+    )
+
+    return f"""## Memory context
+{context if context else "No recent context available."}
+
+## Guidelines
+- Reference something SPECIFIC from the memory context above — a recent topic, a plan the user mentioned, a concern they shared.
+- If the user mentioned plans, events, or concerns recently — follow up on them naturally.
+- If the user's recent emotional patterns suggest stress or tiredness, be warm and supportive.
+- If there are open topics from the recent conversation, follow up.
+- If there's truly nothing specific to reference, do a gentle check-in — but avoid generic "how are you".
+{silence_note}
+
+## Current situation
+- Date: {today}
+- Current time: {now}
+- {silence_line}"""
+
+
+async def _call_llm_text_only(messages: list[dict], max_tokens: int = 200) -> str:
+    """Minimal LLM call for proactive message generation.
+
+    Unlike ``_call_llm`` in agent.py, this function:
+    * Does NOT publish SSE events (no Web UI timeline pollution).
+    * Disables DeepSeek thinking mode (no reasoning_content leak).
+    * Returns only the content text — no tool calls, no metadata.
+    """
+    model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload: dict = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(endpoint, json=payload, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+    return (data["choices"][0]["message"].get("content") or "").strip()
+
+
+# ---------------------------------------------------------------------------
 # Scheduled-task execution  (preserved from the original scheduler)
 # ---------------------------------------------------------------------------
 
@@ -222,15 +482,90 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Proactive message delivery — bot + session state + SSE event
+# ---------------------------------------------------------------------------
+
+
+async def _deliver_proactive_message(text: str, bot, chat_id: int) -> None:
+    """Deliver a proactive message so it appears in both the bot and the Web UI.
+
+    1. Sends the text through the bot (Telegram or WebBot).
+    2. Appends an assistant entry to ``state.json`` so the message is visible
+       in the Web UI chat history on the next page load.
+    3. Publishes a ``chat_message`` SSE event so connected frontends update
+       in real time without a refresh.
+
+    The state.json write is best-effort — failures are logged and swallowed
+    so a corrupt or missing state file never blocks proactive delivery.
+    """
+    # 1. Bot delivery (Telegram push or WebBot memory queue)
+    if bot is not None:
+        await bot.send_message(chat_id=chat_id, text=text)
+
+    # 2. Write to session state for Web UI chat history
+    try:
+        from uuid import uuid4
+
+        from cyrene import debug
+
+        if STATE_FILE.exists():
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        else:
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+
+        messages = state.get("messages", [])
+        if not isinstance(messages, list):
+            messages = []
+
+        entry: dict = {
+            "role": "assistant",
+            "content": text,
+            "message_id": f"msg_{uuid4().hex}",
+            "proactive": True,
+        }
+        messages.append(entry)
+
+        # Keep within the context-window limit (same as agent.py)
+        if len(messages) > 40:
+            messages = messages[-40:]
+
+        state["messages"] = messages
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        # 3. Push SSE event so connected frontends update in real time
+        await debug.publish_event({
+            "type": "chat_message",
+            "proactive": True,
+        })
+    except Exception:
+        logger.exception(
+            "Failed to write proactive message to session state"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Proactive heartbeat  (lottery-driven)
 # ---------------------------------------------------------------------------
 
 async def _heartbeat_proactive_check(bot, db_path: str) -> None:
-    """Attempt to send a proactive message to the user.
+    """Attempt to send a context-aware proactive message to the user.
 
-    The decision is based on a lottery draw that only happens during daytime
-    (06:00-22:00 local time).  If the draw succeeds, a short prompt is sent
-    through ``run_task_agent`` to generate a casual 1-2 sentence message.
+    The decision to send is based on the lottery draw, but the trigger is
+    also influenced by how long the user has been silent:
+
+    * Normal: lottery draw with accumulating probability (delta 0.15, max 0.85).
+    * Silent > 72 h: always trigger regardless of lottery state.
+
+    When triggered, a minimal LLM call (no tools, no thinking mode, no SSE
+    events from the agent loop) generates a personalised message.  The text
+    is then delivered to the bot AND written to session state so it appears
+    in the Web UI chat history.
     """
     if OWNER_ID is None:
         logger.debug("OWNER_ID not configured, skipping proactive check")
@@ -243,29 +578,57 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             logger.debug("Nighttime, skipping proactive check")
             return
 
-        if _lottery_draw():
-            _save_lottery_state()
-            logger.info("Lottery won -- sending proactive message")
+        silence_h = _silence_hours()
 
-            prompt = (
-                "You are Cyrene, a proactive AI assistant. "
-                "Send a brief, casual message to the user "
-                "-- just 1-2 sentences. Do not use any tools."
+        # -------- Trigger decision --------
+        should_send = False
+        if silence_h is not None and silence_h > 72:
+            should_send = True
+            logger.info(
+                "Silence > 72 h — overriding lottery and sending proactive message"
             )
-            try:
-                response = await asyncio.wait_for(
-                    run_task_agent(prompt, bot, OWNER_ID, db_path),
-                    timeout=30.0,
-                )
-                logger.info("Proactive message sent: %s", response[:100])
-            except asyncio.TimeoutError:
-                logger.warning("Proactive message generation timed out")
+        elif _lottery_draw():
+            should_send = True
+            _save_lottery_state()
+            logger.info(
+                "Lottery won — sending proactive message (silence=%.1f h)",
+                silence_h or -1,
+            )
         else:
             _save_lottery_state()
             logger.debug(
-                "Lottery draw failed, probability now %.2f",
+                "Lottery draw failed, probability now %.2f (silence=%.1f h)",
                 _LOTTERY_STATE["probability"],
+                silence_h or -1,
             )
+
+        if not should_send:
+            return
+
+        # -------- Generate message via clean LLM call --------
+        context = await _assemble_proactive_context()
+        messages = [
+            {"role": "system", "content": _build_proactive_system_prompt()},
+            {"role": "user", "content": _build_proactive_user_prompt(context, silence_h)},
+        ]
+
+        text = await asyncio.wait_for(
+            _call_llm_text_only(messages, max_tokens=200),
+            timeout=30.0,
+        )
+
+        if not text:
+            logger.warning("Proactive LLM returned empty text, skipping")
+            return
+
+        # -------- Deliver via bot + write to session state --------
+        await _deliver_proactive_message(text, bot, OWNER_ID)
+        logger.info("Proactive message sent: %s", text[:100])
+
+    except asyncio.TimeoutError:
+        logger.warning("Proactive message generation timed out")
+    except httpx.HTTPError:
+        logger.exception("Proactive message LLM request failed")
     except Exception:
         logger.exception("Proactive check failed")
 

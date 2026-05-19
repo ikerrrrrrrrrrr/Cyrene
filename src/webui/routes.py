@@ -549,10 +549,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/api/context/state")
     async def api_context_state():
-        from cyrene.settings_store import is_workspace_active, get_workspace_history
-        soul_active = bool(_read_soul().strip())
+        from cyrene.settings_store import is_workspace_active, is_soul_active, get_workspace_history
         return {
-            "soul_active": soul_active,
+            "soul_active": is_soul_active(),
             "workspace_active": is_workspace_active(),
             "workspace_dir": str(WORKSPACE_DIR),
             "workspace_history": get_workspace_history(),
@@ -560,13 +559,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.post("/api/context/remove-soul")
     async def api_remove_soul():
-        SOUL_PATH.write_text("", encoding="utf-8")
+        from cyrene.settings_store import set_soul_active
+        set_soul_active(False)
         return {"ok": True}
 
     @router.post("/api/context/add-soul")
     async def api_add_soul():
-        from cyrene.soul import get_default_soul_content
-        SOUL_PATH.write_text(get_default_soul_content(), encoding="utf-8")
+        from cyrene.settings_store import set_soul_active
+        set_soul_active(True)
         return {"ok": True}
 
     @router.post("/api/context/remove-workspace")
@@ -2242,9 +2242,9 @@ def _build_config() -> dict:
 
 def _build_context_chips() -> list[dict]:
     """Build context chips reflecting current SOUL.md and workspace state."""
-    from cyrene.settings_store import is_workspace_active
+    from cyrene.settings_store import is_workspace_active, is_soul_active
     chips = []
-    if bool(_read_soul().strip()):
+    if is_soul_active():
         chips.append({"icon": "🧠", "label": "SOUL.md"})
     if is_workspace_active():
         chips.append({"icon": "📁", "label": "workspace"})
