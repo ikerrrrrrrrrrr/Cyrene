@@ -906,39 +906,79 @@ async def _synthesize_subagent_results(
     guidance: str = "",
     round_history: list[dict[str, Any]] | None = None,
 ) -> str:
-    history_lines: list[str] = []
-    for message in (round_history or [])[-8:]:
-        role = str(message.get("role", "")).strip()
-        if role not in ("user", "assistant"):
-            continue
-        content = str(message.get("content", "")).strip()
-        if not content:
-            continue
-        label = "User" if role == "user" else ASSISTANT_NAME
-        history_lines.append(f"{label}: {content[:1200]}")
-    history_block = "\n".join(history_lines) if history_lines else "—"
+    # Include the main agent's own reasoning and spawn context so the LLM
+    # understands what each subagent was asked to do and how we got here.
+    context_lines: list[str] = []
+    if round_history:
+        for msg in round_history[-16:]:
+            role = str(msg.get("role", "")).strip()
+            if role == "system":
+                continue
+            content = str(msg.get("content", "")).strip()
+            tool_calls = msg.get("tool_calls") or []
+            if role == "user" and content:
+                label = "User query" if not context_lines else "User"
+                context_lines.append(f"[{label}]\n{content[:800]}")
+            elif role == "assistant":
+                if content:
+                    context_lines.append(f"[Assistant reasoning]\n{content[:600]}")
+                for tc in tool_calls:
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "")
+                    args = fn.get("arguments", "{}")
+                    if name == "spawn_subagent":
+                        try:
+                            a = json.loads(args)
+                            context_lines.append(f"[Spawned subagent: {a.get('agent_id', '?')}]\nTask: {a.get('task', '')[:300]}")
+                        except Exception:
+                            context_lines.append(f"[Spawned subagent]")
+                    elif name == "send_agent_message":
+                        try:
+                            a = json.loads(args)
+                            context_lines.append(f"[Subagent msg: {a.get('from', '?')} -> {a.get('to', '?')}]")
+                        except Exception:
+                            pass
+    context_block = "\n\n".join(context_lines) if context_lines else "—"
+
+    # Build the expert findings block from subagent results
+    experts_block = summary.strip() or "(No subagent results.)"
+
+    # Only call LLM synthesis when there are actual multi-subagent findings
+    if len(experts_block) < 50:
+        return experts_block
+
     response = await _call_llm([
         {
             "role": "system",
             "content": (
-                "You synthesize main-agent replies from multiple subagent findings.\n"
-                "Preserve concrete facts, code details, caveats, tradeoffs, and next steps.\n"
-                "Do not over-compress. If the experts covered distinct angles, carry each angle forward.\n"
-                "Prefer a complete answer over a terse summary."
+                "You are presenting the final answer after subagents completed their tasks.\n\n"
+                "Rules:\n"
+                "1. First, present EACH subagent's original output in full — verbatim, under their own heading.\n"
+                "   This is mandatory. Do not rewrite, truncate, or summarize their work.\n"
+                "2. After all subagent outputs, you MAY add a brief synthesis section that connects"
+                " or contrasts their perspectives.\n"
+                "3. For creative work (poems, code, art descriptions): quote the original completely.\n"
+                "4. For research or analysis: present each expert's findings in full, then synthesize.\n\n"
+                "Output format:\n"
+                "--- <subagent name> ---\n"
+                "<their complete original output>\n"
+                "...\n"
+                "--- Synthesis ---\n"
+                "<your synthesis, if needed>"
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Round title: {round_title or '—'}\n"
-                f"Task: {task}\n"
-                f"Latest user guidance: {guidance or '—'}\n\n"
-                f"Recent round history:\n{history_block}\n\n"
-                f"Expert findings:\n{summary}"
+                f"Task: {task}\n\n"
+                f"Round context:\n{context_block}\n\n"
+                f"Expert findings from subagents:\n{experts_block}\n\n"
+                "Present the final answer following the rules above."
             ),
         },
     ], tools=None, max_tokens=None)
-    return _assistant_text(response) or summary
+    llm_text = _assistant_text(response).strip()
+    return llm_text or experts_block
 
 
 async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id: int, db_path: str) -> str:
@@ -1484,9 +1524,8 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
             await _publish_runtime_event({
                 "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
                 "tools": [t.get("function", {}).get("name") for t in (tools or [])],
-                "response": _assistant_text(msg)[:200],
-                "tool_calls": [{"name": tc["function"]["name"], "args": tc["function"].get("arguments", "")[:100]}
-                              for tc in (msg.get("tool_calls") or [])],
+                "messages": _sanitize_messages_for_llm(messages),
+                "response": msg,
                 "usage": data.get("usage") or {},
                 "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
             })
@@ -1733,7 +1772,7 @@ async def _run_main_agent(
                     "to": "synthesis",
                     "detail": "All subagents done, synthesizing results",
                 })
-                final_text = await _synthesize_subagent_results(task=user_message, summary=summary)
+                final_text = await _synthesize_subagent_results(task=user_message, summary=summary, round_history=messages)
                 synthesis_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
                 if client_request_id:
                     synthesis_entry["client_request_id"] = client_request_id

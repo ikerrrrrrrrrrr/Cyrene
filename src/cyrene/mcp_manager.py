@@ -13,6 +13,7 @@ Supports two transport modes:
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from cyrene.config import DATA_DIR
@@ -124,11 +125,19 @@ class MCPServerConnection:
         from mcp import ClientSession
 
         self._session = ClientSession(self._read_stream, self._write_stream)
-        await self._session.initialize()
+        try:
+            await self._session.initialize()
+        except Exception:
+            await self.disconnect()
+            raise
         self.status = "connected"
 
         # Discover tools
-        await self._refresh_tools()
+        try:
+            await self._refresh_tools()
+        except Exception:
+            logger.warning("MCP server '%s' tool discovery failed", self.name, exc_info=True)
+
         logger.info("MCP server '%s' connected (%d tools)", self.name, len(self._tools))
 
     async def _connect_stdio(self) -> None:
@@ -140,11 +149,15 @@ class MCPServerConnection:
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no command configured")
 
+        _cwd = self.config.get("cwd") or None
+        _env = dict(os.environ)
+        _env["PYTHONUNBUFFERED"] = "1"
         params = StdioServerParameters(
             command=command,
             args=list(args),
+            cwd=_cwd,
+            env=_env,
         )
-        # stdio_client returns an async context manager
         ctx = stdio_client(params)
         self._ctx_stack = ctx
         self._read_stream, self._write_stream = await ctx.__aenter__()
@@ -282,7 +295,6 @@ class MCPManager:
                 self._servers[name] = conn
             except Exception:
                 logger.warning("Failed to connect MCP server '%s'", name, exc_info=True)
-                # Don't add failed connections
 
     async def stop(self) -> None:
         """Disconnect all servers."""
