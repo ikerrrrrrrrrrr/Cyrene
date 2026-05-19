@@ -87,6 +87,14 @@ function unmatchedMessages(existingMessages, transientMessages) {
   return visible;
 }
 
+function visibleRetainedMessages(existingMessages, transientMessages) {
+  return unmatchedMessages(existingMessages, transientMessages).filter(function (msg) {
+    const replacementRequestId = String(msg && msg.replaceWhenAssistantReplyForRequestId || "");
+    if (!replacementRequestId) return true;
+    return !hasVisibleAssistantReplyForRequest(existingMessages, replacementRequestId);
+  });
+}
+
 function mergeMessagesWithAnchors(baseMessages, anchoredMessages) {
   const merged = (baseMessages || []).slice();
   (anchoredMessages || []).forEach(function (msg) {
@@ -169,6 +177,7 @@ function snapshotRuntimeTrace(state, options) {
     traceEntries,
     traceElapsed: formatElapsedMs(endedAt - state.startedAt),
     insertAfterKey: String(options && options.insertAfterKey || ""),
+    replaceWhenAssistantReplyForRequestId: String(options && options.replaceWhenAssistantReplyForRequestId || ""),
   };
 }
 
@@ -226,6 +235,18 @@ function canAttachRuntimeToLastMessage(msg, activeRequest, session) {
   const currentRoundId = String(session && session.currentRoundId || "");
   const messageRoundId = String(msg && msg.roundId || "");
   return Boolean(!messageRequestId && currentRoundId && messageRoundId && currentRoundId === messageRoundId);
+}
+
+function hasVisibleAssistantReplyForRequest(messages, requestId) {
+  const targetRequestId = String(requestId || "");
+  if (!targetRequestId) return false;
+  return (messages || []).some(function (msg) {
+    return msg
+      && msg.role === "agent"
+      && !msg.runtimeTrace
+      && (msg.body || msg.thinking || (msg.tools && msg.tools.length))
+      && String(msg.clientRequestId || "") === targetRequestId;
+  });
 }
 
 function formatProgressEvent(event) {
@@ -354,6 +375,7 @@ function ensureChatRuntimeSseSubscription() {
               runtime.activeRequest.finalTraceAnchorKey
               || (runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "")
             ),
+            replaceWhenAssistantReplyForRequestId: eventRequestId,
           })
         : null;
       delete runtime.requests[eventRequestId];
@@ -453,7 +475,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
   const retainedMessages = isLiveSession
-    ? unmatchedMessages(session.chat.messages, runtimeState.retainedMessages || [])
+    ? visibleRetainedMessages(session.chat.messages, runtimeState.retainedMessages || [])
     : [];
   const visiblePendingMessages = isLiveSession
     ? unmatchedMessages((session.chat.messages || []).concat(retainedMessages), pendingMessages || [])
@@ -471,7 +493,10 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const watchingGuidance = Boolean(activeRequest && activeRequest.guideRoundId && !activeRequest.guidanceAccepted);
   const activeTraceDescriptor = runtimeTraceDescriptor(activeRequest);
   const liveElapsed = runtimeState.startedAt ? formatElapsedMs(elapsedNow - runtimeState.startedAt) : "00:00";
-  const visibleSending = isLiveSession && sending;
+  const requestFulfilledInSession = isLiveSession
+    ? hasVisibleAssistantReplyForRequest(session.chat.messages, runtimeState.watchRequestId)
+    : false;
+  const visibleSending = isLiveSession && sending && !requestFulfilledInSession;
   const visibleNotice = isLiveSession ? notice : "";
   const visibleLiveProgress = isLiveSession ? liveProgress : [];
 
@@ -489,7 +514,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   useEffect(function () {
     if (!isLiveSession) return;
     if (!runtimeState.retainedMessages || runtimeState.retainedMessages.length === 0) return;
-    const nextRetained = unmatchedMessages(session.chat.messages, runtimeState.retainedMessages);
+    const nextRetained = visibleRetainedMessages(session.chat.messages, runtimeState.retainedMessages);
     if (nextRetained.length === runtimeState.retainedMessages.length) return;
     updateChatRuntime({ retainedMessages: nextRetained });
   }, [isLiveSession, session.id, session.chat.messages.length, runtimeState.retainedMessages]);
@@ -524,6 +549,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
             runtime.activeRequest.finalTraceAnchorKey
             || (runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "")
           ),
+          replaceWhenAssistantReplyForRequestId: requestId,
         })
       : null;
     updateChatRuntime({
@@ -653,9 +679,18 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         clientRequestId: requestId,
       };
       if (isWatching) {
+        delete runtime.requests[requestId];
         updateChatRuntime(function (state) {
-          return { pendingMessages: state.pendingMessages.concat([agentMsg]) };
+          return {
+            pendingMessages: state.pendingMessages.concat([agentMsg]),
+            sending: false,
+            liveProgress: [],
+            startedAt: 0,
+            activeRequest: null,
+            watchRequestId: "",
+          };
         });
+        clearChatRuntimeSseSubscription();
       }
       // Refresh sessions FIRST so the run_live entry contains the new
       // messages before we clear pending — otherwise there's a flash of
@@ -664,7 +699,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         await window.refreshSessions();
       }
       if (isWatching) {
-        updateChatRuntime({ pendingMessages: [] });
+        updateChatRuntime(function (state) {
+          return {
+            pendingMessages: (state.pendingMessages || []).filter(function (msg) {
+              return String(msg.clientRequestId || "") !== requestId;
+            }),
+          };
+        });
       }
     } catch (e) {
       if (!isAbortError(e) && getChatRuntime().watchRequestId === requestId) {

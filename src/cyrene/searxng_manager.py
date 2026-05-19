@@ -5,12 +5,14 @@ vendors SearXNG and runs it via waitress on a configurable port.
 """
 
 import asyncio
+import importlib.util
 import logging
 import os
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import httpx
 
@@ -53,8 +55,9 @@ class SearXNGManager:
         self._stderr_path = log_path
 
         try:
+            launch_cmd = _build_simplexng_launch_cmd(port, host)
             self._process = subprocess.Popen(
-                [sys.executable, "-m", "simplexng", "-p", str(port), "-H", host],
+                launch_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=open(log_path, "w"),
             )
@@ -115,16 +118,16 @@ class SearXNGManager:
             pass
 
     def _wait_ready(self) -> bool:
-        """Poll the health-check endpoint until the server responds 200."""
+        """Poll the local HTTP endpoint until the server responds 200."""
         deadline = time.monotonic() + _HEALTH_CHECK_TIMEOUT
-        url = f"{self._url}/search?q=healthcheck&format=json"
+        url = f"{self._url}/"
 
         while time.monotonic() < deadline:
             if self._process and self._process.poll() is not None:
                 logger.error("SearXNG exited prematurely (rc=%d)", self._process.returncode)
                 return False
             try:
-                r = httpx.get(url, timeout=3.0)
+                r = httpx.get(url, timeout=3.0, trust_env=False)
                 if r.status_code == 200:
                     return True
             except Exception:
@@ -143,6 +146,23 @@ def get_manager() -> SearXNGManager:
     if _manager is None:
         _manager = SearXNGManager()
     return _manager
+
+
+def _build_simplexng_launch_cmd(port: int, host: str) -> list[str]:
+    """Build a launch command compatible with different SimpleXNG package layouts."""
+    args = ["-p", str(port), "-H", host]
+
+    if importlib.util.find_spec("simplexng.__main__") is not None:
+        return [sys.executable, "-m", "simplexng", *args]
+
+    if importlib.util.find_spec("simplexng.simplexng") is not None:
+        return [sys.executable, "-m", "simplexng.simplexng", *args]
+
+    script_path = Path(sys.executable).resolve().parent / "simplexng"
+    if script_path.exists():
+        return [str(script_path), *args]
+
+    raise FileNotFoundError("Could not locate a runnable SimpleXNG entrypoint")
 
 
 async def start_searxng(port: int = 8888, host: str = "127.0.0.1") -> str:
