@@ -1,6 +1,21 @@
-# Cyrene — AI Agent Framework
+# Cyrene — AI Agent That Evolves
 
-Cyrene is an open-source AI agent framework with a pluggable personality system, multi-agent orchestration, layered memory architecture, and a real-time web UI with agent activity visualization.
+Cyrene is an open-source AI agent framework designed to feel alive. It runs on your own hardware, needs zero external infrastructure, and gets smarter over time through a self-evolving personality system.
+
+## Why not just use OpenClaw / LangChain / AutoGPT?
+
+| | Cyrene | Others |
+|---|---|---|
+| **Personality** | SOUL.md — a living document the agent rewrites itself via a Steward Agent. Your AI isn't stateless, it grows. | Static system prompts. No memory of who it is. |
+| **Memory** | Three-tier: context window → compressed short-term (with emotional valence) → long-term SOUL.md. Conversations become the agent's identity. | Single context window. Everything is ephemeral. |
+| **Cost** | Two-phase loop: lightweight decision first, full tool execution only when needed. Pure chat costs 1 LLM call. | Every turn burns tokens on tool schemas and reasoning. |
+| **Search** | Built-in SearXNG via SimpleXNG. No Docker, no API key, no external service. Zero setup. | Bring your own. Or pay per-search API fees. |
+| **Proactivity** | Lottery system: the agent initiates conversation when it has something to say, not just when spoken to. | Purely reactive. Never speaks unless prompted. |
+| **Infrastructure** | SQLite + filesystem. That's it. No Docker, no Redis, no vector DB, no Kubernetes. | Redis, Postgres, Qdrant, S3, Docker Compose — a full cloud stack just to run locally. |
+| **MCP** | Connects to any MCP server. Use community tools as if they were native. | Vendor-locked or no standard protocol. |
+| **Observability** | Real-time SVG agent timeline in the browser. Every LLM call, tool execution, subagent spawn — visualized live. | Log files. Maybe. |
+| **Subagents** | Inbox-based async communication. Spawn parallel workers, they coordinate via file-based message passing. | Thread-based or no parallelism. |
+| **Configuration** | Edit API keys, models, tools, search mode from the Web UI at runtime. No restart needed. | Edit .env, restart, pray. |
 
 ## Quick Start
 
@@ -12,10 +27,13 @@ conda activate cyrene
 # 2. Install dependencies
 #    Linux/macOS:
 pip install -e .
-#    Windows (uvloop is Unix-only, skip it):
+#    Windows (uvloop → winloop replacement):
 pip install aiosqlite apscheduler croniter fastapi httpx jinja2 python-dotenv python-telegram-bot requests sniffio uvicorn "mcp>=1.27.0"
+pip install winloop  # uvloop replacement for Windows
 pip install simplexng --no-deps
+pip install babel brotli clideps flask flask-babel httpx-socks isodate lxml markdown-it-py msgspec platformdirs pyyaml rich setproctitle typer-slim valkey whitenoise
 pip install -e . --no-build-isolation
+#    See "Windows note" below for post-install patches.
 #    Or install all at once:
 pip install -e . && pip install simplexng --no-deps  # Linux/macOS
 
@@ -32,7 +50,32 @@ PYTHONPATH=src python -m cyrene.local_cli --headless
 
 On first launch, a personality setup wizard will guide you through injecting a personality (real or fictional) into the agent. Open `http://localhost:4242` for the web UI.
 
-> **Windows note:** `simplexng` (built-in SearXNG) depends on `uvloop` which does not support Windows ([tracking issue](https://github.com/MagicStack/uvloop/issues/14)). Use `pip install simplexng --no-deps` to skip uvloop — SearXNG auto-start will be unavailable, but all other features work normally. Alternatively, set `SEARXNG_URL` in `.env` to point to an external SearXNG instance.
+> **Windows note:** `simplexng` (built-in SearXNG) depends on `uvloop` which does not support Windows ([tracking issue](https://github.com/MagicStack/uvloop/issues/14)). Cyrene patches it automatically with `winloop` (a drop-in replacement), but some manual setup is required:
+>
+> ```bash
+> # 1. Install pip packages with Tsinghua mirror (recommended for China users)
+> pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+>
+> # 2. Install winloop (uvloop replacement for Windows)
+> pip install winloop
+>
+> # 3. Install all simplexng dependencies (omitted by --no-deps)
+> pip install babel brotli clideps fasttext-predict flask flask-babel \
+>   httpx-socks isodate lxml markdown-it-py msgspec platformdirs pyyaml \
+>   rich setproctitle typer-slim valkey whitenoise
+>
+> # 4. Apply Windows compatibility patches:
+> #    Replace uvloop with winloop in simplexng's vendored SearXNG
+> #    Edit: Lib/site-packages/simplexng/_vendor/searx/network/client.py
+> #      import winloop instead of uvloop on Windows
+> #    Edit: Lib/site-packages/simplexng/_vendor/searx/plugins/calculator.py
+> #      mp_fork = "spawn" instead of "fork" on Windows
+> #    Create: Lib/site-packages/pwd.py (stub for Unix-only module)
+> #    Edit: Lib/site-packages/simplexng/settings/settings_template.yml
+> #      Add "json" to search.formats
+> ```
+>
+> Alternatively, set `SEARXNG_URL` in `.env` to point to an external SearXNG instance and skip the built-in one entirely.
 
 ## Architecture
 
