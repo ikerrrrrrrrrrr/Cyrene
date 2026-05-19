@@ -569,6 +569,13 @@ button { font-family: inherit; }
   line-height: 1.55;
   order: 2;
 }
+.msg-body.streaming-reply::after {
+  content: "▍";
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent);
+  animation: cyrene-stream-caret 1s steps(1, end) infinite;
+}
 .msg-trace + .msg-body {
   margin-top: 14px;
 }
@@ -580,6 +587,9 @@ button { font-family: inherit; }
 }
 .msg-body.markdown > :last-child {
   margin-bottom: 0;
+}
+@keyframes cyrene-stream-caret {
+  50% { opacity: 0; }
 }
 .msg-body.markdown p,
 .msg-body.markdown ul,

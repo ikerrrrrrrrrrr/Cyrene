@@ -1,5 +1,6 @@
 """Route handlers for the Cyrene Web UI (SPA backend)."""
 
+import asyncio
 import getpass
 import json
 import logging
@@ -59,6 +60,53 @@ _APP_DIR = _STATIC_DIR / "app"
 _SERVER_STARTED_AT = time.time()
 
 
+def _ndjson_line(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False) + "\n"
+
+
+def _reply_stream_chunks(text: str, target_chars: int = 36) -> list[str]:
+    source = str(text or "")
+    if not source:
+        return []
+
+    chunks: list[str] = []
+    for block in re.split(r"(\n\n+)", source):
+        if not block:
+            continue
+        if block.startswith("\n"):
+            chunks.append(block)
+            continue
+        remaining = block
+        while remaining:
+            if len(remaining) <= target_chars:
+                chunks.append(remaining)
+                break
+            split_at = target_chars
+            lower_bound = max(0, target_chars - 14)
+            for index in range(target_chars - 1, lower_bound - 1, -1):
+                if remaining[index] in "，。！？；：,.!?;: ":
+                    split_at = index + 1
+                    break
+            chunks.append(remaining[:split_at])
+            remaining = remaining[split_at:]
+    return [chunk for chunk in chunks if chunk]
+
+
+async def _stream_reply_payload(response_text: str) -> StreamingResponse:
+    async def event_stream():
+        yield _ndjson_line({"type": "reply_start"})
+        for chunk in _reply_stream_chunks(response_text):
+            yield _ndjson_line({"type": "reply_delta", "delta": chunk})
+            await asyncio.sleep(0)
+        yield _ndjson_line({"type": "reply_done", "response": response_text})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 def register_routes(app, bot: Any, db_path: str) -> None:
     global _bot, _db_path
     _bot = bot
@@ -86,6 +134,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         message = (body.get("message") or "").strip()
         guide_round_id = str(body.get("guide_round_id") or "").strip()
         client_request_id = str(body.get("client_request_id") or "").strip()
+        wants_stream = bool(body.get("stream"))
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
 
@@ -102,17 +151,31 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 )
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
-            return {
+            payload = {
                 "response": f"Sent to the main-agent inbox for {guide_round_id}. It will run after the current main-agent output finishes.",
                 "queued": True,
                 "guide_round_id": guide_round_id,
                 "guide_request_id": item.get("id", ""),
             }
+            if wants_stream:
+                return StreamingResponse(
+                    iter([_ndjson_line({"type": "queued", **payload})]),
+                    media_type="application/x-ndjson",
+                    headers={"Cache-Control": "no-cache"},
+                )
+            return payload
 
         try:
             response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id)
             if response == _AWAITING_USER_SENTINEL:
-                return {"awaiting_user": True, "pending_question": get_pending_question()}
+                payload = {"awaiting_user": True, "pending_question": get_pending_question()}
+                if wants_stream:
+                    return StreamingResponse(
+                        iter([_ndjson_line({"type": "awaiting_user", **payload})]),
+                        media_type="application/x-ndjson",
+                        headers={"Cache-Control": "no-cache"},
+                    )
+                return payload
             labels = get_session_labels()
             await archive_exchange(
                 message,
@@ -123,6 +186,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 round_id=labels.get("round_id", ""),
                 archive_session_id=labels.get("archive_session_id", ""),
             )
+            if wants_stream:
+                return await _stream_reply_payload(response)
             return {"response": response}
         except httpx.TimeoutException as exc:
             logger.exception(
@@ -156,6 +221,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         selected_option = str(body.get("selected_option") or "").strip()
         answer_text = str(body.get("answer") or "").strip() or selected_option
         client_request_id = str(body.get("client_request_id") or "").strip()
+        wants_stream = bool(body.get("stream"))
         if not question_id:
             return JSONResponse({"error": "missing question_id"}, status_code=400)
         if not answer_text:
@@ -171,7 +237,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 client_request_id=client_request_id,
             )
             if response == _AWAITING_USER_SENTINEL:
-                return {"awaiting_user": True, "pending_question": get_pending_question()}
+                payload = {"awaiting_user": True, "pending_question": get_pending_question()}
+                if wants_stream:
+                    return StreamingResponse(
+                        iter([_ndjson_line({"type": "awaiting_user", **payload})]),
+                        media_type="application/x-ndjson",
+                        headers={"Cache-Control": "no-cache"},
+                    )
+                return payload
             labels = get_session_labels()
             await archive_exchange(
                 answer_text,
@@ -182,6 +255,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 round_id=labels.get("round_id", ""),
                 archive_session_id=labels.get("archive_session_id", ""),
             )
+            if wants_stream:
+                return await _stream_reply_payload(response)
             return {"response": response}
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)

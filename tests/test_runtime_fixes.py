@@ -536,6 +536,32 @@ def test_build_current_session_exposes_pending_question(monkeypatch, tmp_path):
     assert session["chat"]["messages"][-1]["questionPrompt"] is True
 
 
+def test_reply_stream_chunks_reconstructs_original_text():
+    from webui import routes
+
+    text = "第一段先说重点。\n\n第二段补充更多细节，而且这一段稍微长一点，方便验证分块逻辑。"
+    chunks = routes._reply_stream_chunks(text, target_chars=12)
+
+    assert chunks
+    assert len(chunks) > 1
+    assert "".join(chunks) == text
+
+
+async def test_stream_reply_payload_emits_ndjson_events():
+    from webui import routes
+
+    response = await routes._stream_reply_payload("你好，世界")
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+
+    events = [json.loads(line) for line in body.decode("utf-8").splitlines() if line.strip()]
+
+    assert events[0]["type"] == "reply_start"
+    assert any(event["type"] == "reply_delta" for event in events)
+    assert events[-1] == {"type": "reply_done", "response": "你好，世界"}
+
+
 def test_flush_intermediate_replies_keeps_messages_for_later_saves():
     from cyrene import agent
 

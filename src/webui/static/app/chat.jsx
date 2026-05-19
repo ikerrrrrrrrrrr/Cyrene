@@ -52,6 +52,65 @@ function isAbortError(error) {
   return error && (error.name === "AbortError" || String(error.message || "").includes("aborted"));
 }
 
+async function readNdjsonStream(response, onEvent) {
+  if (!response.body || !response.body.getReader) {
+    const payload = await response.json();
+    onEvent(payload.awaiting_user
+      ? { type: "awaiting_user", ...payload }
+      : payload.queued
+      ? { type: "queued", ...payload }
+      : { type: "reply_done", response: payload.response || "" });
+    return;
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const read = await reader.read();
+    if (read.done) break;
+    buffer += decoder.decode(read.value, { stream: true });
+    while (true) {
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex < 0) break;
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      onEvent(JSON.parse(line));
+    }
+  }
+  buffer += decoder.decode();
+  const tail = buffer.trim();
+  if (tail) onEvent(JSON.parse(tail));
+}
+
+function upsertStreamingAgentMessage(requestId, delta, done) {
+  updateChatRuntime(function (state) {
+    const pending = (state.pendingMessages || []).slice();
+    const targetId = "pending_agent_" + requestId;
+    const targetIndex = pending.findIndex(function (msg) {
+      return String(msg && msg.clientRequestId || "") === requestId && msg.role === "agent";
+    });
+    if (targetIndex >= 0) {
+      const current = pending[targetIndex];
+      pending[targetIndex] = {
+        ...current,
+        body: String(current.body || "") + String(delta || ""),
+        streamingReply: !done,
+      };
+    } else {
+      pending.push({
+        id: targetId,
+        role: "agent",
+        time: new Date().toLocaleTimeString(),
+        body: String(delta || ""),
+        clientRequestId: requestId,
+        streamingReply: !done,
+      });
+    }
+    return { pendingMessages: pending };
+  });
+}
+
 function messageKey(msg) {
   const messageId = String(msg && msg.messageId || msg && msg.id || "");
   if (msg && (msg.intermediateReply || msg.questionPrompt) && messageId) return "message::" + messageId;
@@ -658,89 +717,83 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           message: text,
           guide_round_id: selectedGuideRoundId || undefined,
           client_request_id: requestId,
+          stream: true,
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
-      const isWatching = getChatRuntime().watchRequestId === requestId;
-      if (data.queued) {
-        keepWatching = true;
-        if (runtime.requests[requestId]) {
-          runtime.requests[requestId].guideRequestId = data.guide_request_id || "";
-          runtime.requests[requestId].queued = true;
+      let streamCompleted = false;
+      await readNdjsonStream(r, function (event) {
+        const isWatching = getChatRuntime().watchRequestId === requestId;
+        if (event.type === "queued") {
+          keepWatching = true;
+          if (runtime.requests[requestId]) {
+            runtime.requests[requestId].guideRequestId = event.guide_request_id || "";
+            runtime.requests[requestId].queued = true;
+          }
+          if (isWatching) {
+            updateChatRuntime(function (state) {
+              const queuedProgress = {
+                icon: "↳",
+                text: "Guidance accepted. Waiting for the current round to reach the main agent.",
+              };
+              return {
+                pendingMessages: state.pendingMessages.map(function (msg) {
+                  if (String(msg.clientRequestId || "") !== requestId) return msg;
+                  return { ...msg, queuedGuidanceId: event.guide_request_id || "" };
+                }),
+                activeRequest: state.activeRequest && state.activeRequest.id === requestId
+                  ? {
+                      ...state.activeRequest,
+                      guideRequestId: event.guide_request_id || "",
+                      queued: true,
+                    }
+                  : state.activeRequest,
+                liveProgress: state.liveProgress.concat([queuedProgress]).slice(-30),
+              };
+            });
+          }
+          return;
         }
-        if (window.refreshSessions) {
-          await window.refreshSessions();
+        if (event.type === "awaiting_user") {
+          streamCompleted = true;
+          delete runtime.requests[requestId];
+          if (isWatching) {
+            updateChatRuntime({
+              sending: false,
+              liveProgress: [],
+              startedAt: 0,
+              activeRequest: null,
+              watchRequestId: "",
+              pendingMessages: [],
+            });
+            clearChatRuntimeSseSubscription();
+          }
+          return;
         }
-        if (isWatching) {
-          updateChatRuntime(function (state) {
-            const queuedProgress = {
-              icon: "↳",
-              text: "Guidance accepted. Waiting for the current round to reach the main agent.",
-            };
-            return {
-              pendingMessages: state.pendingMessages.map(function (msg) {
-                if (String(msg.clientRequestId || "") !== requestId) return msg;
-                return { ...msg, queuedGuidanceId: data.guide_request_id || "" };
-              }),
-              activeRequest: state.activeRequest && state.activeRequest.id === requestId
-                ? {
-                    ...state.activeRequest,
-                    guideRequestId: data.guide_request_id || "",
-                    queued: true,
-                  }
-                : state.activeRequest,
-              liveProgress: state.liveProgress.concat([queuedProgress]).slice(-30),
-            };
-          });
+        if (event.type === "reply_delta") {
+          if (isWatching) upsertStreamingAgentMessage(requestId, event.delta || "", false);
+          return;
         }
-        return;
-      }
-      if (data.awaiting_user) {
-        delete runtime.requests[requestId];
-        if (window.refreshSessions) {
-          await window.refreshSessions();
+        if (event.type === "reply_done") {
+          streamCompleted = true;
+          if (isWatching) {
+            upsertStreamingAgentMessage(requestId, "", true);
+            delete runtime.requests[requestId];
+            updateChatRuntime({
+              sending: false,
+              liveProgress: [],
+              startedAt: 0,
+              activeRequest: null,
+              watchRequestId: "",
+            });
+            clearChatRuntimeSseSubscription();
+          }
         }
-        if (isWatching) {
-          updateChatRuntime({
-            sending: false,
-            liveProgress: [],
-            startedAt: 0,
-            activeRequest: null,
-            watchRequestId: "",
-            pendingMessages: [],
-          });
-          clearChatRuntimeSseSubscription();
-        }
-        return;
-      }
-      const agentMsg = {
-        id: "pending_agent_" + Date.now(),
-        role: "agent", time: new Date().toLocaleTimeString(),
-        body: data.response || "(no response)",
-        clientRequestId: requestId,
-      };
-      if (isWatching) {
-        delete runtime.requests[requestId];
-        updateChatRuntime(function (state) {
-          return {
-            pendingMessages: state.pendingMessages.concat([agentMsg]),
-            sending: false,
-            liveProgress: [],
-            startedAt: 0,
-            activeRequest: null,
-            watchRequestId: "",
-          };
-        });
-        clearChatRuntimeSseSubscription();
-      }
-      // Refresh sessions FIRST so the run_live entry contains the new
-      // messages before we clear pending — otherwise there's a flash of
-      // "No messages yet" between pending-clear and sessions-arriving.
+      });
       if (window.refreshSessions) {
         await window.refreshSessions();
       }
-      if (isWatching) {
+      if (streamCompleted) {
         updateChatRuntime(function (state) {
           return {
             pendingMessages: (state.pendingMessages || []).filter(function (msg) {
@@ -835,56 +888,53 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           answer: text,
           selected_option: selectedOption || undefined,
           client_request_id: requestId,
+          stream: true,
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
-      const isWatching = getChatRuntime().watchRequestId === requestId;
-      if (data.awaiting_user) {
-        delete runtime.requests[requestId];
-        if (window.refreshSessions) {
-          await window.refreshSessions();
+      let streamCompleted = false;
+      await readNdjsonStream(r, function (event) {
+        const isWatching = getChatRuntime().watchRequestId === requestId;
+        if (event.type === "awaiting_user") {
+          streamCompleted = true;
+          delete runtime.requests[requestId];
+          if (isWatching) {
+            updateChatRuntime({
+              sending: false,
+              liveProgress: [],
+              startedAt: 0,
+              activeRequest: null,
+              watchRequestId: "",
+              pendingMessages: [],
+            });
+            clearChatRuntimeSseSubscription();
+          }
+          return;
         }
-        if (isWatching) {
-          updateChatRuntime({
-            sending: false,
-            liveProgress: [],
-            startedAt: 0,
-            activeRequest: null,
-            watchRequestId: "",
-            pendingMessages: [],
-          });
-          clearChatRuntimeSseSubscription();
+        if (event.type === "reply_delta") {
+          if (isWatching) upsertStreamingAgentMessage(requestId, event.delta || "", false);
+          return;
         }
-        setQuestionDraft("");
-        return;
-      }
-
-      const agentMsg = {
-        id: "pending_agent_" + Date.now(),
-        role: "agent",
-        time: new Date().toLocaleTimeString(),
-        body: data.response || "(no response)",
-        clientRequestId: requestId,
-      };
-      if (isWatching) {
-        delete runtime.requests[requestId];
-        updateChatRuntime(function (state) {
-          return {
-            pendingMessages: state.pendingMessages.concat([agentMsg]),
-            sending: false,
-            liveProgress: [],
-            startedAt: 0,
-            activeRequest: null,
-            watchRequestId: "",
-          };
-        });
-        clearChatRuntimeSseSubscription();
-      }
+        if (event.type === "reply_done") {
+          streamCompleted = true;
+          if (isWatching) {
+            upsertStreamingAgentMessage(requestId, "", true);
+            delete runtime.requests[requestId];
+            updateChatRuntime({
+              sending: false,
+              liveProgress: [],
+              startedAt: 0,
+              activeRequest: null,
+              watchRequestId: "",
+            });
+            clearChatRuntimeSseSubscription();
+          }
+        }
+      });
       if (window.refreshSessions) {
         await window.refreshSessions();
       }
-      if (isWatching) {
+      if (streamCompleted) {
         updateChatRuntime(function (state) {
           return {
             pendingMessages: (state.pendingMessages || []).filter(function (msg) {
@@ -1260,7 +1310,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
 }
 
 function Message({ msg, assistantName }) {
-  const markdownBody = (msg.role === "agent" || msg.role === "system") && msg.body
+  const renderMarkdownBody = !msg.streamingReply;
+  const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
     ? renderMarkdown(msg.body)
     : "";
   const isRuntimeTrace = Boolean(msg.runtimeTrace);
@@ -1328,9 +1379,9 @@ function Message({ msg, assistantName }) {
       )}
 
       {msg.body && (
-        msg.role === "agent" || msg.role === "system"
+        (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
           ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
-          : <div className="msg-body">{msg.body}</div>
+          : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
       )}
     </div>
   );
