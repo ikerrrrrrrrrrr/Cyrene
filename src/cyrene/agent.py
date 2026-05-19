@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 import httpx
@@ -35,6 +35,7 @@ _persist_merge_live_state: ContextVar[bool] = ContextVar("_persist_merge_live_st
 _persist_history_prefix_len: ContextVar[int] = ContextVar("_persist_history_prefix_len", default=0)
 _persist_insert_at: ContextVar[int | None] = ContextVar("_persist_insert_at", default=None)
 _pending_intermediate_user_replies: ContextVar[list[dict[str, Any]] | None] = ContextVar("_pending_intermediate_user_replies", default=None)
+_reply_stream_writer: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar("_reply_stream_writer", default=None)
 _agent_lock = asyncio.Lock()
 _session_state_lock = asyncio.Lock()
 _interrupt_event = asyncio.Event()
@@ -434,6 +435,17 @@ async def _publish_runtime_event(event: dict[str, Any]) -> None:
     if round_id and not str(event.get("round_id", "")).strip():
         event = {**event, "round_id": round_id}
     await debug.publish_event(event)
+
+
+async def _emit_reply_stream_event(event: dict[str, Any]) -> None:
+    writer = _reply_stream_writer.get()
+    if writer is None:
+        return
+    await writer(dict(event))
+
+
+def _streaming_reply_requested() -> bool:
+    return _reply_stream_writer.get() is not None
 
 
 def _assistant_entry_from_response(response: dict[str, Any], round_id: str, include_tool_calls: bool = True) -> dict[str, Any]:
@@ -1123,7 +1135,7 @@ async def _synthesize_subagent_results(
         label = "User" if role == "user" else ASSISTANT_NAME
         history_lines.append(f"{label}: {content[:1200]}")
     history_block = "\n".join(history_lines) if history_lines else "—"
-    response = await _call_llm([
+    prompt_messages = [
         {
             "role": "system",
             "content": (
@@ -1143,8 +1155,14 @@ async def _synthesize_subagent_results(
                 f"Expert findings:\n{summary}"
             ),
         },
-    ], tools=None, max_tokens=None)
+    ]
+    response = await (_call_llm_stream(prompt_messages, max_tokens=None) if _streaming_reply_requested() else _call_llm(prompt_messages, tools=None, max_tokens=None))
     return _assistant_text(response) or summary
+
+
+async def _final_reply_from_history(messages: list[dict[str, Any]], max_tokens: int | None = None) -> str:
+    response = await (_call_llm_stream(messages, max_tokens=max_tokens) if _streaming_reply_requested() else _call_llm(messages, tools=None, max_tokens=max_tokens))
+    return _assistant_text(response).strip() or "Done."
 
 
 async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id: int, db_path: str) -> str:
@@ -1687,29 +1705,60 @@ def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
     return result
 
 
-async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens: int | None = 32000) -> dict:
-    _t0 = __import__("time").monotonic()
-    _phase = "phase1" if tools is _LIGHT_TOOL_DEFS else ("phase2" if tools else "no_tools")
-    _model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
-    _base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
-    _api_key = os.environ.get("OPENAI_API_KEY", "")
-    endpoint = f"{_base_url.rstrip('/')}/chat/completions"
-    safe_messages = _sanitize_messages_for_llm(messages)
-    payload = {
-        "model": _model,
-        "messages": safe_messages,
+def _llm_phase_name(tools: list | None) -> str:
+    return "phase1" if tools is _LIGHT_TOOL_DEFS else ("phase2" if tools else "no_tools")
+
+
+def _build_llm_request(
+    messages: list[dict],
+    tools: list | None,
+    max_tokens: int | None,
+    *,
+    stream: bool,
+) -> tuple[str, str, dict[str, Any], dict[str, str]]:
+    model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
+    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": _sanitize_messages_for_llm(messages),
     }
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
-    if "deepseek" in _model:
+    if "deepseek" in model:
         payload["thinking"] = {"type": "enabled"}
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
-
+    if stream:
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
     headers = {"Content-Type": "application/json"}
-    if _api_key and _api_key.lower() not in ("lmstudio", "dummy", ""):
-        headers["Authorization"] = f"Bearer {_api_key}"
+    if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
+        headers["Authorization"] = f"Bearer {api_key}"
+    return endpoint, model, payload, headers
+
+
+def _extract_stream_delta_text(delta: dict[str, Any]) -> str:
+    content = delta.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens: int | None = 32000) -> dict:
+    _t0 = __import__("time").monotonic()
+    _phase = _llm_phase_name(tools)
+    endpoint, _model, payload, headers = _build_llm_request(messages, tools, max_tokens, stream=False)
 
     transport = httpx.AsyncHTTPTransport(retries=1)
     try:
@@ -1760,6 +1809,98 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
     except httpx.HTTPError as exc:
         logger.exception(
             "Upstream LLM HTTP error [caller=%s phase=%s model=%s endpoint=%s]: %s",
+            _caller_type.get(),
+            _phase,
+            _model,
+            endpoint,
+            format_httpx_error(exc),
+        )
+        raise
+
+
+async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000) -> dict[str, Any]:
+    _t0 = __import__("time").monotonic()
+    _phase = _llm_phase_name(None)
+    endpoint, _model, payload, headers = _build_llm_request(messages, None, max_tokens, stream=True)
+
+    accumulated: list[str] = []
+    usage: dict[str, Any] = {}
+    started = False
+    transport = httpx.AsyncHTTPTransport(retries=1)
+    try:
+        async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
+            async with client.stream("POST", endpoint, json=payload, headers=headers) as resp:
+                if resp.status_code != 200:
+                    try:
+                        resp.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        logger.error(
+                            "Upstream LLM returned non-200 [caller=%s phase=%s model=%s stream=true]: %s",
+                            _caller_type.get(),
+                            _phase,
+                            _model,
+                            format_httpx_error(exc),
+                        )
+                        raise
+                async for raw_line in resp.aiter_lines():
+                    line = str(raw_line or "").strip()
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if not line:
+                        continue
+                    if line == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(data.get("usage"), dict):
+                        usage = data["usage"]
+                    for choice in data.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        text = _extract_stream_delta_text(delta)
+                        if not text:
+                            continue
+                        if not started:
+                            await _emit_reply_stream_event({"type": "reply_start"})
+                            started = True
+                        accumulated.append(text)
+                        await _emit_reply_stream_event({"type": "reply_delta", "delta": text})
+        full_text = "".join(accumulated)
+        if not started:
+            await _emit_reply_stream_event({"type": "reply_start"})
+        await _emit_reply_stream_event({"type": "reply_done", "response": full_text})
+        msg: dict[str, Any] = {"role": "assistant", "content": full_text}
+        if usage:
+            msg["usage"] = usage
+        if debug.VERBOSE:
+            debug.log_llm_call(_caller_type.get(), _phase, messages, None, msg, (__import__("time").monotonic() - _t0) * 1000)
+        await _publish_runtime_event({
+            "type": "llm_call",
+            "caller": _caller_type.get(),
+            "phase": _phase,
+            "tools": [],
+            "response": full_text[:200],
+            "tool_calls": [],
+            "usage": usage,
+            "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
+        })
+        return msg
+    except httpx.TimeoutException as exc:
+        logger.exception(
+            "Upstream LLM timeout [caller=%s phase=%s model=%s endpoint=%s stream=true]: %s",
+            _caller_type.get(),
+            _phase,
+            _model,
+            endpoint,
+            format_httpx_error(exc),
+        )
+        raise
+    except httpx.HTTPError as exc:
+        logger.exception(
+            "Upstream LLM HTTP error [caller=%s phase=%s model=%s endpoint=%s stream=true]: %s",
             _caller_type.get(),
             _phase,
             _model,
@@ -1911,11 +2052,33 @@ async def _run_main_agent(
                     "to": "done",
                     "detail": "Agent called quit",
                 })
+                if _streaming_reply_requested():
+                    messages.pop()
+                    final_text = await _final_reply_from_history(messages, max_tokens=None)
+                    final_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
+                    if client_request_id:
+                        final_entry["client_request_id"] = client_request_id
+                    if round_id:
+                        final_entry["round_id"] = round_id
+                    messages.append(final_entry)
+                    await _save_session_messages(_session_messages_to_save(messages))
+                    return final_text
                 if client_request_id:
                     messages[-1]["client_request_id"] = client_request_id
                 await _save_session_messages(_session_messages_to_save(messages))
                 return _assistant_text(response).strip() or "Done."
             if not tcs:
+                if _streaming_reply_requested():
+                    messages.pop()
+                    final_text = await _final_reply_from_history(messages, max_tokens=None)
+                    final_entry = {"role": "assistant", "content": final_text}
+                    if client_request_id:
+                        final_entry["client_request_id"] = client_request_id
+                    if round_id:
+                        final_entry["round_id"] = round_id
+                    messages.append(final_entry)
+                    await _save_session_messages(_session_messages_to_save(messages))
+                    return final_text
                 if client_request_id:
                     messages[-1]["client_request_id"] = client_request_id
                 await _save_session_messages(_session_messages_to_save(messages))
@@ -2047,6 +2210,17 @@ async def _run_main_agent(
         "detail": "Phase 1 decided chat-only, no tools needed",
     })
     # Phase 1 结束：纯聊天，无工具需要
+    if _streaming_reply_requested():
+        messages = [{"role": "system", "content": effective_system}, *history, user_entry]
+        final_text = await _final_reply_from_history(messages, max_tokens=None)
+        final_entry = {"role": "assistant", "content": final_text}
+        if client_request_id:
+            final_entry["client_request_id"] = client_request_id
+        if round_id:
+            final_entry["round_id"] = round_id
+        messages.append(final_entry)
+        await _save_session_messages(_session_messages_to_save(messages))
+        return final_text
     if client_request_id:
         messages[-1]["client_request_id"] = client_request_id
     await _save_session_messages(_session_messages_to_save(messages))

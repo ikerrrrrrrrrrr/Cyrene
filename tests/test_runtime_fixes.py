@@ -562,6 +562,93 @@ async def test_stream_reply_payload_emits_ndjson_events():
     assert events[-1] == {"type": "reply_done", "response": "你好，世界"}
 
 
+async def test_run_main_agent_chat_only_streams_final_reply(monkeypatch):
+    from cyrene import agent
+
+    saved = {}
+    streamed = []
+
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+        return {"content": "internal draft"}
+
+    async def fake_call_llm_stream(messages, max_tokens=32000):
+        await agent._emit_reply_stream_event({"type": "reply_start"})
+        await agent._emit_reply_stream_event({"type": "reply_delta", "delta": "真实"})
+        await agent._emit_reply_stream_event({"type": "reply_delta", "delta": "流式"})
+        await agent._emit_reply_stream_event({"type": "reply_done", "response": "真实流式"})
+        return {"content": "真实流式"}
+
+    async def fake_save_session_messages(messages):
+        saved["messages"] = list(messages)
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(agent, "_call_llm_stream", fake_call_llm_stream)
+    monkeypatch.setattr(agent, "_save_session_messages", fake_save_session_messages)
+    monkeypatch.setattr(agent, "_append_session_message", AsyncMock())
+    monkeypatch.setattr(agent, "_publish_runtime_event", AsyncMock())
+
+    async def collect(event):
+        streamed.append(event)
+
+    token = agent._reply_stream_writer.set(collect)
+    round_token = agent._current_round_id.set("round_stream")
+    try:
+        result = await agent._run_main_agent(
+            "直接聊聊天",
+            [],
+            None,
+            0,
+            "db.sqlite3",
+            system_prompt="system",
+            client_request_id="req_stream",
+        )
+    finally:
+        agent._current_round_id.reset(round_token)
+        agent._reply_stream_writer.reset(token)
+
+    assert result == "真实流式"
+    assert [event["type"] for event in streamed] == ["reply_start", "reply_delta", "reply_delta", "reply_done"]
+    assert saved["messages"][-1]["content"] == "真实流式"
+    assert saved["messages"][-1]["client_request_id"] == "req_stream"
+
+
+async def test_stream_agent_reply_forwards_live_events_before_completion(monkeypatch):
+    from cyrene import agent
+    from webui import routes
+
+    seen = {"archived": None}
+
+    async def fake_archive_exchange(*args, **kwargs):
+        seen["archived"] = (args, kwargs)
+
+    async def fake_run():
+        writer = agent._reply_stream_writer.get()
+        assert writer is not None
+        await writer({"type": "reply_start"})
+        await writer({"type": "reply_delta", "delta": "先到"})
+        await asyncio.sleep(0)
+        await writer({"type": "reply_done", "response": "先到后完"})
+        return "先到后完"
+
+    monkeypatch.setattr(routes, "archive_exchange", fake_archive_exchange)
+    monkeypatch.setattr(routes, "get_session_labels", lambda: {
+        "session_title": "session",
+        "round_title": "round",
+        "round_id": "round_1",
+        "archive_session_id": "session_1",
+    })
+
+    response = routes._stream_agent_reply(fake_run, "用户消息")
+    body = b""
+    async for chunk in response.body_iterator:
+        body += chunk.encode("utf-8") if isinstance(chunk, str) else chunk
+
+    events = [json.loads(line) for line in body.decode("utf-8").splitlines() if line.strip()]
+
+    assert [event["type"] for event in events] == ["reply_start", "reply_delta", "reply_done"]
+    assert seen["archived"] is not None
+
+
 def test_flush_intermediate_replies_keeps_messages_for_later_saves():
     from cyrene import agent
 

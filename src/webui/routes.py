@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from cyrene import debug
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
+    _reply_stream_writer,
     answer_pending_question,
     clear_session_id,
     format_httpx_error,
@@ -107,6 +108,61 @@ async def _stream_reply_payload(response_text: str) -> StreamingResponse:
     )
 
 
+def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingResponse:
+    async def event_stream():
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        saw_reply_events = False
+
+        async def publish_reply_event(event: dict[str, Any]) -> None:
+            await queue.put(dict(event))
+
+        token = _reply_stream_writer.set(publish_reply_event)
+        task = asyncio.create_task(run_coro_factory())
+        _reply_stream_writer.reset(token)
+
+        try:
+            while True:
+                if task.done() and queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+                if str(event.get("type") or "").startswith("reply_"):
+                    saw_reply_events = True
+                yield _ndjson_line(event)
+
+            response = await task
+            if response == _AWAITING_USER_SENTINEL:
+                yield _ndjson_line({"type": "awaiting_user", "awaiting_user": True, "pending_question": get_pending_question()})
+                return
+
+            labels = get_session_labels()
+            await archive_exchange(
+                user_message,
+                response,
+                _CHAT_ID,
+                session_title=labels.get("session_title", ""),
+                round_title=labels.get("round_title", ""),
+                round_id=labels.get("round_id", ""),
+                archive_session_id=labels.get("archive_session_id", ""),
+            )
+            if not saw_reply_events:
+                yield _ndjson_line({"type": "reply_start"})
+                for chunk in _reply_stream_chunks(response):
+                    yield _ndjson_line({"type": "reply_delta", "delta": chunk})
+                yield _ndjson_line({"type": "reply_done", "response": response})
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 def register_routes(app, bot: Any, db_path: str) -> None:
     global _bot, _db_path
     _bot = bot
@@ -166,16 +222,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return payload
 
         try:
+            if wants_stream:
+                return _stream_agent_reply(
+                    lambda: run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id),
+                    message,
+                )
             response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id)
             if response == _AWAITING_USER_SENTINEL:
-                payload = {"awaiting_user": True, "pending_question": get_pending_question()}
-                if wants_stream:
-                    return StreamingResponse(
-                        iter([_ndjson_line({"type": "awaiting_user", **payload})]),
-                        media_type="application/x-ndjson",
-                        headers={"Cache-Control": "no-cache"},
-                    )
-                return payload
+                return {"awaiting_user": True, "pending_question": get_pending_question()}
             labels = get_session_labels()
             await archive_exchange(
                 message,
@@ -186,8 +240,6 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 round_id=labels.get("round_id", ""),
                 archive_session_id=labels.get("archive_session_id", ""),
             )
-            if wants_stream:
-                return await _stream_reply_payload(response)
             return {"response": response}
         except httpx.TimeoutException as exc:
             logger.exception(
@@ -228,6 +280,18 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "empty answer"}, status_code=400)
 
         try:
+            if wants_stream:
+                return _stream_agent_reply(
+                    lambda: answer_pending_question(
+                        question_id,
+                        answer_text,
+                        _bot,
+                        _CHAT_ID,
+                        _db_path,
+                        client_request_id=client_request_id,
+                    ),
+                    answer_text,
+                )
             response = await answer_pending_question(
                 question_id,
                 answer_text,
@@ -237,14 +301,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 client_request_id=client_request_id,
             )
             if response == _AWAITING_USER_SENTINEL:
-                payload = {"awaiting_user": True, "pending_question": get_pending_question()}
-                if wants_stream:
-                    return StreamingResponse(
-                        iter([_ndjson_line({"type": "awaiting_user", **payload})]),
-                        media_type="application/x-ndjson",
-                        headers={"Cache-Control": "no-cache"},
-                    )
-                return payload
+                return {"awaiting_user": True, "pending_question": get_pending_question()}
             labels = get_session_labels()
             await archive_exchange(
                 answer_text,
@@ -255,8 +312,6 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 round_id=labels.get("round_id", ""),
                 archive_session_id=labels.get("archive_session_id", ""),
             )
-            if wants_stream:
-                return await _stream_reply_payload(response)
             return {"response": response}
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)

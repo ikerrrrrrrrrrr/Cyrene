@@ -65,6 +65,22 @@ async function readNdjsonStream(response, onEvent) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+
+  async function dispatchEvent(event) {
+    if (!event || event.type !== "reply_delta") {
+      onEvent(event);
+      return;
+    }
+    const source = String(event.delta || "");
+    if (!source) return;
+    const chars = Array.from(source);
+    const chunkSize = 24;
+    for (let i = 0; i < chars.length; i += chunkSize) {
+      onEvent({ ...event, delta: chars.slice(i, i + chunkSize).join("") });
+      await new Promise(function (resolve) { window.requestAnimationFrame(resolve); });
+    }
+  }
+
   while (true) {
     const read = await reader.read();
     if (read.done) break;
@@ -75,12 +91,12 @@ async function readNdjsonStream(response, onEvent) {
       const line = buffer.slice(0, newlineIndex).trim();
       buffer = buffer.slice(newlineIndex + 1);
       if (!line) continue;
-      onEvent(JSON.parse(line));
+      await dispatchEvent(JSON.parse(line));
     }
   }
   buffer += decoder.decode();
   const tail = buffer.trim();
-  if (tail) onEvent(JSON.parse(tail));
+  if (tail) await dispatchEvent(JSON.parse(tail));
 }
 
 function upsertStreamingAgentMessage(requestId, delta, done) {
@@ -147,11 +163,19 @@ function unmatchedMessages(existingMessages, transientMessages) {
   return visible;
 }
 
-function visibleRetainedMessages(existingMessages, transientMessages) {
+function pruneRetainedMessages(existingMessages, transientMessages) {
   return unmatchedMessages(existingMessages, transientMessages).filter(function (msg) {
+    const attachmentRequestId = String(msg && msg.attachToAssistantReplyForRequestId || "");
+    if (attachmentRequestId) return true;
     const replacementRequestId = String(msg && msg.replaceWhenAssistantReplyForRequestId || "");
     if (!replacementRequestId) return true;
     return !hasVisibleAssistantReplyForRequest(existingMessages, replacementRequestId);
+  });
+}
+
+function visibleRetainedMessages(existingMessages, transientMessages) {
+  return pruneRetainedMessages(existingMessages, transientMessages).filter(function (msg) {
+    return !String(msg && msg.attachToAssistantReplyForRequestId || "");
   });
 }
 
@@ -238,7 +262,28 @@ function snapshotRuntimeTrace(state, options) {
     traceElapsed: formatElapsedMs(endedAt - state.startedAt),
     insertAfterKey: String(options && options.insertAfterKey || ""),
     replaceWhenAssistantReplyForRequestId: String(options && options.replaceWhenAssistantReplyForRequestId || ""),
+    attachToAssistantReplyForRequestId: String(options && options.attachToAssistantReplyForRequestId || ""),
   };
+}
+
+function runtimeAttachmentFromTrace(msg) {
+  return {
+    summary: String(msg && msg.traceSummary || "details · processing"),
+    head: String(msg && msg.traceHead || "processing"),
+    elapsed: String(msg && msg.traceElapsed || "00:00"),
+    timeLabel: "—",
+    entries: Array.isArray(msg && msg.traceEntries) ? msg.traceEntries.slice() : [],
+  };
+}
+
+function collectRetainedRuntimeAttachments(retainedMessages) {
+  const attachments = new Map();
+  (retainedMessages || []).forEach(function (msg) {
+    const requestId = String(msg && msg.attachToAssistantReplyForRequestId || "");
+    if (!requestId || !msg.runtimeTrace) return;
+    attachments.set(requestId, runtimeAttachmentFromTrace(msg));
+  });
+  return attachments;
 }
 
 function guidanceAckMessage(guidanceId, body, insertAfterKey) {
@@ -287,11 +332,13 @@ function buildAttachedRuntime(activeTraceDescriptor, liveElapsed, visibleLivePro
 }
 
 function canAttachRuntimeToLastMessage(msg, activeRequest, session) {
-  if (!isTraceOnlyAssistantMessage(msg)) return false;
+  if (!msg || msg.role !== "agent" || msg.runtimeTrace) return false;
   if (msg.guidanceAckForGuidanceId || msg.inReplyToGuidanceId || msg.queuedGuidanceId) return false;
+  if (msg.questionPrompt || msg.intermediateReply) return false;
   const activeRequestId = String(activeRequest && activeRequest.id || "");
   const messageRequestId = String(msg && msg.clientRequestId || "");
   if (activeRequestId && messageRequestId && activeRequestId === messageRequestId) return true;
+  if (!isTraceOnlyAssistantMessage(msg)) return false;
   const currentRoundId = String(session && session.currentRoundId || "");
   const messageRoundId = String(msg && msg.roundId || "");
   return Boolean(!messageRequestId && currentRoundId && messageRoundId && currentRoundId === messageRoundId);
@@ -431,15 +478,9 @@ function ensureChatRuntimeSseSubscription() {
       return;
     }
     if (event && event.type === "chat_message" && eventRequestId && runtime.watchRequestId === eventRequestId) {
-      const frozenFinalTrace = runtime.activeRequest && runtime.activeRequest.guideRoundId
-        ? snapshotRuntimeTrace(runtime, {
-            insertAfterKey: String(
-              runtime.activeRequest.finalTraceAnchorKey
-              || (runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "")
-            ),
-            replaceWhenAssistantReplyForRequestId: eventRequestId,
-          })
-        : null;
+      const frozenFinalTrace = snapshotRuntimeTrace(runtime, {
+        attachToAssistantReplyForRequestId: eventRequestId,
+      });
       delete runtime.requests[eventRequestId];
       updateChatRuntime({
         sending: false,
@@ -539,12 +580,18 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const scrollRef = useRef(null);
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
+  const prunedRetainedMessages = isLiveSession
+    ? pruneRetainedMessages(session.chat.messages, runtimeState.retainedMessages || [])
+    : [];
   const retainedMessages = isLiveSession
     ? visibleRetainedMessages(session.chat.messages, runtimeState.retainedMessages || [])
     : [];
   const visiblePendingMessages = isLiveSession
     ? unmatchedMessages((session.chat.messages || []).concat(retainedMessages), pendingMessages || [])
     : [];
+  const retainedRuntimeAttachments = isLiveSession
+    ? collectRetainedRuntimeAttachments(prunedRetainedMessages)
+    : new Map();
   const liveProgress = runtimeState.liveProgress;
   const activeRequest = runtimeState.activeRequest;
   const selectedGuideRound = liveRounds.find(function (round) { return round.id === selectedGuideRoundId; }) || null;
@@ -582,7 +629,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   useEffect(function () {
     if (!isLiveSession) return;
     if (!runtimeState.retainedMessages || runtimeState.retainedMessages.length === 0) return;
-    const nextRetained = visibleRetainedMessages(session.chat.messages, runtimeState.retainedMessages);
+    const nextRetained = pruneRetainedMessages(session.chat.messages, runtimeState.retainedMessages);
     if (nextRetained.length === runtimeState.retainedMessages.length) return;
     updateChatRuntime({ retainedMessages: nextRetained });
   }, [isLiveSession, session.id, session.chat.messages.length, runtimeState.retainedMessages]);
@@ -620,15 +667,9 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     const runtime = getChatRuntime();
     delete runtime.requests[requestId];
     if (runtime.watchRequestId !== requestId) return;
-    const frozenFinalTrace = runtime.activeRequest && runtime.activeRequest.guideRoundId
-      ? snapshotRuntimeTrace(runtime, {
-          insertAfterKey: String(
-            runtime.activeRequest.finalTraceAnchorKey
-            || (runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "")
-          ),
-          replaceWhenAssistantReplyForRequestId: requestId,
-        })
-      : null;
+    const frozenFinalTrace = snapshotRuntimeTrace(runtime, {
+      attachToAssistantReplyForRequestId: requestId,
+    });
     updateChatRuntime({
       sending: false,
       liveProgress: [],
@@ -770,6 +811,10 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           }
           return;
         }
+        if (event.type === "reply_start") {
+          if (isWatching) upsertStreamingAgentMessage(requestId, "", false);
+          return;
+        }
         if (event.type === "reply_delta") {
           if (isWatching) upsertStreamingAgentMessage(requestId, event.delta || "", false);
           return;
@@ -779,12 +824,18 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           if (isWatching) {
             upsertStreamingAgentMessage(requestId, "", true);
             delete runtime.requests[requestId];
+            const frozenFinalTrace = snapshotRuntimeTrace(getChatRuntime(), {
+              attachToAssistantReplyForRequestId: requestId,
+            });
             updateChatRuntime({
               sending: false,
               liveProgress: [],
               startedAt: 0,
               activeRequest: null,
               watchRequestId: "",
+              retainedMessages: frozenFinalTrace
+                ? getChatRuntime().retainedMessages.concat([frozenFinalTrace])
+                : getChatRuntime().retainedMessages.slice(),
             });
             clearChatRuntimeSseSubscription();
           }
@@ -911,6 +962,10 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           }
           return;
         }
+        if (event.type === "reply_start") {
+          if (isWatching) upsertStreamingAgentMessage(requestId, "", false);
+          return;
+        }
         if (event.type === "reply_delta") {
           if (isWatching) upsertStreamingAgentMessage(requestId, event.delta || "", false);
           return;
@@ -920,12 +975,18 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           if (isWatching) {
             upsertStreamingAgentMessage(requestId, "", true);
             delete runtime.requests[requestId];
+            const frozenFinalTrace = snapshotRuntimeTrace(getChatRuntime(), {
+              attachToAssistantReplyForRequestId: requestId,
+            });
             updateChatRuntime({
               sending: false,
               liveProgress: [],
               startedAt: 0,
               activeRequest: null,
               watchRequestId: "",
+              retainedMessages: frozenFinalTrace
+                ? getChatRuntime().retainedMessages.concat([frozenFinalTrace])
+                : getChatRuntime().retainedMessages.slice(),
             });
             clearChatRuntimeSseSubscription();
           }
@@ -1062,10 +1123,16 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         retainedMessages
       )
     : session.chat.messages;
-  const lastMessage = allMessages.length ? allMessages[allMessages.length - 1] : null;
+  const messagesWithRetainedRuntime = allMessages.map(function (msg) {
+    const requestId = String(msg && msg.clientRequestId || "");
+    const retainedRuntime = requestId ? retainedRuntimeAttachments.get(requestId) : null;
+    if (!retainedRuntime || msg.role !== "agent" || msg.runtimeTrace) return msg;
+    return { ...msg, attachedRuntime: retainedRuntime };
+  });
+  const lastMessage = messagesWithRetainedRuntime.length ? messagesWithRetainedRuntime[messagesWithRetainedRuntime.length - 1] : null;
   const runtimeAttachedToLastMessage = visibleSending && canAttachRuntimeToLastMessage(lastMessage, activeRequest, session);
   const renderedMessages = runtimeAttachedToLastMessage
-    ? allMessages.slice(0, -1).concat([{
+    ? messagesWithRetainedRuntime.slice(0, -1).concat([{
         ...lastMessage,
         attachedRuntime: buildAttachedRuntime(
           activeTraceDescriptor,
@@ -1076,7 +1143,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           activeRequest
         ),
       }])
-    : allMessages;
+    : messagesWithRetainedRuntime;
   const renderedMessageEntries = renderMessageEntries(renderedMessages);
 
   async function newSession() {
@@ -1316,11 +1383,14 @@ function Message({ msg, assistantName }) {
     : "";
   const isRuntimeTrace = Boolean(msg.runtimeTrace);
   const attachedRuntime = msg.attachedRuntime || null;
-  const hasTrace = isRuntimeTrace || Boolean(msg.thinking || (msg.tools && msg.tools.length));
+  const hasOwnTrace = Boolean(msg.thinking || (msg.tools && msg.tools.length));
+  const hasTrace = isRuntimeTrace || hasOwnTrace || Boolean(attachedRuntime);
   const traceLabel = isRuntimeTrace
     ? (msg.traceSummary + (msg.traceElapsed ? " · " + msg.traceElapsed : ""))
+    : attachedRuntime && !hasOwnTrace
+    ? (attachedRuntime.summary + (attachedRuntime.elapsed ? " · " + attachedRuntime.elapsed : ""))
     : traceSummary(msg);
-  const runtimeSuffix = attachedRuntime
+  const runtimeSuffix = attachedRuntime && hasOwnTrace
     ? " · " + attachedRuntime.summary.replace(/^details\s·\s/, "") + " · " + attachedRuntime.elapsed
     : "";
   return (
