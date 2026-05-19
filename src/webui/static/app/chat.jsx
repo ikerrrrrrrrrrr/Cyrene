@@ -53,13 +53,14 @@ function isAbortError(error) {
 }
 
 function messageKey(msg) {
+  const messageId = String(msg && msg.messageId || msg && msg.id || "");
+  if (msg && msg.intermediateReply && messageId) return "message::" + messageId;
   const clientRequestId = String(msg && msg.clientRequestId || "");
   if (clientRequestId) return "request::" + clientRequestId + "::" + String(msg && msg.role || "");
   const queuedGuidanceId = String(msg && msg.queuedGuidanceId || "");
   if (queuedGuidanceId) return "guide::" + queuedGuidanceId;
   const guidanceAckForGuidanceId = String(msg && msg.guidanceAckForGuidanceId || "");
   if (guidanceAckForGuidanceId) return "guidance-ack::" + guidanceAckForGuidanceId;
-  const messageId = String(msg && msg.messageId || msg && msg.id || "");
   if (messageId) return "message::" + messageId;
   return [
     String(msg && msg.role || ""),
@@ -244,6 +245,7 @@ function hasVisibleAssistantReplyForRequest(messages, requestId) {
     return msg
       && msg.role === "agent"
       && !msg.runtimeTrace
+      && !msg.intermediateReply
       && (msg.body || msg.thinking || (msg.tools && msg.tools.length))
       && String(msg.clientRequestId || "") === targetRequestId;
   });
@@ -574,6 +576,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     const hasAssistantReply = (session.chat.messages || []).some(function (msg) {
       return msg
         && msg.role === "agent"
+        && !msg.intermediateReply
         && String(msg.clientRequestId || "") === requestId;
     });
     if (!hasAssistantReply) return;

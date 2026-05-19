@@ -270,6 +270,78 @@ async def test_send_agent_message_rejects_cross_round_target():
     assert "round_new" in result
 
 
+async def test_send_message_tool_persists_intermediate_reply(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+    from cyrene import tools
+
+    seen = []
+
+    async def fake_publish_event(event):
+        seen.append(event)
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+
+    agent.STATE_FILE.write_text(json.dumps({
+        "messages": [
+            {"role": "user", "content": "do the work", "round_id": "round_1", "client_request_id": "req_1"},
+        ]
+    }, ensure_ascii=False), encoding="utf-8")
+
+    round_token = agent._current_round_id.set("round_1")
+    request_token = agent._current_client_request_id.set("req_1")
+    pending_token = agent._pending_intermediate_user_replies.set([])
+    sender_token = agent._current_agent_id.set("main")
+    try:
+        result = await tools._tool_send_user_message(
+            {"text": "先给你一个中途结论：方向是对的，我继续细化。"},
+            None,
+            0,
+            "db.sqlite3",
+            None,
+        )
+    finally:
+        agent._current_agent_id.reset(sender_token)
+        agent._pending_intermediate_user_replies.reset(pending_token)
+        agent._current_client_request_id.reset(request_token)
+        agent._current_round_id.reset(round_token)
+
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert result == "Mid-run message sent to the user."
+    assert saved[-1]["role"] == "assistant"
+    assert saved[-1]["content"].startswith("先给你一个中途结论")
+    assert saved[-1]["round_id"] == "round_1"
+    assert saved[-1]["client_request_id"] == "req_1"
+    assert saved[-1]["intermediate_reply"] is True
+    assert any(event.get("type") == "assistant_message" and event.get("intermediate") is True for event in seen)
+
+
+def test_flush_intermediate_replies_keeps_messages_for_later_saves():
+    from cyrene import agent
+
+    base_messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task", "message_id": "u1"},
+    ]
+    pending = [{
+        "role": "assistant",
+        "content": "working on it",
+        "message_id": "a_mid",
+        "intermediate_reply": True,
+    }]
+    token = agent._pending_intermediate_user_replies.set(pending)
+    try:
+        agent._flush_intermediate_user_replies(base_messages)
+    finally:
+        agent._pending_intermediate_user_replies.reset(token)
+
+    assert base_messages[-1]["message_id"] == "a_mid"
+    assert base_messages[-1]["intermediate_reply"] is True
+
+
 async def test_query_round_tool_reports_live_round():
     from cyrene import subagent
     from cyrene import tools
@@ -1841,6 +1913,35 @@ def test_convert_messages_collapses_repeated_user_bodies_within_one_user_block()
     assert len(ui_msgs) == 3
     assert [msg["messageId"] for msg in ui_msgs] == ["u3", "u4", "a1"]
     assert [msg["body"] for msg in ui_msgs[:2]] == ["check", "现在先看看多伦多的天气"]
+
+
+def test_convert_messages_marks_intermediate_replies():
+    from webui import routes
+
+    raw_msgs = [
+        {
+            "role": "assistant",
+            "content": "先汇报一个阶段性结论",
+            "round_id": "round_1",
+            "client_request_id": "req_1",
+            "message_id": "a_mid",
+            "intermediate_reply": True,
+        },
+        {
+            "role": "assistant",
+            "content": "最终答复",
+            "round_id": "round_1",
+            "client_request_id": "req_1",
+            "message_id": "a_final",
+        },
+    ]
+
+    ui_msgs = routes._convert_messages(raw_msgs)
+
+    assert ui_msgs[0]["messageId"] == "a_mid"
+    assert ui_msgs[0]["intermediateReply"] is True
+    assert ui_msgs[1]["messageId"] == "a_final"
+    assert "intermediateReply" not in ui_msgs[1]
 
 
 async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_path):

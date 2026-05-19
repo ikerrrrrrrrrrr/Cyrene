@@ -77,6 +77,33 @@ async def _tool_send_message(args: dict[str, Any], bot: Any, chat_id: int, _db_p
     return "Message sent."
 
 
+async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    text = str(args.get("text", "") or "").strip()
+    if not text:
+        return "Error: 'text' is required."
+    from cyrene.agent import (
+        _current_agent_id,
+        _current_client_request_id,
+        _current_round_id,
+        _insert_intermediate_user_reply,
+    )
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can send a user-visible mid-run message. Sub-agents should use send_agent_message."
+
+    round_id = str(_current_round_id.get() or "").strip()
+    if not round_id:
+        return "Cannot send a mid-run message outside an active round."
+
+    client_request_id = str(_current_client_request_id.get() or "").strip()
+    await _insert_intermediate_user_reply(
+        text,
+        round_id=round_id,
+        client_request_id=client_request_id,
+    )
+    return "Mid-run message sent to the user."
+
+
 async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
     stype = str(args["schedule_type"])
     svalue = str(args["schedule_value"])
@@ -476,6 +503,14 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "send_message",
+            "description": "Send a brief user-visible mid-run reply in the current chat. Use this sparingly when there is meaningful progress or a useful intermediate result, then continue working toward the final answer.",
+            "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "schedule_task",
             "description": "Schedule a task. schedule_type must be cron, interval, or once.",
             "parameters": {
@@ -735,6 +770,7 @@ TOOL_DEFS = [
 # TOOL_HANDLERS without "quit" — agent.py adds it after import to avoid circular import.
 TOOL_HANDLERS: dict[str, Any] = {
     "send_telegram": _tool_send_message,
+    "send_message": _tool_send_user_message,
     "send_agent_message": _tool_send_agent_message,
     "spawn_subagent": _tool_spawn_subagent,
     "query_round": _tool_query_round,

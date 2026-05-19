@@ -740,6 +740,8 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
         ui_msg = {"id": message_id, "messageId": message_id, "role": ui_role, "time": "—"}
         if content:
             ui_msg["body"] = content
+        if bool(m.get("intermediate_reply")):
+            ui_msg["intermediateReply"] = True
         round_id = str(m.get("round_id", "")).strip()
         if round_id:
             ui_msg["roundId"] = round_id

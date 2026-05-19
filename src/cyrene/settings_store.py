@@ -42,6 +42,7 @@ _DEFAULT_ENABLED_TOOLS = {
     "pause_task": True,
     "resume_task": True,
     "cancel_task": True,
+    "send_message": True,
     "send_telegram": False,
     "query_round": True,
 }

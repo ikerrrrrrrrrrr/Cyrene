@@ -27,12 +27,14 @@ logger = logging.getLogger(__name__)
 _current_agent_id: ContextVar[str] = ContextVar("_current_agent_id", default="main")
 # 当前对话轮次 ID，用于隔离多轮 flow / inbox 通信
 _current_round_id: ContextVar[str] = ContextVar("_current_round_id", default="")
+_current_client_request_id: ContextVar[str] = ContextVar("_current_client_request_id", default="")
 # 当前调用者类型，用于 debug 日志
 _caller_type: ContextVar[str] = ContextVar("_caller_type", default="main_agent")
 _persist_base_messages: ContextVar[list[dict[str, Any]] | None] = ContextVar("_persist_base_messages", default=None)
 _persist_merge_live_state: ContextVar[bool] = ContextVar("_persist_merge_live_state", default=False)
 _persist_history_prefix_len: ContextVar[int] = ContextVar("_persist_history_prefix_len", default=0)
 _persist_insert_at: ContextVar[int | None] = ContextVar("_persist_insert_at", default=None)
+_pending_intermediate_user_replies: ContextVar[list[dict[str, Any]] | None] = ContextVar("_pending_intermediate_user_replies", default=None)
 _agent_lock = asyncio.Lock()
 _session_state_lock = asyncio.Lock()
 _interrupt_event = asyncio.Event()
@@ -67,6 +69,7 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 
 ## Tools
 - Use tools when helpful: files, search, web, code, sub-agents, etc.
+- If it helps the user stay oriented during a long task, you may call `send_message` to post a brief in-progress update before the final answer. Use it sparingly and only when there is real new information.
 - When a task is complete, call the `quit` tool.
 """
 
@@ -82,6 +85,7 @@ _EXECUTION_SYSTEM_PROMPT = """You are a capable execution agent. Your job is to 
 Rules:
 - Use tools to complete the task efficiently.
 - Read/Write/Edit files, run Bash commands, search the web as needed.
+- You may call `send_message` to post a brief user-visible progress reply mid-run when helpful, but do not overuse it and do not treat it as the final answer.
 - Return the RESULT of what you did, not a conversation.
 - Be concise in tool usage.
 - When done, call the `quit` tool.
@@ -228,6 +232,67 @@ async def _append_session_message(entry: dict[str, Any]) -> None:
         full_messages.append(entry)
         _ensure_message_identity(full_messages)
         await _write_session_messages_locked(state, full_messages)
+
+
+def _flush_intermediate_user_replies(messages: list[dict[str, Any]]) -> None:
+    pending = _pending_intermediate_user_replies.get()
+    if not pending:
+        return
+    existing_ids = {
+        str(message.get("message_id", "")).strip()
+        for message in messages
+        if isinstance(message, dict)
+    }
+    for entry in pending:
+        message_id = str(entry.get("message_id", "")).strip()
+        if message_id and message_id in existing_ids:
+            continue
+        messages.append(dict(entry))
+        if message_id:
+            existing_ids.add(message_id)
+    pending.clear()
+
+
+async def _insert_intermediate_user_reply(
+    content: str,
+    round_id: str,
+    client_request_id: str = "",
+) -> dict[str, Any]:
+    assistant_entry: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+        "round_id": round_id,
+        "intermediate_reply": True,
+    }
+    if client_request_id:
+        assistant_entry["client_request_id"] = client_request_id
+
+    labels = get_session_labels(round_id)
+    if labels.get("round_title"):
+        assistant_entry["round_title"] = labels["round_title"]
+
+    _ensure_message_identity([assistant_entry])
+
+    pending = _pending_intermediate_user_replies.get()
+    if pending is not None:
+        pending.append(dict(assistant_entry))
+
+    async with _session_state_lock:
+        state = _load_session_state()
+        existing = state.get("messages", [])
+        full_messages = list(existing) if isinstance(existing, list) else []
+        full_messages.append(dict(assistant_entry))
+        _ensure_message_identity(full_messages)
+        await _write_session_messages_locked(state, full_messages)
+
+    await _publish_runtime_event({
+        "type": "assistant_message",
+        "round_id": round_id,
+        "client_request_id": client_request_id,
+        "intermediate": True,
+        "message_id": assistant_entry.get("message_id", ""),
+    })
+    return assistant_entry
 
 
 async def _publish_runtime_event(event: dict[str, Any]) -> None:
@@ -1484,6 +1549,7 @@ async def _run_main_agent(
     phase1_messages = [{"role": "system", "content": effective_system}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
 
     def _session_messages_to_save(current_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        _flush_intermediate_user_replies(current_messages)
         return [
             message
             for message in current_messages[1:]
@@ -1822,6 +1888,8 @@ async def _run_chat_agent(
     merge_live_token = _persist_merge_live_state.set(merge_live_state and merge_base is None)
     prefix_token = _persist_history_prefix_len.set(len(history) if (merge_base is not None or merge_live_state) else 0)
     insert_token = _persist_insert_at.set(merge_insert_at if (merge_base is not None or merge_live_state) else None)
+    client_request_token = _current_client_request_id.set(client_request_id)
+    intermediate_reply_token = _pending_intermediate_user_replies.set([])
     try:
         # 如果 history 为空（session 被重置），注入短期记忆
         restored_short_term = False
@@ -1863,6 +1931,8 @@ async def _run_chat_agent(
         })
         return main_text or "Done."
     finally:
+        _pending_intermediate_user_replies.reset(intermediate_reply_token)
+        _current_client_request_id.reset(client_request_token)
         _persist_insert_at.reset(insert_token)
         _persist_history_prefix_len.reset(prefix_token)
         _persist_merge_live_state.reset(merge_live_token)
