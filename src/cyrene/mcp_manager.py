@@ -117,19 +117,35 @@ class MCPServerConnection:
         if self.transport == "stdio":
             await self._connect_stdio()
         elif self.transport == "sse":
-            await self._connect_sse()
+            # SSE transport still uses the MCP SDK (SSE has no anyio conflict)
+            from mcp.client.sse import sse_client
+
+            url = str(self.config.get("url", ""))
+            if not url:
+                raise ValueError(f"MCP server '{self.name}' has no URL configured")
+
+            ctx = sse_client(url)
+            self._ctx_stack = ctx
+            self._read_stream, self._write_stream = await ctx.__aenter__()
+            from mcp import ClientSession
+            self._session = ClientSession(self._read_stream, self._write_stream)
+            await self._session.initialize()
         else:
             raise ValueError(f"Unsupported MCP transport: {self.transport}")
 
-        # Initialize session
-        from mcp import ClientSession
+        if self.transport == "stdio":
+            # Initialize via raw JSON-RPC
+            init_result = await self._json_rpc_request("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "cyrene", "version": "0.1.3"},
+            })
+            # Send initialized notification
+            notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+            if self._process and self._process.stdin:
+                self._process.stdin.write(notif.encode("utf-8"))
+                await self._process.stdin.drain()
 
-        self._session = ClientSession(self._read_stream, self._write_stream)
-        try:
-            await self._session.initialize()
-        except Exception:
-            await self.disconnect()
-            raise
         self.status = "connected"
 
         # Discover tools
@@ -141,26 +157,58 @@ class MCPServerConnection:
         logger.info("MCP server '%s' connected (%d tools)", self.name, len(self._tools))
 
     async def _connect_stdio(self) -> None:
-        """Connect via stdio transport (spawn subprocess)."""
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        """Connect via stdio transport using raw asyncio subprocess + JSON-RPC.
 
+        Uses pure asyncio instead of the MCP SDK's anyio-based stdio_client to
+        avoid compatibility issues with uvicorn's event loop on Windows.
+        """
         command = str(self.config.get("command", ""))
-        args = self.config.get("args", [])
+        args = list(self.config.get("args", []))
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no command configured")
 
+        full_args = [command] + args
         _cwd = self.config.get("cwd") or None
         _env = dict(os.environ)
         _env["PYTHONUNBUFFERED"] = "1"
-        params = StdioServerParameters(
-            command=command,
-            args=list(args),
+
+        self._process = await asyncio.create_subprocess_exec(
+            *full_args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=_cwd,
             env=_env,
         )
-        ctx = stdio_client(params)
-        self._ctx_stack = ctx
-        self._read_stream, self._write_stream = await ctx.__aenter__()
+
+        logger.info("MCP server '%s' subprocess started (pid=%s)", self.name, self._process.pid)
+
+    async def _json_rpc_request(self, method: str, params: dict | None = None) -> dict:
+        """Send a JSON-RPC request to the subprocess and return the result."""
+        import uuid as _uuid
+        req_id = _uuid.uuid4().hex[:8]
+        request = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": method,
+        }
+        if params is not None:
+            request["params"] = params
+
+        if self._process is None or self._process.stdin is None or self._process.stdout is None:
+            raise RuntimeError(f"MCP server '{self.name}' not running")
+
+        payload = (json.dumps(request) + "\n").encode("utf-8")
+        self._process.stdin.write(payload)
+        await self._process.stdin.drain()
+
+        # Read response line
+        line = await asyncio.wait_for(self._process.stdout.readline(), timeout=15.0)
+        response = json.loads(line.decode("utf-8").strip())
+
+        if "error" in response:
+            raise RuntimeError(f"MCP server '{self.name}' error: {response['error']}")
+        return response.get("result", {})
 
     async def _connect_sse(self) -> None:
         """Connect via SSE transport."""
@@ -175,23 +223,21 @@ class MCPServerConnection:
         self._read_stream, self._write_stream = await ctx.__aenter__()
 
     async def _refresh_tools(self) -> None:
-        """Fetch and cache tool definitions from the server."""
-        if self._session is None:
-            self._tools = []
-            return
+        """Fetch and cache tool definitions from the server via JSON-RPC."""
         try:
-            result = await self._session.list_tools()
+            result = await self._json_rpc_request("tools/list")
+            raw_tools = result.get("tools", [])
             self._tools = [
                 {
                     "type": "function",
                     "function": {
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "parameters": tool.inputSchema,
+                        "name": t.get("name", ""),
+                        "description": t.get("description", "") or "",
+                        "parameters": t.get("inputSchema", {}),
                     },
                 }
-                for tool in result.tools
-                if tool.name
+                for t in raw_tools
+                if t.get("name")
             ]
         except Exception:
             logger.exception("Failed to list tools from MCP server '%s'", self.name)
@@ -207,38 +253,48 @@ class MCPServerConnection:
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """Call a tool on this server and return the text result."""
-        if self._session is None:
-            raise RuntimeError(f"MCP server '{self.name}' is not connected")
-
-        from mcp.types import TextContent
-
-        result = await self._session.call_tool(name, arguments or {})
-        if result.isError:
-            error_text = " | ".join(
-                item.text for item in result.content if isinstance(item, TextContent)
-            ) or f"Tool '{name}' returned an error"
-            raise RuntimeError(error_text)
-
-        parts: list[str] = []
-        for item in result.content:
-            if isinstance(item, TextContent) and item.text:
-                parts.append(item.text)
-        return "\n".join(parts) if parts else f"(Tool '{name}' returned no text content)"
+        if self.transport == "stdio":
+            # Raw JSON-RPC for stdio
+            result = await self._json_rpc_request("tools/call", {
+                "name": name,
+                "arguments": arguments or {},
+            })
+            content_items = result.get("content", [])
+            parts: list[str] = []
+            is_error = result.get("isError", False)
+            for item in content_items:
+                if item.get("type") == "text" and item.get("text"):
+                    parts.append(item["text"])
+            text = "\n".join(parts) if parts else f"(Tool '{name}' returned no text content)"
+            if is_error:
+                raise RuntimeError(text)
+            return text
+        else:
+            # SSE transport uses the MCP SDK session
+            if self._session is None:
+                raise RuntimeError(f"MCP server '{self.name}' is not connected")
+            from mcp.types import TextContent
+            result = await self._session.call_tool(name, arguments or {})
+            if result.isError:
+                error_text = " | ".join(
+                    item.text for item in result.content if isinstance(item, TextContent)
+                ) or f"Tool '{name}' returned an error"
+                raise RuntimeError(error_text)
+            parts = [item.text for item in result.content if isinstance(item, TextContent) and item.text]
+            return "\n".join(parts) if parts else f"(Tool '{name}' returned no text content)"
 
     async def disconnect(self) -> None:
         """Disconnect from the server and clean up resources."""
         self.status = "disconnected"
         self._tools = []
 
-        # Close session
+        # Close SSE session/context if present
         if self._session is not None:
             try:
                 await self._session.__aexit__(None, None, None)
             except Exception:
                 pass
             self._session = None
-
-        # Close transport context
         if self._ctx_stack is not None:
             try:
                 await self._ctx_stack.__aexit__(None, None, None)
@@ -246,11 +302,12 @@ class MCPServerConnection:
                 pass
             self._ctx_stack = None
 
-        self._read_stream = None
-        self._write_stream = None
-
         # Terminate subprocess (stdio transport)
         if self._process is not None:
+            try:
+                self._process.stdin.close()
+            except Exception:
+                pass
             try:
                 self._process.terminate()
                 await asyncio.wait_for(self._process.wait(), timeout=5)
