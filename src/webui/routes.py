@@ -583,6 +583,20 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "desc": td["function"]["description"],
                 "enabled": enabled.get(name, True),
             })
+        # Include MCP tools from connected servers
+        try:
+            from cyrene.mcp_manager import get_manager as _get_mcp_mgr
+            manager = _get_mcp_mgr()
+            for mcp_td in manager.get_tool_defs():
+                name = mcp_td["function"]["name"]
+                tools.append({
+                    "name": name,
+                    "desc": mcp_td["function"]["description"],
+                    "enabled": enabled.get(name, True),
+                    "source": "mcp",
+                })
+        except Exception:
+            pass
         return {"tools": tools}
 
     @router.put("/api/settings/tools")
@@ -613,6 +627,29 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 set_setting(key, body[key])
                 changed.append(key)
         return {"ok": True, "changed": changed}
+
+    # ---- MCP Servers API ----
+
+    @router.get("/api/settings/mcp")
+    async def api_get_mcp_servers():
+        from cyrene.mcp_manager import get_manager as _get_mcp_mgr, get_mcp_servers as _get_servers
+        manager = _get_mcp_mgr()
+        return {
+            "servers": manager.get_server_status(),
+            "configs": _get_servers(),
+        }
+
+    @router.put("/api/settings/mcp")
+    async def api_update_mcp_servers(request: Request):
+        from cyrene.mcp_manager import save_mcp_servers as _save_servers
+        from cyrene.mcp_manager import get_manager as _get_mcp_mgr, stop_mcp as _stop_mcp, start_mcp as _start_mcp
+        body = await request.json()
+        servers = body.get("servers", [])
+        _save_servers(servers)
+        # Restart MCP manager with new config
+        _stop_mcp()
+        await _start_mcp()
+        return {"ok": True}
 
     app.include_router(router)
 
@@ -2076,6 +2113,7 @@ def _build_settings_meta() -> dict:
             {"id": "agents", "label": "Agents"},
             {"id": "tools", "label": "Tools"},
             {"id": "search", "label": "Search"},
+            {"id": "mcp", "label": "MCP Servers"},
             {"id": "keys", "label": "API keys"},
             {"id": "appearance", "label": "Appearance"},
             {"id": "danger", "label": "Danger zone"},

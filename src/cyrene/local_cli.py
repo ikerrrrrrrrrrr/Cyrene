@@ -31,6 +31,161 @@ async def _prepare_cli() -> None:
         except Exception as exc:
             logger.warning("SearXNG auto-start failed: %s", exc)
 
+    # Start MCP servers
+    from cyrene.mcp_manager import start_mcp as _start_mcp
+    try:
+        await _start_mcp()
+        logger.info("MCP manager started")
+    except Exception as exc:
+        logger.warning("MCP manager start failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# MCP CLI helpers (shared between menu and command-line flags)
+# ---------------------------------------------------------------------------
+
+
+async def _cli_mcp_list() -> None:
+    from cyrene.mcp_manager import get_manager as _get_mgr, get_mcp_servers as _get_cfg
+
+    configs = _get_cfg()
+    if not configs:
+        print("  No MCP servers configured.")
+        return
+    manager = _get_mgr()
+    statuses = {s["name"]: s for s in manager.get_server_status()}
+    print(f"\n  {'Name':<16} {'Transport':<10} {'Status':<14} {'Tools':<6} Endpoint")
+    print(f"  {'-'*16} {'-'*10} {'-'*14} {'-'*6} {'-'*40}")
+    for cfg in configs:
+        name = cfg.get("name", "?")
+        st = statuses.get(name, {})
+        status = st.get("status", "disconnected")
+        tools = st.get("tool_count", 0)
+        transport = cfg.get("transport", "stdio")
+        endpoint = cfg.get("command", "") if transport == "stdio" else cfg.get("url", "")
+        enabled = cfg.get("enabled", True)
+        enabled_mark = "" if enabled else " [disabled]"
+        print(f"  {name:<16} {transport:<10} {status:<14} {tools:<6} {endpoint}{enabled_mark}")
+    # Show tool summary if any connected
+    mcp_defs = manager.get_tool_defs()
+    if mcp_defs:
+        print(f"\n  Total MCP tools available: {len(mcp_defs)}")
+        for td in mcp_defs:
+            print(f"    - {td['function']['name']}: {td['function']['description'][:80]}")
+
+
+async def _cli_mcp_add(args: list[str]) -> None:
+    from cyrene.mcp_manager import save_mcp_servers as _save, get_mcp_servers as _load
+
+    if len(args) < 3:
+        print("  Usage: add <name> stdio <command> [args...]")
+        print("         add <name> sse <url>")
+        return
+    name, transport = args[0], args[1]
+    if transport == "stdio":
+        command = args[2]
+        extra_args = args[3:]
+        server = {"name": name, "transport": "stdio", "command": command, "args": extra_args, "enabled": True}
+    elif transport == "sse":
+        url = args[2]
+        server = {"name": name, "transport": "sse", "url": url, "enabled": True}
+    else:
+        print(f"  Unknown transport: {transport} (use stdio or sse)")
+        return
+    servers = _load()
+    servers = [s for s in servers if s.get("name") != name]
+    servers.append(server)
+    _save(servers)
+    # Restart MCP manager
+    from cyrene.mcp_manager import stop_mcp as _stop, start_mcp as _start
+    _stop()
+    await _start()
+    print(f"  ✅ MCP server '{name}' added and connected.")
+
+
+async def _cli_mcp_remove(args: list[str]) -> None:
+    from cyrene.mcp_manager import save_mcp_servers as _save, get_mcp_servers as _load, stop_mcp as _stop, start_mcp as _start
+
+    if not args:
+        print("  Usage: remove <name>")
+        return
+    name = args[0]
+    servers = _load()
+    before = len(servers)
+    servers = [s for s in servers if s.get("name") != name]
+    if len(servers) == before:
+        print(f"  Server '{name}' not found.")
+        return
+    _save(servers)
+    _stop()
+    await _start()
+    print(f"  ✅ MCP server '{name}' removed.")
+
+
+async def _cli_mcp_toggle(args: list[str]) -> None:
+    from cyrene.mcp_manager import save_mcp_servers as _save, get_mcp_servers as _load, stop_mcp as _stop, start_mcp as _start
+
+    if not args:
+        print("  Usage: toggle <name>")
+        return
+    name = args[0]
+    servers = _load()
+    found = False
+    for s in servers:
+        if s.get("name") == name:
+            s["enabled"] = not s.get("enabled", True)
+            found = True
+            break
+    if not found:
+        print(f"  Server '{name}' not found.")
+        return
+    _save(servers)
+    _stop()
+    await _start()
+    status = "enabled" if next(s for s in servers if s["name"] == name).get("enabled", True) else "disabled"
+    print(f"  ✅ MCP server '{name}' {status}.")
+
+
+async def _cli_mcp_test(args: list[str]) -> None:
+    from cyrene.mcp_manager import get_manager as _get_mgr
+
+    if not args:
+        print("  Usage: test <name>")
+        return
+    name = args[0]
+    manager = _get_mgr()
+    for conn_name, conn in manager._servers.items():
+        if conn_name == name:
+            tools = conn.get_tool_defs()
+            print(f"  ✅ Server '{name}' connected, {len(tools)} tools available.")
+            for td in tools[:10]:
+                print(f"    - {td['function']['name']}: {td['function']['description'][:60]}")
+            if len(tools) > 10:
+                print(f"    ... and {len(tools) - 10} more")
+            return
+    print(f"  Server '{name}' is not connected. Check config with '/mcp list'.")
+
+
+async def _handle_mcp_command(cmd_line: str) -> None:
+    parts = cmd_line.strip().split()
+    if not parts:
+        return
+    sub = parts[0].lower()
+    rest = parts[1:]
+    if sub == "list":
+        await _cli_mcp_list()
+    elif sub == "add":
+        await _cli_mcp_add(rest)
+    elif sub == "remove":
+        await _cli_mcp_remove(rest)
+    elif sub == "toggle":
+        await _cli_mcp_toggle(rest)
+    elif sub == "test":
+        await _cli_mcp_test(rest)
+    else:
+        print(f"  Unknown mcp command: {sub}")
+        print("  Commands: list, add, remove, toggle, test")
+
 
 def _show_help():
     print()
@@ -98,6 +253,14 @@ async def _handle_menu():
                 print(f"  当前 session: {len(msgs)} 条消息")
             else:
                 print("  当前 session: 空")
+            # MCP 状态
+            from cyrene.mcp_manager import get_manager as _get_mgr, get_mcp_servers as _get_cfg
+            mcp_cfgs = _get_cfg()
+            if mcp_cfgs:
+                print(f"  MCP 服务器: {len(mcp_cfgs)} 个已配置")
+                mcp_mgr = _get_mgr()
+                for st in mcp_mgr.get_server_status():
+                    print(f"    {st['name']}: {st['status']} ({st['tool_count']} tools)")
             print("------------------")
             return
 
@@ -106,7 +269,7 @@ async def _handle_menu():
 
 
 async def _cli_loop() -> None:
-    print(f"{ASSISTANT_NAME} CLI mode. '/h' for menu, '/clear' to reset session, 'quit' to exit.")
+    print(f"{ASSISTANT_NAME} CLI mode. '/h' for menu, '/clear' to reset session, '/mcp' for MCP management, 'quit' to exit.")
     while True:
         try:
             user_input = input("\nYou: ").strip()
@@ -121,6 +284,13 @@ async def _cli_loop() -> None:
             if user_input.lower() == "/clear":
                 await clear_session_id()
                 print("Session cleared.")
+                continue
+            if user_input.lower().startswith("/mcp "):
+                cmd = user_input[5:].strip()
+                await _handle_mcp_command(cmd)
+                continue
+            if user_input.lower() == "/mcp":
+                await _cli_mcp_list()
                 continue
 
             response = await run_agent(user_input, None, 0, str(DB_PATH))
@@ -161,6 +331,14 @@ def _run_web_mode() -> None:
             except Exception as exc:
                 logger.warning("SearXNG auto-start failed: %s", exc)
 
+        # Start MCP servers
+        from cyrene.mcp_manager import start_mcp as _start_mcp
+        try:
+            await _start_mcp()
+            logger.info("MCP manager started")
+        except Exception as exc:
+            logger.warning("MCP manager start failed: %s", exc)
+
         bot = WebBot()
         scheduler = setup_scheduler(bot, str(DB_PATH))
         scheduler.start()
@@ -178,6 +356,17 @@ def _run_web_mode() -> None:
     finally:
         from cyrene.searxng_manager import stop_searxng
         stop_searxng()
+        from cyrene.mcp_manager import stop_mcp as _stop_mcp
+        _stop_mcp()
+
+
+async def _run_one_shot_mcp(args: list[str]) -> None:
+    """Run a single MCP command and exit."""
+    await _prepare_cli()
+    cmd_line = " ".join(args)
+    await _handle_mcp_command(cmd_line)
+    from cyrene.mcp_manager import stop_mcp as _stop_mcp
+    _stop_mcp()
 
 
 def main() -> None:
@@ -185,6 +374,29 @@ def main() -> None:
     if "--web" in sys.argv:
         _run_web_mode()
         return
+
+    # One-shot MCP commands (no interactive loop)
+    mcp_args = [a for a in sys.argv[1:] if a.startswith("--mcp-")]
+    if mcp_args:
+        for flag in mcp_args:
+            idx = sys.argv.index(flag)
+            if flag == "--mcp-list":
+                asyncio.run(_run_one_shot_mcp(["list"]))
+            elif flag == "--mcp-test" and idx + 1 < len(sys.argv):
+                asyncio.run(_run_one_shot_mcp(["test", sys.argv[idx + 1]]))
+            elif flag == "--mcp-add":
+                # --mcp-add name stdio command arg1 arg2 ...  OR  --mcp-add name sse url
+                rest = sys.argv[idx + 1:]
+                asyncio.run(_run_one_shot_mcp(["add"] + rest))
+                break
+            elif flag == "--mcp-remove" and idx + 1 < len(sys.argv):
+                asyncio.run(_run_one_shot_mcp(["remove", sys.argv[idx + 1]]))
+            elif flag == "--mcp-toggle" and idx + 1 < len(sys.argv):
+                asyncio.run(_run_one_shot_mcp(["toggle", sys.argv[idx + 1]]))
+            else:
+                print(f"Usage: --mcp-list | --mcp-test <name> | --mcp-add <name> stdio <cmd> [args...] | --mcp-add <name> sse <url> | --mcp-remove <name> | --mcp-toggle <name>")
+        return
+
     if "--verbose" in sys.argv:
         import cyrene.debug as _debug
         _debug.VERBOSE = True

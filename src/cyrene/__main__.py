@@ -50,6 +50,14 @@ async def _prepare_runtime() -> None:
         except Exception as exc:
             logger.warning("SearXNG auto-start failed: %s", exc)
 
+    # Start MCP servers
+    from cyrene.mcp_manager import start_mcp as _start_mcp
+    try:
+        await _start_mcp()
+        logger.info("MCP manager started")
+    except Exception as exc:
+        logger.warning("MCP manager start failed: %s", exc)
+
     # 人格设置检测（Telegram 模式跳过交互，提示用户先运行 CLI）
     from cyrene.setup import init_setup_flag, is_setup_done
     init_setup_flag()
@@ -79,3 +87,5 @@ if __name__ == "__main__":
     finally:
         from cyrene.searxng_manager import stop_searxng
         stop_searxng()
+        from cyrene.mcp_manager import stop_mcp as _stop_mcp
+        _stop_mcp()
