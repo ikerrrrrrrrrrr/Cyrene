@@ -104,6 +104,51 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     return "Mid-run message sent to the user."
 
 
+async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    text = str(args.get("text", "") or "").strip()
+    if not text:
+        return "Error: 'text' is required."
+
+    from cyrene.agent import (
+        _current_agent_id,
+        _current_client_request_id,
+        _current_round_id,
+        _upsert_pending_question,
+    )
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can ask the user a clarification question."
+
+    round_id = str(_current_round_id.get() or "").strip()
+    if not round_id:
+        return "Cannot ask the user a question outside an active chat round."
+
+    raw_options = args.get("options", [])
+    options: list[str] = []
+    if isinstance(raw_options, list):
+        for item in raw_options:
+            label = str(item or "").strip()
+            if label:
+                options.append(label)
+
+    from cyrene.agent import get_session_labels
+
+    labels = get_session_labels(round_id)
+    question = await _upsert_pending_question({
+        "text": text,
+        "round_id": round_id,
+        "round_title": labels.get("round_title", ""),
+        "client_request_id": str(_current_client_request_id.get() or "").strip(),
+        "options": options[:6],
+        "allow_custom": True,
+    })
+    return _json_result({
+        "status": "awaiting_user",
+        "question_id": question.get("id", ""),
+        "option_count": len(question.get("options", []) or []),
+    })
+
+
 async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
     stype = str(args["schedule_type"])
     svalue = str(args["schedule_value"])
@@ -511,6 +556,25 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "ask_user",
+            "description": "Ask the user a clarification question and pause the current round until they answer. For a direct freeform question, send only text. For a choice-based question, also provide a short options array. The UI will still allow the user to type a custom answer even when options are present.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The clarification question to show the user."},
+                    "options": {
+                        "type": "array",
+                        "description": "Optional short option labels when structured choices would help.",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "schedule_task",
             "description": "Schedule a task. schedule_type must be cron, interval, or once.",
             "parameters": {
@@ -771,6 +835,7 @@ TOOL_DEFS = [
 TOOL_HANDLERS: dict[str, Any] = {
     "send_telegram": _tool_send_message,
     "send_message": _tool_send_user_message,
+    "ask_user": _tool_ask_user,
     "send_agent_message": _tool_send_agent_message,
     "spawn_subagent": _tool_spawn_subagent,
     "query_round": _tool_query_round,

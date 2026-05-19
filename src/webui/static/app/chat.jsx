@@ -54,7 +54,7 @@ function isAbortError(error) {
 
 function messageKey(msg) {
   const messageId = String(msg && msg.messageId || msg && msg.id || "");
-  if (msg && msg.intermediateReply && messageId) return "message::" + messageId;
+  if (msg && (msg.intermediateReply || msg.questionPrompt) && messageId) return "message::" + messageId;
   const clientRequestId = String(msg && msg.clientRequestId || "");
   if (clientRequestId) return "request::" + clientRequestId + "::" + String(msg && msg.role || "");
   const queuedGuidanceId = String(msg && msg.queuedGuidanceId || "");
@@ -246,6 +246,7 @@ function hasVisibleAssistantReplyForRequest(messages, requestId) {
       && msg.role === "agent"
       && !msg.runtimeTrace
       && !msg.intermediateReply
+      && !msg.questionPrompt
       && (msg.body || msg.thinking || (msg.tools && msg.tools.length))
       && String(msg.clientRequestId || "") === targetRequestId;
   });
@@ -455,6 +456,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   if (!session.summary) session.summary = { tokens: "—", spend: "—", toolCalls: 0 };
 
   const isLiveSession = session.id === "run_live";
+  const pendingQuestion = isLiveSession && session.pendingQuestion ? session.pendingQuestion : null;
   const subagents = visibleRoundSubagents(session);
   const liveRounds = selectableLiveRounds(session);
   const runningSubagents = subagents.filter((s) => s.status === "running").length;
@@ -466,6 +468,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   }, [onSelectSession]);
 
   const [draft, setDraft] = useState("");
+  const [questionDraft, setQuestionDraft] = useState("");
+  const [answeringQuestion, setAnsweringQuestion] = useState(false);
   const [contextPickerOpen, setContextPickerOpen] = useState(false);
   const [selectedGuideRoundId, setSelectedGuideRoundId] = useState("");
   const [selectedGuideRoundTitle, setSelectedGuideRoundTitle] = useState("");
@@ -501,6 +505,9 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const visibleSending = isLiveSession && sending && !requestFulfilledInSession;
   const visibleNotice = isLiveSession ? notice : "";
   const visibleLiveProgress = isLiveSession ? liveProgress : [];
+  const questionOptionCount = pendingQuestion && Array.isArray(pendingQuestion.options)
+    ? pendingQuestion.options.length
+    : 0;
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -526,6 +533,15 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     if (selectedGuideRound.title === selectedGuideRoundTitle) return;
     setSelectedGuideRoundTitle(selectedGuideRound.title);
   }, [selectedGuideRound, selectedGuideRoundTitle]);
+
+  useEffect(function () {
+    if (!pendingQuestion) {
+      setQuestionDraft("");
+      setAnsweringQuestion(false);
+      return;
+    }
+    setQuestionDraft("");
+  }, [pendingQuestion ? pendingQuestion.id : ""]);
 
   useEffect(function () {
     if (!sending || !runtimeState.startedAt) return;
@@ -576,6 +592,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     const hasAssistantReply = (session.chat.messages || []).some(function (msg) {
       return msg
         && msg.role === "agent"
+        && !msg.questionPrompt
         && !msg.intermediateReply
         && String(msg.clientRequestId || "") === requestId;
     });
@@ -588,6 +605,10 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     const text = draft.trim();
     const runtime = getChatRuntime();
     if (!text) return;
+    if (pendingQuestion) {
+      setNotice("Answer the pending question above before starting a new message.");
+      return;
+    }
     setNotice("");
     runtime.requestSeq = (runtime.requestSeq || 0) + 1;
     const requestId = "req_" + Date.now() + "_" + runtime.requestSeq;
@@ -675,6 +696,24 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         }
         return;
       }
+      if (data.awaiting_user) {
+        delete runtime.requests[requestId];
+        if (window.refreshSessions) {
+          await window.refreshSessions();
+        }
+        if (isWatching) {
+          updateChatRuntime({
+            sending: false,
+            liveProgress: [],
+            startedAt: 0,
+            activeRequest: null,
+            watchRequestId: "",
+            pendingMessages: [],
+          });
+          clearChatRuntimeSseSubscription();
+        }
+        return;
+      }
       const agentMsg = {
         id: "pending_agent_" + Date.now(),
         role: "agent", time: new Date().toLocaleTimeString(),
@@ -736,6 +775,151 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           clearChatRuntimeSseSubscription();
         }
       }
+    }
+  }
+
+  async function submitQuestionAnswer(options) {
+    if (!pendingQuestion || answeringQuestion || sending) return;
+    const selectedOption = String(options && options.selectedOption || "");
+    const text = String(options && options.text || questionDraft || "").trim() || selectedOption;
+    if (!text) return;
+
+    setNotice("");
+    setAnsweringQuestion(true);
+
+    const runtime = getChatRuntime();
+    runtime.requestSeq = (runtime.requestSeq || 0) + 1;
+    const requestId = "req_" + Date.now() + "_" + runtime.requestSeq;
+    const controller = new AbortController();
+    runtime.requests[requestId] = {
+      id: requestId,
+      message: text,
+      controller,
+      questionId: pendingQuestion.id,
+    };
+
+    const userMsg = {
+      id: "pending_answer_" + Date.now(),
+      role: "user",
+      time: new Date().toLocaleTimeString(),
+      body: text,
+      roundId: pendingQuestion.roundId || "",
+      clientRequestId: requestId,
+    };
+
+    updateChatRuntime({
+      sending: true,
+      startedAt: Date.now(),
+      pendingMessages: [userMsg],
+      liveProgress: [],
+      activeRequest: {
+        id: requestId,
+        message: text,
+        guideRoundId: "",
+        guideRoundTitle: "",
+        guideRequestId: "",
+        guidanceAccepted: false,
+        finalTraceAnchorKey: "",
+      },
+      watchRequestId: requestId,
+    });
+    ensureChatRuntimeSseSubscription();
+
+    try {
+      const r = await fetch("/api/chat/answer-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          question_id: pendingQuestion.id,
+          answer: text,
+          selected_option: selectedOption || undefined,
+          client_request_id: requestId,
+        }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      const isWatching = getChatRuntime().watchRequestId === requestId;
+      if (data.awaiting_user) {
+        delete runtime.requests[requestId];
+        if (window.refreshSessions) {
+          await window.refreshSessions();
+        }
+        if (isWatching) {
+          updateChatRuntime({
+            sending: false,
+            liveProgress: [],
+            startedAt: 0,
+            activeRequest: null,
+            watchRequestId: "",
+            pendingMessages: [],
+          });
+          clearChatRuntimeSseSubscription();
+        }
+        setQuestionDraft("");
+        return;
+      }
+
+      const agentMsg = {
+        id: "pending_agent_" + Date.now(),
+        role: "agent",
+        time: new Date().toLocaleTimeString(),
+        body: data.response || "(no response)",
+        clientRequestId: requestId,
+      };
+      if (isWatching) {
+        delete runtime.requests[requestId];
+        updateChatRuntime(function (state) {
+          return {
+            pendingMessages: state.pendingMessages.concat([agentMsg]),
+            sending: false,
+            liveProgress: [],
+            startedAt: 0,
+            activeRequest: null,
+            watchRequestId: "",
+          };
+        });
+        clearChatRuntimeSseSubscription();
+      }
+      if (window.refreshSessions) {
+        await window.refreshSessions();
+      }
+      if (isWatching) {
+        updateChatRuntime(function (state) {
+          return {
+            pendingMessages: (state.pendingMessages || []).filter(function (msg) {
+              return String(msg.clientRequestId || "") !== requestId;
+            }),
+          };
+        });
+      }
+      setQuestionDraft("");
+    } catch (e) {
+      if (!isAbortError(e) && getChatRuntime().watchRequestId === requestId) {
+        updateChatRuntime(function (state) {
+          return {
+            pendingMessages: state.pendingMessages.concat([{
+              id: "err_" + Date.now(),
+              role: "system",
+              time: new Date().toLocaleTimeString(),
+              body: "Error: " + e.message,
+            }]),
+          };
+        });
+      }
+    } finally {
+      delete runtime.requests[requestId];
+      if (getChatRuntime().watchRequestId === requestId) {
+        updateChatRuntime({
+          sending: false,
+          liveProgress: [],
+          startedAt: 0,
+          activeRequest: null,
+          watchRequestId: "",
+        });
+        clearChatRuntimeSseSubscription();
+      }
+      setAnsweringQuestion(false);
     }
   }
 
@@ -812,6 +996,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       send();
+    }
+  }
+
+  function onQuestionKey(e) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      submitQuestionAnswer();
     }
   }
 
@@ -941,6 +1132,19 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
             </div>
           </div>
         )}
+        {isLiveSession && pendingQuestion && (
+          <QuestionPanel
+            pendingQuestion={pendingQuestion}
+            draft={questionDraft}
+            onDraftChange={setQuestionDraft}
+            onOptionSelect={function (label) { submitQuestionAnswer({ selectedOption: label }); }}
+            onSubmit={function () { submitQuestionAnswer(); }}
+            onKeyDown={onQuestionKey}
+            answering={answeringQuestion}
+            sending={sending}
+            optionCount={questionOptionCount}
+          />
+        )}
         {isLiveSession && (
         <div className="composer">
           <div className="composer-box">
@@ -1000,7 +1204,12 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               value={draft}
               onChange={autosize}
               onKeyDown={onKey}
-              placeholder={"Message " + DATA.assistantName + "… (⌘+↵ to send)"}
+              disabled={Boolean(pendingQuestion)}
+              placeholder={
+                pendingQuestion
+                  ? "Answer the pending question above to continue this round…"
+                  : ("Message " + DATA.assistantName + "… (⌘+↵ to send)")
+              }
             />
             <div className="composer-actions">
               <button className="iconbtn" title="Attach">+</button>
@@ -1011,13 +1220,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 {session.model}
               </span>
               {visibleSending && (
-                <button className="send secondary" disabled={!draft.trim()} onClick={openNextDialogue}>
+                <button className="send secondary" disabled={!draft.trim() || Boolean(pendingQuestion)} onClick={openNextDialogue}>
                   {hasSelectedGuideRound ? "guide" : "new dialogue"}
                 </button>
               )}
               <button
                 className={"send" + (visibleSending ? " stop" : "")}
-                disabled={!visibleSending && !draft.trim()}
+                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim())}
                 onClick={visibleSending ? stopActiveRun : send}
               >
                 {visibleSending ? "stop" : <>{hasSelectedGuideRound ? "guide" : "send"} <span className="kbd">⌘↵</span></>}
@@ -1030,6 +1239,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 ? (hasSelectedGuideRound
                     ? "Watching the current run. Type the next message, then click guide to send it to the selected round without waiting."
                     : "Watching the current run. Type the next message, then click new dialogue to send it without waiting.")
+                : pendingQuestion
+                ? "The main agent is waiting for your answer above before it can continue this round."
                 : hasSelectedGuideRound
                 ? "Guidance mode: this message will be sent to the selected round's main-agent inbox."
                 : DATA.assistantName + " plans, then acts. Subagents spawn for parallel work."}
@@ -1121,6 +1332,58 @@ function Message({ msg, assistantName }) {
           ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
           : <div className="msg-body">{msg.body}</div>
       )}
+    </div>
+  );
+}
+
+function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, onSubmit, onKeyDown, answering, sending, optionCount }) {
+  if (!pendingQuestion) return null;
+  const options = Array.isArray(pendingQuestion.options) ? pendingQuestion.options : [];
+  const customDisabled = answering || sending;
+  return (
+    <div className="question-panel">
+      <div className="question-panel-head">
+        <span className="question-panel-kicker">clarification needed</span>
+        <span className="question-panel-meta">
+          {optionCount ? optionCount + " option" + (optionCount === 1 ? "" : "s") + " + custom answer" : "custom answer"}
+        </span>
+      </div>
+      <div className="question-panel-body">
+        <div className="question-panel-title">{pendingQuestion.text}</div>
+        {options.length > 0 && (
+          <div className="question-options">
+            {options.map(function (option) {
+              return (
+                <button
+                  key={option.id}
+                  className="question-option"
+                  disabled={customDisabled}
+                  onClick={function () { onOptionSelect && onOptionSelect(option.label); }}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <div className="question-custom">
+          <textarea
+            className="question-textarea"
+            value={draft}
+            onChange={function (e) { onDraftChange && onDraftChange(e.target.value); }}
+            onKeyDown={onKeyDown}
+            disabled={customDisabled}
+            placeholder="Type your answer… (⌘+↵ to submit)"
+          />
+          <button
+            className="question-submit"
+            disabled={customDisabled || !String(draft || "").trim()}
+            onClick={onSubmit}
+          >
+            answer <span className="kbd">⌘↵</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

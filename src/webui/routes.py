@@ -16,8 +16,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 
 from cyrene import debug
 from cyrene.agent import (
+    _AWAITING_USER_SENTINEL,
+    answer_pending_question,
     clear_session_id,
     format_httpx_error,
+    get_pending_question,
     get_live_rounds,
     get_session_labels,
     interrupt_active_run,
@@ -108,6 +111,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         try:
             response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id)
+            if response == _AWAITING_USER_SENTINEL:
+                return {"awaiting_user": True, "pending_question": get_pending_question()}
             labels = get_session_labels()
             await archive_exchange(
                 message,
@@ -139,6 +144,67 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             )
         except Exception as exc:
             logger.exception("Chat request crashed")
+            return JSONResponse(
+                {"error": "internal server error", "detail": str(exc)},
+                status_code=500,
+            )
+
+    @router.post("/api/chat/answer-question")
+    async def api_answer_question(request: Request):
+        body = await request.json()
+        question_id = str(body.get("question_id") or "").strip()
+        selected_option = str(body.get("selected_option") or "").strip()
+        answer_text = str(body.get("answer") or "").strip() or selected_option
+        client_request_id = str(body.get("client_request_id") or "").strip()
+        if not question_id:
+            return JSONResponse({"error": "missing question_id"}, status_code=400)
+        if not answer_text:
+            return JSONResponse({"error": "empty answer"}, status_code=400)
+
+        try:
+            response = await answer_pending_question(
+                question_id,
+                answer_text,
+                _bot,
+                _CHAT_ID,
+                _db_path,
+                client_request_id=client_request_id,
+            )
+            if response == _AWAITING_USER_SENTINEL:
+                return {"awaiting_user": True, "pending_question": get_pending_question()}
+            labels = get_session_labels()
+            await archive_exchange(
+                answer_text,
+                response,
+                _CHAT_ID,
+                session_title=labels.get("session_title", ""),
+                round_title=labels.get("round_title", ""),
+                round_id=labels.get("round_id", ""),
+                archive_session_id=labels.get("archive_session_id", ""),
+            )
+            return {"response": response}
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except httpx.TimeoutException as exc:
+            logger.exception(
+                "Question-answer request timed out while calling upstream model: %s",
+                format_httpx_error(exc),
+            )
+            return JSONResponse(
+                {"error": "upstream model timed out", "detail": str(exc)},
+                status_code=504,
+            )
+        except httpx.HTTPError as exc:
+            logger.exception(
+                "Question-answer request failed while calling upstream model: %s",
+                format_httpx_error(exc),
+            )
+            return JSONResponse(
+                {"error": "upstream model request failed", "detail": str(exc)},
+                status_code=502,
+            )
+        except Exception as exc:
+            logger.exception("Question-answer request crashed")
             return JSONResponse(
                 {"error": "internal server error", "detail": str(exc)},
                 status_code=500,
@@ -500,6 +566,41 @@ def _build_summary(raw_msgs: list[dict]) -> dict:
     }
 
 
+def _ui_pending_question(raw_pending: Any) -> dict[str, Any] | None:
+    if not isinstance(raw_pending, dict):
+        return None
+    question_id = str(raw_pending.get("id", "")).strip()
+    text = str(raw_pending.get("text", "")).strip()
+    if not question_id or not text:
+        return None
+    options_out = []
+    raw_options = raw_pending.get("options", [])
+    if isinstance(raw_options, list):
+        for item in raw_options:
+            if isinstance(item, dict):
+                option_id = str(item.get("id", "")).strip()
+                label = str(item.get("label", "")).strip()
+            else:
+                option_id = ""
+                label = str(item or "").strip()
+            if not label:
+                continue
+            options_out.append({
+                "id": option_id or f"option_{len(options_out) + 1}",
+                "label": label,
+            })
+    return {
+        "id": question_id,
+        "text": text,
+        "askedAt": str(raw_pending.get("asked_at", "")).strip(),
+        "roundId": str(raw_pending.get("round_id", "")).strip(),
+        "roundTitle": str(raw_pending.get("round_title", "")).strip(),
+        "clientRequestId": str(raw_pending.get("client_request_id", "")).strip(),
+        "allowCustom": bool(raw_pending.get("allow_custom", True)),
+        "options": options_out,
+    }
+
+
 def _build_current_session() -> dict | None:
     """Build a session object from state.json + live subagents.
 
@@ -518,6 +619,7 @@ def _build_current_session() -> dict | None:
             raw_msgs = []
             state = {}
 
+    pending_question = _ui_pending_question(state.get("pending_question", {}))
     messages = _convert_messages(raw_msgs) if raw_msgs else []
     current_round_id = _latest_round_id_from_messages(raw_msgs)
     current_round_title = next(
@@ -562,6 +664,8 @@ def _build_current_session() -> dict | None:
     is_empty = not messages
     if live_rounds and any(str(item.get("status", "")) == "running" for item in live_rounds):
         live_status = "running"
+    elif pending_question:
+        live_status = "queued"
     elif live_rounds and any(int(item.get("pendingGuidance", 0) or 0) > 0 for item in live_rounds):
         live_status = "queued"
     elif is_empty:
@@ -579,6 +683,7 @@ def _build_current_session() -> dict | None:
         "model": OPENAI_MODEL,
         "currentRoundId": current_round_id,
         "currentRoundTitle": current_round_title,
+        "pendingQuestion": pending_question,
         "summary": _build_summary(raw_msgs),
         "chat": {
             "contextChips": [
@@ -792,6 +897,11 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
             ui_msg["body"] = content
         if bool(m.get("intermediate_reply")):
             ui_msg["intermediateReply"] = True
+        if bool(m.get("question_prompt")):
+            ui_msg["questionPrompt"] = True
+        question_id = str(m.get("question_id", "")).strip()
+        if question_id:
+            ui_msg["questionId"] = question_id
         round_id = str(m.get("round_id", "")).strip()
         if round_id:
             ui_msg["roundId"] = round_id

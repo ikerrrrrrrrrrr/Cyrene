@@ -49,6 +49,7 @@ _active_main_round_id = ""
 _active_main_round_prompt = ""
 _active_main_round_started_at = 0.0
 _MAIN_INBOX_AGENT_ID = "main"
+_AWAITING_USER_SENTINEL = "[[cyrene.awaiting_user]]"
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -70,6 +71,7 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 ## Tools
 - Use tools when helpful: files, search, web, code, sub-agents, etc.
 - If it helps the user stay oriented during a long task, you may call `send_message` to post a brief in-progress update before the final answer. Use it sparingly and only when there is real new information.
+- If the user's request is ambiguous or missing a key detail, call `ask_user` instead of guessing. Use it either as a freeform question or with a short option list when structured choices would help.
 - When a task is complete, call the `quit` tool.
 """
 
@@ -86,6 +88,7 @@ Rules:
 - Use tools to complete the task efficiently.
 - Read/Write/Edit files, run Bash commands, search the web as needed.
 - You may call `send_message` to post a brief user-visible progress reply mid-run when helpful, but do not overuse it and do not treat it as the final answer.
+- If you cannot continue safely without user clarification, call `ask_user` and stop until the user answers.
 - Return the RESULT of what you did, not a conversation.
 - Be concise in tool usage.
 - When done, call the `quit` tool.
@@ -101,6 +104,16 @@ def _load_session_messages() -> list[dict[str, Any]]:
     state = _load_session_state()
     messages = state.get("messages", [])
     return messages if isinstance(messages, list) else []
+
+
+def _load_pending_question() -> dict[str, Any]:
+    state = _load_session_state()
+    pending = state.get("pending_question", {})
+    return dict(pending) if isinstance(pending, dict) else {}
+
+
+def get_pending_question() -> dict[str, Any]:
+    return _load_pending_question()
 
 
 def _load_round_messages(round_id: str) -> list[dict[str, Any]]:
@@ -295,6 +308,126 @@ async def _insert_intermediate_user_reply(
     return assistant_entry
 
 
+def _normalize_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
+    question_id = str(payload.get("id", "")).strip() or f"question_{uuid4().hex[:12]}"
+    text = str(payload.get("text", "") or "").strip()
+    round_id = str(payload.get("round_id", "") or "").strip()
+    client_request_id = str(payload.get("client_request_id", "") or "").strip()
+    asked_at = str(payload.get("asked_at", "") or "").strip() or datetime.now(timezone.utc).isoformat()
+    allow_custom = bool(payload.get("allow_custom", True))
+    options: list[dict[str, str]] = []
+    raw_options = payload.get("options", [])
+    if isinstance(raw_options, list):
+        for index, item in enumerate(raw_options, start=1):
+            if isinstance(item, dict):
+                label = str(item.get("label", "") or "").strip()
+                option_id = str(item.get("id", "") or "").strip() or f"option_{index}"
+            else:
+                label = str(item or "").strip()
+                option_id = f"option_{index}"
+            if not label:
+                continue
+            options.append({"id": option_id, "label": label})
+    question: dict[str, Any] = {
+        "id": question_id,
+        "text": text,
+        "round_id": round_id,
+        "client_request_id": client_request_id,
+        "options": options[:6],
+        "allow_custom": allow_custom,
+        "asked_at": asked_at,
+    }
+    round_title = str(payload.get("round_title", "") or "").strip()
+    if round_title:
+        question["round_title"] = round_title
+    return question
+
+
+async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
+    question = _normalize_pending_question(payload)
+    assistant_entry: dict[str, Any] = {
+        "role": "assistant",
+        "content": question["text"],
+        "round_id": question["round_id"],
+        "question_prompt": True,
+        "question_id": question["id"],
+    }
+    if question.get("client_request_id"):
+        assistant_entry["client_request_id"] = question["client_request_id"]
+    if question.get("round_title"):
+        assistant_entry["round_title"] = question["round_title"]
+    if question["options"]:
+        assistant_entry["question_options"] = list(question["options"])
+
+    _ensure_message_identity([assistant_entry])
+    question["message_id"] = assistant_entry["message_id"]
+
+    async with _session_state_lock:
+        state = _load_session_state()
+        existing = state.get("messages", [])
+        full_messages = list(existing) if isinstance(existing, list) else []
+        replacement_index = next(
+            (
+                idx
+                for idx, msg in enumerate(full_messages)
+                if str(msg.get("question_id", "")).strip() == question["id"]
+            ),
+            -1,
+        )
+        if replacement_index >= 0:
+            assistant_entry["message_id"] = str(full_messages[replacement_index].get("message_id", "")).strip() or assistant_entry["message_id"]
+            question["message_id"] = assistant_entry["message_id"]
+            full_messages[replacement_index] = assistant_entry
+        else:
+            full_messages.append(assistant_entry)
+        state["pending_question"] = question
+        await _write_session_messages_locked(state, full_messages)
+
+    await _publish_runtime_event({
+        "type": "user_question",
+        "question_id": question["id"],
+        "client_request_id": question.get("client_request_id", ""),
+        "round_id": question.get("round_id", ""),
+    })
+    return question
+
+
+async def _restore_pending_question(question: dict[str, Any]) -> None:
+    normalized = _normalize_pending_question(question)
+    async with _session_state_lock:
+        state = _load_session_state()
+        state["pending_question"] = normalized
+        _write_session_state(state)
+    await _publish_runtime_event({
+        "type": "user_question",
+        "question_id": normalized["id"],
+        "client_request_id": normalized.get("client_request_id", ""),
+        "round_id": normalized.get("round_id", ""),
+    })
+
+
+async def _clear_pending_question(question_id: str) -> dict[str, Any]:
+    target_question_id = str(question_id or "").strip()
+    async with _session_state_lock:
+        state = _load_session_state()
+        pending = state.get("pending_question", {})
+        pending_dict = dict(pending) if isinstance(pending, dict) else {}
+        if not pending_dict:
+            return {}
+        if target_question_id and str(pending_dict.get("id", "")).strip() != target_question_id:
+            return {}
+        state.pop("pending_question", None)
+        _write_session_state(state)
+
+    await _publish_runtime_event({
+        "type": "user_question_answered",
+        "question_id": str(pending_dict.get("id", "")).strip(),
+        "client_request_id": str(pending_dict.get("client_request_id", "")).strip(),
+        "round_id": str(pending_dict.get("round_id", "")).strip(),
+    })
+    return pending_dict
+
+
 async def _publish_runtime_event(event: dict[str, Any]) -> None:
     """Publish a UI/runtime event annotated with the current round when present."""
     round_id = _current_round_id.get()
@@ -338,6 +471,11 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _tool_result_requests_user_input(result: str) -> bool:
+    payload = _extract_json_object(result)
+    return str(payload.get("status", "")).strip() == "awaiting_user"
 
 
 def _ensure_message_identity(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -423,6 +561,26 @@ def _main_inbox_pending_by_round() -> dict[str, int]:
     return counts
 
 
+def _pending_question_live_entry() -> dict[str, Any]:
+    pending = _load_pending_question()
+    round_id = str(pending.get("round_id", "")).strip()
+    if not round_id:
+        return {}
+    return {
+        "id": round_id,
+        "title": str(pending.get("round_title", "")).strip(),
+        "prompt": str(pending.get("text", "")).strip(),
+        "last_user": "",
+        "last_assistant": str(pending.get("text", "")).strip(),
+        "status": "queued",
+        "pending_guidance": 0,
+        "subagent_count": 0,
+        "running_subagents": 0,
+        "started_at": _round_started_iso(round_id),
+        "updated_at": str(pending.get("asked_at", "")).strip() or datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def get_live_rounds() -> list[dict[str, Any]]:
     """Return live round summaries for UI context selection and tooling."""
     entries = _session_round_entries()
@@ -476,6 +634,20 @@ def get_live_rounds() -> list[dict[str, Any]]:
         entry["updated_at"] = datetime.now(timezone.utc).isoformat()
         if entry["status"] != "running":
             entry["status"] = "queued"
+
+    pending_question_entry = _pending_question_live_entry()
+    if pending_question_entry:
+        round_id = pending_question_entry["id"]
+        entry = entries.setdefault(round_id, pending_question_entry)
+        if not entry.get("title"):
+            entry["title"] = pending_question_entry["title"]
+        if not entry.get("prompt"):
+            entry["prompt"] = pending_question_entry["prompt"]
+        if not entry.get("last_assistant"):
+            entry["last_assistant"] = pending_question_entry["last_assistant"]
+        if entry.get("status") != "running":
+            entry["status"] = "queued"
+        entry["updated_at"] = pending_question_entry["updated_at"]
 
     if _active_main_round_id:
         entry = entries.setdefault(_active_main_round_id, {
@@ -693,6 +865,40 @@ def _guidance_persist_context_after_ack(guidance_id: str) -> dict[str, Any]:
     return {
         "persist_base_messages": full_messages,
         "persist_insert_at": insert_at,
+    }
+
+
+def _pending_question_resume_context(question_id: str) -> dict[str, Any]:
+    full_messages = _load_session_messages()
+    pending = _load_pending_question()
+    target_question_id = str(question_id or "").strip()
+    if not pending:
+        return {}
+    if target_question_id and str(pending.get("id", "")).strip() != target_question_id:
+        return {}
+
+    target_round_id = str(pending.get("round_id", "")).strip()
+    insert_at = next(
+        (
+            idx + 1
+            for idx, msg in enumerate(full_messages)
+            if str(msg.get("question_id", "")).strip() == str(pending.get("id", "")).strip()
+        ),
+        len(full_messages),
+    )
+    return {
+        "pending_question": pending,
+        "full_messages": full_messages,
+        "persist_base_messages": full_messages,
+        "persist_insert_at": insert_at,
+        "round_history": [
+            msg
+            for msg in full_messages
+            if str(msg.get("round_id", "")).strip() == target_round_id
+        ],
+        "round_id": target_round_id,
+        "round_title": str(pending.get("round_title", "")).strip(),
+        "client_request_id": str(pending.get("client_request_id", "")).strip(),
     }
 
 
@@ -1027,6 +1233,56 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
     )
 
 
+async def answer_pending_question(
+    question_id: str,
+    answer_text: str,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    client_request_id: str = "",
+) -> str:
+    context = _pending_question_resume_context(question_id)
+    pending = context.get("pending_question", {})
+    if not pending:
+        raise ValueError("Pending question not found.")
+
+    content = str(answer_text or "").strip()
+    if not content:
+        raise ValueError("Answer cannot be empty.")
+
+    round_id = str(context.get("round_id", "")).strip()
+    if not round_id:
+        raise ValueError("Pending question has no round context.")
+
+    cleared = await _clear_pending_question(str(pending.get("id", "")).strip())
+    if not cleared:
+        raise ValueError("Pending question not found.")
+
+    answer_system = (
+        "This user message answers your earlier clarification question for the same round.\n"
+        f"Target round id: {round_id}\n"
+        f"Original clarification question: {str(pending.get('text', '')).strip()}\n"
+        "Treat the new user message as the answer and continue the same round."
+    )
+    try:
+        return await _run_chat_agent(
+            content,
+            bot,
+            chat_id,
+            db_path,
+            ephemeral_system=answer_system,
+            forced_round_id=round_id,
+            history_override=context.get("round_history") or [],
+            persist_base_messages=context.get("persist_base_messages") or [],
+            persist_insert_at=context.get("persist_insert_at"),
+            client_request_id=client_request_id,
+            persist_user_message=True,
+        )
+    except Exception:
+        await _restore_pending_question(pending)
+        raise
+
+
 def _ensure_main_inbox_worker(bot: Any, chat_id: int, db_path: str) -> None:
     global _main_inbox_worker
     if _main_inbox_worker is None or _main_inbox_worker.done():
@@ -1126,7 +1382,7 @@ async def _drain_main_inbox(bot: Any, chat_id: int, db_path: str) -> None:
                 await mark_read_count(_MAIN_INBOX_AGENT_ID, 1)
                 if target_round_id:
                     await _publish_round_guidance_update(target_round_id)
-            if response:
+            if response and response != _AWAITING_USER_SENTINEL:
                 labels = get_session_labels(target_round_id)
                 await archive_exchange(
                     str(item.get("content") or ""),
@@ -1521,6 +1777,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
 # 轻量 tool：只有 use_tools + quit，用于第一阶段判断是否进重循环
 _LIGHT_TOOL_DEFS = [
     {"type": "function", "function": {"name": "use_tools", "description": "Call this when the user asks you to DO something (file ops, search, code, web, spawn_subagent, etc.). Not needed for chat only. IMPORTANT: set task to the user's EXACT original message, do not rewrite it.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
+    {"type": "function", "function": {"name": "ask_user", "description": "Ask the user a clarification question when their request is ambiguous or missing a critical detail. Use freeform by sending only text, or add a short options array when offering structured choices would help. Do not combine this with other tools in the same assistant turn.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["text"]}}},
     {"type": "function", "function": {"name": "quit", "description": "Call this when the interaction is done.", "parameters": {"type": "object", "properties": {}}}},
 ]
 
@@ -1562,7 +1819,7 @@ async def _run_main_agent(
     invalid_phase1_tools = [
         str(tc.get("function", {}).get("name") or "").strip()
         for tc in tool_calls
-        if str(tc.get("function", {}).get("name") or "").strip() not in {"use_tools", "quit", ""}
+        if str(tc.get("function", {}).get("name") or "").strip() not in {"use_tools", "ask_user", "quit", ""}
     ]
     if invalid_phase1_tools:
         retry_messages = [
@@ -1575,8 +1832,9 @@ async def _run_main_agent(
                 "role": "user",
                 "content": (
                     f"[Decision-phase correction] You attempted unavailable tool(s): {', '.join(invalid_phase1_tools)}. "
-                    "Only `use_tools` and `quit` are available in this phase. "
+                    "Only `use_tools`, `ask_user`, and `quit` are available in this phase. "
                     "If real tool work is needed, call `use_tools` with the user's exact original message. "
+                    "If clarification is needed before acting, call `ask_user`. "
                     "Otherwise say there is no suitable tool in this phase."
                 ),
             },
@@ -1589,15 +1847,33 @@ async def _run_main_agent(
 
     # 如果 LLM 调了 use_tools → 进入重循环（含全部工具）
     use_tools_call = None
+    ask_user_call = None
     for tc in tool_calls:
         name = tc.get("function", {}).get("name")
         if name == "use_tools":
             use_tools_call = tc
+        elif name == "ask_user":
+            ask_user_call = tc
         elif name == "quit":
             if client_request_id:
                 messages[-1]["client_request_id"] = client_request_id
             await _save_session_messages(_session_messages_to_save(messages))
             return _assistant_text(response).strip() or "Done."
+
+    if ask_user_call:
+        try:
+            args = json.loads(ask_user_call["function"].get("arguments") or "{}")
+            result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None)
+        except Exception as exc:
+            result = f"Tool failed: {exc}"
+        tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": ask_user_call["id"], "content": _truncate(result)}
+        if round_id:
+            tool_entry["round_id"] = round_id
+        messages.append(tool_entry)
+        if _tool_result_requests_user_input(result):
+            return _AWAITING_USER_SENTINEL
+        await _save_session_messages(_session_messages_to_save(messages))
+        return _assistant_text(response).strip() or str(result)
 
     if use_tools_call:
         await _publish_runtime_event({
@@ -1645,19 +1921,35 @@ async def _run_main_agent(
                 await _save_session_messages(_session_messages_to_save(messages))
                 return _assistant_text(response).strip() or "Done."
 
+            awaiting_user = False
             spawned = False
-            for t in tcs:
+            for index, t in enumerate(tcs):
+                tool_name = t.get("function", {}).get("name")
+                if awaiting_user:
+                    skipped_tool_entry: dict[str, Any] = {
+                        "role": "tool",
+                        "tool_call_id": t["id"],
+                        "content": "Skipped because ask_user paused the round until the user answers.",
+                    }
+                    if round_id:
+                        skipped_tool_entry["round_id"] = round_id
+                    messages.append(skipped_tool_entry)
+                    continue
                 try:
                     args = json.loads(t["function"].get("arguments") or "{}")
-                    result = await _execute_tool(t["function"]["name"], args, bot, chat_id, db_path, None)
+                    result = await _execute_tool(tool_name, args, bot, chat_id, db_path, None)
                 except Exception as e:
                     result = f"Tool failed: {e}"
                 tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": t["id"], "content": _truncate(result)}
                 if round_id:
                     tool_entry["round_id"] = round_id
                 messages.append(tool_entry)
-                if t.get("function", {}).get("name") == "spawn_subagent":
+                if tool_name == "ask_user" and _tool_result_requests_user_input(str(result)):
+                    awaiting_user = True
+                if tool_name == "spawn_subagent":
                     spawned = True
+            if awaiting_user:
+                return _AWAITING_USER_SENTINEL
             await _save_session_messages(_session_messages_to_save(messages))
 
             # 调用了 spawn_subagent → 进入监控模式，不调 LLM，等 subagent 全部安静
@@ -1925,6 +2217,8 @@ async def _run_chat_agent(
         )
 
         await _refresh_session_labels(user_message, round_id)
+        if main_text == _AWAITING_USER_SENTINEL:
+            return main_text
         await _publish_runtime_event({
             "type": "chat_message",
             "client_request_id": client_request_id,

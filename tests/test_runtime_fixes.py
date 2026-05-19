@@ -319,6 +319,223 @@ async def test_send_message_tool_persists_intermediate_reply(monkeypatch, tmp_pa
     assert any(event.get("type") == "assistant_message" and event.get("intermediate") is True for event in seen)
 
 
+async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+    from cyrene import tools
+
+    seen = []
+
+    async def fake_publish_event(event):
+        seen.append(event)
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+
+    agent.STATE_FILE.write_text(json.dumps({
+        "messages": [
+            {"role": "user", "content": "帮我订行程", "round_id": "round_1", "round_title": "订行程"},
+        ]
+    }, ensure_ascii=False), encoding="utf-8")
+
+    round_token = agent._current_round_id.set("round_1")
+    request_token = agent._current_client_request_id.set("req_ask_1")
+    sender_token = agent._current_agent_id.set("main")
+    try:
+        result = await tools._tool_ask_user(
+            {"text": "你想去北京还是上海？", "options": ["北京", "上海"]},
+            None,
+            0,
+            "db.sqlite3",
+            None,
+        )
+    finally:
+        agent._current_agent_id.reset(sender_token)
+        agent._current_client_request_id.reset(request_token)
+        agent._current_round_id.reset(round_token)
+
+    payload = json.loads(result)
+    state = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))
+    pending = state["pending_question"]
+    saved = state["messages"]
+
+    assert payload["status"] == "awaiting_user"
+    assert pending["text"] == "你想去北京还是上海？"
+    assert pending["round_id"] == "round_1"
+    assert pending["client_request_id"] == "req_ask_1"
+    assert [item["label"] for item in pending["options"]] == ["北京", "上海"]
+    assert saved[-1]["role"] == "assistant"
+    assert saved[-1]["content"] == "你想去北京还是上海？"
+    assert saved[-1]["question_prompt"] is True
+    assert saved[-1]["question_id"] == pending["id"]
+    assert any(event.get("type") == "user_question" and event.get("question_id") == pending["id"] for event in seen)
+
+
+async def test_ask_user_wait_state_does_not_persist_assistant_trace(monkeypatch, tmp_path):
+    from cyrene import agent
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+        if tools is agent._LIGHT_TOOL_DEFS:
+            return {
+                "content": "我应该先问清楚。",
+                "tool_calls": [
+                    {
+                        "id": "ask_1",
+                        "function": {
+                            "name": "ask_user",
+                            "arguments": json.dumps({
+                                "text": "你更想看攻略还是代码？",
+                                "options": ["攻略", "代码"],
+                            }, ensure_ascii=False),
+                        },
+                    }
+                ],
+            }
+        raise AssertionError("Unexpected heavy tool loop")
+
+    async def fake_execute_tool(name, arguments, bot, chat_id, db_path, notify_state):
+        assert name == "ask_user"
+        await agent._upsert_pending_question({
+            "text": str(arguments.get("text", "")),
+            "options": list(arguments.get("options", [])),
+            "round_id": agent._current_round_id.get(),
+            "client_request_id": agent._current_client_request_id.get(),
+        })
+        return json.dumps({
+            "status": "awaiting_user",
+            "question_id": "question_fake",
+            "option_count": 2,
+        }, ensure_ascii=False)
+
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(agent, "_execute_tool", fake_execute_tool)
+
+    result = await agent._run_chat_agent("帮我继续", None, 0, "db.sqlite3", client_request_id="req_wait")
+    state = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))
+    messages = state["messages"]
+
+    assert result == agent._AWAITING_USER_SENTINEL
+    assert [msg["role"] for msg in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "帮我继续"
+    assert messages[1]["question_prompt"] is True
+    assert messages[1]["content"] == "你更想看攻略还是代码？"
+    assert "tool_calls" not in messages[1]
+    assert state["pending_question"]["text"] == "你更想看攻略还是代码？"
+
+
+async def test_answer_pending_question_resumes_same_round(monkeypatch, tmp_path):
+    from cyrene import agent
+
+    seen = {}
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    agent.STATE_FILE.write_text(json.dumps({
+        "messages": [
+            {"role": "user", "content": "做一个旅游计划", "round_id": "round_1", "message_id": "u1"},
+            {"role": "assistant", "content": "你更偏向城市还是自然？", "round_id": "round_1", "question_prompt": True, "question_id": "question_1", "message_id": "a1"},
+            {"role": "user", "content": "别的轮次", "round_id": "round_2", "message_id": "u2"},
+        ],
+        "pending_question": {
+            "id": "question_1",
+            "text": "你更偏向城市还是自然？",
+            "round_id": "round_1",
+            "round_title": "旅游计划",
+            "client_request_id": "req_ask_1",
+            "allow_custom": True,
+            "options": [{"id": "option_1", "label": "城市"}, {"id": "option_2", "label": "自然"}],
+            "asked_at": "2026-05-19T03:00:00+00:00",
+        },
+    }, ensure_ascii=False), encoding="utf-8")
+
+    async def fake_run_chat_agent(
+        user_message,
+        bot,
+        chat_id,
+        db_path,
+        ephemeral_system="",
+        forced_round_id="",
+        history_override=None,
+        persist_base_messages=None,
+        persist_insert_at=None,
+        client_request_id="",
+        persist_user_message=True,
+    ):
+        seen["user_message"] = user_message
+        seen["ephemeral_system"] = ephemeral_system
+        seen["forced_round_id"] = forced_round_id
+        seen["history_override"] = history_override
+        seen["persist_base_messages"] = persist_base_messages
+        seen["persist_insert_at"] = persist_insert_at
+        seen["client_request_id"] = client_request_id
+        seen["persist_user_message"] = persist_user_message
+        return "继续完成后的最终答案"
+
+    monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
+
+    result = await agent.answer_pending_question(
+        "question_1",
+        "我更偏向城市",
+        None,
+        0,
+        "db.sqlite3",
+        client_request_id="req_answer_1",
+    )
+
+    state = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))
+
+    assert result == "继续完成后的最终答案"
+    assert "pending_question" not in state
+    assert seen["user_message"] == "我更偏向城市"
+    assert "answers your earlier clarification question" in seen["ephemeral_system"]
+    assert seen["forced_round_id"] == "round_1"
+    assert [msg["content"] for msg in seen["history_override"]] == ["做一个旅游计划", "你更偏向城市还是自然？"]
+    assert [msg["content"] for msg in seen["persist_base_messages"]] == ["做一个旅游计划", "你更偏向城市还是自然？", "别的轮次"]
+    assert seen["persist_insert_at"] == 2
+    assert seen["client_request_id"] == "req_answer_1"
+    assert seen["persist_user_message"] is True
+
+
+def test_build_current_session_exposes_pending_question(monkeypatch, tmp_path):
+    from webui import routes
+
+    monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(routes, "_SERVER_STARTED_AT", 0)
+    monkeypatch.setattr(routes, "get_live_rounds", lambda: [])
+    monkeypatch.setattr(routes, "list_live_shells", lambda include_exited=False: [])
+
+    routes.STATE_FILE.write_text(json.dumps({
+        "session_title": "当前会话",
+        "messages": [
+            {"role": "user", "content": "帮我订机票", "round_id": "round_1", "message_id": "u1"},
+            {"role": "assistant", "content": "你是要单程还是往返？", "round_id": "round_1", "question_prompt": True, "question_id": "question_1", "message_id": "a1"},
+        ],
+        "pending_question": {
+            "id": "question_1",
+            "text": "你是要单程还是往返？",
+            "round_id": "round_1",
+            "round_title": "订机票",
+            "client_request_id": "req_ask_1",
+            "allow_custom": True,
+            "options": [{"id": "option_1", "label": "单程"}, {"id": "option_2", "label": "往返"}],
+            "asked_at": "2026-05-19T03:00:00+00:00",
+        },
+    }, ensure_ascii=False), encoding="utf-8")
+
+    session = routes._build_current_session()
+
+    assert session["status"] == "queued"
+    assert session["pendingQuestion"]["id"] == "question_1"
+    assert session["pendingQuestion"]["text"] == "你是要单程还是往返？"
+    assert [item["label"] for item in session["pendingQuestion"]["options"]] == ["单程", "往返"]
+    assert session["chat"]["messages"][-1]["questionPrompt"] is True
+
+
 def test_flush_intermediate_replies_keeps_messages_for_later_saves():
     from cyrene import agent
 

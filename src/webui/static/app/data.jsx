@@ -201,6 +201,8 @@ function connectEvents() {
         if ([
           "chat_message",
           "guidance_acknowledged",
+          "user_question",
+          "user_question_answered",
           "tool_call",
           "llm_call",
           "phase_transition",

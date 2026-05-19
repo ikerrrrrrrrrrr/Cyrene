@@ -778,6 +778,118 @@ button { font-family: inherit; }
   white-space: nowrap;
 }
 
+/* pending question */
+.question-panel {
+  margin: 14px 8% 0;
+  border: 1px solid rgba(133, 189, 168, 0.28);
+  border-radius: var(--r-m);
+  background:
+    linear-gradient(180deg, rgba(133, 189, 168, 0.1), rgba(133, 189, 168, 0.04)),
+    var(--bg-1);
+  overflow: hidden;
+}
+.question-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid rgba(133, 189, 168, 0.18);
+}
+.question-panel-kicker,
+.question-panel-meta {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.question-panel-kicker {
+  color: var(--accent);
+}
+.question-panel-meta {
+  color: var(--text-4);
+}
+.question-panel-body {
+  padding: 14px;
+}
+.question-panel-title {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.question-option {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(133, 189, 168, 0.28);
+  background: rgba(133, 189, 168, 0.08);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.question-option:hover:not(:disabled) {
+  background: rgba(133, 189, 168, 0.16);
+  border-color: rgba(133, 189, 168, 0.4);
+}
+.question-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.question-custom {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  margin-top: 14px;
+}
+.question-textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--text);
+  padding: 10px 12px;
+  line-height: 1.45;
+}
+.question-textarea:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+.question-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: var(--r-s);
+  background: var(--accent);
+  color: var(--accent-text);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.question-submit:disabled {
+  background: var(--bg-3);
+  color: var(--text-4);
+  cursor: not-allowed;
+}
+@media (max-width: 720px) {
+  .question-custom {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .question-submit {
+    justify-content: center;
+  }
+}
+
 /* composer */
 .composer {
   border-top: 1px solid var(--line);
