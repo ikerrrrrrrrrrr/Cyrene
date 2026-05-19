@@ -545,6 +545,62 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 status_code=502,
             )
 
+    # ---- Context management (SOUL.md / workspace chips) ----
+
+    @router.get("/api/context/state")
+    async def api_context_state():
+        from cyrene.settings_store import is_workspace_active, get_workspace_history
+        soul_active = bool(_read_soul().strip())
+        return {
+            "soul_active": soul_active,
+            "workspace_active": is_workspace_active(),
+            "workspace_dir": str(WORKSPACE_DIR),
+            "workspace_history": get_workspace_history(),
+        }
+
+    @router.post("/api/context/remove-soul")
+    async def api_remove_soul():
+        SOUL_PATH.write_text("", encoding="utf-8")
+        return {"ok": True}
+
+    @router.post("/api/context/add-soul")
+    async def api_add_soul():
+        from cyrene.soul import get_default_soul_content
+        SOUL_PATH.write_text(get_default_soul_content(), encoding="utf-8")
+        return {"ok": True}
+
+    @router.post("/api/context/remove-workspace")
+    async def api_remove_workspace():
+        from cyrene.settings_store import set_workspace_active
+        set_workspace_active(False)
+        return {"ok": True}
+
+    @router.post("/api/context/add-workspace")
+    async def api_add_workspace(request: Request):
+        from cyrene.settings_store import set_workspace_active, add_workspace_to_history
+        body = await request.json()
+        path = str(body.get("path", "")).strip()
+        set_workspace_active(True)
+        if path:
+            add_workspace_to_history(path)
+        return {"ok": True}
+
+    @router.post("/api/context/pick-directory")
+    async def api_pick_directory():
+        import platform
+        import subprocess
+        system = platform.system()
+        if system == "Darwin":
+            result = subprocess.run(
+                ['osascript', '-e', 'POSIX path of (choose folder with prompt "Select workspace directory")'],
+                capture_output=True, text=True, timeout=30,
+            )
+            path = result.stdout.strip()
+            if path:
+                return {"path": path}
+            return {"path": "", "cancelled": True}
+        return {"path": "", "error": f"Directory picker not supported on {system}"}
+
     @router.get("/api/settings/soul")
     async def api_get_soul():
         return {"content": _read_soul()}
@@ -893,10 +949,7 @@ def _build_current_session() -> dict | None:
         "pendingQuestion": pending_question,
         "summary": _build_summary(raw_msgs),
         "chat": {
-            "contextChips": [
-                {"icon": "🧠", "label": "SOUL.md"},
-                {"icon": "📁", "label": "workspace"},
-            ],
+            "contextChips": _build_context_chips(),
             "messages": messages,
         },
         "liveRounds": live_rounds,
@@ -1814,7 +1867,7 @@ def _empty_session() -> dict:
         "model": OPENAI_MODEL,
         "summary": {"tokens": "0", "spend": "$0.00", "toolCalls": 0},
         "chat": {
-            "contextChips": [{"icon": "🧠", "label": "SOUL.md"}],
+            "contextChips": _build_context_chips(),
             "messages": [],
         },
         "liveRounds": [],
@@ -2185,6 +2238,17 @@ def _build_config() -> dict:
         "search_port": str(SEARXNG_PORT),
         "search_host": SEARXNG_HOST,
     }
+
+
+def _build_context_chips() -> list[dict]:
+    """Build context chips reflecting current SOUL.md and workspace state."""
+    from cyrene.settings_store import is_workspace_active
+    chips = []
+    if bool(_read_soul().strip()):
+        chips.append({"icon": "🧠", "label": "SOUL.md"})
+    if is_workspace_active():
+        chips.append({"icon": "📁", "label": "workspace"})
+    return chips
 
 
 def _build_search_config() -> dict:

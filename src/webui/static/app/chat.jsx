@@ -567,12 +567,87 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     return function () { delete window.selectChatSession; };
   }, [onSelectSession]);
 
+  // Load context state (SOUL.md / workspace active status + workspace history)
+  useEffect(function () {
+    if (!isLiveSession) return;
+    fetch("/api/context/state")
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        setContextState(s);
+        setWorkspaceHistory(s.workspace_history || []);
+      })
+      .catch(function () {});
+  }, [isLiveSession, session.id]);
+
+  async function removeContext(label) {
+    setHiddenContexts(Object.assign({}, hiddenContexts, (function (o) { o[label] = true; return o; })({})));
+    var chips = session.chat.contextChips;
+    if (chips) {
+      for (var i = chips.length - 1; i >= 0; i--) {
+        if (chips[i].label === label) chips.splice(i, 1);
+      }
+    }
+    if (label === "SOUL.md") {
+      await fetch("/api/context/remove-soul", { method: "POST" });
+    } else if (label === "workspace") {
+      await fetch("/api/context/remove-workspace", { method: "POST" });
+    }
+    setContextPickerOpen(false);
+    if (window.refreshSessions) window.refreshSessions();
+  }
+
+  async function addContext(label, path) {
+    var h = Object.assign({}, hiddenContexts);
+    delete h[label];
+    setHiddenContexts(h);
+    var icon = label === "SOUL.md" ? "🧠" : "📁";
+    var chips = session.chat.contextChips;
+    if (chips) {
+      var found = false;
+      for (var i = 0; i < chips.length; i++) {
+        if (chips[i].label === label) { found = true; break; }
+      }
+      if (!found) chips.push({ icon: icon, label: label });
+    }
+    if (label === "SOUL.md") {
+      await fetch("/api/context/add-soul", { method: "POST" });
+    } else if (label === "workspace") {
+      await fetch("/api/context/add-workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path || "" }),
+      });
+      if (path) {
+        setWorkspaceHistory((function (prev) {
+          var next = prev.filter(function (p) { return p !== path; });
+          next.unshift(path);
+          return next.slice(0, 10);
+        })());
+      }
+    }
+    setContextPickerOpen(false);
+    if (window.refreshSessions) window.refreshSessions();
+  }
+
+  async function pickWorkspaceDir() {
+    try {
+      var r = await fetch("/api/context/pick-directory", { method: "POST" });
+      var data = await r.json();
+      if (data.path) {
+        await addContext("workspace", data.path);
+      }
+    } catch (e) {}
+  }
+
   const [draft, setDraft] = useState("");
   const [questionDraft, setQuestionDraft] = useState("");
   const [answeringQuestion, setAnsweringQuestion] = useState(false);
   const [contextPickerOpen, setContextPickerOpen] = useState(false);
   const [selectedGuideRoundId, setSelectedGuideRoundId] = useState("");
   const [selectedGuideRoundTitle, setSelectedGuideRoundTitle] = useState("");
+  const [hiddenContexts, setHiddenContexts] = useState({});
+  const [workspaceHistory, setWorkspaceHistory] = useState([]);
+  const [contextState, setContextState] = useState({ soul_active: true, workspace_active: true, workspace_dir: "" });
   const [notice, setNotice] = useState("");
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
@@ -1160,6 +1235,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     }
   }
 
+  var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[c.label]; });
+  var visibleLabels = visibleChips.map(function (c) { return c.label; });
+  var addableContexts = [];
+  if (visibleLabels.indexOf("SOUL.md") === -1) addableContexts.push({ icon: "🧠", label: "SOUL.md", hasPicker: false });
+  if (visibleLabels.indexOf("workspace") === -1) addableContexts.push({ icon: "📁", label: "workspace", hasPicker: true });
+  var hasAddable = addableContexts.length > 0 || liveRounds.length > 0;
+
   return (
     <div className="chat-layout">
       <div className="chat-main">
@@ -1266,9 +1348,9 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         <div className="composer">
           <div className="composer-box">
             <div className="composer-chips">
-              {(session.chat.contextChips || []).map((c, i) => (
+              {visibleChips.map((c, i) => (
                 <span className="chip" key={i}>
-                  {c.icon} {c.label} <span className="x">×</span>
+                  {c.icon} {c.label} <span className="x" onClick={function () { removeContext(c.label); }}>×</span>
                 </span>
               ))}
               {hasSelectedGuideRound && (
@@ -1278,42 +1360,82 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 </span>
               )}
               <span
-                className={"chip chip-add-context" + (liveRounds.length === 0 ? " disabled" : "")}
-                style={{ borderStyle: "dashed", cursor: liveRounds.length === 0 ? "default" : "pointer" }}
+                className={"chip chip-add-context" + (hasAddable ? "" : " disabled")}
+                style={{ borderStyle: "dashed", cursor: hasAddable ? "pointer" : "default" }}
                 onClick={function () {
-                  if (liveRounds.length === 0) return;
+                  if (!hasAddable) return;
                   setContextPickerOpen(!contextPickerOpen);
                 }}
               >
                 + add context
               </span>
             </div>
-            {contextPickerOpen && liveRounds.length > 0 && (
+            {contextPickerOpen && hasAddable && (
               <div className="context-picker">
-                <div className="context-picker-head">Running rounds</div>
-                {liveRounds.map(function (round) {
-                  const isActive = selectedGuideRoundId === round.id;
-                  return (
-                    <button
-                      key={round.id}
-                      className={"context-option" + (isActive ? " active" : "")}
-                      onClick={function () {
-                        setSelectedGuideRoundId(round.id);
-                        setSelectedGuideRoundTitle(round.title || round.id);
-                        setContextPickerOpen(false);
-                      }}
-                    >
-                      <span className={"sa-dot " + round.status} style={{ marginTop: 0 }}></span>
-                      <span className="context-option-body">
-                        <span className="context-option-title">{round.title}</span>
-                        <span className="context-option-meta">
-                          {round.elapsed} · {round.runningSubagents}/{round.subagentCount} subagents
-                          {round.pendingGuidance ? " · " + round.pendingGuidance + " queued" : ""}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
+                {addableContexts.length > 0 && (
+                  <div>
+                    <div className="context-picker-head">Context</div>
+                    {addableContexts.map(function (ctx) {
+                      return (
+                        <button
+                          key={ctx.label}
+                          className="context-option"
+                          onClick={function () { addContext(ctx.label, ""); }}
+                        >
+                          <span style={{ marginRight: 6 }}>{ctx.icon}</span> {ctx.label}
+                        </button>
+                      );
+                    })}
+                    {addableContexts.some(function (c) { return c.hasPicker; }) && (
+                      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 4, marginTop: 2 }}>
+                        <div className="context-picker-head" style={{ paddingLeft: 12 }}>workspace directories</div>
+                        {workspaceHistory.map(function (p) {
+                          return (
+                            <button
+                              key={p}
+                              className="context-option"
+                              style={{ paddingLeft: 20, fontFamily: "var(--mono)", fontSize: 10 }}
+                              onClick={function () { addContext("workspace", p); }}
+                            >{p}</button>
+                          );
+                        })}
+                        <button
+                          className="context-option"
+                          style={{ paddingLeft: 20 }}
+                          onClick={function () { pickWorkspaceDir(); }}
+                        >+ choose directory...</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {liveRounds.length > 0 && (
+                  <div>
+                    <div className="context-picker-head" style={{ marginTop: addableContexts.length > 0 ? 8 : 0 }}>Running rounds</div>
+                    {liveRounds.map(function (round) {
+                      var isActive = selectedGuideRoundId === round.id;
+                      return (
+                        <button
+                          key={round.id}
+                          className={"context-option" + (isActive ? " active" : "")}
+                          onClick={function () {
+                            setSelectedGuideRoundId(round.id);
+                            setSelectedGuideRoundTitle(round.title || round.id);
+                            setContextPickerOpen(false);
+                          }}
+                        >
+                          <span className={"sa-dot " + round.status} style={{ marginTop: 0 }}></span>
+                          <span className="context-option-body">
+                            <span className="context-option-title">{round.title}</span>
+                            <span className="context-option-meta">
+                              {round.elapsed} · {round.runningSubagents}/{round.subagentCount} subagents
+                              {round.pendingGuidance ? " · " + round.pendingGuidance + " queued" : ""}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             <textarea

@@ -194,11 +194,17 @@ async def _tool_cancel_task(args: dict[str, Any], _bot: Any, _chat_id: int, db_p
 
 
 async def _tool_read(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     path = _resolve_workspace_path(str(args["path"]))
     return _truncate(path.read_text(encoding="utf-8"))
 
 
 async def _tool_write(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     path = _resolve_workspace_path(str(args["path"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(args.get("content", "")), encoding="utf-8")
@@ -206,6 +212,9 @@ async def _tool_write(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: 
 
 
 async def _tool_edit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     path = _resolve_workspace_path(str(args["path"]))
     old_string = str(args["old_string"])
     new_string = str(args["new_string"])
@@ -225,12 +234,18 @@ async def _tool_edit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
 
 
 async def _tool_glob(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     pattern = str(args["pattern"])
     matches = sorted(str(path.relative_to(WORKSPACE_DIR)) for path in WORKSPACE_DIR.glob(pattern))
     return "\n".join(matches[:200]) if matches else "No matches."
 
 
 async def _tool_grep(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     pattern = re.compile(str(args["pattern"]))
     search_root = _resolve_workspace_path(str(args.get("path", ".")))
     glob_pattern = str(args.get("glob", "**/*"))

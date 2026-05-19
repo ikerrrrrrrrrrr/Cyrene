@@ -133,3 +133,31 @@ def save_enabled_tools(tools: dict[str, bool]) -> None:
     # Never persist protected tools
     clean = {k: v for k, v in tools.items() if k not in _PROTECTED_TOOLS}
     set_("enabled_tools", clean)
+
+
+# ---------------------------------------------------------------------------
+# Workspace history helpers
+# ---------------------------------------------------------------------------
+
+def get_workspace_history() -> list[str]:
+    """Return list of previously used workspace directories."""
+    return _load().get("workspace_history", [])
+
+
+def add_workspace_to_history(path: str) -> None:
+    """Record a workspace directory in history (most recent first, max 10)."""
+    history = [p for p in get_workspace_history() if p != path]
+    history.insert(0, path)
+    if len(history) > 10:
+        history = history[:10]
+    set_("workspace_history", history)
+
+
+def is_workspace_active() -> bool:
+    """Check if workspace access is granted (filesystem tools allowed to execute)."""
+    return _load().get("workspace_active", True)
+
+
+def set_workspace_active(active: bool) -> None:
+    """Grant or revoke workspace file access."""
+    set_("workspace_active", active)
