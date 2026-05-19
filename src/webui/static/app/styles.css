@@ -299,7 +299,7 @@ button { font-family: inherit; }
   background: var(--bg);
 }
 .setup-shell {
-  min-height: 100vh;
+  height: 100vh;
   padding: 28px 32px 40px;
   background:
     radial-gradient(circle at top left, var(--accent-faint), transparent 32%),
