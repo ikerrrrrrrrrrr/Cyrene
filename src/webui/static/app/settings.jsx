@@ -1,9 +1,11 @@
 // Settings page
 const { useState: useStateSet } = React;
+const VALID_SETTINGS_SECTIONS = new Set(["general", "models", "agents", "tools", "search", "mcp", "keys", "appearance", "danger"]);
 
 function readStoredSettingsSection() {
   try {
-    return localStorage.getItem("cyrene-settings-section") || "general";
+    const section = localStorage.getItem("cyrene-settings-section");
+    return VALID_SETTINGS_SECTIONS.has(section) ? section : "general";
   } catch (e) {
     return "general";
   }
