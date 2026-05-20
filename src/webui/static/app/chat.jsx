@@ -650,6 +650,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const [workspaceHistory, setWorkspaceHistory] = useState([]);
   const [contextState, setContextState] = useState({ soul_active: true, workspace_active: true, workspace_dir: "" });
   const [notice, setNotice] = useState("");
+  const [ccStatus, setCcStatus] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const taRef = useRef(null);
@@ -694,6 +695,33 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
+
+  useEffect(function () {
+    let cancelled = false;
+
+    function loadCcStatus() {
+      fetch("/api/cc/status")
+        .then(function (response) { return response.json(); })
+        .then(function (payload) {
+          if (!cancelled) setCcStatus(payload);
+        })
+        .catch(function () {
+          if (!cancelled) {
+            setCcStatus({
+              available: false,
+              reason: "Failed to reach /api/cc/status.",
+            });
+          }
+        });
+    }
+
+    loadCcStatus();
+    const timer = window.setInterval(loadCcStatus, 15000);
+    return function () {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     const runtime = getChatRuntime();
@@ -1495,7 +1523,17 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         )}
       </div>
 
-      <ChatSide session={session} subagents={subagents} />
+      <ChatSide
+        session={session}
+        subagents={subagents}
+        ccStatus={ccStatus}
+        refreshCcStatus={function () {
+          fetch("/api/cc/status")
+            .then(function (response) { return response.json(); })
+            .then(function (payload) { setCcStatus(payload); })
+            .catch(function () {});
+        }}
+      />
     </div>
   );
 }
@@ -1652,10 +1690,20 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
   const { t } = useI18n();
   return (
     <div className="chat-side">
+      {window.CCTerminalPanel && (
+        <div className="side-section side-section--terminal">
+          <div className="side-head">
+            {t("chat.activeCc")}
+            <span className="count">{ccStatus && ccStatus.available ? "live" : "off"}</span>
+          </div>
+          <window.CCTerminalPanel statusInfo={ccStatus} onRefresh={refreshCcStatus} />
+        </div>
+      )}
+
       <div className="side-section" style={{ maxHeight: "40%", overflowY: "auto" }}>
         <div className="side-head">
           {t("chat.activeShells")}

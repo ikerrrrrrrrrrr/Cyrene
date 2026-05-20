@@ -1,0 +1,278 @@
+const { useEffect, useRef, useState } = React;
+
+function ccText(key, fallback) {
+  return typeof window.t === "function" ? window.t(key) : fallback;
+}
+
+function ccWsUrl(tmuxSession) {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return protocol + "//" + window.location.host + "/ws/cc-terminal/" + encodeURIComponent(tmuxSession);
+}
+
+function ccStatusLabel(status) {
+  if (status === "running") return "live";
+  if (status === "connecting") return "connecting";
+  if (status === "offline") return "offline";
+  if (status === "unsupported") return "missing xterm";
+  return "unavailable";
+}
+
+function ccLearningText(learningSnapshot, liveLearning) {
+  if (liveLearning && liveLearning.phase === "started" && liveLearning.user_input) {
+    return "Learning from: " + liveLearning.user_input;
+  }
+  if (liveLearning && Array.isArray(liveLearning.highlights) && liveLearning.highlights.length) {
+    return liveLearning.highlights.slice(0, 2).join(" · ");
+  }
+  if (learningSnapshot && learningSnapshot.summary && Array.isArray(learningSnapshot.summary.highlights) && learningSnapshot.summary.highlights.length) {
+    return learningSnapshot.summary.highlights.slice(0, 2).join(" · ");
+  }
+  return ccText("chat.ccLearningIdle", "Watching your Claude Code habits.");
+}
+
+function CCTerminalPanel({ statusInfo, onRefresh }) {
+  const tmuxSession = statusInfo && statusInfo.tmux_session ? statusInfo.tmux_session : "";
+  const available = Boolean(statusInfo && statusInfo.available && tmuxSession);
+  const containerRef = useRef(null);
+  const terminalRef = useRef(null);
+  const fitAddonRef = useRef(null);
+  const wsRef = useRef(null);
+  const syncSizeRef = useRef(function () {});
+  const [expanded, setExpanded] = useState(false);
+  const [connectionState, setConnectionState] = useState(available ? "connecting" : "unavailable");
+  const [learningSnapshot, setLearningSnapshot] = useState(null);
+  const [liveLearning, setLiveLearning] = useState(null);
+
+  useEffect(function () {
+    setConnectionState(available ? "connecting" : "unavailable");
+  }, [available, tmuxSession]);
+
+  useEffect(function () {
+    if (!available) {
+      setLearningSnapshot(null);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/cc/learning")
+      .then(function (response) { return response.json(); })
+      .then(function (payload) {
+        if (cancelled) return;
+        if (payload && payload.available) {
+          setLearningSnapshot(payload);
+        }
+      })
+      .catch(function () {});
+    return function () {
+      cancelled = true;
+    };
+  }, [available, statusInfo && statusInfo.latest_jsonl, tmuxSession]);
+
+  useEffect(function () {
+    if (!window.__sseHandlers) return undefined;
+    function handleEvent(event) {
+      if (!event || event.type !== "cc_learning") return;
+      if (event.tmux_session && tmuxSession && event.tmux_session !== tmuxSession) return;
+      setLiveLearning(event);
+      if (event.phase === "completed") {
+        window.setTimeout(function () {
+          fetch("/api/cc/learning")
+            .then(function (response) { return response.json(); })
+            .then(function (payload) {
+              if (payload && payload.available) setLearningSnapshot(payload);
+            })
+            .catch(function () {});
+        }, 120);
+      }
+      window.setTimeout(function () {
+        setLiveLearning(function (current) {
+          return current === event ? null : current;
+        });
+      }, 5000);
+    }
+    window.__sseHandlers.add(handleEvent);
+    return function () {
+      window.__sseHandlers.delete(handleEvent);
+    };
+  }, [tmuxSession]);
+
+  useEffect(function () {
+    if (!available || !containerRef.current) return undefined;
+    const TerminalCtor = window.Terminal;
+    const FitAddonCtor = window.FitAddon && (window.FitAddon.FitAddon || window.FitAddon);
+    if (!TerminalCtor) {
+      setConnectionState("unsupported");
+      return undefined;
+    }
+
+    const term = new TerminalCtor({
+      allowTransparency: true,
+      convertEol: true,
+      cursorBlink: true,
+      fontFamily: "\"IBM Plex Mono\", ui-monospace, Menlo, monospace",
+      fontSize: expanded ? 14 : 11,
+      lineHeight: 1.2,
+      rows: expanded ? 28 : 10,
+      cols: expanded ? 120 : 48,
+      scrollback: 3000,
+      theme: {
+        background: "transparent",
+        foreground: "#ebeff3",
+        cursor: "#63b38f",
+        selectionBackground: "rgba(99, 179, 143, 0.22)",
+      },
+    });
+
+    let fitAddon = null;
+    if (FitAddonCtor) {
+      fitAddon = new FitAddonCtor();
+      fitAddonRef.current = fitAddon;
+      term.loadAddon(fitAddon);
+    }
+
+    term.open(containerRef.current);
+    terminalRef.current = term;
+
+    function syncSize() {
+      if (!terminalRef.current) return;
+      if (fitAddonRef.current && typeof fitAddonRef.current.fit === "function") {
+        try {
+          fitAddonRef.current.fit();
+        } catch (error) {
+          /* swallow */
+        }
+      }
+      const socket = wsRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: "resize",
+          cols: terminalRef.current.cols || (expanded ? 120 : 48),
+          rows: terminalRef.current.rows || (expanded ? 28 : 10),
+        }));
+      }
+    }
+
+    syncSizeRef.current = syncSize;
+
+    const ws = new WebSocket(ccWsUrl(tmuxSession));
+    wsRef.current = ws;
+
+    ws.onopen = function () {
+      setConnectionState("running");
+      syncSize();
+      term.focus();
+    };
+    ws.onmessage = function (event) {
+      term.write(event.data);
+    };
+    ws.onerror = function () {
+      setConnectionState("offline");
+    };
+    ws.onclose = function () {
+      setConnectionState("offline");
+    };
+
+    term.onData(function (data) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "input", data: data }));
+      }
+    });
+
+    const resizeHandler = function () {
+      window.requestAnimationFrame(syncSize);
+    };
+    window.addEventListener("resize", resizeHandler);
+    window.requestAnimationFrame(syncSize);
+
+    return function () {
+      window.removeEventListener("resize", resizeHandler);
+      ws.close();
+      wsRef.current = null;
+      fitAddonRef.current = null;
+      term.dispose();
+      terminalRef.current = null;
+    };
+  }, [available, tmuxSession]);
+
+  useEffect(function () {
+    const term = terminalRef.current;
+    if (!term) return;
+    term.options.fontSize = expanded ? 14 : 11;
+    window.requestAnimationFrame(function () {
+      if (syncSizeRef.current) syncSizeRef.current();
+      if (expanded) term.focus();
+    });
+  }, [expanded]);
+
+  if (!statusInfo) {
+    return null;
+  }
+
+  if (!available) {
+    return (
+      <div className="cc-terminal cc-terminal--inactive">
+        <div className="cc-terminal__header">
+          <div className="cc-terminal__titleRow">
+            <span className="cc-terminal__eyebrow">Claude Code</span>
+            <span className="cc-terminal__title">{ccText("chat.ccUnavailable", "Terminal unavailable")}</span>
+          </div>
+          <button className="cc-terminal__button" onClick={onRefresh}>
+            {ccText("chat.ccRetry", "Retry")}
+          </button>
+        </div>
+        <div className="cc-terminal__empty">
+          <div className="cc-terminal__emptyReason">{statusInfo.reason || "No usable tmux session was found."}</div>
+          {statusInfo.project_dir && (
+            <div className="cc-terminal__emptyMeta">{statusInfo.project_dir}</div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={"cc-terminal" + (expanded ? " cc-terminal--expanded" : "")}>
+      {expanded && <div className="cc-terminal__backdrop" onClick={function () { setExpanded(false); }}></div>}
+      <div className="cc-terminal__panel">
+        <div className="cc-terminal__header">
+          <div className="cc-terminal__titleRow">
+            <span className="cc-terminal__eyebrow">Claude Code</span>
+            <span className="cc-terminal__title">{tmuxSession}</span>
+            <span className={"cc-terminal__status cc-terminal__status--" + connectionState}>
+              {ccStatusLabel(connectionState)}
+            </span>
+          </div>
+          <div className="cc-terminal__actions">
+            <button className="cc-terminal__button" onClick={onRefresh}>
+              {ccText("chat.ccRefresh", "Refresh")}
+            </button>
+            <button className="cc-terminal__button cc-terminal__button--accent" onClick={function () { setExpanded(!expanded); }}>
+              {expanded ? ccText("chat.ccShrink", "Shrink") : ccText("chat.ccExpand", "Expand")}
+            </button>
+          </div>
+        </div>
+
+        <div className="cc-terminal__surface">
+          <div
+            ref={containerRef}
+            className="cc-terminal__viewport"
+            onClick={function () {
+              if (terminalRef.current) terminalRef.current.focus();
+            }}
+          ></div>
+        </div>
+
+        <div className="cc-terminal__footer">
+          <div className="cc-terminal__learningLabel">{ccText("chat.ccLearning", "Cyrene learning")}</div>
+          <div className="cc-terminal__learningText">{ccLearningText(learningSnapshot, liveLearning)}</div>
+          {learningSnapshot && learningSnapshot.summary && Array.isArray(learningSnapshot.summary.top_tools) && learningSnapshot.summary.top_tools.length > 0 && (
+            <div className="cc-terminal__meta">
+              {ccText("chat.ccTopTools", "Top tools")}: {learningSnapshot.summary.top_tools.join(", ")}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+window.CCTerminalPanel = CCTerminalPanel;

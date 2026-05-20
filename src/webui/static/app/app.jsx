@@ -15,11 +15,12 @@ const ACCENT_PRESETS = {
   dark:  ["#4fd1a0", "#6dbde0", "#b8a2e0", "#e8ae5c", "#e87070"],
   light: ["#2da873", "#3b90c8", "#7858b0", "#c88520", "#d04848"],
 };
+const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "skills", "memory", "status", "settings"]);
 
 function readStoredUiPage() {
   try {
     var page = localStorage.getItem("cyrene-ui-page");
-    return page || "dashboard";
+    return VALID_UI_PAGES.has(page) ? page : "chat";
   } catch (e) {
     return "dashboard";
   }
