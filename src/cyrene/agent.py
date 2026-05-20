@@ -282,6 +282,36 @@ async def _append_session_message(entry: dict[str, Any]) -> None:
         await _write_session_messages_locked(state, full_messages)
 
 
+async def append_system_message(
+    content: str,
+    *,
+    message_meta: dict[str, Any] | None = None,
+    publish_event: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist a user-visible assistant message outside an active chat round.
+
+    This is used by scheduler-driven flows where there is no live user request
+    to attach an intermediate reply to, but the Web UI still needs to display
+    the message reliably from session state.
+    """
+    assistant_entry: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+        "system_initiated": True,
+    }
+    if message_meta:
+        assistant_entry.update(message_meta)
+
+    _ensure_message_identity([assistant_entry])
+    await _append_session_message(dict(assistant_entry))
+
+    event = {"type": "assistant_message", "system_initiated": True}
+    if publish_event:
+        event.update(publish_event)
+    await _publish_runtime_event(event)
+    return assistant_entry
+
+
 def _flush_intermediate_user_replies(messages: list[dict[str, Any]]) -> None:
     pending = _pending_intermediate_user_replies.get()
     if not pending:

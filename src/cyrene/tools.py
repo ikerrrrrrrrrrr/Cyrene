@@ -63,6 +63,19 @@ def _json_result(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _normalize_schedule_datetime(raw_value: str) -> str:
+    """Normalize a user-facing datetime string to UTC ISO-8601.
+
+    If the input is naive, interpret it in the machine's local timezone so
+    Web UI scheduling like "2 minutes later" behaves as the user expects.
+    """
+    parsed = datetime.fromisoformat(raw_value)
+    if parsed.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        parsed = parsed.replace(tzinfo=local_tz)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -82,6 +95,7 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     if not text:
         return "Error: 'text' is required."
     from cyrene.agent import (
+        append_system_message,
         _current_agent_id,
         _current_client_request_id,
         _current_round_id,
@@ -89,11 +103,21 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     )
 
     if _current_agent_id.get() != "main":
-        return "Only the main agent can send a user-visible mid-run message. Sub-agents should use send_agent_message."
+        await append_system_message(
+            text,
+            message_meta={"scheduled": True},
+            publish_event={"scheduled": True},
+        )
+        if _notify_state is not None:
+            _notify_state["sent"] = True
+        return "Scheduled message sent to the user."
 
     round_id = str(_current_round_id.get() or "").strip()
     if not round_id:
-        return "Cannot send a mid-run message outside an active round."
+        await append_system_message(text)
+        if _notify_state is not None:
+            _notify_state["sent"] = True
+        return "System message sent to the user."
 
     client_request_id = str(_current_client_request_id.get() or "").strip()
     await _insert_intermediate_user_reply(
@@ -101,6 +125,8 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
         round_id=round_id,
         client_request_id=client_request_id,
     )
+    if _notify_state is not None:
+        _notify_state["sent"] = True
     return "Mid-run message sent to the user."
 
 
@@ -159,7 +185,8 @@ async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_
     elif stype == "interval":
         next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
     elif stype == "once":
-        next_run = svalue
+        next_run = _normalize_schedule_datetime(svalue)
+        svalue = next_run
     else:
         raise ValueError(f"Unknown schedule_type: {stype}")
 

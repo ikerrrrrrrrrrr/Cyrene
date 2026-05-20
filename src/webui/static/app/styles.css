@@ -114,7 +114,13 @@ button { font-family: inherit; }
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   box-shadow: var(--surface-gloss), var(--shadow-md);
+}
+.sidebar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .sidebar-brand {

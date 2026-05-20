@@ -326,6 +326,56 @@ async def test_heartbeat_proactive_check_uses_main_agent_loop(monkeypatch):
     assert "Recent memories about the user" in seen["prompt"]
 
 
+async def test_execute_task_fallback_persists_webui_reminder(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+    from cyrene import scheduler
+
+    seen = []
+
+    async def fake_publish_event(event):
+        seen.append(event)
+
+    async def fake_run_task_agent(prompt, bot, chat_id, db_path, notify_state=None):
+        return "task finished without explicit message"
+
+    async def fake_log_task_run(*args, **kwargs):
+        return None
+
+    async def fake_update_task_after_run(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(scheduler, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(scheduler, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+    monkeypatch.setattr(scheduler, "run_task_agent", fake_run_task_agent)
+    monkeypatch.setattr(scheduler.db, "log_task_run", fake_log_task_run)
+    monkeypatch.setattr(scheduler.db, "update_task_after_run", fake_update_task_after_run)
+
+    agent.STATE_FILE.write_text(json.dumps({"messages": []}, ensure_ascii=False), encoding="utf-8")
+
+    await scheduler._execute_task(
+        {
+            "id": "task_1",
+            "chat_id": 7,
+            "prompt": "提醒我喝水",
+            "schedule_type": "once",
+            "schedule_value": "2026-05-20T10:18:00+00:00",
+        },
+        bot=None,
+        db_path="db.sqlite3",
+    )
+
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert saved[-1]["content"] == "Reminder: 提醒我喝水"
+    assert saved[-1]["system_initiated"] is True
+    assert saved[-1]["scheduled"] is True
+    assert any(event.get("type") == "assistant_message" and event.get("scheduled") is True for event in seen)
+
+
 def test_format_httpx_error_includes_request_response_and_cause():
     import httpx
     from cyrene import agent
@@ -430,6 +480,90 @@ async def test_send_message_tool_persists_intermediate_reply(monkeypatch, tmp_pa
     assert saved[-1]["client_request_id"] == "req_1"
     assert saved[-1]["intermediate_reply"] is True
     assert any(event.get("type") == "assistant_message" and event.get("intermediate") is True for event in seen)
+
+
+async def test_send_message_tool_from_scheduler_persists_system_message(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+    from cyrene import tools
+
+    seen = []
+
+    async def fake_publish_event(event):
+        seen.append(event)
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(tools, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(tools, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+
+    agent.STATE_FILE.write_text(json.dumps({"messages": []}, ensure_ascii=False), encoding="utf-8")
+
+    sender_token = agent._current_agent_id.set("scheduler")
+    try:
+        notify_state = {"sent": False}
+        result = await tools._tool_send_user_message(
+            {"text": "这是调度任务消息"},
+            None,
+            0,
+            "db.sqlite3",
+            notify_state,
+        )
+    finally:
+        agent._current_agent_id.reset(sender_token)
+
+    saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
+
+    assert result == "Scheduled message sent to the user."
+    assert notify_state["sent"] is True
+    assert saved[-1]["role"] == "assistant"
+    assert saved[-1]["content"] == "这是调度任务消息"
+    assert saved[-1]["system_initiated"] is True
+    assert saved[-1]["scheduled"] is True
+    assert any(event.get("type") == "assistant_message" and event.get("scheduled") is True for event in seen)
+
+
+async def test_schedule_task_once_normalizes_naive_local_time_to_utc(monkeypatch):
+    from datetime import datetime, timezone
+    from cyrene import tools
+
+    seen = {}
+
+    async def fake_create_task(db_path, chat_id, prompt, schedule_type, schedule_value, next_run):
+        seen["db_path"] = db_path
+        seen["chat_id"] = chat_id
+        seen["prompt"] = prompt
+        seen["schedule_type"] = schedule_type
+        seen["schedule_value"] = schedule_value
+        seen["next_run"] = next_run
+        return "task_local"
+
+    class _FakeLocalNow(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return cls(2026, 5, 20, 19, 33, 35, tzinfo=timezone.utc).astimezone()
+            return cls(2026, 5, 20, 11, 33, 35, tzinfo=tz)
+
+    monkeypatch.setattr(tools.db, "create_task", fake_create_task)
+    monkeypatch.setattr(tools, "datetime", _FakeLocalNow)
+
+    result = await tools._tool_schedule_task(
+        {
+            "prompt": "send_message(\"2分钟到了\")",
+            "schedule_type": "once",
+            "schedule_value": "2026-05-20T19:35:35",
+        },
+        None,
+        -1,
+        "db.sqlite3",
+        None,
+    )
+
+    assert result == "Task task_local scheduled. Next run: 2026-05-20T11:35:35+00:00"
+    assert seen["schedule_value"] == "2026-05-20T11:35:35+00:00"
+    assert seen["next_run"] == "2026-05-20T11:35:35+00:00"
 
 
 async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):

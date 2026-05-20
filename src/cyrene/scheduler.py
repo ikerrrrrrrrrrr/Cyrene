@@ -30,7 +30,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from croniter import croniter
 
 from cyrene import db
-from cyrene.agent import run_heartbeat_agent, run_steward_agent, run_task_agent
+from cyrene.agent import append_system_message, run_heartbeat_agent, run_steward_agent, run_task_agent
 from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STATE_FILE, STEWARD_INTERVAL
 from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
 from cyrene.short_term import clear_old_entries, get_context as get_short_term_context
@@ -433,11 +433,13 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
         )
 
         # Fallback: if the model forgot to call send_message, send a plain
-        # reminder so the task doesn't go completely silent.
+        # reminder through the Web UI persistence path so the task doesn't go
+        # completely silent in web-only mode.
         if not notify_state["sent"]:
-            await bot.send_message(
-                chat_id=task_chat_id,
-                text=f"Reminder: {prompt}",
+            await append_system_message(
+                f"Reminder: {prompt}",
+                message_meta={"scheduled": True},
+                publish_event={"scheduled": True},
             )
 
         duration_ms = int((time.monotonic() - start) * 1000)
