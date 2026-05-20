@@ -884,8 +884,8 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
-            "name": "CCStatus",
-            "description": "Check if Claude Code is currently running in a tmux session. Use this when the user asks about Claude Code status, asks you to start/open/launch Claude Code, or wants to know if Claude Code is available. Returns whether CC is running, the session name, and whether it can be launched.",
+            "name": "CheckClaudeCode",
+            "description": "Check if Claude Code is currently running in a tmux session. Use this when the user asks about Claude Code status, or before StartClaudeCode to see if it's already running. Returns whether CC is running, the session name, and whether it can be launched.",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -895,7 +895,7 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
-            "name": "CCLaunch",
+            "name": "StartClaudeCode",
             "description": "Start Claude Code in a new tmux session. Use this when the user asks you to start, open, launch, or run Claude Code. Creates a detached tmux session named after the project, then registers it so it appears in the WebUI active shells list. Do NOT use Bash to start Claude Code — use this tool instead.",
             "parameters": {
                 "type": "object",
@@ -937,8 +937,8 @@ TOOL_HANDLERS: dict[str, Any] = {
     "CloseShell": _tool_close_shell,
     "WebFetch": _tool_webfetch,
     "WebSearch": _tool_websearch,
-    "CCStatus": _tool_cc_status,
-    "CCLaunch": _tool_cc_launch,
+    "CheckClaudeCode": _tool_cc_status,
+    "StartClaudeCode": _tool_cc_launch,
 }
 
 
