@@ -172,7 +172,7 @@ async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_promp
         seen["include_short_term"] = include_short_term
         return "## Memory Context\n- stable trait"
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         seen["history"] = history
         seen["system_prompt"] = system_prompt
         return "ok"
@@ -578,6 +578,11 @@ async def test_answer_pending_question_resumes_same_round(monkeypatch, tmp_path)
         persist_insert_at=None,
         client_request_id="",
         persist_user_message=True,
+        public_prompt=None,
+        refresh_labels=True,
+        hide_initial_detail=False,
+        assistant_message_meta=None,
+        lang="",
     ):
         seen["user_message"] = user_message
         seen["ephemeral_system"] = ephemeral_system
@@ -839,6 +844,11 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
         persist_insert_at=None,
         client_request_id="",
         persist_user_message=True,
+        public_prompt=None,
+        refresh_labels=True,
+        hide_initial_detail=False,
+        assistant_message_meta=None,
+        lang="",
     ):
         seen["user_message"] = user_message
         seen["ephemeral_system"] = ephemeral_system
@@ -1160,7 +1170,7 @@ async def test_run_chat_agent_persists_client_request_ids(monkeypatch, tmp_path)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -1202,7 +1212,7 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -1249,7 +1259,7 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -1297,7 +1307,7 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         await agent._append_session_message({
             "role": "user",
             "content": "queued guidance",
@@ -1397,7 +1407,7 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -2395,7 +2405,7 @@ async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_
     monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
@@ -2421,7 +2431,7 @@ async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final
     monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             {"role": "user", "content": user_message, "round_id": round_id},
@@ -2498,7 +2508,7 @@ async def test_run_agent_clears_stale_interrupt_before_starting(monkeypatch):
 
     seen = {}
 
-    async def fake_run_chat_agent(user_message, bot, chat_id, db_path):
+    async def fake_run_chat_agent(user_message, bot, chat_id, db_path, **kwargs):
         seen["interrupt_before_start"] = agent._interrupt_event.is_set()
         return "ok"
 

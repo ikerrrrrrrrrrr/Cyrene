@@ -23,6 +23,7 @@ function Sparkline({ data, color = "var(--accent)" }) {
 
 function StatusPage() {
   useDataVersion();
+  const { t } = useI18n();
   const s = DATA.status;
   if (!s.sparkData || !s.sparkData.length) s.sparkData = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
   return (
@@ -52,15 +53,15 @@ function StatusPage() {
       {/* workers table */}
       <div className="card" style={{ gridColumn: "span 8" }}>
         <div className="card-head">
-          <span className="card-title">Workers</span>
-          <span className="card-action">view all →</span>
+          <span className="card-title">{t("status.workers")}</span>
+          <span className="card-action">{t("status.viewAll")}</span>
         </div>
         <table className="table">
           <thead>
             <tr>
-              <th>id</th><th>role</th><th>status</th>
-              <th>host</th><th>uptime</th><th style={{ textAlign: "right" }}>tokens</th>
-              <th style={{ textAlign: "right" }}>spend</th>
+              <th>{t("status.id")}</th><th>{t("status.role")}</th><th>{t("status.status")}</th>
+              <th>{t("status.host")}</th><th>{t("status.uptime")}</th><th style={{ textAlign: "right" }}>{t("status.tokens")}</th>
+              <th style={{ textAlign: "right" }}>{t("status.spend")}</th>
             </tr>
           </thead>
           <tbody>
@@ -87,8 +88,8 @@ function StatusPage() {
       {/* services */}
       <div className="card" style={{ gridColumn: "span 4" }}>
         <div className="card-head">
-          <span className="card-title">Services</span>
-          <span className="card-action">refresh ⟳</span>
+          <span className="card-title">{t("status.services")}</span>
+          <span className="card-action">{t("status.refresh")}</span>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {s.services.map((svc, i) => (
@@ -116,8 +117,8 @@ function StatusPage() {
       {/* logs */}
       <div className="card" style={{ gridColumn: "span 8" }}>
         <div className="card-head">
-          <span className="card-title">Activity log</span>
-          <span className="card-action">live · pause ⏸</span>
+          <span className="card-title">{t("status.activityLog")}</span>
+          <span className="card-action">{t("status.livePause")}</span>
         </div>
         <div style={{ maxHeight: 360, overflowY: "auto" }}>
           {s.logs.map((l, i) => (
@@ -133,33 +134,33 @@ function StatusPage() {
       {/* config card (replaces hardcoded budget) */}
       <div className="card" style={{ gridColumn: "span 4" }}>
         <div className="card-head">
-          <span className="card-title">Configuration</span>
+          <span className="card-title">{t("status.configuration")}</span>
         </div>
         <div style={{
           marginTop: 8, fontFamily: "var(--mono)", fontSize: 11.5,
           color: "var(--text-3)", display: "flex", flexDirection: "column", gap: 6
         }}>
           <div style={{ display: "flex" }}>
-            <span>model</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.model || "—"}</span>
+            <span>{t("status.model")}</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.model || "—"}</span>
           </div>
           <div style={{ display: "flex" }}>
-            <span>base url</span>
+            <span>{t("status.baseUrl")}</span>
             <span style={{ marginLeft: "auto", color: "var(--text)", maxWidth: 180,
                            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {s.base_url || "—"}
             </span>
           </div>
           <div style={{ display: "flex" }}>
-            <span>SOUL.md</span>
+            <span>{t("status.soulMd")}</span>
             <span style={{ marginLeft: "auto", color: s.soul_exists ? "var(--accent)" : "var(--warn)" }}>
-              {s.soul_exists ? "loaded" : "missing"}
+              {s.soul_exists ? t("status.loaded") : t("status.missing")}
             </span>
           </div>
           <div style={{ display: "flex" }}>
-            <span>scheduled tasks</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.scheduled_tasks ?? 0}</span>
+            <span>{t("status.scheduledTasks")}</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.scheduled_tasks ?? 0}</span>
           </div>
           <div style={{ display: "flex" }}>
-            <span>short-term entries</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.short_term_entries ?? 0}</span>
+            <span>{t("status.shortTermEntries")}</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.short_term_entries ?? 0}</span>
           </div>
         </div>
       </div>

@@ -18,6 +18,7 @@ const ACCENT_PRESETS = {
 
 function SetupWizard({ theme, onToggleTheme }) {
   useDataVersion();
+  const { t } = useI18n();
   const onboarding = DATA.onboarding || {};
   const [step, setStep] = useStateApp(onboarding.activeStep || "llm");
   const [busy, setBusy] = useStateApp(false);
@@ -67,7 +68,7 @@ function SetupWizard({ theme, onToggleTheme }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(llmForm),
       }));
-      setNotice("LLM connection verified" + (payload.preview ? ": " + payload.preview : "."));
+      setNotice(t("setup.llmVerified") + (payload.preview ? ": " + payload.preview : "."));
       setStep((payload.onboarding && payload.onboarding.activeStep) || "personality");
     } catch (e) {
       setError(e.message);
@@ -90,7 +91,7 @@ function SetupWizard({ theme, onToggleTheme }) {
           content: customSoul,
         }),
       }));
-      setNotice("Personality applied to SOUL.md.");
+      setNotice(t("setup.personalityApplied"));
       setStep((payload.onboarding && payload.onboarding.activeStep) || "done");
     } catch (e) {
       setError(e.message);
@@ -100,8 +101,8 @@ function SetupWizard({ theme, onToggleTheme }) {
   }
 
   const stepItems = [
-    { id: "llm", label: "LLM API", done: !!onboarding.llm?.configured },
-    { id: "personality", label: "Personality", done: !!onboarding.personality?.configured },
+    { id: "llm", label: t("setup.llmApi"), done: !!onboarding.llm?.configured },
+    { id: "personality", label: t("setup.personality"), done: !!onboarding.personality?.configured },
   ];
 
   return (
@@ -111,10 +112,10 @@ function SetupWizard({ theme, onToggleTheme }) {
           <div className="brand-mark"></div>
           <div>
             <div className="brand-name">{(DATA.assistantName || "Cyrene").toUpperCase()}</div>
-            <div className="setup-kicker">First-run setup wizard</div>
+            <div className="setup-kicker">{t("setup.kicker")}</div>
           </div>
         </div>
-        <button className="theme-toggle-btn" title="Cycle theme" onClick={onToggleTheme}>
+        <button className="theme-toggle-btn" title={theme === "dark" ? t("topbar.switchToLight") : t("topbar.switchToDark")} onClick={onToggleTheme}>
           <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
           <span>{theme === "system" ? "Auto" : theme === "dark" ? "Light" : "Dark"}</span>
         </button>
@@ -122,12 +123,9 @@ function SetupWizard({ theme, onToggleTheme }) {
 
       <div className="setup-hero">
         <div className="setup-copy">
-          <div className="setup-eyebrow">{onboarding.isAbsoluteFreshStart ? "Fresh workspace detected" : "Setup incomplete"}</div>
-          <h1>Connect an LLM, then inject a persona before entering the workspace.</h1>
-          <p>
-            This wizard is shown only when the Web UI detects that the environment has not been fully initialized.
-            Browser refreshes do not retrigger it. Deleting the persisted setup state or starting from a blank workspace does.
-          </p>
+          <div className="setup-eyebrow">{onboarding.isAbsoluteFreshStart ? t("setup.freshDetected") : t("setup.setupIncomplete")}</div>
+          <h1>{t("setup.heroTitle")}</h1>
+          <p>{t("setup.heroDesc")}</p>
         </div>
         <div className="setup-steps">
           {stepItems.map((item, index) => (
@@ -135,7 +133,7 @@ function SetupWizard({ theme, onToggleTheme }) {
               <div className="setup-step-index">{item.done ? "✓" : index + 1}</div>
               <div>
                 <div className="setup-step-label">{item.label}</div>
-                <div className="setup-step-meta">{item.done ? "Configured" : "Required"}</div>
+                <div className="setup-step-meta">{item.done ? t("setup.configured") : t("setup.required")}</div>
               </div>
             </div>
           ))}
@@ -145,10 +143,10 @@ function SetupWizard({ theme, onToggleTheme }) {
       <div className="setup-panel">
         {step === "llm" && (
           <div className="setup-section">
-            <h2>LLM API</h2>
-            <p className="subtitle">Save the endpoint and model, then verify the connection with a live test request.</p>
+            <h2>{t("setup.llmSectionTitle")}</h2>
+            <p className="subtitle">{t("setup.llmSubtitle")}</p>
             <div className="field">
-              <div className="label">API key<small>Optional for local OpenAI-compatible endpoints. Required by hosted providers.</small></div>
+              <div className="label">{t("setup.apiKeyLabel")}<small>{t("setup.apiKeyHint")}</small></div>
               <input
                 className="input"
                 type="password"
@@ -158,7 +156,7 @@ function SetupWizard({ theme, onToggleTheme }) {
               />
             </div>
             <div className="field">
-              <div className="label">Endpoint<small>Example: `https://api.deepseek.com/v1` or your local OpenAI-compatible base URL.</small></div>
+              <div className="label">{t("setup.endpointLabel")}<small>{t("setup.endpointHint")}</small></div>
               <input
                 className="input mono"
                 value={llmForm.base_url}
@@ -166,7 +164,7 @@ function SetupWizard({ theme, onToggleTheme }) {
               />
             </div>
             <div className="field">
-              <div className="label">Model<small>The exact model id sent to `/chat/completions`.</small></div>
+              <div className="label">{t("setup.modelLabel")}<small>{t("setup.modelHint")}</small></div>
               <input
                 className="input mono"
                 value={llmForm.model}
@@ -174,24 +172,24 @@ function SetupWizard({ theme, onToggleTheme }) {
               />
             </div>
             <div className="setup-actions">
-              <button className="btn primary" onClick={saveLlm} disabled={busy}>{busy ? "testing…" : "Save and test"}</button>
+              <button className="btn primary" onClick={saveLlm} disabled={busy}>{busy ? t("setup.testing") : t("setup.saveAndTest")}</button>
             </div>
           </div>
         )}
 
         {step === "personality" && (
           <div className="setup-section">
-            <h2>Personality</h2>
-            <p className="subtitle">Choose how the initial `SOUL.md` should be seeded for this workspace.</p>
+            <h2>{t("setup.personalitySectionTitle")}</h2>
+            <p className="subtitle">{t("setup.personalitySubtitle")}</p>
             <div className="seg" style={{ marginBottom: 18 }}>
-              <button className={"seg-btn " + (mode === "name" ? "active" : "")} onClick={() => setMode("name")}>By name</button>
-              <button className={"seg-btn " + (mode === "custom" ? "active" : "")} onClick={() => setMode("custom")}>Custom SOUL.md</button>
-              <button className={"seg-btn " + (mode === "default" ? "active" : "")} onClick={() => setMode("default")}>Default</button>
+              <button className={"seg-btn " + (mode === "name" ? "active" : "")} onClick={() => setMode("name")}>{t("setup.byName")}</button>
+              <button className={"seg-btn " + (mode === "custom" ? "active" : "")} onClick={() => setMode("custom")}>{t("setup.customSoul")}</button>
+              <button className={"seg-btn " + (mode === "default" ? "active" : "")} onClick={() => setMode("default")}>{t("setup.defaultLabel")}</button>
             </div>
 
             {mode === "name" && (
               <div className="field">
-                <div className="label">Personality name<small>Real or fictional. Cyrene will research the character and generate a behavior profile.</small></div>
+                <div className="label">{t("setup.personalityNameLabel")}<small>{t("setup.personalityNameHint")}</small></div>
                 <input
                   className="input"
                   value={personalityName}
@@ -203,7 +201,7 @@ function SetupWizard({ theme, onToggleTheme }) {
 
             {mode === "custom" && (
               <div className="field" style={{ display: "block" }}>
-                <div className="label" style={{ marginBottom: 8 }}>SOUL.md content<small>Paste the document you want persisted into `workspace/SOUL.md`.</small></div>
+                <div className="label" style={{ marginBottom: 8 }}>{t("setup.soulContentLabel")}<small>{t("setup.soulContentHint")}</small></div>
                 <textarea
                   className="input mono"
                   value={customSoul}
@@ -215,22 +213,22 @@ function SetupWizard({ theme, onToggleTheme }) {
 
             {mode === "default" && (
               <div className="setup-note">
-                The default persona keeps Cyrene neutral and companion-oriented. You can edit `SOUL.md` later from Settings.
+                {t("setup.defaultDesc")}
               </div>
             )}
 
             <div className="setup-actions">
-              <button className="btn primary" onClick={savePersonality} disabled={busy}>{busy ? "applying…" : "Apply personality"}</button>
+              <button className="btn primary" onClick={savePersonality} disabled={busy}>{busy ? t("setup.applying") : t("setup.applyPersonality")}</button>
             </div>
           </div>
         )}
 
         {step === "done" && (
           <div className="setup-section">
-            <h2>Workspace ready</h2>
-            <p className="subtitle">The setup state is persisted. Future page refreshes and process restarts will skip this wizard unless the environment is reset back to a blank state.</p>
+            <h2>{t("setup.workspaceReady")}</h2>
+            <p className="subtitle">{t("setup.workspaceReadyDesc")}</p>
             <div className="setup-actions">
-              <button className="btn primary" onClick={() => { DATA.onboarding = { ...DATA.onboarding, needsOnboarding: false }; window.bumpData && window.bumpData(); }}>Enter workspace</button>
+              <button className="btn primary" onClick={() => { DATA.onboarding = { ...DATA.onboarding, needsOnboarding: false }; window.bumpData && window.bumpData(); }}>{t("setup.enterWorkspace")}</button>
             </div>
           </div>
         )}
@@ -247,6 +245,7 @@ function SetupWizard({ theme, onToggleTheme }) {
 
 function App() {
   useDataVersion();
+  const { t: i18nT, lang } = useI18n();
   const [page, setPage] = useStateApp("chat");
   const [selectedSessionId, setSelectedSessionId] = useStateApp(null);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -276,6 +275,7 @@ function App() {
     localStorage.setItem("cyrene-theme-mode", t.theme);
     const applied = actualTheme;
     document.documentElement.dataset.theme = applied;
+    document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
     document.documentElement.style.setProperty("--accent", t.accent);
     const m = t.accent.match(/^#([0-9a-f]{6})$/i);
     if (m) {
@@ -366,23 +366,52 @@ function App() {
           />
         )}
       </div>
+
+      <TweaksPanel title={i18nT("tweaks.title")}>
+        <TweakSection label={i18nT("tweaks.theme")} />
+        <TweakRadio label={i18nT("tweaks.mode")} value={t.theme}
+                    options={[i18nT("tweaks.light"), i18nT("tweaks.dark")]}
+                    onChange={(v) => {
+                      const i = (ACCENT_PRESETS[t.theme] || []).indexOf(t.accent);
+                      const a = i >= 0 ? ACCENT_PRESETS[v][i] : t.accent;
+                      setTweak({ theme: v, accent: a });
+                    }} />
+        <TweakColor label={i18nT("tweaks.accent")} value={t.accent}
+                    options={ACCENT_PRESETS[t.theme]}
+                    onChange={(v) => setTweak("accent", v)} />
+        <TweakSection label={i18nT("tweaks.display")} />
+        <TweakRadio label={i18nT("tweaks.density")} value={t.density}
+                    options={[i18nT("tweaks.cozy"), i18nT("tweaks.compact")]}
+                    onChange={(v) => setTweak("density", v)} />
+        <TweakRadio label={i18nT("tweaks.textSize")} value={t.textSize}
+                    options={[i18nT("tweaks.defaultSize"), i18nT("tweaks.large")]}
+                    onChange={(v) => setTweak("textSize", v)} />
+        <TweakRadio label={i18nT("tweaks.flowchart")} value={t.orientation}
+                    options={[i18nT("tweaks.horizontal"), i18nT("tweaks.vertical")]}
+                    onChange={(v) => setTweak("orientation", v)} />
+        <TweakToggle label={i18nT("tweaks.canvasLegend")} value={t.showLegend}
+                     onChange={(v) => setTweak("showLegend", v)} />
+        <TweakToggle label={i18nT("tweaks.pulseAnimation")} value={t.animatePulse}
+                     onChange={(v) => setTweak("animatePulse", v)} />
+      </TweaksPanel>
     </div>
   );
 }
 
 function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
   useDataVersion();
+  const { t } = useI18n();
   const [skillsOpen, setSkillsOpen] = useStateApp(true);
   const sessionCount = (DATA.sessions || []).length;
   const activeRecentSessionId = selectedSessionId || DATA.sessions[0]?.id || null;
   const items = [
-    { id: "chat",     label: "Chat",     icon: "▸", key: "1" },
-    { id: "agents",   label: "Agent flow",   icon: "⌘", key: "2" },
-    { id: "sessions", label: "Sessions", icon: "≡", key: "3", badge: sessionCount > 0 ? String(sessionCount) : null },
-    { id: "skills",   label: "Skills",   icon: "✸", key: "4" },
-    { id: "memory",   label: "Memory",   icon: "▤", key: "5" },
-    { id: "status",   label: "Status",   icon: "◉", key: "6" },
-    { id: "settings", label: "Settings", icon: "✱", key: "7" },
+    { id: "chat",     label: t("nav.chat"),     icon: "▸", key: "1" },
+    { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "2" },
+    { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "3", badge: sessionCount > 0 ? String(sessionCount) : null },
+    { id: "skills",   label: t("nav.skills"),   icon: "✸", key: "4" },
+    { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "5" },
+    { id: "status",   label: t("nav.status"),   icon: "◉", key: "6" },
+    { id: "settings", label: t("nav.settings"), icon: "✱", key: "7" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
@@ -393,7 +422,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
         <div className="brand-version">{DATA.appVersion || "v0.1.8"}</div>
       </div>
 
-      <div className="nav-section">Workspace</div>
+      <div className="nav-section">{t("nav.workspace")}</div>
       <div className="nav" style={{ paddingTop: 0 }}>
         {items.map((it) => (
           <div key={it.id}
@@ -415,18 +444,18 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
         <span>Skills</span>
         <span className="nav-section-link"
               onClick={(e) => { e.stopPropagation(); setPage("skills"); }}>
-          manage →
+          {t("nav.manage")}
         </span>
       </div>
       {skillsOpen && <SkillsRail onOpenPage={() => setPage("skills")} />}
 
       <div className="nav-section nav-section-collapsible" style={{ cursor: "default" }}>
-        <span>Recent sessions</span>
+        <span>{t("nav.recentSessions")}</span>
         <span className="nav-section-link"
-              title="Start a new session"
+              title={t("chat.newSessionTitle")}
               onClick={async (e) => {
                 e.stopPropagation();
-                if (!confirm("Start a new session? Current conversation will be compressed.")) return;
+                if (!confirm(t("chat.confirmNewSession"))) return;
                 try {
                   if (window.resetChatRuntime) window.resetChatRuntime({ abort: true });
                   const r = await fetch("/api/sessions", { method: "POST" });
@@ -435,7 +464,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
                   if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
                 } catch (err) { alert("Failed: " + err.message); }
               }}>
-          + new
+          {t("nav.newSession")}
         </span>
       </div>
       <div className="nav" style={{ paddingTop: 0 }}>
@@ -461,7 +490,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
           {DATA.user.name}
           <small>@{DATA.user.handle} · {DATA.appVersion || "v0.1.8"}</small>
         </div>
-        <button className="iconbtn" title="Account">▾</button>
+        <button className="iconbtn" title={t("nav.account")}>▾</button>
       </div>
     </div>
   );
@@ -477,11 +506,12 @@ function SkillsRail({ onOpenPage }) {
   function toggle(id) {
     setSkills((arr) => arr.map((s) => s.id === id ? { ...s, enabled: !s.enabled } : s));
   }
+  const { t: skT } = useI18n();
   const enabledCount = skills.filter((s) => s.enabled).length;
   return (
     <div className="skills-rail">
       <div className="skills-meta">
-        <span>{enabledCount} of {skills.length} enabled</span>
+        <span>{skT("nav.enabledCount", { n: enabledCount, m: skills.length })}</span>
       </div>
       <div className="skills-list">
         {skills.map((s) => (
@@ -507,27 +537,28 @@ function SkillsRail({ onOpenPage }) {
 
 function Topbar({ page, theme, onToggleTheme, activeSession }) {
   useDataVersion();
+  const { t } = useI18n();
   const session = activeSession || { title: "—", subagents: [] };
   const runningSubagents = (session.subagents || []).filter((s) => s.status === "running").length;
   const title =
-    page === "chat" ? <>Chat<span className="crumb-sep">/</span><b>{session.title}</b></> :
-    page === "agents" ? <>Agent flow<span className="crumb-sep">/</span><b>{session.title}</b></> :
-    page === "sessions" ? <>Sessions<span className="crumb-sep">/</span><b>{session.title}</b></> :
-    page === "skills" ? <>Skills<span className="crumb-sep">/</span><b>library</b></> :
-    page === "memory" ? <>Memory<span className="crumb-sep">/</span><b>pipeline</b></> :
-    page === "status" ? <>Status<span className="crumb-sep">/</span><b>overview</b></> :
-    <>Settings<span className="crumb-sep">/</span><b>workspace</b></>;
+    page === "chat" ? <>{t("topbar.chat")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
+    page === "agents" ? <>{t("topbar.agentFlow")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
+    page === "sessions" ? <>{t("topbar.sessions")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
+    page === "skills" ? <>{t("topbar.skills")}<span className="crumb-sep">/</span><b>{t("topbar.library")}</b></> :
+    page === "memory" ? <>{t("topbar.memory")}<span className="crumb-sep">/</span><b>{t("topbar.pipeline")}</b></> :
+    page === "status" ? <>{t("topbar.status")}<span className="crumb-sep">/</span><b>{t("topbar.overview")}</b></> :
+    <>{t("topbar.settings")}<span className="crumb-sep">/</span><b>{t("topbar.workspace")}</b></>;
 
   return (
     <div className="topbar">
       <span className="topbar-title">{title}</span>
       <div className="topbar-right">
         <span className="statlight">
-          <span className="dot"></span> orchestrator · running
+          <span className="dot"></span> {t("topbar.orchestratorRunning")}
         </span>
         {runningSubagents > 0 && (
           <span className="statlight">
-            <span className="dot warn"></span> {runningSubagents} subagent{runningSubagents > 1 ? "s" : ""}
+            <span className="dot warn"></span> {t("topbar.subagents", { n: runningSubagents, pl: runningSubagents > 1 ? "s" : "" })}
           </span>
         )}
         <span style={{ width: 1, height: 18, background: "var(--line)", margin: "0 4px" }}></span>
@@ -536,12 +567,12 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
           <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
           <span>{theme === "system" ? "Auto" : theme === "dark" ? "Light" : "Dark"}</span>
         </button>
-        <button className="iconbtn" title="Search">
+        <button className="iconbtn" title={t("topbar.search")}>
           <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
             <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
           </svg>
         </button>
-        <button className="iconbtn" title="Pause">
+        <button className="iconbtn" title={t("topbar.pause")}>
           <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor">
             <rect x="5" y="4" width="3" height="12" rx="0.5" />
             <rect x="12" y="4" width="3" height="12" rx="0.5" />

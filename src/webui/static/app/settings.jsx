@@ -3,6 +3,7 @@ const { useState: useStateSet } = React;
 
 function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   useDataVersion();
+  const { t, lang, setLang } = useI18n();
   const [section, setSection] = useStateSet("general");
   const [config, setConfig] = useStateSet({
     model: "—", base_url: "—", assistant_name: "—",
@@ -34,7 +35,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [mcpSaved, setMcpSaved] = useStateSet("");
   const [newMcpServer, setNewMcpServer] = useStateSet({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
 
-  function t(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
+  function toggleKey(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
 
   React.useEffect(() => {
     fetch("/api/settings/config").then((r) => r.json()).then((c) => {
@@ -234,7 +235,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
           <div key={s.id}
                className={"nav-item " + (section === s.id ? "active" : "")}
                onClick={() => setSection(s.id)}>
-            {s.label}
+            {t("section." + s.id) || s.label}
           </div>
         ))}
       </div>
@@ -271,7 +272,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             </div>
             <div className="field">
               <div className="label">Stream reasoning to chat<small>Show the agent's thinking inline as it works.</small></div>
-              <div className={"toggle " + (toggles.streamThinking ? "on" : "")} onClick={() => t("streamThinking")}></div>
+              <div className={"toggle " + (toggles.streamThinking ? "on" : "")} onClick={() => toggleKey("streamThinking")}></div>
             </div>
           </div>
         )}
@@ -543,7 +544,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             </div>
             <div className="field" style={{ marginTop: 16 }}>
               <div className="label">Redact secrets from logs<small>Mask API keys + bearer tokens before they hit disk.</small></div>
-              <div className={"toggle " + (toggles.redactSecrets ? "on" : "")} onClick={() => t("redactSecrets")}></div>
+              <div className={"toggle " + (toggles.redactSecrets ? "on" : "")} onClick={() => toggleKey("redactSecrets")}></div>
             </div>
           </div>
         )}
@@ -599,6 +600,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                         onClick={() => setTweak && setTweak("density", "cozy")}>cozy</button>
                 <button className={"seg-btn " + (tweaks && tweaks.density === "compact" ? "active" : "")}
                         onClick={() => setTweak && setTweak("density", "compact")}>compact</button>
+              </div>
+            </div>
+            <div className="field">
+              <div className="label">{t("settings.language")}<small>{t("settings.languageHint")}</small></div>
+              <div className="seg">
+                <button className={"seg-btn " + (lang === "en" ? "active" : "")}
+                        onClick={() => setLang("en")}>English</button>
+                <button className={"seg-btn " + (lang === "zh" ? "active" : "")}
+                        onClick={() => setLang("zh")}>中文</button>
               </div>
             </div>
             <div className="field">

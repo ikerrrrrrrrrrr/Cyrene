@@ -83,7 +83,7 @@ function buildAgentRounds(session) {
         return nodeIds.has(edge.from) && nodeIds.has(edge.to);
       });
       const roundNumber = Number(bucket.key.slice(1) || 0) + 1;
-      const fallbackLabel = "Round " + roundNumber;
+      const fallbackLabel = (window.t && window.t("agents.roundN", {n: roundNumber})) || ("Round " + roundNumber);
       rounds.push({
         id: (session && session.id ? session.id : "session") + ":" + bucket.key,
         key: bucket.key,
@@ -104,6 +104,7 @@ function buildAgentRounds(session) {
 
 function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
   const dv = useDataVersion();
+  const { t } = useI18n();
   const activeSession = useMemo(() => {
     const sessions = DATA.sessions || [];
     const preferredId = selectedSessionId;
@@ -492,23 +493,23 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
           <div className="legend-row">
             <span className="legend-item">
               <span className="legend-swatch" style={{ background: "var(--accent)" }}></span>
-              main agent
+              {t("agents.mainAgent")}
             </span>
             <span className="legend-item">
               <span className="legend-swatch" style={{ background: "var(--info)" }}></span>
-              subagent
+              {t("agents.subagent")}
             </span>
             <span className="legend-item">
               <span className="legend-swatch" style={{ background: "var(--magenta)" }}></span>
-              tool call
+              {t("agents.toolCall")}
             </span>
             <span className="legend-item">
               <span className="legend-swatch" style={{ background: "var(--warn)" }}></span>
-              output
+              {t("agents.output")}
             </span>
           </div>
           <div className="legend-row legend-tips">
-            wheel · scroll  ·  ⌘+wheel · zoom  ·  drag · pan
+            {t("agents.canvasHelp")}
           </div>
         </div>
       </div>
@@ -521,13 +522,14 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
 }
 
 function RoundsList({ rounds, selected, onSelect }) {
+  const { t } = useI18n();
   return (
     <div className="runs-list">
       <div className="side-head" style={{ padding: "14px 14px 10px", margin: 0 }}>
-        Rounds <span className="count">{rounds.length}</span>
+        {t("agents.rounds")} <span className="count">{rounds.length}</span>
       </div>
       {rounds.length === 0 && (
-        <div className="runs-empty">No rounds yet.</div>
+        <div className="runs-empty">{t("agents.noRounds")}</div>
       )}
       {rounds.map((round) => (
         <div key={round.id}
@@ -549,13 +551,14 @@ function RoundsList({ rounds, selected, onSelect }) {
 }
 
 function FlowNode({ node, pos, selected, onClick }) {
+  const { t } = useI18n();
   const cls = "node " + node.kind + (selected ? " selected" : "");
   const kindLabel =
-    node.kind === "main" ? "main agent" :
-    node.kind === "subagent" ? "subagent" :
-    node.kind === "tool" ? "tool" :
-    node.kind === "output" ? "output" :
-    "input";
+    node.kind === "main" ? t("agents.mainAgent") :
+    node.kind === "subagent" ? t("agents.subagent") :
+    node.kind === "tool" ? t("agents.tool") :
+    node.kind === "output" ? t("agents.output") :
+    t("agents.input");
   return (
     <div className={cls}
          style={{ left: pos.x, top: pos.y, width: pos.w }}
@@ -576,6 +579,7 @@ function FlowNode({ node, pos, selected, onClick }) {
 }
 
 function Inspector({ node, edge, flow, onSelectNode }) {
+  const { t } = useI18n();
   const [tab, setTab] = useStateAg("details");
   if (edge) {
     return <EdgeInspector edge={edge} flow={flow} onSelectNode={onSelectNode} />;
@@ -583,18 +587,18 @@ function Inspector({ node, edge, flow, onSelectNode }) {
   if (!node) {
     return (
       <div className="inspector">
-        <div className="empty-insp">Click any node or comm line to inspect it.</div>
+        <div className="empty-insp">{t("agents.clickToInspect")}</div>
       </div>
     );
   }
 
   const d = node.detail || {};
   const kindLabel =
-    node.kind === "main" ? "Main agent" :
-    node.kind === "subagent" ? "Subagent" :
-    node.kind === "tool" ? "Tool call" :
-    node.kind === "output" ? "Output" :
-    "Input";
+    node.kind === "main" ? t("agents.MainAgent") :
+    node.kind === "subagent" ? t("agents.Subagent") :
+    node.kind === "tool" ? t("agents.ToolCall") :
+    node.kind === "output" ? t("agents.Output") :
+    t("agents.Input");
 
   return (
     <div className="inspector">
@@ -604,16 +608,16 @@ function Inspector({ node, edge, flow, onSelectNode }) {
         <div className="insp-id">{node.id} · {node.status || "—"}</div>
       </div>
       <div className="insp-tabs">
-        <div className={"insp-tab " + (tab === "details" ? "active" : "")} onClick={() => setTab("details")}>details</div>
-        <div className={"insp-tab " + (tab === "io" ? "active" : "")} onClick={() => setTab("io")}>input / output</div>
-        <div className={"insp-tab " + (tab === "raw" ? "active" : "")} onClick={() => setTab("raw")}>raw</div>
+        <div className={"insp-tab " + (tab === "details" ? "active" : "")} onClick={() => setTab("details")}>{t("agents.details")}</div>
+        <div className={"insp-tab " + (tab === "io" ? "active" : "")} onClick={() => setTab("io")}>{t("agents.inputOutput")}</div>
+        <div className={"insp-tab " + (tab === "raw" ? "active" : "")} onClick={() => setTab("raw")}>{t("agents.raw")}</div>
       </div>
 
       {tab === "details" && <InspectorDetails node={node} d={d} flow={flow} onSelectNode={onSelectNode} />}
       {tab === "io" && <InspectorIO node={node} d={d} />}
       {tab === "raw" && (
         <div className="insp-section" style={{ flex: 1 }}>
-          <div className="insp-label">json</div>
+          <div className="insp-label">{t("agents.json")}</div>
           <pre className="code-block json">{JSON.stringify(node, null, 2)}</pre>
         </div>
       )}
