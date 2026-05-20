@@ -903,6 +903,10 @@ def get_active_tool_defs() -> list[dict]:
 
 
 async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None) -> str:
+    if name == "spawn_subagent":
+        from cyrene.settings_store import get_spawn_policy
+        if get_spawn_policy() == "off":
+            return "Subagent spawning is disabled by the current spawn policy (`off`). Stay in single-agent mode unless the user explicitly changes this setting."
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
         # Fallback: try MCP tool

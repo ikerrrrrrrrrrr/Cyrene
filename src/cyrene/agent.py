@@ -14,6 +14,7 @@ from contextvars import ContextVar
 from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
+from cyrene.settings_store import get_spawn_policy
 from cyrene import debug
 from cyrene.llm import _assistant_text, _truncate
 from cyrene.tools import get_active_tool_defs, TOOL_HANDLERS, _execute_tool
@@ -102,6 +103,32 @@ Rules:
 - When done, call the `quit` tool.
 - Do not fabricate results. If a tool fails or returns nothing useful, state that clearly.
 """
+
+
+def _spawn_policy_prompt_block(policy: str) -> str:
+    if policy == "aggressive":
+        return (
+            "## Subagent Spawn Policy\n"
+            "Current policy: aggressive.\n"
+            "- Proactively look for work that can be split into independent parallel subtasks.\n"
+            "- If there is clear benefit from parallel research, verification, or implementation slices, spawn subagents early.\n"
+            "- Favor delegation when task boundaries are clean and multiple tracks can advance at once."
+        )
+    if policy == "off":
+        return (
+            "## Subagent Spawn Policy\n"
+            "Current policy: off.\n"
+            "- Do not spawn subagents.\n"
+            "- Complete the task as a single main agent unless the user explicitly requests multi-agent delegation.\n"
+            "- Even if parallel work seems helpful, stay in single-agent mode by default."
+        )
+    return (
+        "## Subagent Spawn Policy\n"
+        "Current policy: conservative.\n"
+        "- Spawn subagents only when parallelism is clearly beneficial.\n"
+        "- Prefer delegation for well-bounded independent tasks, not for tightly coupled or trivial work.\n"
+        "- If the benefit is marginal, keep the work in the main agent."
+    )
 
 # ---------------------------------------------------------------------------
 # Session helpers
@@ -2452,6 +2479,7 @@ async def _run_chat_agent(
             main_system += f"\n\nThe user has set their preferred language to {lang}. Reply in this language."
         if memory_context:
             main_system = main_system + "\n\n## Memory Context\n" + memory_context
+        main_system = main_system + "\n\n" + _spawn_policy_prompt_block(get_spawn_policy())
 
         # ====== 主 Agent ======
         main_text = await _run_main_agent(

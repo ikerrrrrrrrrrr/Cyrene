@@ -42,6 +42,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [mcpConfigs, setMcpConfigs] = useStateSet([]);
   const [mcpSaved, setMcpSaved] = useStateSet("");
   const [newMcpServer, setNewMcpServer] = useStateSet({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
+  const [agentsSaved, setAgentsSaved] = useStateSet("");
 
   function toggleKey(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
 
@@ -228,6 +229,22 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     }
   }
 
+  async function saveAgents() {
+    setAgentsSaved("saving…");
+    try {
+      const r = await fetch("/api/settings/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spawn_policy: config.spawn_policy || "conservative" }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      setAgentsSaved("saved ✓");
+      setTimeout(() => setAgentsSaved(""), 1500);
+    } catch (e) {
+      setAgentsSaved("error: " + e.message);
+    }
+  }
+
   function toggleTool(name) {
     setToolList(toolList.map(function(tl) {
       return tl.name === name ? { ...tl, enabled: !tl.enabled } : tl;
@@ -365,11 +382,20 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             <p className="subtitle">{t("settings.agentsSubtitle")}</p>
             <div className="field">
               <div className="label">{t("settings.spawnPolicy")}<small>{t("settings.spawnPolicyHint")}</small></div>
-              <select className="select" style={{ maxWidth: 240 }} defaultValue="conservative">
+              <select
+                className="select"
+                style={{ maxWidth: 240 }}
+                value={config.spawn_policy || "conservative"}
+                onChange={(e) => setConfig({ ...config, spawn_policy: e.target.value })}
+              >
                 <option value="aggressive">{t("settings.aggressive")}</option>
                 <option value="conservative">{t("settings.conservative")}</option>
                 <option value="off">{t("settings.off")}</option>
               </select>
+            </div>
+            <div className="settings-actions">
+              <button className="btn primary" onClick={saveAgents}>{t("settings.saveApply")}</button>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{agentsSaved}</span>
             </div>
           </div>
         )}

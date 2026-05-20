@@ -704,6 +704,19 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_get_config():
         return _build_config()
 
+    @router.put("/api/settings/config")
+    async def api_update_config(request: Request):
+        from cyrene.settings_store import set_ as set_setting
+        body = await request.json()
+        changed = []
+        if "spawn_policy" in body:
+            value = str(body.get("spawn_policy") or "").strip().lower()
+            if value not in {"aggressive", "conservative", "off"}:
+                return JSONResponse({"error": "invalid spawn_policy"}, status_code=400)
+            set_setting("spawn_policy", value)
+            changed.append("spawn_policy")
+        return {"ok": True, "changed": changed}
+
     @router.get("/api/settings/search")
     async def api_get_search():
         return {"search": _build_search_config()}
@@ -2241,6 +2254,7 @@ def _build_config() -> dict:
         "soul_content": _read_soul(),
         "search_mode": settings.get("search_mode", "builtin"),
         "search_external_url": settings.get("search_external_url", ""),
+        "spawn_policy": settings.get("spawn_policy", "conservative"),
         "search_port": str(SEARXNG_PORT),
         "search_host": SEARXNG_HOST,
     }

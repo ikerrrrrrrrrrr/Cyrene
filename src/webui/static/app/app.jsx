@@ -134,7 +134,7 @@ function SetupWizard({ theme, onToggleTheme }) {
         </div>
         <button className="theme-toggle-btn" title={theme === "dark" ? t("topbar.switchToLight") : t("topbar.switchToDark")} onClick={onToggleTheme}>
           <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
-          <span>{theme === "system" ? "Auto" : theme === "dark" ? "Light" : "Dark"}</span>
+          <span>{theme === "system" ? t("settings.system") : theme === "dark" ? t("settings.light") : t("settings.dark")}</span>
         </button>
       </div>
 
@@ -567,10 +567,10 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
           </span>
         )}
         <span style={{ width: 1, height: 18, background: "var(--line)", margin: "0 4px" }}></span>
-        <button className="theme-toggle-btn" title="Cycle theme: system → light → dark"
+        <button className="theme-toggle-btn" title={theme === "dark" ? t("topbar.switchToLight") : t("topbar.switchToDark")}
                 onClick={onToggleTheme}>
           <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
-          <span>{theme === "system" ? "Auto" : theme === "dark" ? "Light" : "Dark"}</span>
+          <span>{theme === "system" ? t("settings.system") : theme === "dark" ? t("settings.light") : t("settings.dark")}</span>
         </button>
         <button className="iconbtn" title={t("topbar.search")}>
           <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">

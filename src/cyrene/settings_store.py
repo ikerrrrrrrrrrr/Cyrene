@@ -54,6 +54,7 @@ _PROTECTED_TOOLS = {"quit"}
 _DEFAULTS: dict = {
     "search_mode": "builtin",
     "search_external_url": "",
+    "spawn_policy": "conservative",
     "models": _DEFAULT_MODELS,
     "enabled_tools": _DEFAULT_ENABLED_TOOLS,
 }
@@ -94,6 +95,12 @@ def set_(key: str, value) -> None:
 def get_all() -> dict:
     """Return all settings as a flat dict."""
     return _load()
+
+
+def get_spawn_policy() -> str:
+    """Return subagent spawn policy normalized to a supported value."""
+    value = str(_load().get("spawn_policy", "conservative") or "conservative").strip().lower()
+    return value if value in {"aggressive", "conservative", "off"} else "conservative"
 
 
 # ---------------------------------------------------------------------------
