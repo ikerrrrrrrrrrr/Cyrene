@@ -295,7 +295,7 @@ async def _cli_loop() -> None:
 
             response = await run_agent(user_input, None, 0, str(DB_PATH))
             print(f"\n{ASSISTANT_NAME}: {response}")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             break
         except Exception:
             logger.exception("Error in CLI loop")
