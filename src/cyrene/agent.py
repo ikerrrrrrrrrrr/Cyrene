@@ -70,17 +70,20 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 - Final answer: prefer 1-2 short paragraphs. Use lists only when the content is inherently list-shaped. Keep it flat.
 
 ## Tools
-- Use tools when helpful: files, search, web, code, sub-agents, etc.
+- **You have full tool access** — use it proactively. Any request that involves files, search, web, code, shell commands, scheduling, data, or sub-agents REQUIRES tools. Do NOT try to answer with text alone when a tool would help.
+- The ONLY exception is pure conversation (opinions, greetings, explanations, or questions about concepts that don't need real-world data).
+- When in doubt, use tools. A tool-backed answer is always better than a guess.
 - If it helps the user stay oriented during a long task, you may call `send_message` to post a brief in-progress update before the final answer. Use it sparingly and only when there is real new information.
 - If the user's request is ambiguous or missing a key detail, call `ask_user` instead of guessing. Use it either as a freeform question or with a short option list when structured choices would help.
 - When a task is complete, call the `quit` tool.
 """
 
 _PHASE1_DECISION_PROMPT = """Decision phase rules:
-- The only available tools right now are `use_tools` and `quit`.
-- Never call concrete tools such as `WebSearch`, `Bash`, `Read`, or `spawn_subagent` directly in this phase.
-- If you need any real tool work, call `use_tools` with the user's exact original message.
-- If neither available tool fits, say clearly that there is no suitable tool in this phase.
+- The only available tools right now are `use_tools`, `ask_user`, and `quit`. You cannot call concrete tools (WebSearch, Bash, Read, etc.) directly — you must use `use_tools` to unlock them.
+- ALWAYS call `use_tools` when the user asks you to DO anything — file ops, search, web, code, shell, scheduling, data queries, sub-agents, etc.
+- Call `quit` ONLY when the request is pure conversation (opinions, greetings, conceptual explanations) AND you are completely sure no tool could improve the answer.
+- Call `ask_user` when the request is genuinely ambiguous and you need clarification before acting.
+- When in doubt between answering directly or calling `use_tools`, call `use_tools`. It is always better to have tools available than to answer blindly.
 """
 
 _EXECUTION_SYSTEM_PROMPT = """You are a capable execution agent. Your job is to complete tasks using tools.
@@ -1956,7 +1959,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
 
 # 轻量 tool：只有 use_tools + quit，用于第一阶段判断是否进重循环
 _LIGHT_TOOL_DEFS = [
-    {"type": "function", "function": {"name": "use_tools", "description": "Call this when the user asks you to DO something (file ops, search, code, web, spawn_subagent, etc.). Not needed for chat only. IMPORTANT: set task to the user's EXACT original message, do not rewrite it.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
+    {"type": "function", "function": {"name": "use_tools", "description": "MANDATORY gateway to full tool access. Call this for ANY request that involves doing things — file ops, search, web, code, shell, scheduling, sub-agents, data, etc. This is the ONLY way to reach real tools. Skip ONLY for pure conversation (opinions, greetings, conceptual explanations). IMPORTANT: set task to the user's EXACT original message, do not rewrite it.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
     {"type": "function", "function": {"name": "ask_user", "description": "Ask the user a clarification question when their request is ambiguous or missing a critical detail. Use freeform by sending only text, or add a short options array when offering structured choices would help. Do not combine this with other tools in the same assistant turn.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["text"]}}},
     {"type": "function", "function": {"name": "quit", "description": "Call this when the interaction is done.", "parameters": {"type": "object", "properties": {}}}},
 ]
