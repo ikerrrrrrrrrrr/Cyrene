@@ -69,6 +69,7 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 ## Communication
 - Respond clearly and directly. No conversational interjections ("Got it", "Sure", "Great question").
 - No emoji. Never.
+- Match the user's language. Always reply in the same language the user writes in.
 - While working, give brief progress updates (1-2 sentences). After completion, give a concise final answer.
 - Final answer: prefer 1-2 short paragraphs. Use lists only when the content is inherently list-shaped. Keep it flat.
 
@@ -1990,6 +1991,7 @@ async def _run_main_agent(
     system_prompt: str = "",
     client_request_id: str = "",
     persist_user_message: bool = True,
+    lang: str = "",
 ) -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
     _caller_type.set("main_agent")
@@ -2349,15 +2351,15 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 # ---------------------------------------------------------------------------
 
 
-async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str, client_request_id: str = "") -> str:
+async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str, client_request_id: str = "", lang: str = "") -> str:
     """Main entry point. Runs the main agent loop with full tools."""
     if _agent_lock.locked():
         interrupt_active_run()
     async with _agent_lock:
         _interrupt_event.clear()
         if client_request_id:
-            return await _run_chat_agent(user_message, bot, chat_id, db_path, client_request_id=client_request_id)
-        return await _run_chat_agent(user_message, bot, chat_id, db_path)
+            return await _run_chat_agent(user_message, bot, chat_id, db_path, client_request_id=client_request_id, lang=lang)
+        return await _run_chat_agent(user_message, bot, chat_id, db_path, lang=lang)
 
 
 async def _clear_interrupt_when_idle() -> None:
@@ -2396,6 +2398,7 @@ async def _run_chat_agent(
     refresh_labels: bool = True,
     hide_initial_detail: bool = False,
     assistant_message_meta: dict[str, Any] | None = None,
+    lang: str = "",
 ) -> str:
     """Coordinator: main agent loop."""
     import time as _time
@@ -2445,8 +2448,10 @@ async def _run_chat_agent(
                 raise
             memory_context = get_memory_context()
         main_system = _MAIN_AGENT_PROMPT
+        if lang and lang != "en":
+            main_system += f"\n\nThe user has set their preferred language to {lang}. Reply in this language."
         if memory_context:
-            main_system = _MAIN_AGENT_PROMPT + "\n\n## Memory Context\n" + memory_context
+            main_system = main_system + "\n\n## Memory Context\n" + memory_context
 
         # ====== 主 Agent ======
         main_text = await _run_main_agent(
@@ -2458,6 +2463,7 @@ async def _run_chat_agent(
             main_system,
             client_request_id=client_request_id,
             persist_user_message=persist_user_message,
+            lang=lang,
         )
 
         if refresh_labels:
@@ -2507,6 +2513,7 @@ async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str)
         "The hidden task you receive is internal guidance, not text to answer literally.\n"
         "Your final assistant reply will be shown directly to the user in the Web UI.\n"
         "Write to the user in a natural, user-facing voice.\n"
+        "Match the user's preferred language based on their past messages.\n"
         "Do not mention the scheduler, heartbeat, lottery, hidden prompt, or internal instructions.\n"
         "If you decide to speak, send one concise, useful proactive message to the user.\n"
         "If tools are useful, use the normal main-agent loop and let the UI show the later details."

@@ -3,6 +3,7 @@ const { useState: useStateSk } = React;
 
 function SkillsPage() {
   const dv = useDataVersion();
+  const { t } = useI18n();
   const [skills, setSkills] = useStateSk(() => DATA.skills.map((s) => ({ ...s })));
   const [selected, setSelected] = useStateSk(DATA.skills[0]?.id || "");
   const [tab, setTab] = useStateSk("installed"); // installed | available | all
@@ -19,7 +20,7 @@ function SkillsPage() {
   if (!skills.length) {
     return (
       <div style={{ padding: 48, color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 13 }}>
-        Loading skills…
+        {t("skills.loading")}
       </div>
     );
   }
@@ -54,11 +55,11 @@ function SkillsPage() {
     <div className="skills-layout">
       <div className="skills-side">
         <div className="skills-tabs">
-          {["installed", "available", "all"].map((t) => (
-            <div key={t}
-                 className={"skills-tab " + (tab === t ? "active" : "")}
-                 onClick={() => setTab(t)}>
-              {t}<span className="skills-tab-count">{counts[t]}</span>
+          {["installed", "available", "all"].map((tabKey) => (
+            <div key={tabKey}
+                 className={"skills-tab " + (tab === tabKey ? "active" : "")}
+                 onClick={() => setTab(tabKey)}>
+              {t("skills." + tabKey)}<span className="skills-tab-count">{counts[tabKey]}</span>
             </div>
           ))}
         </div>
@@ -66,7 +67,7 @@ function SkillsPage() {
           <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
             <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
           </svg>
-          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter skills" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("skills.filterPlaceholder")} />
         </div>
         <div className="skills-list-page">
           {filtered.map((s) => (
@@ -80,21 +81,21 @@ function SkillsPage() {
                 <div className="skill-row-meta">
                   <span>v{s.version}</span>
                   <span>· {s.author}</span>
-                  {s.installed && s.invocations != null && <span>· {s.invocations} runs</span>}
+                  {s.installed && s.invocations != null && <span>· {s.invocations} {t("skills.runs")}</span>}
                 </div>
               </div>
               <div className="skill-row-state">
                 {s.installed ? (
                   <span className={"skill-state-dot " + (s.enabled ? "on" : "off")}></span>
                 ) : (
-                  <span className="skill-state-tag">available</span>
+                  <span className="skill-state-tag">{t("skills.available")}</span>
                 )}
               </div>
             </div>
           ))}
           {filtered.length === 0 && (
             <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
-              no skills match.
+              {t("skills.noMatch")}
             </div>
           )}
         </div>
@@ -111,6 +112,7 @@ function SkillsPage() {
 }
 
 function SkillDetail({ skill, onToggle, onInstall, onUninstall }) {
+  const { t } = useI18n();
   if (!skill) return null;
 
   return (
@@ -131,15 +133,15 @@ function SkillDetail({ skill, onToggle, onInstall, onUninstall }) {
             <>
               <div className="enable-toggle">
                 <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
-                  {skill.enabled ? "enabled" : "disabled"}
+                  {skill.enabled ? t("skills.enabled") : t("skills.disabled")}
                 </span>
                 <div className={"toggle " + (skill.enabled ? "on" : "")} onClick={onToggle}></div>
               </div>
-              <button className="btn" onClick={onUninstall}>uninstall</button>
+              <button className="btn" onClick={onUninstall}>{t("skills.uninstall")}</button>
             </>
           ) : (
             <button className="btn primary" onClick={onInstall}>
-              install skill
+              {t("skills.installSkill")}
             </button>
           )}
         </div>
@@ -148,18 +150,18 @@ function SkillDetail({ skill, onToggle, onInstall, onUninstall }) {
       <div className="skill-detail-body">
         {skill.installed && (
           <div className="skill-stats">
-            <Stat label="Invocations" value={skill.invocations ?? "—"} />
-            <Stat label="Success rate" value={skill.successRate != null ? Math.round(skill.successRate * 100) + "%" : "—"} />
-            <Stat label="Avg duration" value={skill.avgDuration || "—"} />
-            <Stat label="Last used" value={skill.lastUsed || "—"} />
+            <Stat label={t("skills.invocations")} value={skill.invocations ?? "—"} />
+            <Stat label={t("skills.successRate")} value={skill.successRate != null ? Math.round(skill.successRate * 100) + "%" : "—"} />
+            <Stat label={t("skills.avgDuration")} value={skill.avgDuration || "—"} />
+            <Stat label={t("skills.lastUsed")} value={skill.lastUsed || "—"} />
           </div>
         )}
 
-        <SkillSection title="System prompt">
+        <SkillSection title={t("skills.systemPrompt")}>
           <pre className="code-block" style={{ color: "var(--text)" }}>{skill.prompt || "—"}</pre>
         </SkillSection>
 
-        <SkillSection title="Tools used">
+        <SkillSection title={t("skills.toolsUsed")}>
           <div className="tool-chips">
             {(skill.tools || []).map((t) => (
               <span key={t} className="tool-chip">{t}</span>
@@ -168,19 +170,19 @@ function SkillDetail({ skill, onToggle, onInstall, onUninstall }) {
           </div>
         </SkillSection>
 
-        <SkillSection title="Trigger">
+        <SkillSection title={t("skills.trigger")}>
           <div className="kv">
-            <span className="k">slash command</span>
+            <span className="k">{t("skills.slashCommand")}</span>
             <span className="v">{skill.hotkey ? "/" + skill.hotkey.toLowerCase() : "—"}</span>
-            <span className="k">auto-suggest</span>
-            <span className="v">{skill.installed && skill.enabled ? "on" : "off"}</span>
-            <span className="k">mention</span>
+            <span className="k">{t("skills.autoSuggest")}</span>
+            <span className="v">{skill.installed && skill.enabled ? t("skills.on") : t("skills.off")}</span>
+            <span className="k">{t("skills.mention")}</span>
             <span className="v">@{skill.id}</span>
           </div>
         </SkillSection>
 
         {skill.installed && skill.recent && skill.recent.length > 0 && (
-          <SkillSection title={"Recent activity · " + skill.recent.length}>
+          <SkillSection title={t("skills.recentActivity") + " · " + skill.recent.length}>
             <div className="skill-recent">
               {skill.recent.map((r, i) => (
                 <div key={i} className="recent-row">
