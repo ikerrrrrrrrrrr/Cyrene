@@ -288,7 +288,7 @@ function collectRetainedRuntimeAttachments(retainedMessages) {
 
 function guidanceAckMessage(guidanceId, body, insertAfterKey) {
   const safeGuidanceId = String(guidanceId || "");
-  const text = String(body || "已接受引导。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。");
+  const text = String(body || window.t("chat.guidanceAcceptedBody"));
   return {
     id: "guidance_ack_" + (safeGuidanceId || Date.now()),
     role: "agent",
@@ -538,6 +538,7 @@ window.resetChatRuntime = resetChatRuntime;
 
 function ChatPage({ selectedSessionId, onSelectSession }) {
   useDataVersion(); // re-render when DATA refreshes
+  const { t, lang } = useI18n();
 
   const session = (selectedSessionId
     ? DATA.sessions.find(function (s) { return s.id === selectedSessionId; })
@@ -781,7 +782,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     const runtime = getChatRuntime();
     if (!text) return;
     if (pendingQuestion) {
-      setNotice("Answer the pending question above before starting a new message.");
+      setNotice(t("chat.answerPendingWarning"));
       return;
     }
     setNotice("");
@@ -834,6 +835,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           guide_round_id: selectedGuideRoundId || undefined,
           client_request_id: requestId,
           stream: true,
+          lang: lang,
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1222,7 +1224,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const renderedMessageEntries = renderMessageEntries(renderedMessages);
 
   async function newSession() {
-    if (!confirm("Start a new session? The current conversation will be compressed into short-term memory.")) return;
+    if (!confirm(t("chat.confirmNewSession"))) return;
     try {
       resetChatRuntime({ abort: true });
       const r = await fetch("/api/sessions", { method: "POST" });
@@ -1231,7 +1233,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
       onSelectSession && onSelectSession(null);
     } catch (e) {
-      alert("Failed: " + e.message);
+      alert(t("chat.failedToCreate") + ": " + e.message);
     }
   }
 
@@ -1258,22 +1260,22 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                   onClick={newSession}
                   onMouseEnter={(e) => (e.target.style.color = "var(--accent)")}
                   onMouseLeave={(e) => (e.target.style.color = "var(--text-3)")}
-                  title="Compress current session and start a new one">
-              + new session
+                  title={t("chat.newSessionTitle")}>
+              {t("chat.newSession")}
             </span>
           </div>
           {!isLiveSession && (
             <div className="archive-banner">
-              <span>Viewing archive · {session.started}</span>
+              <span>{t("chat.viewingArchive")} · {session.started}</span>
               <span className="archive-banner-action"
                     onClick={function () { onSelectSession && onSelectSession(null); }}>
-                ← return to live session
+                {t("chat.returnToLive")}
               </span>
             </div>
           )}
           {renderedMessages.length === 0 && (
             <div style={{ padding: "40px 0", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
-              No messages yet. Say hello to {DATA.assistantName}.
+              {t("chat.noMessages", { name: DATA.assistantName })}
             </div>
           )}
           {renderedMessageEntries.map((entry) => (
@@ -1446,21 +1448,21 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               disabled={Boolean(pendingQuestion)}
               placeholder={
                 pendingQuestion
-                  ? "Answer the pending question above to continue this round…"
-                  : ("Message " + DATA.assistantName + "… (⌘+↵ to send)")
+                  ? t("chat.answerPending")
+                  : t("chat.messagePlaceholder", { name: DATA.assistantName })
               }
             />
             <div className="composer-actions">
-              <button className="iconbtn" title="Attach">+</button>
-              <button className="iconbtn" title="Slash command">/</button>
-              <button className="iconbtn" title="Mention">@</button>
+              <button className="iconbtn" title={t("chat.attach")}>+</button>
+              <button className="iconbtn" title={t("chat.slashCommand")}>/</button>
+              <button className="iconbtn" title={t("chat.mention")}>@</button>
               <span style={{ flex: 1 }}></span>
               <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>
                 {session.model}
               </span>
               {visibleSending && (
                 <button className="send secondary" disabled={!draft.trim() || Boolean(pendingQuestion)} onClick={openNextDialogue}>
-                  {hasSelectedGuideRound ? "guide" : "new dialogue"}
+                  {hasSelectedGuideRound ? t("chat.guide") : t("chat.newDialogue")}
                 </button>
               )}
               <button
@@ -1468,7 +1470,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 disabled={pendingQuestion ? true : (!visibleSending && !draft.trim())}
                 onClick={visibleSending ? stopActiveRun : send}
               >
-                {visibleSending ? "stop" : <>{hasSelectedGuideRound ? "guide" : "send"} <span className="kbd">⌘↵</span></>}
+                {visibleSending ? t("chat.stop") : <>{hasSelectedGuideRound ? t("chat.guide") : t("chat.send")} <span className="kbd">⌘↵</span></>}
               </button>
             </div>
           </div>
@@ -1476,17 +1478,17 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
             <span>
               {visibleSending
                 ? (hasSelectedGuideRound
-                    ? "Watching the current run. Type the next message, then click guide to send it to the selected round without waiting."
-                    : "Watching the current run. Type the next message, then click new dialogue to send it without waiting.")
+                    ? t("chat.watchingRunGuide")
+                    : t("chat.watchingRunNew"))
                 : pendingQuestion
-                ? "The main agent is waiting for your answer above before it can continue this round."
+                ? t("chat.waitingForAnswer")
                 : hasSelectedGuideRound
-                ? "Guidance mode: this message will be sent to the selected round's main-agent inbox."
-                : DATA.assistantName + " plans, then acts. Subagents spawn for parallel work."}
+                ? t("chat.guidanceMode")
+                : t("chat.agentPlansActs", { name: DATA.assistantName })}
             </span>
             <span>
-              {visibleSending ? "running · " : ""}
-              {runningSubagents} active subagent(s)
+              {visibleSending ? t("chat.running") + " · " : ""}
+              {t("chat.activeSubagents", { n: runningSubagents, pl: runningSubagents !== 1 ? "s" : "" })}
             </span>
           </div>
         </div>
@@ -1499,6 +1501,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
 }
 
 function Message({ msg, assistantName }) {
+  const { t } = useI18n();
   const renderMarkdownBody = !msg.streamingReply;
   const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
     ? renderMarkdown(msg.body)
@@ -1519,7 +1522,7 @@ function Message({ msg, assistantName }) {
     <div className={"msg " + msg.role}>
       <div className="msg-meta">
         <span className={"msg-role " + msg.role}>
-          {msg.role === "user" ? "▸ you" :
+          {msg.role === "user" ? "▸ " + t("chat.you") :
            msg.role === "agent" ? "● " + (assistantName || "agent") :
            msg.role}
         </span>
@@ -1548,7 +1551,7 @@ function Message({ msg, assistantName }) {
             )}
             {!isRuntimeTrace && msg.thinking && (
               <div className="thinking">
-                <div className="thinking-head">reasoning</div>
+                <div className="thinking-head">{t("chat.reasoning")}</div>
                 {msg.thinking}
               </div>
             )}
@@ -1580,15 +1583,16 @@ function Message({ msg, assistantName }) {
 }
 
 function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, onSubmit, onKeyDown, answering, sending, optionCount }) {
+  const { t } = useI18n();
   if (!pendingQuestion) return null;
   const options = Array.isArray(pendingQuestion.options) ? pendingQuestion.options : [];
   const customDisabled = answering || sending;
   return (
     <div className="question-panel">
       <div className="question-panel-head">
-        <span className="question-panel-kicker">clarification needed</span>
+        <span className="question-panel-kicker">{t("chat.clarificationNeeded")}</span>
         <span className="question-panel-meta">
-          {optionCount ? optionCount + " option" + (optionCount === 1 ? "" : "s") + " + custom answer" : "custom answer"}
+          {optionCount ? t("chat.optionsPlusCustom", { n: optionCount, pl: optionCount === 1 ? "" : "s" }) : t("chat.customAnswer")}
         </span>
       </div>
       <div className="question-panel-body">
@@ -1616,14 +1620,14 @@ function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, 
             onChange={function (e) { onDraftChange && onDraftChange(e.target.value); }}
             onKeyDown={onKeyDown}
             disabled={customDisabled}
-            placeholder="Type your answer… (⌘+↵ to submit)"
+            placeholder={t("chat.typeYourAnswer")}
           />
           <button
             className="question-submit"
             disabled={customDisabled || !String(draft || "").trim()}
             onClick={onSubmit}
           >
-            answer <span className="kbd">⌘↵</span>
+            {t("chat.answer")} <span className="kbd">⌘↵</span>
           </button>
         </div>
       </div>
@@ -1649,11 +1653,12 @@ function ToolCard({ tool }) {
 }
 
 function ChatSide({ session, subagents }) {
+  const { t } = useI18n();
   return (
     <div className="chat-side">
       <div className="side-section" style={{ maxHeight: "40%", overflowY: "auto" }}>
         <div className="side-head">
-          Active shells
+          {t("chat.activeShells")}
           <span className="count">{session.shells.length}</span>
         </div>
         {session.shells.length === 0 && (
@@ -1664,7 +1669,7 @@ function ChatSide({ session, subagents }) {
 
       <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
         <div className="side-head">
-          Subagents
+          {t("chat.subagents")}
           <span className="count">{subagents.length}</span>
         </div>
         {subagents.length === 0 && (
@@ -1674,14 +1679,14 @@ function ChatSide({ session, subagents }) {
       </div>
 
       <div className="side-section" style={{ borderBottom: 0 }}>
-        <div className="side-head">Run summary</div>
+        <div className="side-head">{t("chat.runSummary")}</div>
         <div className="kv" style={{ rowGap: 6 }}>
-          <span className="k">run id</span><span className="v">{session.id}</span>
-          <span className="k">started</span><span className="v">{session.started}</span>
-          <span className="k">elapsed</span><span className="v">{session.dur}</span>
-          <span className="k">tool calls</span><span className="v">{session.summary.toolCalls}</span>
-          <span className="k">tokens</span><span className="v">{session.summary.tokens}</span>
-          <span className="k">spend</span><span className="v">{session.summary.spend}</span>
+          <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
+          <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
+          <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
+          <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
+          <span className="k">{t("chat.tokens")}</span><span className="v">{session.summary.tokens}</span>
+          <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
         </div>
       </div>
     </div>
@@ -1693,7 +1698,7 @@ function ShellCard({ shell }) {
     <div className="shell-card">
       <div className="shell-card-head">
         <span>▣</span>
-        <span>{shell.title || "independent shell"}</span>
+        <span>{shell.title || window.t("chat.independentShell")}</span>
         <span className="cwd">{shell.cwd}</span>
         <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
         <span className="pid">pid {shell.pid}</span>

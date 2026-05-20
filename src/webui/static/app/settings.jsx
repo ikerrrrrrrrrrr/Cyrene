@@ -1,9 +1,18 @@
 // Settings page
 const { useState: useStateSet } = React;
 
-function SettingsPage({ tweaks, setTweak }) {
+function readStoredSettingsSection() {
+  try {
+    return localStorage.getItem("cyrene-settings-section") || "general";
+  } catch (e) {
+    return "general";
+  }
+}
+
+function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   useDataVersion();
-  const [section, setSection] = useStateSet("general");
+  const { t, lang, setLang } = useI18n();
+  const [section, setSection] = useStateSet(readStoredSettingsSection);
   const [config, setConfig] = useStateSet({
     model: "—", base_url: "—", assistant_name: "—",
     soul_path: "—", workspace_dir: "—", soul_content: "",
@@ -34,7 +43,13 @@ function SettingsPage({ tweaks, setTweak }) {
   const [mcpSaved, setMcpSaved] = useStateSet("");
   const [newMcpServer, setNewMcpServer] = useStateSet({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
 
-  function t(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
+  function toggleKey(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
+
+  React.useEffect(() => {
+    try {
+      localStorage.setItem("cyrene-settings-section", section);
+    } catch (e) {}
+  }, [section]);
 
   React.useEffect(() => {
     fetch("/api/settings/config").then((r) => r.json()).then((c) => {
@@ -229,32 +244,37 @@ function SettingsPage({ tweaks, setTweak }) {
   return (
     <div className="settings-layout">
       <div className="settings-nav">
-        <div className="nav-section">Settings</div>
-        {DATA.settings.sections.map((s) => (
-          <div key={s.id}
-               className={"nav-item " + (section === s.id ? "active" : "")}
-               onClick={() => setSection(s.id)}>
-            {s.label}
-          </div>
-        ))}
+        <div className="nav-section">{t("nav.settings")}</div>
+        {DATA.settings.sections.map((s) => {
+          const labelKey = "section." + s.id;
+          const translated = t(labelKey);
+          const label = translated === labelKey ? s.label : translated;
+          return (
+            <div key={s.id}
+                 className={"nav-item " + (section === s.id ? "active" : "")}
+                 onClick={() => setSection(s.id)}>
+              {label}
+            </div>
+          );
+        })}
       </div>
 
       <div className="settings-content">
         {section === "general" && (
-          <>
-            <h2>General</h2>
-            <p className="subtitle">Workspace identity and persona (SOUL.md).</p>
+          <div className="settings-pane">
+            <h2>{t("settings.general")}</h2>
+            <p className="subtitle">{t("settings.generalSubtitle")}</p>
             <div className="field">
-              <div className="label">Assistant name<small>From ASSISTANT_NAME env var. Used in chat + sidebar.</small></div>
+              <div className="label">{t("settings.assistantName")}<small>{t("settings.assistantNameHint")}</small></div>
               <input className="input" value={config.assistant_name} readOnly />
             </div>
             <div className="field">
-              <div className="label">Workspace directory<small>Where SOUL.md, conversations/, and runtime files live.</small></div>
+              <div className="label">{t("settings.workspaceDir")}<small>{t("settings.workspaceDirHint")}</small></div>
               <input className="input mono" value={config.workspace_dir} readOnly />
             </div>
             <div className="field" style={{ display: "block" }}>
               <div className="label" style={{ marginBottom: 8 }}>
-                SOUL.md<small>Long-term persona + identity. Steward agent updates this every 30 min.</small>
+                {t("settings.soulMd")}<small>{t("settings.soulMdHint")}</small>
               </div>
               <textarea
                 className="input mono"
@@ -263,23 +283,23 @@ function SettingsPage({ tweaks, setTweak }) {
                 style={{ width: "100%", minHeight: 320, fontSize: 12, lineHeight: 1.5 }}
               />
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-                <button className="btn primary" onClick={saveSoul}>save SOUL.md</button>
+                <button className="btn primary" onClick={saveSoul}>{t("settings.saveSoul")}</button>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
                   {soulStatus || config.soul_path}
                 </span>
               </div>
             </div>
             <div className="field">
-              <div className="label">Stream reasoning to chat<small>Show the agent's thinking inline as it works.</small></div>
-              <div className={"toggle " + (toggles.streamThinking ? "on" : "")} onClick={() => t("streamThinking")}></div>
+              <div className="label">{t("settings.streamReasoning")}<small>{t("settings.streamReasoningHint")}</small></div>
+              <div className={"toggle " + (toggles.streamThinking ? "on" : "")} onClick={() => toggleKey("streamThinking")}></div>
             </div>
-          </>
+          </div>
         )}
 
         {section === "models" && (
-          <>
-            <h2>Models</h2>
-            <p className="subtitle">Manage available models. Click a model to select it — changes apply to new LLM calls immediately.</p>
+          <div className="settings-pane">
+            <h2>{t("settings.models")}</h2>
+            <p className="subtitle">{t("settings.modelsSubtitle")}</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {models.map(function(m) {
                 var isActive = m.id === activeModel;
@@ -311,17 +331,17 @@ function SettingsPage({ tweaks, setTweak }) {
               })}
             </div>
             <div className="field" style={{ marginTop: 8 }}>
-              <div className="label">API endpoint<small>OPENAI_BASE_URL — OpenAI-compatible API base.</small></div>
+              <div className="label">{t("settings.apiEndpoint")}<small>{t("settings.apiEndpointHint")}</small></div>
               <input className="input mono" value={baseUrl}
                      onChange={function(e) { setBaseUrl(e.target.value); }}
                      placeholder="https://api.deepseek.com/v1" style={{ maxWidth: 480 }} />
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-              <button className="btn primary" onClick={saveModels}>save & apply</button>
+            <div className="settings-actions">
+              <button className="btn primary" onClick={saveModels}>{t("settings.saveApply")}</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{modelsSaved}</span>
             </div>
-            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>Add model</h3>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>{t("settings.addModel")}</h3>
+            <div className="inline-form-grid">
               <input className="input mono" placeholder="name" value={newModel.name}
                      onChange={function(e) { setNewModel({ ...newModel, name: e.target.value }); }}
                      style={{ maxWidth: 180 }} />
@@ -334,57 +354,30 @@ function SettingsPage({ tweaks, setTweak }) {
               <input className="input mono" placeholder="price" value={newModel.price}
                      onChange={function(e) { setNewModel({ ...newModel, price: e.target.value }); }}
                      style={{ maxWidth: 100 }} />
-              <button className="btn" onClick={addModel}>add</button>
+              <button className="btn" onClick={addModel}>{t("settings.add")}</button>
             </div>
-          </>
+          </div>
         )}
 
         {section === "agents" && (
-          <>
-            <h2>Agents</h2>
-            <p className="subtitle">How the orchestrator plans, spawns, and tears down workers.</p>
+          <div className="settings-pane">
+            <h2>{t("settings.agents")}</h2>
+            <p className="subtitle">{t("settings.agentsSubtitle")}</p>
             <div className="field">
-              <div className="label">Flowchart orientation<small>Direction nodes flow on the Agents canvas.</small></div>
-              <div className="seg">
-                <button
-                  className={"seg-btn " + (tweaks && tweaks.orientation === "horizontal" ? "active" : "")}
-                  onClick={() => setTweak && setTweak("orientation", "horizontal")}>
-                  <svg width="22" height="14" viewBox="0 0 22 14" fill="none" stroke="currentColor" strokeWidth="1.4">
-                    <rect x="1" y="4" width="5" height="6" rx="1" />
-                    <rect x="9" y="4" width="5" height="6" rx="1" />
-                    <rect x="17" y="4" width="4" height="6" rx="1" />
-                    <path d="M6 7 L9 7 M14 7 L17 7" />
-                  </svg>
-                  horizontal
-                </button>
-                <button
-                  className={"seg-btn " + (tweaks && tweaks.orientation === "vertical" ? "active" : "")}
-                  onClick={() => setTweak && setTweak("orientation", "vertical")}>
-                  <svg width="14" height="22" viewBox="0 0 14 22" fill="none" stroke="currentColor" strokeWidth="1.4">
-                    <rect x="4" y="1" width="6" height="5" rx="1" />
-                    <rect x="4" y="9" width="6" height="5" rx="1" />
-                    <rect x="4" y="17" width="6" height="4" rx="1" />
-                    <path d="M7 6 L7 9 M7 14 L7 17" />
-                  </svg>
-                  vertical
-                </button>
-              </div>
-            </div>
-            <div className="field">
-              <div className="label">Spawn policy<small>When the main agent is allowed to delegate.</small></div>
+              <div className="label">{t("settings.spawnPolicy")}<small>{t("settings.spawnPolicyHint")}</small></div>
               <select className="select" style={{ maxWidth: 240 }} defaultValue="conservative">
-                <option value="aggressive">aggressive — delegate often</option>
-                <option value="conservative">conservative — only obvious parallelism</option>
-                <option value="off">off — single agent only</option>
+                <option value="aggressive">{t("settings.aggressive")}</option>
+                <option value="conservative">{t("settings.conservative")}</option>
+                <option value="off">{t("settings.off")}</option>
               </select>
             </div>
-          </>
+          </div>
         )}
 
         {section === "tools" && (
-          <>
-            <h2>Tools</h2>
-            <p className="subtitle">Enable or disable tools the agent can call. Changes take effect on the next agent turn. <b>quit</b> is always enabled.</p>
+          <div className="settings-pane">
+            <h2>{t("settings.tools")}</h2>
+            <p className="subtitle">{t("settings.toolsSubtitle")}</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {toolList.map(function(tl) {
                 return (
@@ -399,40 +392,40 @@ function SettingsPage({ tweaks, setTweak }) {
                 );
               })}
             </div>
-            <div style={{ marginTop: 12 }}>
-              <button className="btn primary" onClick={saveTools}>save tools</button>
+            <div className="settings-actions">
+              <button className="btn primary" onClick={saveTools}>{t("settings.saveTools")}</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{toolsSaved}</span>
             </div>
-          </>
+          </div>
         )}
 
         {section === "search" && (
-          <>
-            <h2>Web Search</h2>
-            <p className="subtitle">Choose how the agent searches the web. Save to apply changes.</p>
+          <div className="settings-pane">
+            <h2>{t("settings.webSearch")}</h2>
+            <p className="subtitle">{t("settings.webSearchSubtitle")}</p>
             <div className="field">
-              <div className="label">Search backend<small>Built-in uses SimpleXNG (auto-started, no Docker). External points to your own SearXNG instance. Fallback uses DDG/Bing/Baidu scraping only.</small></div>
+              <div className="label">{t("settings.searchBackend")}<small>{t("settings.searchBackendHint")}</small></div>
               <div className="seg">
                 <button
                   className={"seg-btn " + (searchMode === "builtin" ? "active" : "")}
                   onClick={() => setSearchMode("builtin")}>
-                  built-in
+                  {t("settings.builtin")}
                 </button>
                 <button
                   className={"seg-btn " + (searchMode === "external" ? "active" : "")}
                   onClick={() => setSearchMode("external")}>
-                  external
+                  {t("settings.external")}
                 </button>
                 <button
                   className={"seg-btn " + (searchMode === "fallback" ? "active" : "")}
                   onClick={() => setSearchMode("fallback")}>
-                  fallback only
+                  {t("settings.fallbackOnly")}
                 </button>
               </div>
             </div>
             {searchMode === "external" && (
               <div className="field">
-                <div className="label">External SearXNG URL<small>e.g. http://localhost:8888 or https://search.example.com</small></div>
+                <div className="label">{t("settings.externalUrl")}<small>{t("settings.externalUrlHint")}</small></div>
                 <input
                   className="input mono"
                   value={searchExternalUrl}
@@ -444,27 +437,27 @@ function SettingsPage({ tweaks, setTweak }) {
             )}
             {searchMode === "builtin" && (
               <div className="field">
-                <div className="label">Built-in status<small>SimpleXNG auto-starts on port {config.search_port || "8888"}. Make sure <code>pip install simplexng</code> is done.</small></div>
-                <input className="input mono" value="Auto-started on launch — no config needed" readOnly style={{ maxWidth: 420 }} />
+                <div className="label">{t("settings.builtinStatus")}<small>{t("settings.builtinStatusHint", { port: config.search_port || "8888" })}</small></div>
+                <input className="input mono" value={t("settings.autoStarted")} readOnly style={{ maxWidth: 420 }} />
               </div>
             )}
             {searchMode === "fallback" && (
               <div className="field">
-                <div className="label">Fallback engines<small>DuckDuckGo, Bing, and Baidu HTML scraping. Rate-limited and less reliable.</small></div>
-                <input className="input mono" value="DDG → Bing → Baidu (no SearXNG)" readOnly style={{ maxWidth: 420 }} />
+                <div className="label">{t("settings.fallbackEngines")}<small>{t("settings.fallbackEnginesHint")}</small></div>
+                <input className="input mono" value={t("settings.fallbackDesc")} readOnly style={{ maxWidth: 420 }} />
               </div>
             )}
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-              <button className="btn primary" onClick={saveSearch}>save search settings</button>
+            <div className="settings-actions">
+              <button className="btn primary" onClick={saveSearch}>{t("settings.saveSearch")}</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{searchSaved}</span>
             </div>
-          </>
+          </div>
         )}
 
         {section === "mcp" && (
-          <>
-            <h2>MCP Servers</h2>
-            <p className="subtitle">Model Context Protocol servers expose tools that the agent can call. Configure stdio (local subprocess) or SSE (remote HTTP) servers.</p>
+          <div className="settings-pane">
+            <h2>{t("settings.mcpServers")}</h2>
+            <p className="subtitle">{t("settings.mcpSubtitle")}</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {mcpConfigs.map(function(s) {
                 var live = mcpServers.find(function(ls) { return ls.name === s.name; });
@@ -485,7 +478,7 @@ function SettingsPage({ tweaks, setTweak }) {
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span style={{ fontSize: 11, color: statusText === "connected" ? "var(--green)" : "var(--text-4)" }}>
-                        {statusText}{toolCount > 0 ? " · " + toolCount + " tools" : ""}
+                        {t("settings." + statusText)}{toolCount > 0 ? " · " + t("settings.toolsCount", { n: toolCount }) : ""}
                       </span>
                       <div className={"toggle " + (s.enabled !== false ? "on" : "")}
                            onClick={function() { toggleMcpServer(s.name); }}></div>
@@ -501,12 +494,12 @@ function SettingsPage({ tweaks, setTweak }) {
                 );
               })}
             </div>
-            <div style={{ marginTop: 12 }}>
-              <button className="btn primary" onClick={saveMcpServers}>save & restart MCP</button>
+            <div className="settings-actions">
+              <button className="btn primary" onClick={saveMcpServers}>{t("settings.saveRestartMcp")}</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{mcpSaved}</span>
             </div>
-            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>Add MCP server</h3>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>{t("settings.addMcpServer")}</h3>
+            <div className="inline-form-grid">
               <input className="input mono" placeholder="name" value={newMcpServer.name}
                      onChange={function(e) { setNewMcpServer({ ...newMcpServer, name: e.target.value }); }}
                      style={{ maxWidth: 140 }} />
@@ -529,103 +522,167 @@ function SettingsPage({ tweaks, setTweak }) {
                        onChange={function(e) { setNewMcpServer({ ...newMcpServer, url: e.target.value }); }}
                        style={{ maxWidth: 360 }} />
               )}
-              <button className="btn" onClick={addMcpServer}>add</button>
+              <button className="btn" onClick={addMcpServer}>{t("settings.add")}</button>
             </div>
-          </>
+          </div>
         )}
 
         {section === "keys" && (
-          <>
-            <h2>API keys</h2>
-            <p className="subtitle">Edit your .env file from the UI. Changes take effect immediately for LLM calls. Telegram token requires restart.</p>
+          <div className="settings-pane">
+            <h2>{t("settings.apiKeys")}</h2>
+            <p className="subtitle">{t("settings.apiKeysSubtitle")}</p>
             <div className="field">
-              <div className="label">LLM endpoint<small>OPENAI_BASE_URL — OpenAI-compatible API (DeepSeek, OpenAI, LMStudio).</small></div>
+              <div className="label">{t("settings.llmEndpoint")}<small>{t("settings.llmEndpointHint")}</small></div>
               <input className="input mono" value={keys.OPENAI_BASE_URL || config.base_url || ""}
                      onChange={(e) => setKeys({ ...keys, OPENAI_BASE_URL: e.target.value })}
                      placeholder="https://api.deepseek.com/v1" style={{ maxWidth: 480 }} />
             </div>
             <div className="field">
-              <div className="label">Model name<small>OPENAI_MODEL — e.g. deepseek-chat, claude-sonnet-4-7.</small></div>
+              <div className="label">{t("settings.modelName")}<small>{t("settings.modelNameHint")}</small></div>
               <input className="input mono" value={keys.OPENAI_MODEL || config.model || ""}
                      onChange={(e) => setKeys({ ...keys, OPENAI_MODEL: e.target.value })}
                      placeholder="deepseek-chat" style={{ maxWidth: 320 }} />
             </div>
             <div className="field">
-              <div className="label">API key<small>OPENAI_API_KEY — bearer token for LLM authentication.</small></div>
+              <div className="label">{t("settings.apiKey")}<small>{t("settings.apiKeyHint")}</small></div>
               <input className="input mono" type="password"
                      value={keys.OPENAI_API_KEY || ""}
                      onChange={(e) => setKeys({ ...keys, OPENAI_API_KEY: e.target.value })}
                      placeholder="sk-…" style={{ maxWidth: 480 }} />
             </div>
             <div className="field">
-              <div className="label">Telegram bot token<small>TELEGRAM_BOT_TOKEN — optional, for Telegram interface. Requires restart to take effect.</small></div>
+              <div className="label">{t("settings.telegramToken")}<small>{t("settings.telegramTokenHint")}</small></div>
               <input className="input mono" type="password"
                      value={keys.TELEGRAM_BOT_TOKEN || ""}
                      onChange={(e) => setKeys({ ...keys, TELEGRAM_BOT_TOKEN: e.target.value })}
                      placeholder="(optional)" style={{ maxWidth: 480 }} />
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-              <button className="btn primary" onClick={saveKeys}>save API keys</button>
+            <div className="settings-actions">
+              <button className="btn primary" onClick={saveKeys}>{t("settings.saveApiKeys")}</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{keysSaved}</span>
             </div>
             <div className="field" style={{ marginTop: 16 }}>
-              <div className="label">Redact secrets from logs<small>Mask API keys + bearer tokens before they hit disk.</small></div>
-              <div className={"toggle " + (toggles.redactSecrets ? "on" : "")} onClick={() => t("redactSecrets")}></div>
+              <div className="label">{t("settings.redactSecrets")}<small>{t("settings.redactSecretsHint")}</small></div>
+              <div className={"toggle " + (toggles.redactSecrets ? "on" : "")} onClick={() => toggleKey("redactSecrets")}></div>
             </div>
-          </>
+          </div>
         )}
 
         {section === "appearance" && (
-          <>
-            <h2>Appearance</h2>
-            <p className="subtitle">Use the floating Tweaks panel to live-preview theme changes.</p>
+          <div className="settings-pane">
+            <h2>{t("settings.appearance")}</h2>
+            <p className="subtitle">{t("settings.appearanceSubtitle")}</p>
             <div className="field">
-              <div className="label">Theme</div>
+              <div className="label">{t("settings.theme")}<small>{t("settings.themeHint")}</small></div>
               <div className="seg">
+                <button className={"seg-btn " + (tweaks && tweaks.theme === "system" ? "active" : "")}
+                        onClick={() => setTweak && setTweak("theme", "system")}>{t("settings.system")}</button>
                 <button className={"seg-btn " + (tweaks && tweaks.theme === "light" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("theme", "light")}>light</button>
+                        onClick={() => setTweak && setTweak("theme", "light")}>{t("settings.light")}</button>
                 <button className={"seg-btn " + (tweaks && tweaks.theme === "dark" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("theme", "dark")}>dark</button>
+                        onClick={() => setTweak && setTweak("theme", "dark")}>{t("settings.dark")}</button>
               </div>
             </div>
             <div className="field">
-              <div className="label">Text size<small>Use the larger version for readability.</small></div>
+              <div className="label">{t("settings.themeColor")}<small>{t("settings.themeColorHint", { theme: actualTheme || t("settings.system") })}</small></div>
+              <div className="appearance-swatches">
+                {(accentPresets || []).map((color, index) => (
+                  <button
+                    key={color}
+                    className={"appearance-swatch " + (tweaks && tweaks.accent === color ? "active" : "")}
+                    style={{ "--swatch-color": color }}
+                    onClick={() => setTweak && setTweak("accent", color)}
+                    title={t("settings.accentN", { n: index + 1 })}
+                  >
+                    <span className="appearance-swatch-dot"></span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="field">
+              <div className="label">{t("settings.textSize")}<small>{t("settings.textSizeHint")}</small></div>
               <div className="seg">
                 <button className={"seg-btn " + (tweaks && tweaks.textSize === "default" ? "active" : "")}
                         onClick={() => setTweak && setTweak("textSize", "default")}>
-                  <span style={{ fontSize: 11 }}>A</span> default
+                  <span style={{ fontSize: 11 }}>A</span> {t("settings.default")}
                 </button>
                 <button className={"seg-btn " + (tweaks && tweaks.textSize === "large" ? "active" : "")}
                         onClick={() => setTweak && setTweak("textSize", "large")}>
-                  <span style={{ fontSize: 15 }}>A</span> large
+                  <span style={{ fontSize: 15 }}>A</span> {t("settings.large")}
                 </button>
               </div>
             </div>
             <div className="field">
-              <div className="label">Density</div>
+              <div className="label">{t("settings.density")}<small>{t("settings.densityHint")}</small></div>
               <div className="seg">
                 <button className={"seg-btn " + (tweaks && tweaks.density === "cozy" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("density", "cozy")}>cozy</button>
+                        onClick={() => setTweak && setTweak("density", "cozy")}>{t("settings.cozy")}</button>
                 <button className={"seg-btn " + (tweaks && tweaks.density === "compact" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("density", "compact")}>compact</button>
+                        onClick={() => setTweak && setTweak("density", "compact")}>{t("settings.compact")}</button>
               </div>
             </div>
-          </>
+            <div className="field">
+              <div className="label">{t("settings.language")}<small>{t("settings.languageHint")}</small></div>
+              <div className="seg">
+                <button className={"seg-btn " + (lang === "en" ? "active" : "")}
+                        onClick={() => setLang("en")}>English</button>
+                <button className={"seg-btn " + (lang === "zh" ? "active" : "")}
+                        onClick={() => setLang("zh")}>中文</button>
+              </div>
+            </div>
+            <div className="field">
+              <div className="label">{t("settings.flowchartOrientation")}<small>{t("settings.flowchartOrientationHint")}</small></div>
+              <div className="seg">
+                <button
+                  className={"seg-btn " + (tweaks && tweaks.orientation === "horizontal" ? "active" : "")}
+                  onClick={() => setTweak && setTweak("orientation", "horizontal")}>
+                  <svg width="22" height="14" viewBox="0 0 22 14" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <rect x="1" y="4" width="5" height="6" rx="1" />
+                    <rect x="9" y="4" width="5" height="6" rx="1" />
+                    <rect x="17" y="4" width="4" height="6" rx="1" />
+                    <path d="M6 7 L9 7 M14 7 L17 7" />
+                  </svg>
+                  {t("settings.horizontal")}
+                </button>
+                <button
+                  className={"seg-btn " + (tweaks && tweaks.orientation === "vertical" ? "active" : "")}
+                  onClick={() => setTweak && setTweak("orientation", "vertical")}>
+                  <svg width="14" height="22" viewBox="0 0 14 22" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <rect x="4" y="1" width="6" height="5" rx="1" />
+                    <rect x="4" y="9" width="6" height="5" rx="1" />
+                    <rect x="4" y="17" width="6" height="4" rx="1" />
+                    <path d="M7 6 L7 9 M7 14 L7 17" />
+                  </svg>
+                  {t("settings.vertical")}
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <div className="label">{t("settings.canvasLegend")}<small>{t("settings.canvasLegendHint")}</small></div>
+              <div className={"toggle " + (tweaks && tweaks.showLegend ? "on" : "")}
+                   onClick={() => setTweak && setTweak("showLegend", !(tweaks && tweaks.showLegend))}></div>
+            </div>
+            <div className="field">
+              <div className="label">{t("settings.pulseAnimation")}<small>{t("settings.pulseAnimationHint")}</small></div>
+              <div className={"toggle " + (tweaks && tweaks.animatePulse ? "on" : "")}
+                   onClick={() => setTweak && setTweak("animatePulse", !(tweaks && tweaks.animatePulse))}></div>
+            </div>
+          </div>
         )}
 
         {section === "danger" && (
-          <>
-            <h2>Danger zone</h2>
-            <p className="subtitle">Irreversible. Please be careful.</p>
+          <div className="settings-pane danger-pane">
+            <h2>{t("settings.dangerZone")}</h2>
+            <p className="subtitle">{t("settings.dangerSubtitle")}</p>
             <div className="field">
-              <div className="label">Clear current session<small>Wipes data/state.json — current conversation context is lost.</small></div>
-              <button className="btn danger" onClick={clearSession}>clear session</button>
+              <div className="label">{t("settings.clearSession")}<small>{t("settings.clearSessionHint")}</small></div>
+              <button className="btn danger" onClick={clearSession}>{t("settings.clearSessionBtn")}</button>
             </div>
             <div className="field">
-              <div className="label">SOUL.md path<small>To reset persona, edit SOUL.md directly under General.</small></div>
+              <div className="label">{t("settings.soulPath")}<small>{t("settings.soulPathHint")}</small></div>
               <input className="input mono" value={config.soul_path} readOnly />
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>

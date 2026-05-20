@@ -17,6 +17,7 @@ const TYPE_LABELS = {
 
 function MemoryPage() {
   useDataVersion();
+  const { t } = useI18n();
   const [mem, setMem] = useStateMem(null);
   const [loading, setLoading] = useStateMem(true);
   const [error, setError] = useStateMem(null);
@@ -47,7 +48,7 @@ function MemoryPage() {
     return (
       <div className="status-grid">
         <div className="card" style={{ gridColumn: "span 12", textAlign: "center", padding: 40 }}>
-          <span style={{ color: "var(--text-3)" }}>Loading memory state...</span>
+          <span style={{ color: "var(--text-3)" }}>{t("memory.loading")}</span>
         </div>
       </div>
     );
@@ -57,7 +58,7 @@ function MemoryPage() {
     return (
       <div className="status-grid">
         <div className="card" style={{ gridColumn: "span 12", textAlign: "center", padding: 40 }}>
-          <span style={{ color: "var(--err)" }}>Failed to load: {error}</span>
+          <span style={{ color: "var(--err)" }}>{t("memory.failedToLoad")}: {error}</span>
         </div>
       </div>
     );
@@ -67,25 +68,25 @@ function MemoryPage() {
 
   const pipelineLayers = [
     {
-      label: "Context Window",
+      label: t("memory.contextWindow"),
       desc: mem.context_window.messages + " / " + mem.context_window.max + " msgs",
       icon: "◷",
       color: "var(--accent)",
-      detail: "Active conversation messages in state.json. Compressed to short-term when exceeding " + mem.context_window.max + ".",
+      detail: t("memory.ctxDetail", {max: mem.context_window.max}),
     },
     {
-      label: "Short-Term",
+      label: t("memory.shortTerm"),
       desc: mem.short_term.total + " entries",
       icon: "▤",
       color: "#a896c4",
-      detail: "Compressed facts, patterns, preferences. Persists across sessions. Cleaned daily (7-day expiry).",
+      detail: t("memory.stDesc"),
     },
     {
-      label: "Long-Term (SOUL.md)",
+      label: t("memory.longTermSoul"),
       desc: (mem.soul.sections || []).length + " sections",
       icon: "✱",
       color: "#d4a373",
-      detail: "Structured personality + permanent memories. Updated by Steward Agent every 30 min.",
+      detail: t("memory.soulDesc"),
     },
   ];
 
@@ -94,7 +95,7 @@ function MemoryPage() {
       {/* Pipeline visualization */}
       <div className="card" style={{ gridColumn: "span 12" }}>
         <div className="card-head">
-          <span className="card-title">Memory Pipeline</span>
+          <span className="card-title">{t("memory.pipeline")}</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "12px 0" }}>
           {pipelineLayers.map((layer, i) => (
@@ -133,9 +134,9 @@ function MemoryPage() {
           fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-4)",
           display: "flex", gap: 16, flexWrap: "wrap"
         }}>
-          <span>Conversation → [compress] → Short-Term → [Steward/30min] → SOUL.md</span>
+          <span>{t("memory.pipelineFlow")}</span>
           <span style={{ color: "var(--accent)" }}>
-            Archive: {mem.archive.days} day(s) · Today: {mem.archive.today_exchanges} exchange(s)
+            {t("memory.archiveStatus", {days: mem.archive.days, exchanges: mem.archive.today_exchanges})}
           </span>
         </div>
       </div>
@@ -144,10 +145,10 @@ function MemoryPage() {
       <div className="card" style={{ gridColumn: "span 12", padding: "4px 8px" }}>
         <div style={{ display: "flex", gap: 0 }}>
           {[
-            ["soul", "SOUL.md (" + (mem.soul.sections || []).length + " sections)"],
-            ["short", "Short-Term (" + mem.short_term.total + " entries)"],
-            ["context", "Context Window (" + mem.context_window.messages + " msgs)"],
-            ["archive", "Archive (" + mem.archive.days + " days)"],
+            ["soul", t("memory.soulTab", {n: (mem.soul.sections || []).length})],
+            ["short", t("memory.shortTab", {n: mem.short_term.total})],
+            ["context", t("memory.contextTab", {n: mem.context_window.messages})],
+            ["archive", t("memory.archiveTab", {n: mem.archive.days})],
           ].map(([id, label]) => (
             <button key={id} onClick={() => setActiveTab(id)} style={{
               padding: "6px 14px", border: "none", borderRadius: 5,
@@ -183,8 +184,8 @@ function MemoryPage() {
                       marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 10.5,
                       color: isTemp && mem.soul.temporary_expired > 0 ? "var(--warn)" : "var(--text-4)"
                     }}>
-                      {section.entry_count} item(s)
-                      {isTemp && mem.soul.temporary_expired > 0 ? (" · " + mem.soul.temporary_expired + " expired") : ""}
+                      {t("memory.itemCount", {n: section.entry_count})}
+                      {isTemp && mem.soul.temporary_expired > 0 ? (" · " + t("memory.expiredCount", {n: mem.soul.temporary_expired})) : ""}
                     </span>
                   </div>
                   {isExpanded && (
@@ -193,7 +194,7 @@ function MemoryPage() {
                       fontFamily: "var(--mono)", fontSize: 11, lineHeight: 1.6
                     }}>
                       {section.entries.length === 0 ? (
-                        <div style={{ color: "var(--text-4)", padding: "8px 0" }}>— empty —</div>
+                        <div style={{ color: "var(--text-4)", padding: "8px 0" }}>{t("memory.empty")}</div>
                       ) : (
                         section.entries.map((entry, j) => {
                           const dateMatch = entry.match(/(\d{4}-\d{2}-\d{2})/);
@@ -220,9 +221,9 @@ function MemoryPage() {
             })
           ) : (
             <div className="card" style={{ gridColumn: "span 12", textAlign: "center", padding: 40 }}>
-              <span style={{ color: "var(--warn)" }}>SOUL.md not found at {mem.soul.path}</span>
+              <span style={{ color: "var(--warn)" }}>{t("memory.soulNotFound", {path: mem.soul.path})}</span>
               <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-4)" }}>
-                It will be created automatically on first run.
+                {t("memory.soulAutoCreate")}
               </div>
             </div>
           )}
@@ -233,23 +234,23 @@ function MemoryPage() {
       {activeTab === "short" && (
         <div className="card" style={{ gridColumn: "span 12" }}>
           <div className="card-head">
-            <span className="card-title">Short-Term Memory Entries</span>
-            <span className="card-action">{mem.short_term.total} total</span>
+            <span className="card-title">{t("memory.shortTerm")}</span>
+            <span className="card-action">{t("memory.itemCount", {n: mem.short_term.total})}</span>
           </div>
           {mem.short_term.entries.length === 0 ? (
             <div style={{ textAlign: "center", padding: 30, color: "var(--text-4)" }}>
-              No short-term entries yet. They accumulate as conversations are compressed.
+              {t("memory.noShortTerm")}
             </div>
           ) : (
             <table className="table">
               <thead>
                 <tr>
-                  <th>Type</th>
-                  <th>Content</th>
-                  <th>Mentions</th>
-                  <th>Valence</th>
-                  <th>First Seen</th>
-                  <th>Last Mentioned</th>
+                  <th>{t("memory.type")}</th>
+                  <th>{t("memory.content")}</th>
+                  <th>{t("memory.mentions")}</th>
+                  <th>{t("memory.valence")}</th>
+                  <th>{t("memory.firstSeen")}</th>
+                  <th>{t("memory.lastMentioned")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -287,11 +288,11 @@ function MemoryPage() {
         <React.Fragment>
           <div className="card" style={{ gridColumn: "span 6" }}>
             <div className="card-head">
-              <span className="card-title">Context Window</span>
+              <span className="card-title">{t("memory.contextWindow")}</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "8px 0" }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)", fontSize: 11 }}>Messages</span>
+                <span style={{ color: "var(--text-3)", fontSize: 11 }}>{t("memory.messages")}</span>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
                   {mem.context_window.messages}
                   <span style={{ fontSize: 12, color: "var(--text-4)", fontWeight: 400 }}> / {mem.context_window.max}</span>
@@ -310,34 +311,34 @@ function MemoryPage() {
               </div>
               {mem.context_window.messages >= mem.context_window.max && (
                 <div style={{ fontSize: 10.5, color: "var(--warn)", fontFamily: "var(--mono)" }}>
-                  At capacity — oldest messages will be compressed on next save.
+                  {t("memory.atCapacity")}
                 </div>
               )}
             </div>
           </div>
           <div className="card" style={{ gridColumn: "span 6" }}>
             <div className="card-head">
-              <span className="card-title">Persistence</span>
+              <span className="card-title">{t("memory.persistence")}</span>
             </div>
             <div style={{
               display: "flex", flexDirection: "column", gap: 8, padding: "8px 0",
               fontFamily: "var(--mono)", fontSize: 11
             }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>Storage</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.storage")}</span>
                 <span style={{ color: "var(--text)" }}>data/state.json</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>Compression trigger</span>
-                <span style={{ color: "var(--text)" }}>{mem.context_window.max + 5} messages</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.compressionTrigger")}</span>
+                <span style={{ color: "var(--text)" }}>{mem.context_window.max + 5} {t("memory.messages").toLowerCase()}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>Cleared on</span>
-                <span style={{ color: "var(--text)" }}>Session reset (New Session)</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.clearedOn")}</span>
+                <span style={{ color: "var(--text)" }}>{t("memory.sessionReset")}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>On clear</span>
-                <span style={{ color: "var(--text)" }}>Compresses all → short-term</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.onClear")}</span>
+                <span style={{ color: "var(--text)" }}>{t("memory.compressesAll")}</span>
               </div>
             </div>
           </div>
@@ -349,17 +350,17 @@ function MemoryPage() {
         <React.Fragment>
           <div className="card" style={{ gridColumn: "span 6" }}>
             <div className="card-head">
-              <span className="card-title">Conversation Archive</span>
+              <span className="card-title">{t("memory.conversationArchive")}</span>
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "8px 0" }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)", fontSize: 11 }}>Archived days</span>
+                <span style={{ color: "var(--text-3)", fontSize: 11 }}>{t("memory.archivedDays")}</span>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
                   {mem.archive.days}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)", fontSize: 11 }}>Today's exchanges</span>
+                <span style={{ color: "var(--text-3)", fontSize: 11 }}>{t("memory.todaysExchanges")}</span>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
                   {mem.archive.today_exchanges}
                 </span>
@@ -368,27 +369,27 @@ function MemoryPage() {
           </div>
           <div className="card" style={{ gridColumn: "span 6" }}>
             <div className="card-head">
-              <span className="card-title">Archive Format</span>
+              <span className="card-title">{t("memory.archiveFormat")}</span>
             </div>
             <div style={{
               display: "flex", flexDirection: "column", gap: 8, padding: "8px 0",
               fontFamily: "var(--mono)", fontSize: 11
             }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>Location</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.location")}</span>
                 <span style={{ color: "var(--text)" }}>workspace/conversations/</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>Naming</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.naming")}</span>
                 <span style={{ color: "var(--text)" }}>YYYY-MM-DD.md</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>Used by</span>
-                <span style={{ color: "var(--text)" }}>Steward Agent (memory updates)</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.usedBy")}</span>
+                <span style={{ color: "var(--text)" }}>{t("memory.stewardAgent")}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)" }}>Searchable</span>
-                <span style={{ color: "var(--text)" }}>Yes (plain-text search)</span>
+                <span style={{ color: "var(--text-3)" }}>{t("memory.searchable")}</span>
+                <span style={{ color: "var(--text)" }}>{t("memory.yes")}</span>
               </div>
             </div>
           </div>

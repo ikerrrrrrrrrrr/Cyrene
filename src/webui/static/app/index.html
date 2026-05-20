@@ -1,13 +1,25 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <base href="/static/app/" />
 <title>Cyrene</title>
+<script>
+(() => {
+  try {
+    const mode = localStorage.getItem("cyrene-theme-mode") || "system";
+    const theme = mode === "system"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : mode;
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.booting = "1";
+  } catch (e) {}
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="styles.css?v=20260519e" />
 </head>
 <body>
@@ -19,15 +31,16 @@
 <script src="https://unpkg.com/marked@13.0.3/marked.min.js" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/dompurify@3.1.6/dist/purify.min.js" crossorigin="anonymous"></script>
 
-<script type="text/babel" src="tweaks-panel.jsx?v=20260516h"></script>
-<script type="text/babel" src="data.jsx?v=20260519e"></script>
-<script type="text/babel" src="chat.jsx?v=20260519b"></script>
-<script type="text/babel" src="agents.jsx?v=20260518c"></script>
-<script type="text/babel" src="sessions.jsx?v=20260516h"></script>
-<script type="text/babel" src="memory.jsx?v=20260517a"></script>
-<script type="text/babel" src="status.jsx?v=20260516h"></script>
-<script type="text/babel" src="skills.jsx?v=20260516h"></script>
-<script type="text/babel" src="settings.jsx?v=20260516h"></script>
-<script type="text/babel" src="app.jsx?v=20260519e"></script>
+<script type="text/babel" src="tweaks-panel.jsx?v=20260520a"></script>
+<script type="text/babel" src="data.jsx?v=20260520a"></script>
+<script type="text/babel" src="i18n.jsx?v=20260520a"></script>
+<script type="text/babel" src="chat.jsx?v=20260520a"></script>
+<script type="text/babel" src="agents.jsx?v=20260520a"></script>
+<script type="text/babel" src="sessions.jsx?v=20260520a"></script>
+<script type="text/babel" src="memory.jsx?v=20260520a"></script>
+<script type="text/babel" src="status.jsx?v=20260520a"></script>
+<script type="text/babel" src="skills.jsx?v=20260520a"></script>
+<script type="text/babel" src="settings.jsx?v=20260520a"></script>
+<script type="text/babel" src="app.jsx?v=20260520a"></script>
 </body>
 </html>

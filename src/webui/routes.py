@@ -191,6 +191,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         guide_round_id = str(body.get("guide_round_id") or "").strip()
         client_request_id = str(body.get("client_request_id") or "").strip()
         wants_stream = bool(body.get("stream"))
+        lang = str(body.get("lang") or "").strip()
         if not message:
             return JSONResponse({"error": "empty message"}, status_code=400)
 
@@ -224,10 +225,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         try:
             if wants_stream:
                 return _stream_agent_reply(
-                    lambda: run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id),
+                    lambda: run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id, lang=lang),
                     message,
                 )
-            response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id)
+            response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id, lang=lang)
             if response == _AWAITING_USER_SENTINEL:
                 return {"awaiting_user": True, "pending_question": get_pending_question()}
             labels = get_session_labels()
