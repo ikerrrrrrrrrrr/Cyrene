@@ -97,14 +97,13 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
 
   useEffect(function () {
     if (!available || !containerRef.current) return undefined;
-    const TerminalCtor = window.Terminal;
-    const FitAddonCtor = window.FitAddon && (window.FitAddon.FitAddon || window.FitAddon);
+    var TerminalCtor = window.Terminal;
     if (!TerminalCtor) {
       setConnectionState("unsupported");
       return undefined;
     }
 
-    const term = new TerminalCtor({
+    var term = new TerminalCtor({
       allowTransparency: true,
       convertEol: true,
       cursorBlink: true,
@@ -122,11 +121,15 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
       },
     });
 
-    let fitAddon = null;
+    // FitAddon: try to load if available, otherwise manual resize
+    var FitAddonCtor = (window.FitAddon && (window.FitAddon.FitAddon || window.FitAddon)) || null;
+    var fitAddon = null;
     if (FitAddonCtor) {
-      fitAddon = new FitAddonCtor();
-      fitAddonRef.current = fitAddon;
-      term.loadAddon(fitAddon);
+      try {
+        fitAddon = new FitAddonCtor();
+        fitAddonRef.current = fitAddon;
+        term.loadAddon(fitAddon);
+      } catch (e) { /* ignore */ }
     }
 
     term.open(containerRef.current);
@@ -135,13 +138,26 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
     function syncSize() {
       if (!terminalRef.current) return;
       if (fitAddonRef.current && typeof fitAddonRef.current.fit === "function") {
-        try {
-          fitAddonRef.current.fit();
-        } catch (error) {
-          /* swallow */
+        try { fitAddonRef.current.fit(); } catch (e) { /* ignore */ }
+      } else {
+        // Manual resize: estimate cols/rows from container size
+        var el = containerRef.current;
+        if (el && term._core) {
+          try {
+            var dims = term._core._renderService.dimensions;
+            var cellW = dims.css.cell.width;
+            var cellH = dims.css.cell.height;
+            if (cellW > 0 && cellH > 0) {
+              var newCols = Math.floor((el.clientWidth - 20) / cellW);
+              var newRows = Math.floor((el.clientHeight - 10) / cellH);
+              if (newCols > 10 && newRows > 3) {
+                term.resize(Math.max(20, newCols), Math.max(4, newRows));
+              }
+            }
+          } catch (e) { /* ignore */ }
         }
       }
-      const socket = wsRef.current;
+      var socket = wsRef.current;
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
           type: "resize",
