@@ -1,7 +1,7 @@
 // Settings page
 const { useState: useStateSet } = React;
 
-function SettingsPage({ tweaks, setTweak }) {
+function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   useDataVersion();
   const [section, setSection] = useStateSet("general");
   const [config, setConfig] = useStateSet({
@@ -344,33 +344,6 @@ function SettingsPage({ tweaks, setTweak }) {
             <h2>Agents</h2>
             <p className="subtitle">How the orchestrator plans, spawns, and tears down workers.</p>
             <div className="field">
-              <div className="label">Flowchart orientation<small>Direction nodes flow on the Agents canvas.</small></div>
-              <div className="seg">
-                <button
-                  className={"seg-btn " + (tweaks && tweaks.orientation === "horizontal" ? "active" : "")}
-                  onClick={() => setTweak && setTweak("orientation", "horizontal")}>
-                  <svg width="22" height="14" viewBox="0 0 22 14" fill="none" stroke="currentColor" strokeWidth="1.4">
-                    <rect x="1" y="4" width="5" height="6" rx="1" />
-                    <rect x="9" y="4" width="5" height="6" rx="1" />
-                    <rect x="17" y="4" width="4" height="6" rx="1" />
-                    <path d="M6 7 L9 7 M14 7 L17 7" />
-                  </svg>
-                  horizontal
-                </button>
-                <button
-                  className={"seg-btn " + (tweaks && tweaks.orientation === "vertical" ? "active" : "")}
-                  onClick={() => setTweak && setTweak("orientation", "vertical")}>
-                  <svg width="14" height="22" viewBox="0 0 14 22" fill="none" stroke="currentColor" strokeWidth="1.4">
-                    <rect x="4" y="1" width="6" height="5" rx="1" />
-                    <rect x="4" y="9" width="6" height="5" rx="1" />
-                    <rect x="4" y="17" width="6" height="4" rx="1" />
-                    <path d="M7 6 L7 9 M7 14 L7 17" />
-                  </svg>
-                  vertical
-                </button>
-              </div>
-            </div>
-            <div className="field">
               <div className="label">Spawn policy<small>When the main agent is allowed to delegate.</small></div>
               <select className="select" style={{ maxWidth: 240 }} defaultValue="conservative">
                 <option value="aggressive">aggressive — delegate often</option>
@@ -578,9 +551,9 @@ function SettingsPage({ tweaks, setTweak }) {
         {section === "appearance" && (
           <div className="settings-pane">
             <h2>Appearance</h2>
-            <p className="subtitle">Use the floating Tweaks panel to live-preview theme changes.</p>
+            <p className="subtitle">Control theme, color, density, and interface presentation from one place.</p>
             <div className="field">
-              <div className="label">Theme</div>
+              <div className="label">Theme<small>Choose automatic system sync or force a fixed UI mode.</small></div>
               <div className="seg">
                 <button className={"seg-btn " + (tweaks && tweaks.theme === "system" ? "active" : "")}
                         onClick={() => setTweak && setTweak("theme", "system")}>system</button>
@@ -588,6 +561,22 @@ function SettingsPage({ tweaks, setTweak }) {
                         onClick={() => setTweak && setTweak("theme", "light")}>light</button>
                 <button className={"seg-btn " + (tweaks && tweaks.theme === "dark" ? "active" : "")}
                         onClick={() => setTweak && setTweak("theme", "dark")}>dark</button>
+              </div>
+            </div>
+            <div className="field">
+              <div className="label">Theme color<small>Accent presets adapt to the active {actualTheme || "system"} palette.</small></div>
+              <div className="appearance-swatches">
+                {(accentPresets || []).map((color, index) => (
+                  <button
+                    key={color}
+                    className={"appearance-swatch " + (tweaks && tweaks.accent === color ? "active" : "")}
+                    style={{ "--swatch-color": color }}
+                    onClick={() => setTweak && setTweak("accent", color)}
+                    title={"Accent " + (index + 1)}
+                  >
+                    <span className="appearance-swatch-dot"></span>
+                  </button>
+                ))}
               </div>
             </div>
             <div className="field">
@@ -604,13 +593,50 @@ function SettingsPage({ tweaks, setTweak }) {
               </div>
             </div>
             <div className="field">
-              <div className="label">Density</div>
+              <div className="label">Density<small>Compact reduces padding and keeps more information on screen.</small></div>
               <div className="seg">
                 <button className={"seg-btn " + (tweaks && tweaks.density === "cozy" ? "active" : "")}
                         onClick={() => setTweak && setTweak("density", "cozy")}>cozy</button>
                 <button className={"seg-btn " + (tweaks && tweaks.density === "compact" ? "active" : "")}
                         onClick={() => setTweak && setTweak("density", "compact")}>compact</button>
               </div>
+            </div>
+            <div className="field">
+              <div className="label">Flowchart orientation<small>Direction nodes flow on the Agents canvas.</small></div>
+              <div className="seg">
+                <button
+                  className={"seg-btn " + (tweaks && tweaks.orientation === "horizontal" ? "active" : "")}
+                  onClick={() => setTweak && setTweak("orientation", "horizontal")}>
+                  <svg width="22" height="14" viewBox="0 0 22 14" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <rect x="1" y="4" width="5" height="6" rx="1" />
+                    <rect x="9" y="4" width="5" height="6" rx="1" />
+                    <rect x="17" y="4" width="4" height="6" rx="1" />
+                    <path d="M6 7 L9 7 M14 7 L17 7" />
+                  </svg>
+                  horizontal
+                </button>
+                <button
+                  className={"seg-btn " + (tweaks && tweaks.orientation === "vertical" ? "active" : "")}
+                  onClick={() => setTweak && setTweak("orientation", "vertical")}>
+                  <svg width="14" height="22" viewBox="0 0 14 22" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <rect x="4" y="1" width="6" height="5" rx="1" />
+                    <rect x="4" y="9" width="6" height="5" rx="1" />
+                    <rect x="4" y="17" width="6" height="4" rx="1" />
+                    <path d="M7 6 L7 9 M7 14 L7 17" />
+                  </svg>
+                  vertical
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <div className="label">Canvas legend<small>Show or hide the status legend on the Agents canvas.</small></div>
+              <div className={"toggle " + (tweaks && tweaks.showLegend ? "on" : "")}
+                   onClick={() => setTweak && setTweak("showLegend", !(tweaks && tweaks.showLegend))}></div>
+            </div>
+            <div className="field">
+              <div className="label">Pulse animation<small>Disable motion on running agent indicators if you want a calmer UI.</small></div>
+              <div className={"toggle " + (tweaks && tweaks.animatePulse ? "on" : "")}
+                   onClick={() => setTweak && setTweak("animatePulse", !(tweaks && tweaks.animatePulse))}></div>
             </div>
           </div>
         )}

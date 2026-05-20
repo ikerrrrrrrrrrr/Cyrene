@@ -357,29 +357,15 @@ function App() {
         {page === "skills"   && <SkillsPage />}
         {page === "memory"   && <MemoryPage />}
         {page === "status"   && <StatusPage />}
-        {page === "settings" && <SettingsPage tweaks={t} setTweak={setTweak} />}
+        {page === "settings" && (
+          <SettingsPage
+            tweaks={t}
+            setTweak={setTweak}
+            actualTheme={actualTheme}
+            accentPresets={ACCENT_PRESETS[actualTheme] || []}
+          />
+        )}
       </div>
-
-      <TweaksPanel title="Tweaks">
-        <TweakSection label="Accent" />
-        <TweakColor label="Color" value={t.accent}
-                    options={ACCENT_PRESETS[actualTheme]}
-                    onChange={(v) => setTweak("accent", v)} />
-        <TweakSection label="Display" />
-        <TweakRadio label="Density" value={t.density}
-                    options={["cozy", "compact"]}
-                    onChange={(v) => setTweak("density", v)} />
-        <TweakRadio label="Text size" value={t.textSize}
-                    options={["default", "large"]}
-                    onChange={(v) => setTweak("textSize", v)} />
-        <TweakRadio label="Flowchart" value={t.orientation}
-                    options={["horizontal", "vertical"]}
-                    onChange={(v) => setTweak("orientation", v)} />
-        <TweakToggle label="Canvas legend" value={t.showLegend}
-                     onChange={(v) => setTweak("showLegend", v)} />
-        <TweakToggle label="Pulse animation" value={t.animatePulse}
-                     onChange={(v) => setTweak("animatePulse", v)} />
-      </TweaksPanel>
     </div>
   );
 }
@@ -404,7 +390,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
       <div className="sidebar-brand">
         <div className="brand-mark"></div>
         <div className="brand-name">{brandName}</div>
-        <div className="brand-version">{DATA.appVersion || "v0.1.1"}</div>
+        <div className="brand-version">{DATA.appVersion || "v0.1.8"}</div>
       </div>
 
       <div className="nav-section">Workspace</div>
@@ -473,7 +459,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
         <div className="avatar">{DATA.user.initials}</div>
         <div className="who">
           {DATA.user.name}
-          <small>@{DATA.user.handle} · {DATA.appVersion || "v0.1.1"}</small>
+          <small>@{DATA.user.handle} · {DATA.appVersion || "v0.1.8"}</small>
         </div>
         <button className="iconbtn" title="Account">▾</button>
       </div>
