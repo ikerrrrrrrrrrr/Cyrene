@@ -8,6 +8,17 @@ const DATA = {
   user: { name: "loading…", handle: "loading", initials: "…" },
   assistantName: "Cyrene",
   appVersion: APP_VERSION,
+  dashboard: {
+    today: { learned: [], learned_count: 0, memory_count: 0, archive_days: 0 },
+    soul: { path: "", updated_at: "", recent_items: [], section_count: 0 },
+    topic_cloud: [],
+    emotion: [],
+    usage: { requests: 0, tokens: "—", spend: "—", prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cache_hit_tokens: 0, cache_miss_tokens: 0, timeline: [] },
+    reminders: [],
+    recent_memories: [],
+    recent_archive: [],
+    activity_heatmap: { days: [], rows: [] },
+  },
 
   sessions: [
     {
@@ -124,6 +135,7 @@ async function bootstrapData() {
     const fresh = await r.json();
     if (fresh.user) DATA.user = fresh.user;
     if (fresh.assistantName) DATA.assistantName = fresh.assistantName;
+    if (fresh.dashboard) DATA.dashboard = fresh.dashboard;
     if (Array.isArray(fresh.sessions) && fresh.sessions.length) DATA.sessions = fresh.sessions;
     if (fresh.status) DATA.status = fresh.status;
     if (Array.isArray(fresh.skills) && fresh.skills.length) DATA.skills = fresh.skills;

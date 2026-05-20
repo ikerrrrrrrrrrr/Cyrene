@@ -7,7 +7,8 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -777,6 +778,7 @@ async def _build_ui_data() -> dict:
     return {
         "user": _build_user(),
         "assistantName": ASSISTANT_NAME,
+        "dashboard": await _build_dashboard(),
         "sessions": sessions,
         "status": await _build_status(),
         "skills": _build_skills(),
@@ -841,11 +843,12 @@ def _build_sessions() -> list[dict]:
 
 
 def _build_summary(raw_msgs: list[dict]) -> dict:
-    prompt, completion = _usage_totals(raw_msgs)
+    usage = _usage_totals(raw_msgs)
     return {
-        "tokens": _format_tokens(prompt, completion),
-        "spend": _calc_spend(prompt, completion),
+        "tokens": _format_tokens(usage),
+        "spend": _calc_spend(usage),
         "toolCalls": _count_tool_calls(raw_msgs),
+        "requests": usage["requests"],
     }
 
 
@@ -956,6 +959,17 @@ def _build_current_session() -> dict | None:
     else:
         live_status = "done"
 
+    live_summary = _build_summary(raw_msgs)
+    subagent_usage = _merge_usage_totals(*[
+        _usage_totals(info.get("messages", []))
+        for info in subagent_registry.values()
+    ])
+    combined_live_usage = _merge_usage_totals(_usage_totals(raw_msgs), subagent_usage)
+    if combined_live_usage.get("requests") is not None:
+        live_summary["requests"] = combined_live_usage.get("requests")
+        live_summary["tokens"] = _format_tokens(combined_live_usage)
+        live_summary["spend"] = _calc_spend(combined_live_usage)
+
     return {
         "id": "run_live",
         "title": str(state.get("session_title", "")).strip() or ("new session" if is_empty else "current session"),
@@ -969,7 +983,7 @@ def _build_current_session() -> dict | None:
         "currentRoundId": current_round_id,
         "currentRoundTitle": current_round_title,
         "pendingQuestion": pending_question,
-        "summary": _build_summary(raw_msgs),
+        "summary": live_summary,
         "chat": {
             "contextChips": _build_context_chips(),
             "messages": messages,
@@ -1738,7 +1752,7 @@ def _build_live_flow_round(
     system_initiated = any(bool(m.get("system_initiated")) for m in raw_msgs if isinstance(m, dict))
     if system_initiated and round_title == "user request":
         round_title = "proactive check-in"
-    main_tokens_in, main_tokens_out = _usage_totals(raw_msgs)
+    main_usage = _usage_totals(raw_msgs)
     main_tool_base_y = main_y + 150
 
     main_id = f"{prefix}n_main"
@@ -1785,8 +1799,8 @@ def _build_live_flow_round(
                     if latest_phase and latest_phase.get("detail")
                     else "Session step completed."
                 ),
-                "tokensIn": main_tokens_in if main_tokens_in is not None else "—",
-                "tokensOut": main_tokens_out if main_tokens_out is not None else "—",
+                "tokensIn": main_usage.get("prompt_tokens") if main_usage.get("prompt_tokens") is not None else "—",
+                "tokensOut": main_usage.get("completion_tokens") if main_usage.get("completion_tokens") is not None else "—",
                 "model": OPENAI_MODEL, "temp": 0.2,
             },
         },
@@ -1816,7 +1830,7 @@ def _build_live_flow_round(
         info = registry.get(sa["name"], {})
         agent_messages = info.get("messages", [])
         latest_subassistant = next((m for m in reversed(agent_messages) if m.get("role") == "assistant"), None)
-        sub_tokens_in, sub_tokens_out = _usage_totals(agent_messages)
+        sub_usage = _usage_totals(agent_messages)
         sub_tool_count = _count_tool_nodes_for_owner(
             raw_messages=agent_messages,
             recent_events=recent_events,
@@ -1833,8 +1847,8 @@ def _build_live_flow_round(
                 "task": sa["task"],
                 "parent": "main agent",
                 "spawnedAt": sa.get("createdAt", "—"),
-                "tokensIn": sub_tokens_in if sub_tokens_in is not None else "—",
-                "tokensOut": sub_tokens_out if sub_tokens_out is not None else "—",
+                "tokensIn": sub_usage.get("prompt_tokens") if sub_usage.get("prompt_tokens") is not None else "—",
+                "tokensOut": sub_usage.get("completion_tokens") if sub_usage.get("completion_tokens") is not None else "—",
                 "model": OPENAI_MODEL,
                 "reasoning": latest_subassistant.get("reasoning_content") if latest_subassistant else "",
                 "result": sa.get("result", ""),
@@ -1951,24 +1965,24 @@ async def _build_status() -> dict:
     running_subagents = sum(1 for v in _registry.values() if v.get("status") == "running")
     total_subagents = len(_registry)
 
-    main_prompt, main_completion = _usage_totals(session_msgs)
+    main_usage = _usage_totals(session_msgs)
     workers = [{
         "id": "main", "role": "orchestrator", "status": "running",
         "host": "local", "uptime": _format_duration(time.time() - _SERVER_STARTED_AT),
-        "tokens": _format_tokens(main_prompt, main_completion),
-        "spend": _calc_spend(main_prompt, main_completion),
+        "tokens": _format_tokens(main_usage),
+        "spend": _calc_spend(main_usage),
     }]
     for aid, info in _registry.items():
         sub_msgs = info.get("messages", [])
-        sub_prompt, sub_completion = _usage_totals(sub_msgs)
+        sub_usage = _usage_totals(sub_msgs)
         workers.append({
             "id": aid,
             "role": "subagent",
             "status": info.get("status", "running"),
             "host": "local",
             "uptime": "—",
-            "tokens": _format_tokens(sub_prompt, sub_completion),
-            "spend": _calc_spend(sub_prompt, sub_completion),
+            "tokens": _format_tokens(sub_usage),
+            "spend": _calc_spend(sub_usage),
         })
 
     metrics = [
@@ -2099,6 +2113,265 @@ async def _build_memory() -> dict:
             "today_exchanges": max(0, today_exchanges),
         },
     }
+
+
+async def _build_dashboard() -> dict:
+    """Aggregate homepage data from memory, soul, archive, and scheduler state."""
+    from cyrene import db as cy_db
+    from cyrene.subagent import _registry  # noqa: WPS437
+
+    st_entries = load_entries()
+    try:
+        tasks = await cy_db.get_all_tasks(_db_path)
+    except Exception:
+        tasks = []
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    soul_content = read_soul()
+    soul_path = get_soul_path()
+    soul_stat = soul_path.stat() if soul_path.exists() else None
+    soul_lines = [line.strip() for line in soul_content.splitlines() if line.strip().startswith("- ")]
+    recent_soul_items = soul_lines[-3:]
+    recent_memories = sorted(
+        st_entries,
+        key=lambda entry: (str(entry.get("last_mentioned", "")), int(entry.get("mention_count", 0))),
+        reverse=True,
+    )[:6]
+
+    today_entries = [
+        entry for entry in st_entries
+        if str(entry.get("last_mentioned", "")).strip() == today
+    ]
+    learned_today = sorted(
+        today_entries,
+        key=lambda entry: (int(entry.get("mention_count", 0)), abs(int(entry.get("emotional_valence", 0)))),
+        reverse=True,
+    )[:4]
+
+    session_msgs: list[dict[str, Any]] = []
+    if STATE_FILE.exists():
+        try:
+            session_state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            session_msgs = session_state.get("messages", []) if isinstance(session_state, dict) else []
+        except Exception:
+            session_msgs = []
+    session_usage = _usage_totals(session_msgs)
+    subagent_usage = _merge_usage_totals(*[
+        _usage_totals(info.get("messages", []))
+        for info in _registry.values()
+    ])
+    combined_usage = _merge_usage_totals(session_usage, subagent_usage)
+
+    reminder_items = []
+    for task in sorted(tasks, key=lambda item: str(item.get("next_run") or "")):
+        next_run = str(task.get("next_run") or "").strip()
+        status = str(task.get("status") or "").strip()
+        if not next_run or status not in {"active", "paused"}:
+            continue
+        reminder_items.append({
+            "id": str(task.get("id") or ""),
+            "prompt": str(task.get("prompt") or "").strip(),
+            "next_run": next_run,
+            "schedule_type": str(task.get("schedule_type") or "").strip(),
+            "status": status,
+        })
+    reminder_items = reminder_items[:6]
+
+    topic_counts: Counter[str] = Counter()
+    archive_snippets: list[dict[str, Any]] = []
+    for filepath in sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)[:7]:
+        date_str = filepath.stem
+        try:
+            sections = _parse_archive_sections(filepath.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for section in reversed(sections):
+            user_body = str(section.get("user_body", "")).strip()
+            assistant_body = str(section.get("assistant_body", "")).strip()
+            if user_body or assistant_body:
+                archive_snippets.append({
+                    "date": date_str,
+                    "title": str(section.get("round_title") or section.get("session_title") or "").strip(),
+                    "user": user_body,
+                    "assistant": assistant_body,
+                })
+            for token in _extract_topic_terms(" ".join([user_body, assistant_body])):
+                topic_counts[token] += 1
+    archive_snippets = archive_snippets[:6]
+
+    emotion_days: dict[str, list[float]] = {}
+    for offset in range(6, -1, -1):
+        day = (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
+        emotion_days[day] = []
+    for entry in st_entries:
+        day = str(entry.get("last_mentioned", "")).strip()
+        if day in emotion_days:
+            try:
+                emotion_days[day].append(float(entry.get("emotional_valence", 0) or 0))
+            except (TypeError, ValueError):
+                emotion_days[day].append(0.0)
+
+    emotion_series = []
+    for day, values in emotion_days.items():
+        avg = round(sum(values) / len(values), 2) if values else 0.0
+        emotion_series.append({
+            "date": day,
+            "value": avg,
+            "count": len(values),
+        })
+
+    token_timeline: dict[str, dict[str, int]] = {}
+    for offset in range(6, -1, -1):
+        day = (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
+        token_timeline[day] = {"prompt": 0, "completion": 0, "requests": 0}
+
+    debug_logs = sorted((DATA_DIR.glob("debug_*.jsonl") if DATA_DIR.exists() else []), reverse=True)[:5]
+    for log_path in debug_logs:
+        try:
+            for line in log_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                if entry.get("type") != "llm_call":
+                    continue
+                timestamp = str(entry.get("timestamp", "")).strip()
+                if not timestamp:
+                    continue
+                day = timestamp[:10]
+                if day not in token_timeline:
+                    continue
+                usage = entry.get("usage") or {}
+                if isinstance(usage.get("prompt_tokens"), int):
+                    token_timeline[day]["prompt"] += int(usage.get("prompt_tokens") or 0)
+                if isinstance(usage.get("completion_tokens"), int):
+                    token_timeline[day]["completion"] += int(usage.get("completion_tokens") or 0)
+                token_timeline[day]["requests"] += 1
+        except Exception:
+            continue
+
+    today_bucket = token_timeline.get(today)
+    if today_bucket and not debug_logs:
+        today_bucket["prompt"] = int(combined_usage.get("prompt_tokens") or 0)
+        today_bucket["completion"] = int(combined_usage.get("completion_tokens") or 0)
+        today_bucket["requests"] = int(combined_usage.get("requests") or 0)
+
+    heatmap_days = [
+        (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
+        for offset in range(6, -1, -1)
+    ]
+    heatmap_row_defs = [
+        ("00:00", 0, 4),
+        ("04:00", 4, 8),
+        ("08:00", 8, 12),
+        ("12:00", 12, 16),
+        ("16:00", 16, 20),
+        ("20:00", 20, 24),
+    ]
+    heatmap_buckets: dict[str, list[int]] = {
+        label: [0 for _ in heatmap_days]
+        for label, _, _ in heatmap_row_defs
+    }
+    for day_index, day in enumerate(heatmap_days):
+        filepath = CONVERSATIONS_DIR / f"{day}.md"
+        if not filepath.exists():
+            continue
+        try:
+            sections = _parse_archive_sections(filepath.read_text(encoding="utf-8"))
+        except Exception:
+            sections = []
+        for section in sections:
+            stamp = str(section.get("timestamp", "")).strip()
+            if not stamp:
+                continue
+            try:
+                hour = int(stamp.split(":")[0])
+            except Exception:
+                continue
+            for label, start_hour, end_hour in heatmap_row_defs:
+                if start_hour <= hour < end_hour:
+                    heatmap_buckets[label][day_index] += 1
+                    break
+
+    activity_heatmap = {
+        "days": heatmap_days,
+        "rows": [
+            {"label": label, "values": heatmap_buckets[label]}
+            for label, _, _ in heatmap_row_defs
+        ],
+    }
+
+    return {
+        "today": {
+            "learned": learned_today,
+            "learned_count": len(today_entries),
+            "memory_count": len(st_entries),
+            "archive_days": len(list(CONVERSATIONS_DIR.glob("*.md"))) if CONVERSATIONS_DIR.exists() else 0,
+        },
+        "soul": {
+            "path": str(soul_path),
+            "updated_at": datetime.fromtimestamp(soul_stat.st_mtime, tz=timezone.utc).isoformat() if soul_stat else "",
+            "recent_items": recent_soul_items,
+            "section_count": soul_content.count("\n## ") + (1 if soul_content.strip().startswith("# ") else 0),
+        },
+        "topic_cloud": [
+            {"term": term, "count": count}
+            for term, count in topic_counts.most_common(18)
+        ],
+        "emotion": emotion_series,
+        "usage": {
+            "requests": combined_usage.get("requests"),
+            "tokens": _format_tokens(combined_usage),
+            "spend": _calc_spend(combined_usage),
+            "prompt_tokens": combined_usage.get("prompt_tokens"),
+            "completion_tokens": combined_usage.get("completion_tokens"),
+            "total_tokens": combined_usage.get("total_tokens"),
+            "cache_hit_tokens": combined_usage.get("prompt_cache_hit_tokens"),
+            "cache_miss_tokens": combined_usage.get("prompt_cache_miss_tokens"),
+            "timeline": [
+                {
+                    "date": day,
+                    "prompt": values["prompt"],
+                    "completion": values["completion"],
+                    "requests": values["requests"],
+                }
+                for day, values in token_timeline.items()
+            ],
+        },
+        "reminders": reminder_items,
+        "recent_memories": recent_memories,
+        "recent_archive": archive_snippets,
+        "activity_heatmap": activity_heatmap,
+    }
+
+
+def _extract_topic_terms(text: str, limit: int = 12) -> list[str]:
+    """Extract simple high-signal topic terms from mixed Chinese/English text."""
+    source = (text or "").lower()
+    english_stop = {
+        "the", "and", "for", "that", "this", "with", "from", "have", "about",
+        "what", "when", "your", "just", "into", "then", "they", "them", "their",
+        "would", "could", "should", "there", "here", "been", "were", "will",
+        "some", "more", "than", "after", "before", "need", "want", "like",
+        "today", "yesterday", "tomorrow", "really", "also", "maybe", "because",
+        "http", "https", "assistant", "cyrene", "user",
+    }
+    chinese_stop = {
+        "今天", "最近", "这个", "那个", "一下", "已经", "我们", "你们", "然后",
+        "需要", "可以", "还是", "就是", "一个", "没有", "什么", "怎么", "如果",
+        "现在", "自己", "因为", "所以", "以及", "但是", "进行", "相关", "问题",
+        "工作", "页面", "功能", "内容",
+    }
+    tokens = re.findall(r"[\u4e00-\u9fff]{2,}|[a-z][a-z0-9_-]{2,}", source)
+    results: list[str] = []
+    for token in tokens:
+        if token in english_stop or token in chinese_stop:
+            continue
+        if token.isascii() and len(token) < 4:
+            continue
+        results.append(token)
+        if len(results) >= limit:
+            break
+    return results
 
 
 def _read_recent_logs() -> list[dict]:
@@ -2531,35 +2804,71 @@ def _tool_args_signature(value: Any) -> str:
         return json.dumps(str(normalized), ensure_ascii=False)
 
 
-def _usage_totals(raw_messages: list[dict]) -> tuple[int | None, int | None]:
-    prompt_total = 0
-    completion_total = 0
+def _usage_totals(raw_messages: list[dict]) -> dict[str, int | None]:
+    totals: dict[str, int | None] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 0,
+        "requests": 0,
+    }
     found = False
     for msg in raw_messages:
         usage = msg.get("usage")
         if not isinstance(usage, dict):
             continue
-        prompt = usage.get("prompt_tokens")
-        completion = usage.get("completion_tokens")
-        if isinstance(prompt, int):
-            prompt_total += prompt
-            found = True
-        if isinstance(completion, int):
-            completion_total += completion
-            found = True
+        totals["requests"] = int(totals["requests"] or 0) + 1
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int):
+                totals[key] = int(totals[key] or 0) + value
+                found = True
+    if not found and not totals["requests"]:
+        return {key: None for key in totals}
+    if not totals["total_tokens"] and (totals["prompt_tokens"] or totals["completion_tokens"]):
+        totals["total_tokens"] = int(totals["prompt_tokens"] or 0) + int(totals["completion_tokens"] or 0)
+    return totals
+
+
+def _merge_usage_totals(*usage_items: dict[str, int | None]) -> dict[str, int | None]:
+    merged = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 0,
+        "requests": 0,
+    }
+    found = False
+    for usage in usage_items:
+        if not isinstance(usage, dict):
+            continue
+        for key in merged:
+            value = usage.get(key)
+            if isinstance(value, int):
+                merged[key] += value
+                found = True
     if not found:
-        return None, None
-    return prompt_total, completion_total
+        return {key: None for key in merged}
+    if not merged["total_tokens"] and (merged["prompt_tokens"] or merged["completion_tokens"]):
+        merged["total_tokens"] = merged["prompt_tokens"] + merged["completion_tokens"]
+    return merged
 
 
-def _format_tokens(prompt_tokens: int | None, completion_tokens: int | None) -> str:
-    if prompt_tokens is None and completion_tokens is None:
+def _format_tokens(usage: dict[str, int | None] | None) -> str:
+    if not isinstance(usage, dict):
         return "—"
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
     parts: list[str] = []
     if prompt_tokens is not None:
         parts.append(f"{_fmt_tok(prompt_tokens)} in")
     if completion_tokens is not None:
         parts.append(f"{_fmt_tok(completion_tokens)} out")
+    if total_tokens is not None:
+        parts.append(f"{_fmt_tok(total_tokens)} total")
     return " / ".join(parts) if parts else "—"
 
 
@@ -2571,32 +2880,45 @@ def _fmt_tok(n: int) -> str:
     return str(n)
 
 
-def _model_pricing() -> tuple[float, float] | None:
-    """Return (input_price_per_1M, output_price_per_1M) for known models, or None."""
+def _model_pricing() -> dict[str, float] | None:
+    """Return token pricing metadata for known models, or None."""
     model_lower = OPENAI_MODEL.lower()
     if "opus-4" in model_lower or "claude-opus-4" in model_lower:
-        return (15.0, 75.0)
+        return {"input": 15.0, "output": 75.0}
     if "sonnet-4" in model_lower or "claude-sonnet-4" in model_lower:
-        return (3.0, 15.0)
+        return {"input": 3.0, "output": 15.0}
     if "haiku-4" in model_lower or "claude-haiku-4" in model_lower:
-        return (0.25, 1.25)
-    if "deepseek" in model_lower:
-        return (0.14, 0.28)
+        return {"input": 0.25, "output": 1.25}
+    if "deepseek-v4-flash" in model_lower:
+        return {"input": 0.14, "output": 0.28, "cache_hit": 0.0}
+    if "deepseek-v4" in model_lower or "deepseek-chat" in model_lower:
+        return {"input": 0.14, "output": 0.28, "cache_hit": 0.05}
+    if "deepseek-reasoner" in model_lower:
+        return {"input": 0.55, "output": 2.19, "cache_hit": 0.14}
     return None
 
 
-def _calc_spend(prompt_tokens: int | None, completion_tokens: int | None) -> str:
-    if prompt_tokens is None and completion_tokens is None:
+def _calc_spend(usage: dict[str, int | None] | None) -> str:
+    if not isinstance(usage, dict):
         return "—"
     pricing = _model_pricing()
     if pricing is None:
         return "—"
-    in_price, out_price = pricing
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    cache_hit_tokens = usage.get("prompt_cache_hit_tokens")
+    cache_miss_tokens = usage.get("prompt_cache_miss_tokens")
+    input_price = pricing["input"]
+    output_price = pricing["output"]
+    cache_hit_price = pricing.get("cache_hit", input_price)
     cost = 0.0
-    if prompt_tokens is not None:
-        cost += (prompt_tokens / 1_000_000) * in_price
+    if isinstance(cache_hit_tokens, int) and isinstance(cache_miss_tokens, int) and (cache_hit_tokens or cache_miss_tokens):
+        cost += (cache_hit_tokens / 1_000_000) * cache_hit_price
+        cost += (cache_miss_tokens / 1_000_000) * input_price
+    elif prompt_tokens is not None:
+        cost += (prompt_tokens / 1_000_000) * input_price
     if completion_tokens is not None:
-        cost += (completion_tokens / 1_000_000) * out_price
+        cost += (completion_tokens / 1_000_000) * output_price
     if cost < 0.01:
         return "<$0.01"
     return f"${cost:.2f}"
