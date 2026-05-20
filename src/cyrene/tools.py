@@ -574,6 +574,17 @@ async def _tool_close_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
     })
 
 
+async def _tool_cc_status(_args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.cc_bridge import get_cc_status
+    return json.dumps(get_cc_status(), ensure_ascii=False)
+
+
+async def _tool_cc_launch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.cc_bridge import launch_cc_tmux
+    session_name = str(args.get("session_name", "") or "").strip()
+    return json.dumps(launch_cc_tmux(session_name=session_name), ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Tool definitions and dispatch
 # ---------------------------------------------------------------------------
@@ -870,6 +881,33 @@ TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "CCStatus",
+            "description": "Check if Claude Code is currently running in a tmux session. Use this when the user asks about Claude Code status, asks you to start/open/launch Claude Code, or wants to know if Claude Code is available. Returns whether CC is running, the session name, and whether it can be launched.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "CCLaunch",
+            "description": "Start Claude Code in a new tmux session. Use this when the user asks you to start, open, launch, or run Claude Code. Creates a detached tmux session named after the project, then registers it so it appears in the WebUI active shells list. Do NOT use Bash to start Claude Code — use this tool instead.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_name": {
+                        "type": "string",
+                        "description": "Optional custom tmux session name. If omitted a name is derived from the project directory.",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 
@@ -899,6 +937,8 @@ TOOL_HANDLERS: dict[str, Any] = {
     "CloseShell": _tool_close_shell,
     "WebFetch": _tool_webfetch,
     "WebSearch": _tool_websearch,
+    "CCStatus": _tool_cc_status,
+    "CCLaunch": _tool_cc_launch,
 }
 
 

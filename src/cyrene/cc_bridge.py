@@ -149,6 +149,7 @@ def find_latest_jsonl(project_dir: Path | None) -> Path | None:
 
 def get_cc_status(cwd: Path | None = None) -> dict[str, Any]:
     """Return a frontend-friendly status summary for the CC terminal integration."""
+    sync_cc_shell_status()
     cwd = (cwd or Path.cwd()).resolve()
     project_dir = find_claude_project_dir(cwd)
     latest_jsonl = find_latest_jsonl(project_dir)
@@ -156,14 +157,17 @@ def get_cc_status(cwd: Path | None = None) -> dict[str, Any]:
     tmux_session = find_cc_tmux_session(cwd) if tmux_sessions else ""
 
     available = bool(tmux_session)
+    can_launch = False
     if available:
         reason = ""
     elif not tmux_available():
         reason = "tmux is not installed or not on PATH."
     elif not tmux_sessions:
         reason = "No tmux sessions are currently running."
+        can_launch = True
     elif project_dir is None:
         reason = "No Claude Code project transcripts were found for this repo."
+        can_launch = True
     else:
         reason = "Cyrene found Claude transcripts but could not confidently match a tmux session."
 
@@ -173,6 +177,7 @@ def get_cc_status(cwd: Path | None = None) -> dict[str, Any]:
 
     return {
         "available": available,
+        "can_launch": can_launch,
         "tmux_available": tmux_available(),
         "tmux_session": tmux_session,
         "reason": reason,
@@ -182,6 +187,120 @@ def get_cc_status(cwd: Path | None = None) -> dict[str, Any]:
         "session_count": len(tmux_sessions),
         "sessions": [session["name"] for session in tmux_sessions[:5]],
     }
+
+
+def launch_cc_tmux(cwd: Path | None = None, session_name: str = "") -> dict[str, Any]:
+    """Create a new tmux session running Claude Code in the project directory.
+
+    Called by the CCLaunch agent tool.  The session name is chosen so that
+    :func:`find_cc_tmux_session` picks it up on the next status poll.
+
+    Returns ``{"ok": True, "session": "..."}`` on success.
+    """
+    if not tmux_available():
+        return {"ok": False, "reason": "tmux is not installed or not on PATH."}
+
+    cwd = (cwd or Path.cwd()).resolve()
+
+    # 优先使用调用方指定的名字，否则根据项目目录自动生成
+    if session_name and _TMUX_SESSION_RE.fullmatch(session_name):
+        name = session_name
+    else:
+        name = "claude-" + _session_name_from_path(cwd)
+
+    # 检查同名 session 是否已存在
+    for session in list_tmux_sessions():
+        if session["name"] == name:
+            return {"ok": True, "session": name, "detail": "Session already exists."}
+
+    # 找到 claude 可执行文件
+    cc_bin = _find_claude_bin()
+
+    # tmux new-session -d: 后台创建, 不 attach
+    result = _run_command([
+        "tmux", "new-session", "-d", "-s", name,
+        "-c", str(cwd),
+        cc_bin,
+    ])
+    if result.returncode != 0:
+        error = result.stderr.strip() or "tmux new-session failed"
+        logger.warning("Failed to create tmux session '%s': %s", name, error)
+        return {"ok": False, "reason": error}
+
+    # 注册为 external shell，使 CC 出现在 WebUI 的活动 shell 列表中
+    _register_cc_shell(name, cwd)
+
+    logger.info("Created tmux session '%s' running %s in %s", name, cc_bin, cwd)
+    return {"ok": True, "session": name, "detail": f"Launched {cc_bin} in tmux session '{name}'."}
+
+
+def _session_name_from_path(cwd: Path) -> str:
+    name = cwd.name or "project"
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-").lower()
+    return clean or "project"
+
+
+def _find_claude_bin() -> str:
+    for candidate in ("claude", "cc"):
+        if which(candidate):
+            return candidate
+    return "claude"
+
+
+def _register_cc_shell(name: str, cwd: Path) -> None:
+    """Register a Claude Code tmux session as an external shell in the WebUI."""
+    try:
+        from cyrene.shells import register_external_shell, _external_shells
+
+        shell_id = f"cc-{name}"
+        # 避免重复注册
+        if shell_id in _external_shells:
+            return
+
+        title = f"Claude Code · {name}"
+        register_external_shell(
+            shell_id=shell_id,
+            title=title,
+            cwd=str(cwd),
+            extra={
+                "kind": "cc",
+                "tmuxSession": name,
+            },
+        )
+        logger.debug("Registered CC external shell: %s", shell_id)
+    except Exception:
+        logger.exception("Failed to register CC shell for session %s", name)
+
+
+def sync_cc_shell_status() -> None:
+    """Sync external shell entries with actual tmux sessions.
+
+    - Removes shells whose tmux session no longer exists.
+    - Updates status for shells whose session is still running.
+    """
+    try:
+        from cyrene.shells import _external_shells, unregister_external_shell, set_external_shell_status
+
+        active_names = {session["name"] for session in list_tmux_sessions()}
+
+        # 收集需要清理的 key（避免在遍历时修改）
+        stale: list[str] = []
+        for shell_id, shell in _external_shells.items():
+            if shell.get("kind") != "cc":
+                continue
+            tmux_name = shell.get("tmuxSession", "")
+            if not tmux_name:
+                continue
+            if tmux_name in active_names:
+                set_external_shell_status(shell_id, "running")
+            else:
+                stale.append(shell_id)
+
+        for shell_id in stale:
+            unregister_external_shell(shell_id)
+            logger.info("Unregistered stale CC shell: %s", shell_id)
+    except Exception:
+        logger.exception("Failed to sync CC shell status")
 
 
 def _run_command(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:

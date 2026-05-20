@@ -46,6 +46,8 @@ _DEFAULT_ENABLED_TOOLS = {
     "ask_user": True,
     "send_telegram": False,
     "query_round": True,
+    "CCStatus": True,
+    "CCLaunch": True,
 }
 
 # quit is always enabled — never stored, never filtered
