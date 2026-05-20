@@ -241,7 +241,7 @@ function SettingsPage({ tweaks, setTweak }) {
 
       <div className="settings-content">
         {section === "general" && (
-          <>
+          <div className="settings-pane">
             <h2>General</h2>
             <p className="subtitle">Workspace identity and persona (SOUL.md).</p>
             <div className="field">
@@ -273,11 +273,11 @@ function SettingsPage({ tweaks, setTweak }) {
               <div className="label">Stream reasoning to chat<small>Show the agent's thinking inline as it works.</small></div>
               <div className={"toggle " + (toggles.streamThinking ? "on" : "")} onClick={() => t("streamThinking")}></div>
             </div>
-          </>
+          </div>
         )}
 
         {section === "models" && (
-          <>
+          <div className="settings-pane">
             <h2>Models</h2>
             <p className="subtitle">Manage available models. Click a model to select it — changes apply to new LLM calls immediately.</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -316,12 +316,12 @@ function SettingsPage({ tweaks, setTweak }) {
                      onChange={function(e) { setBaseUrl(e.target.value); }}
                      placeholder="https://api.deepseek.com/v1" style={{ maxWidth: 480 }} />
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+            <div className="settings-actions">
               <button className="btn primary" onClick={saveModels}>save & apply</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{modelsSaved}</span>
             </div>
             <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>Add model</h3>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <div className="inline-form-grid">
               <input className="input mono" placeholder="name" value={newModel.name}
                      onChange={function(e) { setNewModel({ ...newModel, name: e.target.value }); }}
                      style={{ maxWidth: 180 }} />
@@ -336,11 +336,11 @@ function SettingsPage({ tweaks, setTweak }) {
                      style={{ maxWidth: 100 }} />
               <button className="btn" onClick={addModel}>add</button>
             </div>
-          </>
+          </div>
         )}
 
         {section === "agents" && (
-          <>
+          <div className="settings-pane">
             <h2>Agents</h2>
             <p className="subtitle">How the orchestrator plans, spawns, and tears down workers.</p>
             <div className="field">
@@ -378,11 +378,11 @@ function SettingsPage({ tweaks, setTweak }) {
                 <option value="off">off — single agent only</option>
               </select>
             </div>
-          </>
+          </div>
         )}
 
         {section === "tools" && (
-          <>
+          <div className="settings-pane">
             <h2>Tools</h2>
             <p className="subtitle">Enable or disable tools the agent can call. Changes take effect on the next agent turn. <b>quit</b> is always enabled.</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -399,15 +399,15 @@ function SettingsPage({ tweaks, setTweak }) {
                 );
               })}
             </div>
-            <div style={{ marginTop: 12 }}>
+            <div className="settings-actions">
               <button className="btn primary" onClick={saveTools}>save tools</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{toolsSaved}</span>
             </div>
-          </>
+          </div>
         )}
 
         {section === "search" && (
-          <>
+          <div className="settings-pane">
             <h2>Web Search</h2>
             <p className="subtitle">Choose how the agent searches the web. Save to apply changes.</p>
             <div className="field">
@@ -454,15 +454,15 @@ function SettingsPage({ tweaks, setTweak }) {
                 <input className="input mono" value="DDG → Bing → Baidu (no SearXNG)" readOnly style={{ maxWidth: 420 }} />
               </div>
             )}
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+            <div className="settings-actions">
               <button className="btn primary" onClick={saveSearch}>save search settings</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{searchSaved}</span>
             </div>
-          </>
+          </div>
         )}
 
         {section === "mcp" && (
-          <>
+          <div className="settings-pane">
             <h2>MCP Servers</h2>
             <p className="subtitle">Model Context Protocol servers expose tools that the agent can call. Configure stdio (local subprocess) or SSE (remote HTTP) servers.</p>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -501,12 +501,12 @@ function SettingsPage({ tweaks, setTweak }) {
                 );
               })}
             </div>
-            <div style={{ marginTop: 12 }}>
+            <div className="settings-actions">
               <button className="btn primary" onClick={saveMcpServers}>save & restart MCP</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{mcpSaved}</span>
             </div>
             <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>Add MCP server</h3>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            <div className="inline-form-grid">
               <input className="input mono" placeholder="name" value={newMcpServer.name}
                      onChange={function(e) { setNewMcpServer({ ...newMcpServer, name: e.target.value }); }}
                      style={{ maxWidth: 140 }} />
@@ -531,11 +531,11 @@ function SettingsPage({ tweaks, setTweak }) {
               )}
               <button className="btn" onClick={addMcpServer}>add</button>
             </div>
-          </>
+          </div>
         )}
 
         {section === "keys" && (
-          <>
+          <div className="settings-pane">
             <h2>API keys</h2>
             <p className="subtitle">Edit your .env file from the UI. Changes take effect immediately for LLM calls. Telegram token requires restart.</p>
             <div className="field">
@@ -564,7 +564,7 @@ function SettingsPage({ tweaks, setTweak }) {
                      onChange={(e) => setKeys({ ...keys, TELEGRAM_BOT_TOKEN: e.target.value })}
                      placeholder="(optional)" style={{ maxWidth: 480 }} />
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+            <div className="settings-actions">
               <button className="btn primary" onClick={saveKeys}>save API keys</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{keysSaved}</span>
             </div>
@@ -572,16 +572,18 @@ function SettingsPage({ tweaks, setTweak }) {
               <div className="label">Redact secrets from logs<small>Mask API keys + bearer tokens before they hit disk.</small></div>
               <div className={"toggle " + (toggles.redactSecrets ? "on" : "")} onClick={() => t("redactSecrets")}></div>
             </div>
-          </>
+          </div>
         )}
 
         {section === "appearance" && (
-          <>
+          <div className="settings-pane">
             <h2>Appearance</h2>
             <p className="subtitle">Use the floating Tweaks panel to live-preview theme changes.</p>
             <div className="field">
               <div className="label">Theme</div>
               <div className="seg">
+                <button className={"seg-btn " + (tweaks && tweaks.theme === "system" ? "active" : "")}
+                        onClick={() => setTweak && setTweak("theme", "system")}>system</button>
                 <button className={"seg-btn " + (tweaks && tweaks.theme === "light" ? "active" : "")}
                         onClick={() => setTweak && setTweak("theme", "light")}>light</button>
                 <button className={"seg-btn " + (tweaks && tweaks.theme === "dark" ? "active" : "")}
@@ -610,11 +612,11 @@ function SettingsPage({ tweaks, setTweak }) {
                         onClick={() => setTweak && setTweak("density", "compact")}>compact</button>
               </div>
             </div>
-          </>
+          </div>
         )}
 
         {section === "danger" && (
-          <>
+          <div className="settings-pane danger-pane">
             <h2>Danger zone</h2>
             <p className="subtitle">Irreversible. Please be careful.</p>
             <div className="field">
@@ -625,7 +627,7 @@ function SettingsPage({ tweaks, setTweak }) {
               <div className="label">SOUL.md path<small>To reset persona, edit SOUL.md directly under General.</small></div>
               <input className="input mono" value={config.soul_path} readOnly />
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>

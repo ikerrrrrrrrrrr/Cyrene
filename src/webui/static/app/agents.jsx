@@ -489,25 +489,27 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
         </div>
 
         <div className="canvas-legend">
-          <span className="legend-item">
-            <span className="legend-swatch" style={{ background: "var(--accent)" }}></span>
-            main agent
-          </span>
-          <span className="legend-item">
-            <span className="legend-swatch" style={{ background: "var(--info)" }}></span>
-            subagent
-          </span>
-          <span className="legend-item">
-            <span className="legend-swatch" style={{ background: "var(--magenta)" }}></span>
-            tool call
-          </span>
-          <span className="legend-item">
-            <span className="legend-swatch" style={{ background: "var(--warn)" }}></span>
-            output
-          </span>
-          <span className="legend-item" style={{ marginLeft: 12, color: "var(--text-4)" }}>
+          <div className="legend-row">
+            <span className="legend-item">
+              <span className="legend-swatch" style={{ background: "var(--accent)" }}></span>
+              main agent
+            </span>
+            <span className="legend-item">
+              <span className="legend-swatch" style={{ background: "var(--info)" }}></span>
+              subagent
+            </span>
+            <span className="legend-item">
+              <span className="legend-swatch" style={{ background: "var(--magenta)" }}></span>
+              tool call
+            </span>
+            <span className="legend-item">
+              <span className="legend-swatch" style={{ background: "var(--warn)" }}></span>
+              output
+            </span>
+          </div>
+          <div className="legend-row legend-tips">
             wheel · scroll  ·  ⌘+wheel · zoom  ·  drag · pan
-          </span>
+          </div>
         </div>
       </div>
 

@@ -95,7 +95,7 @@ function StatusPage() {
             <div key={i} style={{
               display: "flex", alignItems: "center", gap: 10,
               padding: "8px 10px", border: "1px solid var(--line)",
-              borderRadius: 6, background: "var(--bg-2)"
+              borderRadius: "var(--r-m)", background: "var(--bg-2)", boxShadow: "var(--shadow-sm)"
             }}>
               <span className={"sa-dot " + (svc.status === "warn" ? "running" : "done")}
                     style={{ marginTop: 0 }}></span>

@@ -2,8 +2,8 @@
 const { useState: useStateApp, useEffect: useEffectApp, useMemo: useMemoApp } = React;
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "theme": "dark",
-  "accent": "#8fb8a6",
+  "theme": "system",
+  "accent": "#5ec59e",
   "density": "cozy",
   "textSize": "default",
   "orientation": "horizontal",
@@ -12,8 +12,8 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 }/*EDITMODE-END*/;
 
 const ACCENT_PRESETS = {
-  dark:  ["#8fb8a6", "#7faecf", "#a896c4", "#d4a373", "#c97878"],
-  light: ["#4a8a72", "#4a7fa8", "#7a5fa0", "#a8754a", "#b35858"],
+  dark:  ["#4fd1a0", "#6dbde0", "#b8a2e0", "#e8ae5c", "#e87070"],
+  light: ["#2da873", "#3b90c8", "#7858b0", "#c88520", "#d04848"],
 };
 
 function SetupWizard({ theme, onToggleTheme }) {
@@ -114,8 +114,9 @@ function SetupWizard({ theme, onToggleTheme }) {
             <div className="setup-kicker">First-run setup wizard</div>
           </div>
         </div>
-        <button className="iconbtn" title={theme === "dark" ? "Switch to light" : "Switch to dark"} onClick={onToggleTheme}>
-          {theme === "dark" ? "◐" : "◑"}
+        <button className="theme-toggle-btn" title="Cycle theme" onClick={onToggleTheme}>
+          <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
+          <span>{theme === "system" ? "Auto" : theme === "dark" ? "Light" : "Dark"}</span>
         </button>
       </div>
 
@@ -260,15 +261,27 @@ function App() {
     setSelectedSessionId(id || null);
   }
 
-  useEffectApp(() => {
-    document.documentElement.dataset.theme = t.theme;
+  function resolveActualTheme(mode) {
+    if (mode === "system") {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    return mode;
+  }
+
+  const actualTheme = React.useMemo(function () {
+    return resolveActualTheme(t.theme);
+  }, [t.theme]);
+
+  useEffectApp(function () {
+    localStorage.setItem("cyrene-theme-mode", t.theme);
+    const applied = actualTheme;
+    document.documentElement.dataset.theme = applied;
     document.documentElement.style.setProperty("--accent", t.accent);
     const m = t.accent.match(/^#([0-9a-f]{6})$/i);
     if (m) {
       const r = parseInt(m[1].slice(0,2),16), g = parseInt(m[1].slice(2,4),16), b = parseInt(m[1].slice(4,6),16);
       document.documentElement.style.setProperty("--accent-faint", `rgba(${r},${g},${b},0.08)`);
       document.documentElement.style.setProperty("--accent-dim", `rgba(${r},${g},${b},0.35)`);
-      // pick readable text color on accent
       const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
       document.documentElement.style.setProperty("--accent-text", lum > 0.55 ? "#0d1612" : "#ffffff");
     }
@@ -276,7 +289,25 @@ function App() {
     document.documentElement.dataset.textSize = t.textSize || "default";
     document.documentElement.dataset.animPulse = t.animatePulse ? "on" : "off";
     document.documentElement.dataset.legend = t.showLegend ? "on" : "off";
-  }, [t.theme, t.accent, t.density, t.textSize, t.animatePulse, t.showLegend]);
+  }, [t.theme, t.accent, t.density, t.textSize, t.animatePulse, t.showLegend, actualTheme]);
+
+  useEffectApp(function () {
+    if (t.theme !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    function onChange() { setTweak("theme", "system"); }
+    mq.addEventListener("change", onChange);
+    return function () { mq.removeEventListener("change", onChange); };
+  }, [t.theme]);
+
+  function toggleTheme() {
+    const order = ["system", "light", "dark"];
+    const idx = order.indexOf(t.theme);
+    const nextMode = order[(idx + 1) % 3];
+    const nextActual = resolveActualTheme(nextMode);
+    const presetIndex = (ACCENT_PRESETS[actualTheme] || []).indexOf(t.accent);
+    const nextAccent = presetIndex >= 0 ? (ACCENT_PRESETS[nextActual] || [])[presetIndex] : t.accent;
+    setTweak({ theme: nextMode, accent: nextAccent });
+  }
 
   useEffectApp(function () {
     if (selectedSessionId && !DATA.sessions.some(function (session) { return session.id === selectedSessionId; })) {
@@ -292,14 +323,6 @@ function App() {
       delete window.selectUiSession;
     };
   }, [activeSession]);
-
-  function toggleTheme() {
-    const next = t.theme === "dark" ? "light" : "dark";
-    const presetIndex = (ACCENT_PRESETS[t.theme] || []).indexOf(t.accent);
-    const nextAccent =
-      presetIndex >= 0 ? ACCENT_PRESETS[next][presetIndex] : t.accent;
-    setTweak({ theme: next, accent: nextAccent });
-  }
 
   const needsOnboarding = !!(DATA.onboarding && DATA.onboarding.needsOnboarding);
 
@@ -338,16 +361,9 @@ function App() {
       </div>
 
       <TweaksPanel title="Tweaks">
-        <TweakSection label="Theme" />
-        <TweakRadio label="Mode" value={t.theme}
-                    options={["light", "dark"]}
-                    onChange={(v) => {
-                      const i = (ACCENT_PRESETS[t.theme] || []).indexOf(t.accent);
-                      const a = i >= 0 ? ACCENT_PRESETS[v][i] : t.accent;
-                      setTweak({ theme: v, accent: a });
-                    }} />
-        <TweakColor label="Accent" value={t.accent}
-                    options={ACCENT_PRESETS[t.theme]}
+        <TweakSection label="Accent" />
+        <TweakColor label="Color" value={t.accent}
+                    options={ACCENT_PRESETS[actualTheme]}
                     onChange={(v) => setTweak("accent", v)} />
         <TweakSection label="Display" />
         <TweakRadio label="Density" value={t.density}
@@ -447,7 +463,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
             <span className={"sa-dot " + r.status} style={{ marginTop: 0, width: 6, height: 6, flexShrink: 0 }}></span>
             <span style={{
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              fontSize: 12, color: "var(--text-2)"
+              fontSize: 14, color: "var(--text-2)"
             }}>{r.title}</span>
           </div>
         ))}
@@ -529,25 +545,15 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
           </span>
         )}
         <span style={{ width: 1, height: 18, background: "var(--line)", margin: "0 4px" }}></span>
+        <button className="theme-toggle-btn" title="Cycle theme: system → light → dark"
+                onClick={onToggleTheme}>
+          <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
+          <span>{theme === "system" ? "Auto" : theme === "dark" ? "Light" : "Dark"}</span>
+        </button>
         <button className="iconbtn" title="Search">
-          <svg width="13" height="13" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
             <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
           </svg>
-        </button>
-        <button className="iconbtn" title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-                onClick={onToggleTheme}>
-          {theme === "dark" ? (
-            // sun
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-              <circle cx="10" cy="10" r="3.2" />
-              <path d="M10 2.5v1.6 M10 15.9v1.6 M2.5 10h1.6 M15.9 10h1.6 M4.7 4.7l1.1 1.1 M14.2 14.2l1.1 1.1 M4.7 15.3l1.1-1.1 M14.2 5.8l1.1-1.1" />
-            </svg>
-          ) : (
-            // moon
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round">
-              <path d="M16.5 12.2A6.5 6.5 0 0 1 7.8 3.5a6.5 6.5 0 1 0 8.7 8.7Z" />
-            </svg>
-          )}
         </button>
         <button className="iconbtn" title="Pause">
           <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor">
