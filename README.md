@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/cyrene-hero.png" alt="Cyrene hero image" width="100%">
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <img src="https://img.shields.io/badge/status-alpha-yellow" alt="Status">
+</p>
+
+<p align="center">
+  <img src="docs/assets/cyrene-hero.png" alt="Cyrene hero image" width="100%">
 </p>
 
 <h1 align="center">Cyrene — AI Agent That Evolves</h1>
