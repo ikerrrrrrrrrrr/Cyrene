@@ -213,6 +213,119 @@ async def test_save_session_messages_emits_session_update(tmp_path, monkeypatch)
     assert seen[-1]["round_id"] == "round_1"
 
 
+async def test_proactive_round_hides_internal_prompt_and_initial_detail(tmp_path, monkeypatch):
+    from cyrene import agent
+    from cyrene import debug
+
+    events = []
+
+    async def fake_publish_event(event):
+        events.append(dict(event))
+
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+        return {
+            "content": "最近你之前提到的那件事怎么样了？如果你想，我可以继续帮你拆一下。",
+            "tool_calls": [],
+        }
+
+    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    monkeypatch.setattr(agent, "get_memory_context", lambda include_short_term=True: "")
+    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+
+    result = await agent._run_chat_agent(
+        "internal proactive instruction",
+        None,
+        0,
+        "db.sqlite3",
+        persist_user_message=False,
+        public_prompt="",
+        refresh_labels=False,
+        hide_initial_detail=True,
+        assistant_message_meta={"proactive": True, "system_initiated": True},
+    )
+
+    assert "如果你想" in result
+
+    saved = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    messages = saved["messages"]
+    assert len(messages) == 1
+    assert messages[0]["role"] == "assistant"
+    assert messages[0]["content"] == result
+    assert messages[0]["proactive"] is True
+    assert messages[0]["system_initiated"] is True
+
+    phase_events = [event for event in events if event.get("type") == "phase_transition"]
+    assert phase_events
+    assert phase_events[0]["from"] == "phase1_decision"
+    assert phase_events[0]["to"] == "chat_only"
+    assert "detail" not in phase_events[0]
+
+
+def test_build_live_flow_round_skips_input_for_system_initiated_messages():
+    from webui import routes
+
+    raw_msgs = [
+        {
+            "role": "assistant",
+            "content": "最近你之前提到的项目推进得怎么样了？",
+            "round_id": "round_1",
+            "message_id": "msg_1",
+            "system_initiated": True,
+            "proactive": True,
+        }
+    ]
+    messages = routes._convert_messages(raw_msgs)
+    nodes, edges, _bottom = routes._build_live_flow_round(
+        prefix="r1_",
+        raw_msgs=raw_msgs,
+        messages=messages,
+        subagents=[],
+        registry={},
+        recent_events=[{"type": "phase_transition", "to": "chat_only"}],
+        y_offset=0,
+        round_id="round_1",
+    )
+
+    assert not any(node["kind"] == "input" for node in nodes)
+    assert any(node["kind"] == "main" for node in nodes)
+    assert any(node["kind"] == "output" for node in nodes)
+    assert not any(edge.get("from") == "r1_n_user" for edge in edges)
+
+
+async def test_heartbeat_proactive_check_uses_main_agent_loop(monkeypatch):
+    from cyrene import scheduler
+
+    seen = {}
+
+    monkeypatch.setattr(scheduler, "OWNER_ID", 7)
+    monkeypatch.setattr(scheduler, "_load_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_save_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_is_daytime", lambda: True)
+    monkeypatch.setattr(scheduler, "_silence_hours", lambda: 96.0)
+
+    async def fake_context():
+        return "## Recent memories about the user\n- user is preparing a launch"
+
+    async def fake_run_heartbeat_agent(prompt, bot, chat_id, db_path):
+        seen["prompt"] = prompt
+        seen["chat_id"] = chat_id
+        seen["db_path"] = db_path
+        return "user-facing proactive message"
+
+    monkeypatch.setattr(scheduler, "_assemble_proactive_context", fake_context)
+    monkeypatch.setattr(scheduler, "run_heartbeat_agent", fake_run_heartbeat_agent)
+
+    await scheduler._heartbeat_proactive_check(bot=None, db_path="db.sqlite3")
+
+    assert seen["chat_id"] == 7
+    assert seen["db_path"] == "db.sqlite3"
+    assert "scheduler-initiated proactive check-in" in seen["prompt"]
+    assert "Recent memories about the user" in seen["prompt"]
+
+
 def test_format_httpx_error_includes_request_response_and_cause():
     import httpx
     from cyrene import agent

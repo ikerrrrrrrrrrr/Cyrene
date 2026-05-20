@@ -48,9 +48,12 @@ _pending_interrupt_clearers: set[asyncio.Task] = set()
 _main_inbox_worker: asyncio.Task | None = None
 _active_main_round_id = ""
 _active_main_round_prompt = ""
+_active_main_round_public_prompt = ""
 _active_main_round_started_at = 0.0
 _MAIN_INBOX_AGENT_ID = "main"
 _AWAITING_USER_SENTINEL = "[[cyrene.awaiting_user]]"
+_ui_round_hide_initial_detail: ContextVar[bool] = ContextVar("_ui_round_hide_initial_detail", default=False)
+_ui_round_assistant_meta: ContextVar[dict[str, Any] | None] = ContextVar("_ui_round_assistant_meta", default=None)
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -461,6 +464,16 @@ def _assistant_entry_from_response(response: dict[str, Any], round_id: str, incl
         entry["usage"] = response["usage"]
     if round_id:
         entry["round_id"] = round_id
+    extra_meta = _ui_round_assistant_meta.get()
+    if extra_meta:
+        entry.update(extra_meta)
+    return entry
+
+
+def _apply_assistant_meta(entry: dict[str, Any]) -> dict[str, Any]:
+    extra_meta = _ui_round_assistant_meta.get()
+    if extra_meta:
+        entry.update(extra_meta)
     return entry
 
 
@@ -559,6 +572,8 @@ def _session_round_entries() -> dict[str, dict[str, Any]]:
             entry["last_user"] = content
         elif role == "assistant" and content:
             entry["last_assistant"] = content
+            if not entry["title"] and bool(msg.get("system_initiated")):
+                entry["title"] = "proactive check-in"
     return entries
 
 
@@ -668,8 +683,8 @@ def get_live_rounds() -> list[dict[str, Any]]:
         entry = entries.setdefault(_active_main_round_id, {
             "id": _active_main_round_id,
             "title": "",
-            "prompt": _active_main_round_prompt,
-            "last_user": _active_main_round_prompt,
+            "prompt": _active_main_round_public_prompt,
+            "last_user": _active_main_round_public_prompt,
             "last_assistant": "",
             "status": "running",
             "pending_guidance": 0,
@@ -679,8 +694,8 @@ def get_live_rounds() -> list[dict[str, Any]]:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         entry["status"] = "running"
-        if _active_main_round_prompt and not entry.get("prompt"):
-            entry["prompt"] = _active_main_round_prompt
+        if _active_main_round_public_prompt and not entry.get("prompt"):
+            entry["prompt"] = _active_main_round_public_prompt
         if _active_main_round_started_at and not entry.get("started_at"):
             entry["started_at"] = datetime.fromtimestamp(_active_main_round_started_at, tz=timezone.utc).isoformat()
         entry["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1637,9 +1652,10 @@ async def clear_session_id() -> None:
     if _main_inbox_worker is not None:
         _main_inbox_worker.cancel()
         _main_inbox_worker = None
-    global _active_main_round_id, _active_main_round_prompt, _active_main_round_started_at
+    global _active_main_round_id, _active_main_round_prompt, _active_main_round_public_prompt, _active_main_round_started_at
     _active_main_round_id = ""
     _active_main_round_prompt = ""
+    _active_main_round_public_prompt = ""
     _active_main_round_started_at = 0.0
     await _clear_subagents()
     await clear_all_inboxes()
@@ -1977,6 +1993,7 @@ async def _run_main_agent(
 ) -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
     _caller_type.set("main_agent")
+    suppress_initial_detail = _ui_round_hide_initial_detail.get()
     round_id = _current_round_id.get()
     user_entry = {"role": "user", "content": user_message}
     if round_id:
@@ -2059,12 +2076,14 @@ async def _run_main_agent(
         return _assistant_text(response).strip() or str(result)
 
     if use_tools_call:
-        await _publish_runtime_event({
+        event = {
             "type": "phase_transition",
             "from": "phase1_decision",
             "to": "phase2_execution",
-            "detail": f"Phase 1 decided to use tools. Task: {user_message[:120]}",
-        })
+        }
+        if not suppress_initial_detail:
+            event["detail"] = f"Phase 1 decided to use tools. Task: {user_message[:120]}"
+        await _publish_runtime_event(event)
         # Phase 2: 重循环 — 全部工具。使用原始用户消息，不用 LLM 编的 task
         user_entry = {"role": "user", "content": user_message}
         if round_id:
@@ -2084,7 +2103,7 @@ async def _run_main_agent(
                 entry["usage"] = response["usage"]
             if round_id:
                 entry["round_id"] = round_id
-            messages.append(entry)
+            messages.append(_apply_assistant_meta(entry))
 
             tcs = response.get("tool_calls") or []
             if any(t.get("function", {}).get("name") == "quit" for t in tcs):
@@ -2102,7 +2121,7 @@ async def _run_main_agent(
                         final_entry["client_request_id"] = client_request_id
                     if round_id:
                         final_entry["round_id"] = round_id
-                    messages.append(final_entry)
+                    messages.append(_apply_assistant_meta(final_entry))
                     await _save_session_messages(_session_messages_to_save(messages))
                     return final_text
                 if client_request_id:
@@ -2118,7 +2137,7 @@ async def _run_main_agent(
                         final_entry["client_request_id"] = client_request_id
                     if round_id:
                         final_entry["round_id"] = round_id
-                    messages.append(final_entry)
+                    messages.append(_apply_assistant_meta(final_entry))
                     await _save_session_messages(_session_messages_to_save(messages))
                     return final_text
                 if client_request_id:
@@ -2236,7 +2255,7 @@ async def _run_main_agent(
                     synthesis_entry["client_request_id"] = client_request_id
                 if round_id:
                     synthesis_entry["round_id"] = round_id
-                messages.append(synthesis_entry)
+                messages.append(_apply_assistant_meta(synthesis_entry))
                 # 清空 registry，避免下一轮 spawn 把旧结果混入新 context
                 await _sub_clear(round_id=round_id)
                 await _save_session_messages(_session_messages_to_save(messages))
@@ -2245,12 +2264,14 @@ async def _run_main_agent(
         await _save_session_messages(_session_messages_to_save(messages))
         return "Stopped after hitting the tool loop limit."
 
-    await _publish_runtime_event({
+    event = {
         "type": "phase_transition",
         "from": "phase1_decision",
         "to": "chat_only",
-        "detail": "Phase 1 decided chat-only, no tools needed",
-    })
+    }
+    if not suppress_initial_detail:
+        event["detail"] = "Phase 1 decided chat-only, no tools needed"
+    await _publish_runtime_event(event)
     # Phase 1 结束：纯聊天，无工具需要
     if _streaming_reply_requested():
         messages = [{"role": "system", "content": effective_system}, *history, user_entry]
@@ -2260,7 +2281,7 @@ async def _run_main_agent(
             final_entry["client_request_id"] = client_request_id
         if round_id:
             final_entry["round_id"] = round_id
-        messages.append(final_entry)
+        messages.append(_apply_assistant_meta(final_entry))
         await _save_session_messages(_session_messages_to_save(messages))
         return final_text
     if client_request_id:
@@ -2371,6 +2392,10 @@ async def _run_chat_agent(
     persist_insert_at: int | None = None,
     client_request_id: str = "",
     persist_user_message: bool = True,
+    public_prompt: str | None = None,
+    refresh_labels: bool = True,
+    hide_initial_detail: bool = False,
+    assistant_message_meta: dict[str, Any] | None = None,
 ) -> str:
     """Coordinator: main agent loop."""
     import time as _time
@@ -2378,9 +2403,10 @@ async def _run_chat_agent(
     round_id = str(forced_round_id or "").strip() or f"round_{int(_time.time() * 1000)}"
     round_token = _current_round_id.set(round_id)
     full_session_messages = _load_session_messages()
-    global _active_main_round_id, _active_main_round_prompt, _active_main_round_started_at
+    global _active_main_round_id, _active_main_round_prompt, _active_main_round_public_prompt, _active_main_round_started_at
     _active_main_round_id = round_id
     _active_main_round_prompt = user_message
+    _active_main_round_public_prompt = user_message if public_prompt is None else str(public_prompt)
     _active_main_round_started_at = _time.time()
     history = list(history_override) if history_override is not None else _load_session_messages()
     merge_base = persist_base_messages
@@ -2398,6 +2424,8 @@ async def _run_chat_agent(
     insert_token = _persist_insert_at.set(merge_insert_at if (merge_base is not None or merge_live_state) else None)
     client_request_token = _current_client_request_id.set(client_request_id)
     intermediate_reply_token = _pending_intermediate_user_replies.set([])
+    hide_initial_detail_token = _ui_round_hide_initial_detail.set(bool(hide_initial_detail))
+    assistant_meta_token = _ui_round_assistant_meta.set(dict(assistant_message_meta) if assistant_message_meta else None)
     try:
         # 如果 history 为空（session 被重置），注入短期记忆
         restored_short_term = False
@@ -2432,7 +2460,8 @@ async def _run_chat_agent(
             persist_user_message=persist_user_message,
         )
 
-        await _refresh_session_labels(user_message, round_id)
+        if refresh_labels:
+            await _refresh_session_labels(user_message, round_id)
         if main_text == _AWAITING_USER_SENTINEL:
             return main_text
         await _publish_runtime_event({
@@ -2441,6 +2470,8 @@ async def _run_chat_agent(
         })
         return main_text or "Done."
     finally:
+        _ui_round_assistant_meta.reset(assistant_meta_token)
+        _ui_round_hide_initial_detail.reset(hide_initial_detail_token)
         _pending_intermediate_user_replies.reset(intermediate_reply_token)
         _current_client_request_id.reset(client_request_token)
         _persist_insert_at.reset(insert_token)
@@ -2449,6 +2480,7 @@ async def _run_chat_agent(
         _persist_base_messages.reset(base_token)
         _active_main_round_id = ""
         _active_main_round_prompt = ""
+        _active_main_round_public_prompt = ""
         _active_main_round_started_at = 0.0
         _current_round_id.reset(round_token)
 
@@ -2464,8 +2496,37 @@ async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, noti
 
 
 async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
-    """Alias for execution agent (no session). Used by heartbeat."""
-    return await _run_execution_agent(prompt, bot, chat_id, db_path)
+    """Run a full main-agent loop for proactive user-visible check-ins.
+
+    The internal scheduler prompt is hidden from the Web UI. The final reply is
+    persisted as a normal assistant message and must read like a direct message
+    to the user, not a report about the hidden task.
+    """
+    proactive_system = (
+        "This round was initiated by the scheduler, not by a user chat message.\n"
+        "The hidden task you receive is internal guidance, not text to answer literally.\n"
+        "Your final assistant reply will be shown directly to the user in the Web UI.\n"
+        "Write to the user in a natural, user-facing voice.\n"
+        "Do not mention the scheduler, heartbeat, lottery, hidden prompt, or internal instructions.\n"
+        "If you decide to speak, send one concise, useful proactive message to the user.\n"
+        "If tools are useful, use the normal main-agent loop and let the UI show the later details."
+    )
+    if _agent_lock.locked():
+        return ""
+    async with _agent_lock:
+        _interrupt_event.clear()
+        return await _run_chat_agent(
+            prompt,
+            bot,
+            chat_id,
+            db_path,
+            ephemeral_system=proactive_system,
+            persist_user_message=False,
+            public_prompt="",
+            refresh_labels=False,
+            hide_initial_detail=True,
+            assistant_message_meta={"proactive": True, "system_initiated": True},
+        )
 
 
 async def run_steward_agent(conversation_text: str, soulmd_content: str, bot: Any, chat_id: int, db_path: str) -> str:

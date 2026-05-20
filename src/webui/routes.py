@@ -1707,6 +1707,9 @@ def _build_live_flow_round(
     latest_agent = next((m for m in reversed(messages) if m["role"] == "agent"), None)
     latest_assistant_raw = next((m for m in reversed(raw_msgs) if m.get("role") == "assistant"), None)
     round_title = next((str(m.get("round_title", "")).strip() for m in raw_msgs if m.get("round_title")), "") or "user request"
+    system_initiated = any(bool(m.get("system_initiated")) for m in raw_msgs if isinstance(m, dict))
+    if system_initiated and round_title == "user request":
+        round_title = "proactive check-in"
     main_tokens_in, main_tokens_out = _usage_totals(raw_msgs)
     main_tool_base_y = main_y + 150
 
@@ -1735,16 +1738,6 @@ def _build_live_flow_round(
 
     nodes = [
         {
-            "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
-            "title": round_title, "status": "done",
-            "detail": {
-                "role": "User",
-                "text": last_user["body"] if last_user else "—",
-                "tokens": 0,
-                "time": last_user["time"] if last_user else "—",
-            },
-        },
-        {
             "id": main_id, "kind": "main", "x": main_x, "y": main_y,
             "title": f"main agent · {ASSISTANT_NAME}",
             "subtitle": latest_phase["to"] if latest_phase and latest_phase.get("to") else "orchestrator",
@@ -1770,7 +1763,19 @@ def _build_live_flow_round(
             },
         },
     ]
-    edges = [{"from": user_id, "to": main_id, "kind": "active" if main_status == "running" else None}]
+    edges: list[dict[str, Any]] = []
+    if last_user and not system_initiated:
+        nodes.insert(0, {
+            "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
+            "title": round_title, "status": "done",
+            "detail": {
+                "role": "User",
+                "text": last_user["body"] if last_user else "—",
+                "tokens": 0,
+                "time": last_user["time"] if last_user else "—",
+            },
+        })
+        edges.append({"from": user_id, "to": main_id, "kind": "active" if main_status == "running" else None})
     nodes.extend(tool_nodes)
     edges.extend(tool_edges)
 

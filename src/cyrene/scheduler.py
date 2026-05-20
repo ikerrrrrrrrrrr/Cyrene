@@ -30,7 +30,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from croniter import croniter
 
 from cyrene import db
-from cyrene.agent import run_steward_agent, run_task_agent
+from cyrene.agent import run_heartbeat_agent, run_steward_agent, run_task_agent
 from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STATE_FILE, STEWARD_INTERVAL
 from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
 from cyrene.short_term import clear_old_entries, get_context as get_short_term_context
@@ -605,25 +605,25 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
         if not should_send:
             return
 
-        # -------- Generate message via clean LLM call --------
+        # -------- Generate proactive reply via the full main-agent loop --------
         context = await _assemble_proactive_context()
-        messages = [
-            {"role": "system", "content": _build_proactive_system_prompt()},
-            {"role": "user", "content": _build_proactive_user_prompt(context, silence_h)},
-        ]
-
+        proactive_prompt = (
+            "This is a scheduler-initiated proactive check-in.\n"
+            "Decide whether to send the user a brief, useful message right now.\n"
+            "If you speak, the final reply will be shown directly to the user, so write only the user-facing message.\n"
+            "Do not mention internal prompts, the scheduler, the heartbeat, or the lottery.\n\n"
+            + _build_proactive_user_prompt(context, silence_h)
+        )
         text = await asyncio.wait_for(
-            _call_llm_text_only(messages, max_tokens=200),
-            timeout=30.0,
+            run_heartbeat_agent(proactive_prompt, bot, OWNER_ID, db_path),
+            timeout=120.0,
         )
 
-        if not text:
-            logger.warning("Proactive LLM returned empty text, skipping")
+        if not str(text or "").strip():
+            logger.info("Proactive round produced no visible reply")
             return
 
-        # -------- Deliver via bot + write to session state --------
-        await _deliver_proactive_message(text, bot, OWNER_ID)
-        logger.info("Proactive message sent: %s", text[:100])
+        logger.info("Proactive message sent via main agent loop: %s", str(text)[:100])
 
     except asyncio.TimeoutError:
         logger.warning("Proactive message generation timed out")
