@@ -19,9 +19,9 @@ const ACCENT_PRESETS = {
 function readStoredUiPage() {
   try {
     var page = localStorage.getItem("cyrene-ui-page");
-    return page || "chat";
+    return page || "dashboard";
   } catch (e) {
-    return "chat";
+    return "dashboard";
   }
 }
 
@@ -376,6 +376,7 @@ function App() {
           onToggleTheme={toggleTheme}
           activeSession={activeSession}
         />
+        {page === "dashboard" && <DashboardPage />}
         {page === "chat"     && <ChatPage selectedSessionId={activeSession ? activeSession.id : null} onSelectSession={selectSession} />}
         {page === "agents"   && <AgentsPage orientation={t.orientation} selectedSessionId={activeSession ? activeSession.id : null} />}
         {page === "sessions" && <SessionsPage
@@ -409,13 +410,14 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
   const sessionCount = (DATA.sessions || []).length;
   const activeRecentSessionId = selectedSessionId || DATA.sessions[0]?.id || null;
   const items = [
-    { id: "chat",     label: t("nav.chat"),     icon: "▸", key: "1" },
-    { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "2" },
-    { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "3", badge: sessionCount > 0 ? String(sessionCount) : null },
-    { id: "skills",   label: t("nav.skills"),   icon: "✸", key: "4" },
-    { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "5" },
-    { id: "status",   label: t("nav.status"),   icon: "◉", key: "6" },
-    { id: "settings", label: t("nav.settings"), icon: "✱", key: "7" },
+    { id: "dashboard", label: t("nav.dashboard"), icon: "◫", key: "1" },
+    { id: "chat",     label: t("nav.chat"),     icon: "▸", key: "2" },
+    { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "3" },
+    { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "4", badge: sessionCount > 0 ? String(sessionCount) : null },
+    { id: "skills",   label: t("nav.skills"),   icon: "✸", key: "5" },
+    { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "6" },
+    { id: "status",   label: t("nav.status"),   icon: "◉", key: "7" },
+    { id: "settings", label: t("nav.settings"), icon: "✱", key: "8" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
@@ -546,6 +548,7 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
   const runningSubagents = (session.subagents || []).filter((s) => s.status === "running").length;
   const status = session.status === "err" ? "error" : (session.status || "idle");
   const title =
+    page === "dashboard" ? <>{t("topbar.dashboard")}<span className="crumb-sep">/</span><b>{t("topbar.home")}</b></> :
     page === "chat" ? <>{t("topbar.chat")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "agents" ? <>{t("topbar.agentFlow")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "sessions" ? <>{t("topbar.sessions")}<span className="crumb-sep">/</span><b>{session.title}</b></> :

@@ -203,6 +203,7 @@ function SessionDetailPane({ session, onOpenAgents, onDelete }) {
           <span className="k">started</span><span className="v">{session.started}</span>
           <span className="k">duration</span><span className="v">{session.dur}</span>
           <span className="k">tool calls</span><span className="v">{session.summary.toolCalls}</span>
+          <span className="k">requests</span><span className="v">{session.summary.requests ?? "—"}</span>
           <span className="k">tokens</span><span className="v">{session.summary.tokens}</span>
           <span className="k">spend</span><span className="v">{session.summary.spend}</span>
         </div>

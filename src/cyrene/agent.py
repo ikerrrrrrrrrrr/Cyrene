@@ -512,6 +512,82 @@ def _streaming_reply_requested() -> bool:
     return _reply_stream_writer.get() is not None
 
 
+def _approx_token_count(text: str) -> int:
+    source = str(text or "")
+    if not source.strip():
+        return 0
+    units = re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9_]+|[^\s]", source)
+    total = 0
+    for unit in units:
+        if re.fullmatch(r"[A-Za-z0-9_]+", unit):
+            total += max(1, (len(unit) + 3) // 4)
+        else:
+            total += 1
+    return total
+
+
+def _message_token_estimate(message: dict[str, Any]) -> int:
+    total = 4
+    total += _approx_token_count(_assistant_text(message) or message.get("content") or "")
+    total += _approx_token_count(message.get("reasoning_content") or "")
+    for tool_call in message.get("tool_calls") or []:
+        fn = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+        total += _approx_token_count(fn.get("name") or "")
+        total += _approx_token_count(fn.get("arguments") or "")
+    total += _approx_token_count(message.get("tool_call_id") or "")
+    return total
+
+
+def _normalized_usage(usage: Any, messages: list[dict[str, Any]], response_message: dict[str, Any]) -> dict[str, int]:
+    if isinstance(usage, dict) and any(isinstance(usage.get(key), int) for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
+        prompt = int(usage.get("prompt_tokens") or 0)
+        completion = int(usage.get("completion_tokens") or 0)
+        total = int(usage.get("total_tokens") or (prompt + completion))
+        normalized = {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        }
+        for key in ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+            if isinstance(usage.get(key), int):
+                normalized[key] = int(usage.get(key))
+        return normalized
+    prompt = sum(_message_token_estimate(message) for message in messages) + 8
+    completion = _message_token_estimate(response_message) + 8
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+    }
+
+
+def _message_from_upstream_payload(data: dict[str, Any]) -> dict[str, Any]:
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] or {}
+        message = first.get("message")
+        if isinstance(message, dict):
+            return message
+    if isinstance(data.get("message"), dict):
+        return dict(data["message"])
+    output = data.get("output")
+    if isinstance(output, dict):
+        if isinstance(output.get("message"), dict):
+            return dict(output["message"])
+        if isinstance(output.get("text"), str):
+            return {"role": "assistant", "content": output["text"]}
+    if isinstance(data.get("response"), dict):
+        return dict(data["response"])
+    error_text = (
+        data.get("error")
+        or data.get("message")
+        or data.get("detail")
+        or data.get("msg")
+        or json.dumps(data, ensure_ascii=False)[:400]
+    )
+    raise ValueError(f"Upstream response missing choices/message payload: {error_text}")
+
+
 def _assistant_entry_from_response(response: dict[str, Any], round_id: str, include_tool_calls: bool = True) -> dict[str, Any]:
     entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
     if response.get("reasoning_content"):
@@ -1832,11 +1908,15 @@ def _build_llm_request(
     max_tokens: int | None,
     *,
     stream: bool,
-) -> tuple[str, str, dict[str, Any], dict[str, str]]:
+) -> tuple[list[str], str, dict[str, Any], dict[str, str]]:
     model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
     base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
     api_key = os.environ.get("OPENAI_API_KEY", "")
-    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+    normalized_base = base_url.rstrip("/")
+    endpoints = [f"{normalized_base}/chat/completions"]
+    if not normalized_base.endswith("/v1"):
+        endpoints.append(f"{normalized_base}/v1/chat/completions")
+    deduped_endpoints = list(dict.fromkeys(endpoints))
     payload: dict[str, Any] = {
         "model": model,
         "messages": _sanitize_messages_for_llm(messages),
@@ -1854,7 +1934,7 @@ def _build_llm_request(
     headers = {"Content-Type": "application/json"}
     if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
         headers["Authorization"] = f"Bearer {api_key}"
-    return endpoint, model, payload, headers
+    return deduped_endpoints, model, payload, headers
 
 
 def _extract_stream_delta_text(delta: dict[str, Any]) -> str:
@@ -1875,50 +1955,58 @@ def _extract_stream_delta_text(delta: dict[str, Any]) -> str:
 async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens: int | None = 32000) -> dict:
     _t0 = __import__("time").monotonic()
     _phase = _llm_phase_name(tools)
-    endpoint, _model, payload, headers = _build_llm_request(messages, tools, max_tokens, stream=False)
+    endpoints, _model, payload, headers = _build_llm_request(messages, tools, max_tokens, stream=False)
 
     transport = httpx.AsyncHTTPTransport(retries=1)
     try:
         async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
-            resp = await client.post(
-                endpoint,
-                json=payload,
-                headers=headers,
-            )
-            if resp.status_code != 200:
+            last_error: Exception | None = None
+            for endpoint in endpoints:
                 try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as exc:
-                    logger.error(
-                        "Upstream LLM returned non-200 [caller=%s phase=%s model=%s]: %s",
-                        _caller_type.get(),
-                        _phase,
-                        _model,
-                        format_httpx_error(exc),
+                    resp = await client.post(
+                        endpoint,
+                        json=payload,
+                        headers=headers,
                     )
+                    if resp.status_code != 200:
+                        resp.raise_for_status()
+                    data = resp.json()
+                    msg = _message_from_upstream_payload(data)
+                    msg["usage"] = _normalized_usage(data.get("usage"), messages, msg)
+                    if debug.VERBOSE:
+                        debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
+                    await _publish_runtime_event({
+                        "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
+                        "tools": [t.get("function", {}).get("name") for t in (tools or [])],
+                        "messages": _sanitize_messages_for_llm(messages),
+                        "response": msg,
+                        "usage": msg.get("usage") or {},
+                        "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
+                    })
+                    return msg
+                except (httpx.HTTPError, ValueError) as exc:
+                    last_error = exc
+                    if endpoint != endpoints[-1]:
+                        continue
+                    if isinstance(exc, httpx.HTTPError):
+                        logger.error(
+                            "Upstream LLM returned non-200 [caller=%s phase=%s model=%s endpoint=%s]: %s",
+                            _caller_type.get(),
+                            _phase,
+                            _model,
+                            endpoint,
+                            format_httpx_error(exc),
+                        )
                     raise
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            if data.get("usage"):
-                msg["usage"] = data["usage"]
-            if debug.VERBOSE:
-                debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
-            await _publish_runtime_event({
-                "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
-                "tools": [t.get("function", {}).get("name") for t in (tools or [])],
-                "messages": _sanitize_messages_for_llm(messages),
-                "response": msg,
-                "usage": data.get("usage") or {},
-                "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
-            })
-            return msg
+            if last_error:
+                raise last_error
     except httpx.TimeoutException as exc:
         logger.exception(
             "Upstream LLM timeout [caller=%s phase=%s model=%s endpoint=%s]: %s",
             _caller_type.get(),
             _phase,
             _model,
-            endpoint,
+            endpoints[0],
             format_httpx_error(exc),
         )
         raise
@@ -1928,7 +2016,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
             _caller_type.get(),
             _phase,
             _model,
-            endpoint,
+            endpoints[0],
             format_httpx_error(exc),
         )
         raise
@@ -1937,7 +2025,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
 async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000) -> dict[str, Any]:
     _t0 = __import__("time").monotonic()
     _phase = _llm_phase_name(None)
-    endpoint, _model, payload, headers = _build_llm_request(messages, None, max_tokens, stream=True)
+    endpoints, _model, payload, headers = _build_llm_request(messages, None, max_tokens, stream=True)
 
     accumulated: list[str] = []
     usage: dict[str, Any] = {}
@@ -1945,52 +2033,60 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
     transport = httpx.AsyncHTTPTransport(retries=1)
     try:
         async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
-            async with client.stream("POST", endpoint, json=payload, headers=headers) as resp:
-                if resp.status_code != 200:
-                    try:
-                        resp.raise_for_status()
-                    except httpx.HTTPStatusError as exc:
-                        logger.error(
-                            "Upstream LLM returned non-200 [caller=%s phase=%s model=%s stream=true]: %s",
-                            _caller_type.get(),
-                            _phase,
-                            _model,
-                            format_httpx_error(exc),
-                        )
-                        raise
-                async for raw_line in resp.aiter_lines():
-                    line = str(raw_line or "").strip()
-                    if not line:
+            last_error: Exception | None = None
+            for endpoint in endpoints:
+                try:
+                    async with client.stream("POST", endpoint, json=payload, headers=headers) as resp:
+                        if resp.status_code != 200:
+                            resp.raise_for_status()
+                        async for raw_line in resp.aiter_lines():
+                            line = str(raw_line or "").strip()
+                            if not line:
+                                continue
+                            if line.startswith("data:"):
+                                line = line[5:].strip()
+                            if not line:
+                                continue
+                            if line == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if isinstance(data.get("usage"), dict):
+                                usage = data["usage"]
+                            for choice in data.get("choices") or []:
+                                delta = choice.get("delta") or {}
+                                text = _extract_stream_delta_text(delta)
+                                if not text:
+                                    continue
+                                if not started:
+                                    await _emit_reply_stream_event({"type": "reply_start"})
+                                    started = True
+                                accumulated.append(text)
+                                await _emit_reply_stream_event({"type": "reply_delta", "delta": text})
+                    break
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if endpoint != endpoints[-1]:
                         continue
-                    if line.startswith("data:"):
-                        line = line[5:].strip()
-                    if not line:
-                        continue
-                    if line == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(data.get("usage"), dict):
-                        usage = data["usage"]
-                    for choice in data.get("choices") or []:
-                        delta = choice.get("delta") or {}
-                        text = _extract_stream_delta_text(delta)
-                        if not text:
-                            continue
-                        if not started:
-                            await _emit_reply_stream_event({"type": "reply_start"})
-                            started = True
-                        accumulated.append(text)
-                        await _emit_reply_stream_event({"type": "reply_delta", "delta": text})
+                    logger.error(
+                        "Upstream LLM returned non-200 [caller=%s phase=%s model=%s endpoint=%s stream=true]: %s",
+                        _caller_type.get(),
+                        _phase,
+                        _model,
+                        endpoint,
+                        format_httpx_error(exc),
+                    )
+                    raise
+            if last_error and not accumulated and not usage:
+                raise last_error
         full_text = "".join(accumulated)
         if not started:
             await _emit_reply_stream_event({"type": "reply_start"})
         await _emit_reply_stream_event({"type": "reply_done", "response": full_text})
         msg: dict[str, Any] = {"role": "assistant", "content": full_text}
-        if usage:
-            msg["usage"] = usage
+        msg["usage"] = _normalized_usage(usage, messages, msg)
         if debug.VERBOSE:
             debug.log_llm_call(_caller_type.get(), _phase, messages, None, msg, (__import__("time").monotonic() - _t0) * 1000)
         await _publish_runtime_event({
@@ -2000,7 +2096,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
             "tools": [],
             "response": full_text[:200],
             "tool_calls": [],
-            "usage": usage,
+            "usage": msg.get("usage") or {},
             "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
         })
         return msg
@@ -2010,7 +2106,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
             _caller_type.get(),
             _phase,
             _model,
-            endpoint,
+            endpoints[0],
             format_httpx_error(exc),
         )
         raise
@@ -2020,7 +2116,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
             _caller_type.get(),
             _phase,
             _model,
-            endpoint,
+            endpoints[0],
             format_httpx_error(exc),
         )
         raise
