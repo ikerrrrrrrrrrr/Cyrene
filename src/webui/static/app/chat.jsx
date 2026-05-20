@@ -1694,15 +1694,6 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
   const { t } = useI18n();
   return (
     <div className="chat-side">
-      {window.CCTerminalPanel && (
-        <div className="side-section side-section--terminal">
-          <div className="side-head">
-            {t("chat.activeCc")}
-            <span className="count">{ccStatus && ccStatus.available ? "live" : "off"}</span>
-          </div>
-          <window.CCTerminalPanel statusInfo={ccStatus} onRefresh={refreshCcStatus} />
-        </div>
-      )}
 
       <div className="side-section" style={{ maxHeight: "40%", overflowY: "auto" }}>
         <div className="side-head">
@@ -1712,7 +1703,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
         {session.shells.length === 0 && (
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
         )}
-        {session.shells.map((s) => <ShellCard key={s.id} shell={s} />)}
+        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} />)}
       </div>
 
       <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
@@ -1741,21 +1732,61 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
   );
 }
 
-function ShellCard({ shell }) {
+function ShellCard({ shell, ccStatus }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const isCC = shell.kind === "cc" && shell.tmuxSession;
+
+  if (!isCC) {
+    return (
+      <div className="shell-card">
+        <div className="shell-card-head">
+          <span>▣</span>
+          <span>{shell.title || t("chat.independentShell")}</span>
+          <span className="cwd">{shell.cwd}</span>
+          <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
+          <span className="pid">pid {shell.pid}</span>
+        </div>
+        <div className="shell-card-body">
+          {shell.lines.map((l, i) => (
+            <div key={i} className={"shell-" + l.kind}>{l.text}</div>
+          ))}
+        </div>
+        <div className="shell-card-foot">{shell.elapsed || "—"} · {shell.updatedAt || "—"}</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="shell-card">
-      <div className="shell-card-head">
-        <span>▣</span>
-        <span>{shell.title || window.t("chat.independentShell")}</span>
+    <div className="shell-card shell-card--cc">
+      <div className="shell-card-head" onClick={function () { setExpanded(!expanded); }} style={{ cursor: "pointer" }}>
+        <span>▸</span>
+        <span>{shell.title || "Claude Code"}</span>
         <span className="cwd">{shell.cwd}</span>
         <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
-        <span className="pid">pid {shell.pid}</span>
+        <span className="pid">{shell.tmuxSession}</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-4)" }}>{expanded ? t("chat.ccShrink") : t("chat.ccExpand")}</span>
       </div>
-      <div className="shell-card-body">
-        {shell.lines.map((l, i) => (
-          <div key={i} className={"shell-" + l.kind}>{l.text}</div>
-        ))}
-      </div>
+      {!expanded && shell.lines.length > 0 && (
+        <div className="shell-card-body">
+          {shell.lines.map((l, i) => (
+            <div key={i} className={"shell-" + l.kind}>{l.text}</div>
+          ))}
+        </div>
+      )}
+      {expanded && window.CCTerminalPanel && (
+        <div className="shell-card__cc-terminal">
+          <window.CCTerminalPanel
+            statusInfo={{
+              available: true,
+              tmux_session: shell.tmuxSession,
+              reason: "",
+              can_launch: false,
+            }}
+            onRefresh={function () {}}
+          />
+        </div>
+      )}
       <div className="shell-card-foot">{shell.elapsed || "—"} · {shell.updatedAt || "—"}</div>
     </div>
   );
