@@ -69,6 +69,14 @@ html, body, #root { height: 100%; margin: 0; }
 html {
   transition: background-color 0.3s ease, color 0.3s ease;
 }
+html[data-booting="1"] {
+  transition: none;
+}
+html[data-booting="1"] *,
+html[data-booting="1"] *::before,
+html[data-booting="1"] *::after {
+  transition: none !important;
+}
 body {
   font-family: var(--sans);
   font-size: 16px;
@@ -512,12 +520,49 @@ button { font-family: inherit; }
   color: var(--text-3);
 }
 .dot {
-  width: 7px; height: 7px; border-radius: 50%;
+  width: 8px; height: 8px; border-radius: 50%;
   background: var(--accent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, currentColor 24%, transparent),
+    0 0 10px color-mix(in srgb, currentColor 56%, transparent);
 }
-.dot.warn { background: var(--warn); }
-.dot.err { background: var(--err); }
-.dot.idle { background: var(--text-4); }
+.dot.running {
+  background: var(--accent);
+  color: var(--accent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent),
+    0 0 12px color-mix(in srgb, var(--accent) 62%, transparent);
+}
+.dot.queued,
+.dot.warn {
+  background: var(--warn);
+  color: var(--warn);
+  box-shadow:
+    0 0 0 1px rgba(240,184,108,0.24),
+    0 0 12px rgba(240,184,108,0.46);
+}
+.dot.done {
+  background: var(--info);
+  color: var(--info);
+  box-shadow:
+    0 0 0 1px rgba(124,164,198,0.22),
+    0 0 12px rgba(124,164,198,0.42);
+}
+.dot.error,
+.dot.err {
+  background: var(--err);
+  color: var(--err);
+  box-shadow:
+    0 0 0 1px rgba(219,115,115,0.24),
+    0 0 12px rgba(219,115,115,0.44);
+}
+.dot.idle {
+  background: var(--text-4);
+  color: var(--text-4);
+  box-shadow:
+    0 0 0 1px rgba(89,100,115,0.22),
+    0 0 10px rgba(89,100,115,0.26);
+}
 
 .iconbtn {
   width: 32px; height: 32px;
@@ -615,7 +660,7 @@ button { font-family: inherit; }
 }
 .msg-role {
   color: var(--text-2);
-  font-weight: 650;
+  font-weight: 580;
   letter-spacing: 0.04em;
 }
 .msg-role.user { color: var(--info); }
@@ -628,6 +673,7 @@ button { font-family: inherit; }
   color: var(--text);
   white-space: pre-wrap;
   line-height: 1.7;
+  font-weight: 520;
   order: 2;
 }
 .msg.agent .msg-body,
@@ -682,7 +728,7 @@ button { font-family: inherit; }
 }
 .msg-body.markdown strong {
   color: var(--text);
-  font-weight: 600;
+  font-weight: 640;
 }
 .msg-body.markdown em {
   font-style: italic;
@@ -903,6 +949,7 @@ html[data-theme="light"] .msg.user .msg-body {
   color: var(--text);
   font-size: 15px;
   line-height: 1.55;
+  font-weight: 540;
 }
 .question-options {
   display: flex;
@@ -918,6 +965,7 @@ html[data-theme="light"] .msg.user .msg-body {
   color: var(--text);
   cursor: pointer;
   font-size: 13.5px;
+  font-weight: 520;
   transition: background 120ms, border-color 120ms, color 120ms;
 }
 .question-option:hover:not(:disabled) {
@@ -1061,6 +1109,7 @@ html[data-theme="light"] .msg.user .msg-body {
 .context-option-title {
   font-size: 13px;
   color: var(--text);
+  font-weight: 520;
 }
 .context-option-meta {
   font-family: var(--mono);
@@ -1075,6 +1124,7 @@ html[data-theme="light"] .msg.user .msg-body {
   color: var(--text);
   font-family: var(--sans);
   font-size: 16.5px;
+  font-weight: 500;
   resize: none;
   min-height: 24px;
   max-height: 200px;

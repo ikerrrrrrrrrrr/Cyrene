@@ -16,6 +16,23 @@ const ACCENT_PRESETS = {
   light: ["#2da873", "#3b90c8", "#7858b0", "#c88520", "#d04848"],
 };
 
+function readStoredUiPage() {
+  try {
+    var page = localStorage.getItem("cyrene-ui-page");
+    return page || "chat";
+  } catch (e) {
+    return "chat";
+  }
+}
+
+function readStoredSessionId() {
+  try {
+    return localStorage.getItem("cyrene-ui-session-id");
+  } catch (e) {
+    return null;
+  }
+}
+
 function SetupWizard({ theme, onToggleTheme }) {
   useDataVersion();
   const { t } = useI18n();
@@ -245,9 +262,9 @@ function SetupWizard({ theme, onToggleTheme }) {
 
 function App() {
   useDataVersion();
-  const { t: i18nT, lang } = useI18n();
-  const [page, setPage] = useStateApp("chat");
-  const [selectedSessionId, setSelectedSessionId] = useStateApp(null);
+  const { lang } = useI18n();
+  const [page, setPage] = useStateApp(readStoredUiPage);
+  const [selectedSessionId, setSelectedSessionId] = useStateApp(readStoredSessionId);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   const activeSession = useMemoApp(function () {
@@ -289,6 +306,7 @@ function App() {
     document.documentElement.dataset.textSize = t.textSize || "default";
     document.documentElement.dataset.animPulse = t.animatePulse ? "on" : "off";
     document.documentElement.dataset.legend = t.showLegend ? "on" : "off";
+    delete document.documentElement.dataset.booting;
   }, [t.theme, t.accent, t.density, t.textSize, t.animatePulse, t.showLegend, actualTheme]);
 
   useEffectApp(function () {
@@ -308,6 +326,19 @@ function App() {
     const nextAccent = presetIndex >= 0 ? (ACCENT_PRESETS[nextActual] || [])[presetIndex] : t.accent;
     setTweak({ theme: nextMode, accent: nextAccent });
   }
+
+  useEffectApp(function () {
+    try {
+      localStorage.setItem("cyrene-ui-page", page);
+    } catch (e) {}
+  }, [page]);
+
+  useEffectApp(function () {
+    try {
+      if (selectedSessionId) localStorage.setItem("cyrene-ui-session-id", selectedSessionId);
+      else localStorage.removeItem("cyrene-ui-session-id");
+    } catch (e) {}
+  }, [selectedSessionId]);
 
   useEffectApp(function () {
     if (selectedSessionId && !DATA.sessions.some(function (session) { return session.id === selectedSessionId; })) {
@@ -367,33 +398,6 @@ function App() {
         )}
       </div>
 
-      <TweaksPanel title={i18nT("tweaks.title")}>
-        <TweakSection label={i18nT("tweaks.theme")} />
-        <TweakRadio label={i18nT("tweaks.mode")} value={t.theme}
-                    options={[i18nT("tweaks.light"), i18nT("tweaks.dark")]}
-                    onChange={(v) => {
-                      const i = (ACCENT_PRESETS[t.theme] || []).indexOf(t.accent);
-                      const a = i >= 0 ? ACCENT_PRESETS[v][i] : t.accent;
-                      setTweak({ theme: v, accent: a });
-                    }} />
-        <TweakColor label={i18nT("tweaks.accent")} value={t.accent}
-                    options={ACCENT_PRESETS[t.theme]}
-                    onChange={(v) => setTweak("accent", v)} />
-        <TweakSection label={i18nT("tweaks.display")} />
-        <TweakRadio label={i18nT("tweaks.density")} value={t.density}
-                    options={[i18nT("tweaks.cozy"), i18nT("tweaks.compact")]}
-                    onChange={(v) => setTweak("density", v)} />
-        <TweakRadio label={i18nT("tweaks.textSize")} value={t.textSize}
-                    options={[i18nT("tweaks.defaultSize"), i18nT("tweaks.large")]}
-                    onChange={(v) => setTweak("textSize", v)} />
-        <TweakRadio label={i18nT("tweaks.flowchart")} value={t.orientation}
-                    options={[i18nT("tweaks.horizontal"), i18nT("tweaks.vertical")]}
-                    onChange={(v) => setTweak("orientation", v)} />
-        <TweakToggle label={i18nT("tweaks.canvasLegend")} value={t.showLegend}
-                     onChange={(v) => setTweak("showLegend", v)} />
-        <TweakToggle label={i18nT("tweaks.pulseAnimation")} value={t.animatePulse}
-                     onChange={(v) => setTweak("animatePulse", v)} />
-      </TweaksPanel>
     </div>
   );
 }
@@ -540,6 +544,7 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
   const { t } = useI18n();
   const session = activeSession || { title: "—", subagents: [] };
   const runningSubagents = (session.subagents || []).filter((s) => s.status === "running").length;
+  const status = session.status === "err" ? "error" : (session.status || "idle");
   const title =
     page === "chat" ? <>{t("topbar.chat")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "agents" ? <>{t("topbar.agentFlow")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
@@ -554,7 +559,7 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
       <span className="topbar-title">{title}</span>
       <div className="topbar-right">
         <span className="statlight">
-          <span className="dot"></span> {t("topbar.orchestratorRunning")}
+          <span className={"dot " + status}></span> {t("topbar.status." + status)}
         </span>
         {runningSubagents > 0 && (
           <span className="statlight">
