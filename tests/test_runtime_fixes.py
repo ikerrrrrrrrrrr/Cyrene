@@ -1739,6 +1739,43 @@ def test_build_sessions_includes_today_archive_when_live_session_exists(tmp_path
     assert f"archive_{today}_legacy_{today}" in ids
 
 
+def test_build_sessions_skips_archive_copy_of_current_live_session(tmp_path, monkeypatch):
+    from webui import routes
+
+    monkeypatch.setattr(routes, "CONVERSATIONS_DIR", tmp_path / "conversations")
+    monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
+    routes.CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+    today = routes.datetime.now(routes.timezone.utc).strftime("%Y-%m-%d")
+    (routes.CONVERSATIONS_DIR / f"{today}.md").write_text(
+        "# Conversations\n\n"
+        "## 08:00:00 UTC\n\n"
+        "<!-- archive_session_id: session_live -->\n"
+        "<!-- session_title: 当前会话 -->\n\n"
+        "**User**: live hi\n\n"
+        "**Ape**: archived live reply\n\n"
+        "---\n\n"
+        "## 09:00:00 UTC\n\n"
+        "<!-- archive_session_id: session_other -->\n"
+        "<!-- session_title: 另一场会话 -->\n\n"
+        "**User**: other hi\n\n"
+        "**Ape**: other reply\n\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    routes.STATE_FILE.write_text(
+        '{"archive_session_id":"session_live","messages":[{"role":"user","content":"live hi"},{"role":"assistant","content":"live reply"}]}',
+        encoding="utf-8",
+    )
+
+    sessions = routes._build_sessions()
+    ids = [session["id"] for session in sessions]
+
+    assert ids[0] == "run_live"
+    assert f"archive_{today}_session_live" not in ids
+    assert f"archive_{today}_session_other" in ids
+
+
 def test_build_current_session_recovers_subagents_from_state_and_inbox(tmp_path, monkeypatch):
     from cyrene import inbox
     from webui import routes

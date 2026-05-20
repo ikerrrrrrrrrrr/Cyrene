@@ -1319,11 +1319,6 @@ html[data-theme="light"] .msg.user .msg-body {
 }
 .run-item:hover { background: var(--bg-2); }
 .run-item.active { background: var(--bg-2); }
-.run-item.active::before {
-  content: ""; width: 3px; background: var(--accent);
-  border-radius: 3px;
-  margin-right: -10px;
-}
 .run-item .sa-dot { margin-top: 5px; }
 .run-meta {
   font-family: var(--mono); font-size: 10.5px; color: var(--text-4);
@@ -1793,6 +1788,29 @@ html[data-theme="light"] .canvas-wrap {
 }
 .table tr:last-child td { border-bottom: 0; }
 .table tr:hover td { background: var(--bg-2); }
+
+.memory-page .card {
+  padding: 14px;
+}
+.memory-page .card-head {
+  margin-bottom: 12px;
+}
+.memory-page .card-title {
+  font-size: 14.5px;
+}
+.memory-page .card-action {
+  font-size: 12.5px;
+}
+.memory-page .table {
+  font-size: 15px;
+}
+.memory-page .table th {
+  font-size: 11.5px;
+  padding: 11px 10px;
+}
+.memory-page .table td {
+  padding: 12px 10px;
+}
 
 .log-row {
   display: grid;

@@ -2,7 +2,7 @@
 // Loads real data from the FastAPI backend before the React tree mounts.
 // Static fallback values keep the UI usable if the backend is unreachable.
 
-const APP_VERSION = "v0.1.8";
+const APP_VERSION = "v0.1.9";
 
 const DATA = {
   user: { name: "loading…", handle: "loading", initials: "…" },

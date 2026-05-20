@@ -48,7 +48,7 @@ function MemoryPage() {
     return (
       <div className="status-grid">
         <div className="card" style={{ gridColumn: "span 12", textAlign: "center", padding: 40 }}>
-          <span style={{ color: "var(--text-3)" }}>{t("memory.loading")}</span>
+          <span style={{ color: "var(--text-3)", fontSize: 15 }}>{t("memory.loading")}</span>
         </div>
       </div>
     );
@@ -58,7 +58,7 @@ function MemoryPage() {
     return (
       <div className="status-grid">
         <div className="card" style={{ gridColumn: "span 12", textAlign: "center", padding: 40 }}>
-          <span style={{ color: "var(--err)" }}>{t("memory.failedToLoad")}: {error}</span>
+          <span style={{ color: "var(--err)", fontSize: 15 }}>{t("memory.failedToLoad")}: {error}</span>
         </div>
       </div>
     );
@@ -91,7 +91,7 @@ function MemoryPage() {
   ];
 
   return (
-    <div className="status-grid">
+    <div className="status-grid memory-page">
       {/* Pipeline visualization */}
       <div className="card" style={{ gridColumn: "span 12" }}>
         <div className="card-head">
@@ -107,14 +107,14 @@ function MemoryPage() {
               }}>
                 <div style={{ fontSize: 20, marginBottom: 4 }}>{layer.icon}</div>
                 <div style={{
-                  fontFamily: "var(--mono)", fontSize: 11.5, fontWeight: 600,
-                  color: "var(--text)", marginBottom: 2
+                  fontFamily: "var(--mono)", fontSize: 15, fontWeight: 700,
+                  color: "var(--text)", marginBottom: 4
                 }}>{layer.label}</div>
-                <div style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)" }}>
+                <div style={{ fontFamily: "var(--mono)", fontSize: 13.5, color: "var(--text-3)" }}>
                   {layer.desc}
                 </div>
                 <div style={{
-                  marginTop: 6, fontSize: 10, color: "var(--text-4)", lineHeight: 1.4
+                  marginTop: 8, fontSize: 13, color: "var(--text-4)", lineHeight: 1.6
                 }}>{layer.detail}</div>
               </div>
               {i < pipelineLayers.length - 1 && (
@@ -131,7 +131,7 @@ function MemoryPage() {
         <div style={{
           marginTop: 8, padding: "8px 12px",
           background: "var(--bg-2)", borderRadius: 6,
-          fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-4)",
+          fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-4)",
           display: "flex", gap: 16, flexWrap: "wrap"
         }}>
           <span>{t("memory.pipelineFlow")}</span>
@@ -154,8 +154,8 @@ function MemoryPage() {
               padding: "6px 14px", border: "none", borderRadius: 5,
               background: activeTab === id ? "var(--bg-2)" : "transparent",
               color: activeTab === id ? "var(--text)" : "var(--text-3)",
-              fontFamily: "var(--mono)", fontSize: 11, cursor: "pointer",
-              fontWeight: activeTab === id ? 600 : 400,
+              fontFamily: "var(--mono)", fontSize: 12.5, cursor: "pointer",
+              fontWeight: activeTab === id ? 650 : 500,
             }}>{label}</button>
           ))}
         </div>
@@ -174,14 +174,14 @@ function MemoryPage() {
                        onClick={() => toggleSection(section.name)}
                        style={{ cursor: "pointer" }}>
                     <span style={{
-                      fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)",
+                      fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-4)",
                       marginRight: 6
                     }}>{isExpanded ? "▾" : "▸"}</span>
-                    <span className="card-title" style={{ fontFamily: "var(--mono)", fontSize: 12 }}>
+                    <span className="card-title" style={{ fontFamily: "var(--mono)", fontSize: 13.5 }}>
                       {section.name}
                     </span>
                     <span style={{
-                      marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 10.5,
+                      marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11.5,
                       color: isTemp && mem.soul.temporary_expired > 0 ? "var(--warn)" : "var(--text-4)"
                     }}>
                       {t("memory.itemCount", {n: section.entry_count})}
@@ -191,7 +191,7 @@ function MemoryPage() {
                   {isExpanded && (
                     <div style={{
                       maxHeight: 360, overflowY: "auto",
-                      fontFamily: "var(--mono)", fontSize: 11, lineHeight: 1.6
+                      fontFamily: "var(--mono)", fontSize: 12.5, lineHeight: 1.7
                     }}>
                       {section.entries.length === 0 ? (
                         <div style={{ color: "var(--text-4)", padding: "8px 0" }}>{t("memory.empty")}</div>
@@ -222,7 +222,7 @@ function MemoryPage() {
           ) : (
             <div className="card" style={{ gridColumn: "span 12", textAlign: "center", padding: 40 }}>
               <span style={{ color: "var(--warn)" }}>{t("memory.soulNotFound", {path: mem.soul.path})}</span>
-              <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-4)" }}>
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "var(--text-4)" }}>
                 {t("memory.soulAutoCreate")}
               </div>
             </div>
@@ -238,7 +238,7 @@ function MemoryPage() {
             <span className="card-action">{t("memory.itemCount", {n: mem.short_term.total})}</span>
           </div>
           {mem.short_term.entries.length === 0 ? (
-            <div style={{ textAlign: "center", padding: 30, color: "var(--text-4)" }}>
+            <div style={{ textAlign: "center", padding: 30, color: "var(--text-4)", fontSize: 14.5 }}>
               {t("memory.noShortTerm")}
             </div>
           ) : (
@@ -261,20 +261,20 @@ function MemoryPage() {
                         display: "inline-block", padding: "1px 6px", borderRadius: 3,
                         background: (TYPE_COLORS[entry.type] || "var(--text-4)") + "22",
                         color: TYPE_COLORS[entry.type] || "var(--text-3)",
-                        fontFamily: "var(--mono)", fontSize: 10, fontWeight: 600,
+                        fontFamily: "var(--mono)", fontSize: 11.5, fontWeight: 650,
                       }}>
                         {TYPE_LABELS[entry.type] || entry.type}
                       </span>
                     </td>
-                    <td style={{ color: "var(--text)", maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <td style={{ color: "var(--text)", fontSize: 13, maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {entry.content}
                     </td>
-                    <td style={{ fontFamily: "var(--mono)", textAlign: "center" }}>{entry.mention_count ?? 1}</td>
-                    <td style={{ fontFamily: "var(--mono)", textAlign: "center", color: (entry.emotional_valence || 0) < 0 ? "var(--err)" : (entry.emotional_valence || 0) > 0 ? "var(--accent)" : "var(--text-3)" }}>
+                    <td style={{ fontFamily: "var(--mono)", fontSize: 12.5, textAlign: "center" }}>{entry.mention_count ?? 1}</td>
+                    <td style={{ fontFamily: "var(--mono)", fontSize: 12.5, textAlign: "center", color: (entry.emotional_valence || 0) < 0 ? "var(--err)" : (entry.emotional_valence || 0) > 0 ? "var(--accent)" : "var(--text-3)" }}>
                       {entry.emotional_valence > 0 ? "+" : ""}{entry.emotional_valence ?? 0}
                     </td>
-                    <td style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>{entry.first_seen || "—"}</td>
-                    <td style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>{entry.last_mentioned || "—"}</td>
+                    <td style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text-4)" }}>{entry.first_seen || "—"}</td>
+                    <td style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text-4)" }}>{entry.last_mentioned || "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -292,10 +292,10 @@ function MemoryPage() {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "8px 0" }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)", fontSize: 11 }}>{t("memory.messages")}</span>
+                <span style={{ color: "var(--text-3)", fontSize: 13 }}>{t("memory.messages")}</span>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
                   {mem.context_window.messages}
-                  <span style={{ fontSize: 12, color: "var(--text-4)", fontWeight: 400 }}> / {mem.context_window.max}</span>
+                  <span style={{ fontSize: 13, color: "var(--text-4)", fontWeight: 500 }}> / {mem.context_window.max}</span>
                 </span>
               </div>
               <div style={{
@@ -310,7 +310,7 @@ function MemoryPage() {
                 }}></div>
               </div>
               {mem.context_window.messages >= mem.context_window.max && (
-                <div style={{ fontSize: 10.5, color: "var(--warn)", fontFamily: "var(--mono)" }}>
+                <div style={{ fontSize: 12.5, color: "var(--warn)", fontFamily: "var(--mono)" }}>
                   {t("memory.atCapacity")}
                 </div>
               )}
@@ -322,7 +322,7 @@ function MemoryPage() {
             </div>
             <div style={{
               display: "flex", flexDirection: "column", gap: 8, padding: "8px 0",
-              fontFamily: "var(--mono)", fontSize: 11
+              fontFamily: "var(--mono)", fontSize: 12.5
             }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ color: "var(--text-3)" }}>{t("memory.storage")}</span>
@@ -354,13 +354,13 @@ function MemoryPage() {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "8px 0" }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)", fontSize: 11 }}>{t("memory.archivedDays")}</span>
+                <span style={{ color: "var(--text-3)", fontSize: 13 }}>{t("memory.archivedDays")}</span>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
                   {mem.archive.days}
                 </span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)", fontSize: 11 }}>{t("memory.todaysExchanges")}</span>
+                <span style={{ color: "var(--text-3)", fontSize: 13 }}>{t("memory.todaysExchanges")}</span>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
                   {mem.archive.today_exchanges}
                 </span>
@@ -373,7 +373,7 @@ function MemoryPage() {
             </div>
             <div style={{
               display: "flex", flexDirection: "column", gap: 8, padding: "8px 0",
-              fontFamily: "var(--mono)", fontSize: 11
+              fontFamily: "var(--mono)", fontSize: 12.5
             }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ color: "var(--text-3)" }}>{t("memory.location")}</span>

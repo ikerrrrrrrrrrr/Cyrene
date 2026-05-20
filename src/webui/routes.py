@@ -828,7 +828,13 @@ def _build_sessions() -> list[dict]:
         sessions.append(current)
 
     # 2. Historical sessions from conversation archives (one per day, most recent first)
-    archive_sessions = _build_archive_sessions()
+    skip_archive_ids: set[str] = set()
+    current_archive_session_id = str(current.get("archiveSessionId", "")).strip() if current else ""
+    current_archive_date = str(current.get("archiveDate", "")).strip() if current else ""
+    if current_archive_session_id and current_archive_date:
+        skip_archive_ids.add(f"{current_archive_date}:{current_archive_session_id}")
+
+    archive_sessions = _build_archive_sessions(skip_archive_ids=skip_archive_ids)
     sessions.extend(archive_sessions)
 
     return sessions
@@ -955,6 +961,8 @@ def _build_current_session() -> dict | None:
         "title": str(state.get("session_title", "")).strip() or ("new session" if is_empty else "current session"),
         "status": live_status,
         "started": started_at,
+        "archiveDate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "archiveSessionId": str(state.get("archive_session_id", "")).strip(),
         "dur": duration,
         "preview": (last_msg["body"][:80] + "…") if last_msg and last_msg.get("body") else "—",
         "model": OPENAI_MODEL,
@@ -973,7 +981,10 @@ def _build_current_session() -> dict | None:
     }
 
 
-def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
+def _build_archive_sessions(
+    skip_dates: set[str] | None = None,
+    skip_archive_ids: set[str] | None = None,
+) -> list[dict]:
     """Build session entries from conversation archives (one per archived session)."""
     if not CONVERSATIONS_DIR.exists():
         return []
@@ -1003,6 +1014,9 @@ def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
             groups[archive_session_id].append({**section, "_order": index})
 
         for archive_session_id in reversed(order):
+            archive_key = f"{date_str}:{archive_session_id}"
+            if skip_archive_ids and archive_key in skip_archive_ids:
+                continue
             group_sections = groups[archive_session_id]
             messages = _messages_from_archive_sections(group_sections)
             if not messages:
