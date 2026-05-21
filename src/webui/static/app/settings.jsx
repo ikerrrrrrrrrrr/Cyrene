@@ -70,6 +70,9 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       setModels(data.models || []);
       setActiveModel(data.active || "");
       setBaseUrl(data.base_url || "");
+      if (data.active_model_name) {
+        setKeys(function(prev) { return { ...prev, OPENAI_MODEL: data.active_model_name }; });
+      }
     }).catch(() => {});
     fetch("/api/settings/tools").then((r) => r.json()).then((data) => {
       setToolList(data.tools || []);
@@ -138,6 +141,12 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         body: JSON.stringify({ models: models, selected: activeModel, base_url: baseUrl }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      if (data.active) setActiveModel(data.active);
+      if (data.active_model_name) {
+        setKeys(function(prev) { return { ...prev, OPENAI_MODEL: data.active_model_name }; });
+        setConfig(function(prev) { return { ...prev, model: data.active_model_name, base_url: data.base_url || prev.base_url }; });
+      }
       setModelsSaved("saved ✓");
       setTimeout(() => setModelsSaved(""), 1500);
     } catch (e) {

@@ -98,6 +98,42 @@ async def test_execute_tool_awaits_event_publish(monkeypatch):
     tools.TOOL_HANDLERS.pop("__test_tool__", None)
 
 
+async def test_subagent_cannot_send_user_visible_message(monkeypatch):
+    from cyrene import agent
+    from cyrene import tools
+
+    called = {"append": False}
+
+    async def fake_append_system_message(*args, **kwargs):
+        called["append"] = True
+        return {}
+
+    monkeypatch.setattr(agent, "append_system_message", fake_append_system_message)
+
+    token = agent._current_agent_id.set("agent_worker")
+    try:
+        result = await tools._tool_send_user_message({"text": "hello from subagent"}, None, 0, "db.sqlite3", None)
+    finally:
+        agent._current_agent_id.reset(token)
+
+    assert "Only the main agent can send a user-visible WebUI message" in result
+    assert called["append"] is False
+
+
+def test_subagent_tool_defs_hide_main_only_tools():
+    from cyrene import tools
+
+    main_defs = {item["function"]["name"] for item in tools.get_active_tool_defs_for_actor("main")}
+    sub_defs = {item["function"]["name"] for item in tools.get_active_tool_defs_for_actor("subagent")}
+
+    assert "send_message" in main_defs
+    assert "spawn_subagent" in main_defs
+    assert "send_message" not in sub_defs
+    assert "spawn_subagent" not in sub_defs
+    assert "ask_user" not in sub_defs
+    assert "send_agent_message" in sub_defs
+
+
 async def test_recall_memory_tool_returns_archived_matches_and_persisted_memory(tmp_path, monkeypatch):
     from cyrene import conversations
     from cyrene import short_term

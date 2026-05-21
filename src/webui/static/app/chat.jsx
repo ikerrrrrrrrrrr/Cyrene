@@ -52,6 +52,28 @@ function isAbortError(error) {
   return error && (error.name === "AbortError" || String(error.message || "").includes("aborted"));
 }
 
+function attachmentAltText(file) {
+  return String(file && file.name || "uploaded image");
+}
+
+function attachmentThumbStyle(file, maxWidth, maxHeight) {
+  var width = Number(file && file.width) || 0;
+  var height = Number(file && file.height) || 0;
+  if (!(width > 0) || !(height > 0)) {
+    return {
+      maxWidth: maxWidth + "px",
+      maxHeight: maxHeight + "px",
+      width: "auto",
+      height: "auto",
+    };
+  }
+  var ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+  return {
+    width: Math.max(1, Math.round(width * ratio)) + "px",
+    height: Math.max(1, Math.round(height * ratio)) + "px",
+  };
+}
+
 async function readNdjsonStream(response, onEvent) {
   if (!response.body || !response.body.getReader) {
     const payload = await response.json();
@@ -650,11 +672,14 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const [workspaceHistory, setWorkspaceHistory] = useState([]);
   const [contextState, setContextState] = useState({ soul_active: true, workspace_active: true, workspace_dir: "" });
   const [notice, setNotice] = useState("");
+  const [attachments, setAttachments] = useState([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [ccStatus, setCcStatus] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const taRef = useRef(null);
   const scrollRef = useRef(null);
+  const fileInputRef = useRef(null);
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
   const prunedRetainedMessages = isLiveSession
@@ -808,9 +833,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     const preserveProgress = Boolean(options && options.preserveProgress);
     const text = draft.trim();
     const runtime = getChatRuntime();
-    if (!text) return;
+    if (!text && attachments.length === 0) return;
     if (pendingQuestion) {
       setNotice(t("chat.answerPendingWarning"));
+      return;
+    }
+    if (uploadingAttachments) {
+      setNotice("Files are still uploading.");
       return;
     }
     setNotice("");
@@ -829,6 +858,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       id: "pending_user_" + Date.now(),
       role: "user", time: new Date().toLocaleTimeString(),
       body: text,
+      attachments: attachments.slice(),
       roundId: selectedGuideRoundId || "",
       clientRequestId: requestId,
     };
@@ -850,6 +880,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     });
     ensureChatRuntimeSseSubscription();
     setDraft("");
+    setAttachments([]);
     syncTextareaHeight(taRef.current);
 
     let keepWatching = false;
@@ -860,6 +891,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         signal: controller.signal,
         body: JSON.stringify({
           message: text,
+          attachments: attachments,
           guide_round_id: selectedGuideRoundId || undefined,
           client_request_id: requestId,
           stream: true,
@@ -1193,6 +1225,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     releaseWatchedRequest("", { retainMessages: false });
     delete runtime.requests[requestId];
     setDraft(requestMeta.message || "");
+    setAttachments([]);
     setSelectedGuideRoundId(requestMeta.guideRoundId || "");
     setSelectedGuideRoundTitle(requestMeta.guideRoundTitle || "");
     setContextPickerOpen(false);
@@ -1220,6 +1253,39 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       e.preventDefault();
       submitQuestionAnswer();
     }
+  }
+
+  async function handleAttachmentPick(event) {
+    const pickedFiles = Array.from(event.target.files || []);
+    if (pickedFiles.length === 0) return;
+    const formData = new FormData();
+    pickedFiles.forEach(function (file) {
+      formData.append("files", file);
+    });
+    setUploadingAttachments(true);
+    setNotice("");
+    try {
+      const response = await fetch("/api/chat/upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const payload = await response.json();
+      setAttachments(function (prev) {
+        return prev.concat(Array.isArray(payload.files) ? payload.files : []);
+      });
+    } catch (error) {
+      setNotice("Failed to upload files: " + error.message);
+    } finally {
+      setUploadingAttachments(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function removeAttachment(index) {
+    setAttachments(function (prev) {
+      return prev.filter(function (_item, i) { return i !== index; });
+    });
   }
 
   const allMessages = isLiveSession
@@ -1480,8 +1546,46 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                   : t("chat.messagePlaceholder", { name: DATA.assistantName })
               }
             />
+            {attachments.length > 0 && (
+              <div className="composer-attachments">
+                {attachments.map(function (file, index) {
+                  var isImage = String(file.content_type || "").startsWith("image/");
+                  return (
+                    <div className={"composer-attachment-card" + (isImage ? " image" : "")} key={file.id || (file.name + "_" + index)}>
+                      {isImage && file.url && (
+                        <div className="composer-attachment-thumb">
+                          <img
+                            src={file.url}
+                            alt={attachmentAltText(file)}
+                            style={attachmentThumbStyle(file, 112, 88)}
+                          />
+                        </div>
+                      )}
+                      {!isImage && <div className="composer-attachment-file" aria-label="uploaded file"></div>}
+                      <span className="x" onClick={function () { removeAttachment(index); }}>×</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div className="composer-actions">
-              <button className="iconbtn" title={t("chat.attach")}>+</button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleAttachmentPick}
+              />
+              <button
+                className="iconbtn"
+                title={uploadingAttachments ? "Uploading..." : t("chat.attach")}
+                disabled={Boolean(pendingQuestion) || uploadingAttachments}
+                onClick={function () {
+                  if (fileInputRef.current) fileInputRef.current.click();
+                }}
+              >
+                {uploadingAttachments ? "…" : "+"}
+              </button>
               <button className="iconbtn" title={t("chat.slashCommand")}>/</button>
               <button className="iconbtn" title={t("chat.mention")}>@</button>
               <span style={{ flex: 1 }}></span>
@@ -1489,13 +1593,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 {session.model}
               </span>
               {visibleSending && (
-                <button className="send secondary" disabled={!draft.trim() || Boolean(pendingQuestion)} onClick={openNextDialogue}>
+                <button className="send secondary" disabled={(!draft.trim() && attachments.length === 0) || Boolean(pendingQuestion)} onClick={openNextDialogue}>
                   {hasSelectedGuideRound ? t("chat.guide") : t("chat.newDialogue")}
                 </button>
               )}
               <button
                 className={"send" + (visibleSending ? " stop" : "")}
-                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim())}
+                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim() && attachments.length === 0)}
                 onClick={visibleSending ? stopActiveRun : send}
               >
                 {visibleSending ? t("chat.stop") : <>{hasSelectedGuideRound ? t("chat.guide") : t("chat.send")} <span className="kbd">⌘↵</span></>}
@@ -1544,6 +1648,7 @@ function Message({ msg, assistantName }) {
   const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
     ? renderMarkdown(msg.body)
     : "";
+  const attachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
   const isRuntimeTrace = Boolean(msg.runtimeTrace);
   const attachedRuntime = msg.attachedRuntime || null;
   const hasOwnTrace = Boolean(msg.thinking || (msg.tools && msg.tools.length));
@@ -1615,6 +1720,26 @@ function Message({ msg, assistantName }) {
         (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
           ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
           : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
+      )}
+      {attachments.length > 0 && (
+        <div className="msg-attachments">
+          {attachments.map(function (file, index) {
+            var isImage = String(file.content_type || "").startsWith("image/");
+            return (
+              <div className={"msg-attachment" + (isImage ? " image" : "")} key={file.id || (file.name + "_" + index)}>
+                {isImage && file.url ? (
+                  <a className="msg-attachment-image" href={file.url} target="_blank" rel="noreferrer">
+                    <img
+                      src={file.url}
+                      alt={attachmentAltText(file)}
+                      style={attachmentThumbStyle(file, 360, 260)}
+                    />
+                  </a>
+                ) : <div className="msg-attachment-file" aria-label="uploaded file"></div>}
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

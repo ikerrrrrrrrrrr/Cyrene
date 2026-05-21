@@ -1,9 +1,11 @@
 """Route handlers for the Cyrene Web UI (SPA backend)."""
 
 import asyncio
+import base64
 import getpass
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -13,17 +15,23 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from PIL import Image
+from fastapi import APIRouter, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from cyrene.cc_bridge import get_cc_status
 from cyrene.cc_learner import analyze_session, learn_from_session
 from cyrene.cc_terminal import CCTerminalSession
 from cyrene import debug
+from cyrene.attachments import model_supports_multimodal
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
+    _append_session_message,
+    _call_llm,
+    _publish_runtime_event,
     _reply_stream_writer,
     answer_pending_question,
+    append_system_message,
     clear_session_id,
     format_httpx_error,
     get_pending_question,
@@ -62,12 +70,19 @@ _CHAT_ID = -1
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _APP_DIR = _STATIC_DIR / "app"
+_UPLOADS_DIR = DATA_DIR / "webui_uploads"
 
 _SERVER_STARTED_AT = time.time()
 
 
 def _ndjson_line(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False) + "\n"
+
+
+def _live_llm_config() -> tuple[str, str]:
+    from cyrene import config as cy_config
+
+    return cy_config.OPENAI_MODEL, cy_config.OPENAI_BASE_URL
 
 
 def _reply_stream_chunks(text: str, target_chars: int = 36) -> list[str]:
@@ -243,6 +258,125 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
     )
 
 
+def _safe_upload_name(filename: str) -> str:
+    raw = Path(str(filename or "upload.bin")).name
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+    return sanitized or "upload.bin"
+
+
+def _public_attachment_payload(item: dict[str, Any]) -> dict[str, Any]:
+    attachment_id = str(item.get("id") or "").strip()
+    content_type = str(item.get("content_type") or "application/octet-stream")
+    payload = {
+        "id": attachment_id,
+        "name": str(item.get("name") or "file"),
+        "content_type": content_type,
+        "size": int(item.get("size") or 0),
+        "kind": str(item.get("kind") or "file"),
+        "url": f"/api/chat/upload/{attachment_id}" if attachment_id else "",
+    }
+    if content_type.startswith("image/"):
+        width = item.get("width")
+        height = item.get("height")
+        if isinstance(width, int):
+            payload["width"] = width
+        if isinstance(height, int):
+            payload["height"] = height
+    return payload
+
+
+def _attachment_kind_from_meta(content_type: str, filename: str) -> str:
+    normalized_type = str(content_type or "").strip().lower()
+    suffix = Path(str(filename or "")).suffix.lower()
+    if normalized_type.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"}:
+        return "image"
+    if normalized_type == "application/pdf" or suffix == ".pdf":
+        return "pdf"
+    return "file"
+
+
+def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
+    try:
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return None, None
+
+
+def _attachment_prompt_block(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return ""
+    lines = [
+        "",
+        "[Uploaded attachments]",
+        "The user uploaded the following files into the local workspace-accessible runtime data directory.",
+        "Before answering anything about these files, you MUST inspect the relevant attachment with AnalyzeAttachment.",
+        "Do not answer from the filename, extension, or metadata alone.",
+        "After AnalyzeAttachment returns extracted content, use that extracted content to answer the user.",
+    ]
+    for item in items:
+        lines.append(f'- {item["name"]} ({item["content_type"]}): {item["path"]}')
+    return "\n".join(lines)
+
+
+async def _chat_with_uploaded_images(message: str, attachments: list[dict[str, Any]]) -> str:
+    prompt = str(message or "").strip() or "Describe the uploaded image in detail and extract any visible text."
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for item in attachments:
+        path = Path(str(item.get("path") or "")).resolve()
+        mime = str(item.get("content_type") or mimetypes.guess_type(str(path))[0] or "image/png")
+        image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}})
+    try:
+        response = await _call_llm([{"role": "user", "content": content}], tools=None, max_tokens=None)
+    except httpx.HTTPError as exc:
+        detail = format_httpx_error(exc).lower()
+        if any(token in detail for token in ("image", "vision", "multimodal", "unsupported", "invalid content")):
+            return "Current model does not support image understanding. Switch to a vision-capable model to analyze uploaded images."
+        raise
+    response_text = str((response.get("content") if isinstance(response.get("content"), str) else "") or "").strip()
+    if response_text:
+        return response_text
+    parts: list[str] = []
+    if isinstance(response.get("content"), list):
+        for item in response.get("content") or []:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+    merged = "".join(parts).strip()
+    return merged or "The model returned no usable image analysis."
+
+
+async def _persist_direct_image_chat(
+    message: str,
+    response: str,
+    public_attachments: list[dict[str, Any]],
+    client_request_id: str,
+) -> None:
+    round_id = f"round_{int(time.time() * 1000)}"
+    user_entry: dict[str, Any] = {
+        "role": "user",
+        "content": str(message or ""),
+        "attachments": [dict(item) for item in public_attachments],
+        "round_id": round_id,
+    }
+    if client_request_id:
+        user_entry["client_request_id"] = client_request_id
+    await _append_session_message(user_entry)
+    await append_system_message(
+        response,
+        message_meta={
+            "system_initiated": False,
+            "round_id": round_id,
+            **({"client_request_id": client_request_id} if client_request_id else {}),
+        },
+        publish_event={
+            "type": "chat_message",
+            "round_id": round_id,
+            "client_request_id": client_request_id,
+        },
+    )
+
+
 def register_routes(app, bot: Any, db_path: str) -> None:
     global _bot, _db_path
     _bot = bot
@@ -264,23 +398,83 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     # ---- Chat API ----
 
+    @router.post("/api/chat/upload")
+    async def api_chat_upload(files: list[UploadFile]):
+        if not files:
+            return JSONResponse({"error": "no files uploaded"}, status_code=400)
+
+        _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        uploaded: list[dict[str, Any]] = []
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for index, file in enumerate(files, start=1):
+            safe_name = _safe_upload_name(file.filename or "")
+            target = _UPLOADS_DIR / f"{now}_{index:02d}_{safe_name}"
+            content = await file.read()
+            target.write_bytes(content)
+            content_type = str(file.content_type or mimetypes.guess_type(str(target))[0] or "application/octet-stream")
+            kind = _attachment_kind_from_meta(content_type, target.name)
+            width, height = _image_dimensions(target) if kind == "image" else (None, None)
+            uploaded.append({
+                "id": target.name,
+                "name": file.filename or safe_name,
+                "path": str(target.resolve()),
+                "content_type": content_type,
+                "size": len(content),
+                "kind": kind,
+                "url": f"/api/chat/upload/{target.name}",
+                **({"width": width} if isinstance(width, int) else {}),
+                **({"height": height} if isinstance(height, int) else {}),
+            })
+
+        return {"files": uploaded}
+
+    @router.get("/api/chat/upload/{upload_id}")
+    async def api_chat_upload_file(upload_id: str):
+        safe_upload_id = _safe_upload_name(upload_id)
+        target = (_UPLOADS_DIR / safe_upload_id).resolve()
+        uploads_root = _UPLOADS_DIR.resolve()
+        if target != uploads_root and uploads_root not in target.parents:
+            return JSONResponse({"error": "invalid upload path"}, status_code=400)
+        if not target.exists() or not target.is_file():
+            return JSONResponse({"error": "upload not found"}, status_code=404)
+        return FileResponse(target)
+
     @router.post("/api/chat")
     async def api_chat(request: Request):
         body = await request.json()
         message = (body.get("message") or "").strip()
+        attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
         guide_round_id = str(body.get("guide_round_id") or "").strip()
         client_request_id = str(body.get("client_request_id") or "").strip()
         wants_stream = bool(body.get("stream"))
         lang = str(body.get("lang") or "").strip()
-        if not message:
+        normalized_attachments = [
+            {
+                "id": str(item.get("id") or "").strip(),
+                "name": str(item.get("name") or "file"),
+                "path": str(item.get("path") or ""),
+                "content_type": str(item.get("content_type") or "application/octet-stream"),
+                "size": int(item.get("size") or 0),
+                "kind": str(item.get("kind") or "file"),
+                **({"width": int(item.get("width"))} if str(item.get("width", "")).strip().isdigit() else {}),
+                **({"height": int(item.get("height"))} if str(item.get("height", "")).strip().isdigit() else {}),
+            }
+            for item in attachments
+            if str(item.get("path") or "").strip()
+        ]
+        public_attachments = [_public_attachment_payload(item) for item in normalized_attachments]
+        if not message and not normalized_attachments:
             return JSONResponse({"error": "empty message"}, status_code=400)
+        all_images = bool(normalized_attachments) and all(str(item.get("kind") or "") == "image" for item in normalized_attachments)
+        message_with_attachments = (message or "[Attachment upload]") + _attachment_prompt_block(normalized_attachments)
 
         reset_lottery()
         if guide_round_id:
             try:
                 item = await queue_round_guidance(
                     guide_round_id,
-                    message,
+                    message_with_attachments,
                     _bot,
                     _CHAT_ID,
                     _db_path,
@@ -303,12 +497,49 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return payload
 
         try:
+            if all_images:
+                async def _run_direct_image_chat() -> str:
+                    response_text = await _chat_with_uploaded_images(message, normalized_attachments)
+                    await _persist_direct_image_chat(message, response_text, public_attachments, client_request_id)
+                    labels = get_session_labels()
+                    await archive_exchange(
+                        message,
+                        response_text,
+                        _CHAT_ID,
+                        session_title=labels.get("session_title", ""),
+                        round_title=labels.get("round_title", ""),
+                        round_id=labels.get("round_id", ""),
+                        archive_session_id=labels.get("archive_session_id", ""),
+                    )
+                    return response_text
+
+                if wants_stream:
+                    return _stream_agent_reply(_run_direct_image_chat, message or "")
+                return {"response": await _run_direct_image_chat()}
             if wants_stream:
                 return _stream_agent_reply(
-                    lambda: run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id, lang=lang),
-                    message,
+                    lambda: run_agent(
+                        message_with_attachments,
+                        _bot,
+                        _CHAT_ID,
+                        _db_path,
+                        client_request_id=client_request_id,
+                        lang=lang,
+                        public_user_message=message,
+                        public_attachments=public_attachments,
+                    ),
+                    message or "",
                 )
-            response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id, lang=lang)
+            response = await run_agent(
+                message_with_attachments,
+                _bot,
+                _CHAT_ID,
+                _db_path,
+                client_request_id=client_request_id,
+                lang=lang,
+                public_user_message=message,
+                public_attachments=public_attachments,
+            )
             if response == _AWAITING_USER_SENTINEL:
                 return {"awaiting_user": True, "pending_question": get_pending_question()}
             labels = get_session_labels()
@@ -797,8 +1028,23 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/settings/models")
     async def api_get_models():
         from cyrene.settings_store import get_models
-        from cyrene.config import OPENAI_MODEL, OPENAI_BASE_URL
-        return {"models": get_models(), "active": OPENAI_MODEL, "base_url": OPENAI_BASE_URL}
+        models = get_models()
+        active_model_name, base_url = _live_llm_config()
+        active_model_id = next(
+            (
+                str(model.get("id") or "").strip()
+                for model in models
+                if str(model.get("name") or "").strip() == active_model_name
+                or str(model.get("id") or "").strip() == active_model_name
+            ),
+            active_model_name,
+        )
+        return {
+            "models": models,
+            "active": active_model_id,
+            "active_model_name": active_model_name,
+            "base_url": base_url,
+        }
 
     @router.put("/api/settings/models")
     async def api_update_models(request: Request):
@@ -811,14 +1057,28 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not isinstance(models, list) or len(models) == 0:
             return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
         save_models(models)
+        selected_model_name = next(
+            (
+                str(model.get("name") or "").strip()
+                for model in models
+                if str(model.get("id") or "").strip() == str(selected or "").strip()
+            ),
+            str(selected or "").strip(),
+        )
         updates = {}
-        if selected:
-            updates["OPENAI_MODEL"] = selected
+        if selected_model_name:
+            updates["OPENAI_MODEL"] = selected_model_name
         if base_url:
             updates["OPENAI_BASE_URL"] = base_url
         if updates:
             write_env_keys(updates)
-        return {"ok": True, "models": models, "active": selected, "base_url": base_url}
+        return {
+            "ok": True,
+            "models": models,
+            "active": str(selected or "").strip(),
+            "active_model_name": selected_model_name,
+            "base_url": base_url,
+        }
 
     @router.get("/api/settings/tools")
     async def api_get_tools():
@@ -1346,7 +1606,7 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
             continue
         content = (m.get("content") or "").strip()
         has_live_detail = bool(m.get("reasoning_content") or m.get("tool_calls"))
-        if role == "user" and not content:
+        if role == "user" and not content and not m.get("attachments"):
             continue
         if role == "assistant" and not content and not has_live_detail:
             continue
@@ -1355,6 +1615,21 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
         ui_msg = {"id": message_id, "messageId": message_id, "role": ui_role, "time": "—"}
         if content:
             ui_msg["body"] = content
+        if isinstance(m.get("attachments"), list):
+            ui_msg["attachments"] = [
+                {
+                    "id": str(item.get("id") or "").strip(),
+                    "name": str(item.get("name") or "file"),
+                    "content_type": str(item.get("content_type") or "application/octet-stream"),
+                    "size": int(item.get("size") or 0),
+                    "kind": str(item.get("kind") or "file"),
+                    "url": str(item.get("url") or "").strip(),
+                    **({"width": int(item.get("width"))} if str(item.get("width", "")).strip().isdigit() else {}),
+                    **({"height": int(item.get("height"))} if str(item.get("height", "")).strip().isdigit() else {}),
+                }
+                for item in m.get("attachments")
+                if isinstance(item, dict)
+            ]
         if bool(m.get("intermediate_reply")):
             ui_msg["intermediateReply"] = True
         if bool(m.get("question_prompt")):
@@ -1965,12 +2240,17 @@ def _build_live_flow_round(
     ]
     edges: list[dict[str, Any]] = []
     if last_user and not system_initiated:
+        user_text = str(last_user.get("body") or "").strip() or (
+            "[Uploaded attachment]"
+            if last_user.get("attachments")
+            else "—"
+        )
         nodes.insert(0, {
             "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
             "title": round_title, "status": "done",
             "detail": {
                 "role": "User",
-                "text": last_user["body"] if last_user else "—",
+                "text": user_text,
                 "tokens": 0,
                 "time": last_user["time"] if last_user else "—",
             },
@@ -2593,6 +2873,17 @@ def _build_skills() -> list[dict]:
             "recent": [],
         },
         {
+            "id": "attachments", "name": "Attachments", "icon": "◫",
+            "desc": "Parse uploaded PDFs and inspect images. Uses local PDF extraction and multimodal vision when available.",
+            "enabled": True, "installed": True, "hotkey": "P",
+            "version": "1.0.0", "author": "Cyrene core",
+            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
+            "tools": ["AnalyzeAttachment", "Read"],
+            "prompt": "Use AnalyzeAttachment for uploaded PDFs and images. PDFs extract text locally; images use the current model's vision capability when supported.",
+            "tags": ["core", "attachments", "vision"],
+            "recent": [],
+        },
+        {
             "id": "shell", "name": "Shell", "icon": "▣",
             "desc": "Execute shell commands. WARNING: hardcoded to powershell on macOS/Linux — needs fix.",
             "enabled": True, "installed": True, "hotkey": "B",
@@ -2690,9 +2981,10 @@ def _build_settings_meta() -> dict:
 
 def _build_config() -> dict:
     settings = get_web_settings()
+    live_model, live_base_url = _live_llm_config()
     return {
-        "model": OPENAI_MODEL,
-        "base_url": OPENAI_BASE_URL,
+        "model": live_model,
+        "base_url": live_base_url,
         "assistant_name": ASSISTANT_NAME,
         "soul_path": str(SOUL_PATH),
         "workspace_dir": str(WORKSPACE_DIR),

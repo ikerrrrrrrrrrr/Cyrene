@@ -1429,6 +1429,77 @@ async def _synthesize_subagent_results(
     return llm_text or experts_block
 
 
+def _is_placeholder_reply(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return normalized in {
+        "",
+        "done",
+        "done.",
+        "finished",
+        "finished.",
+        "ok",
+        "ok.",
+        "okay",
+        "okay.",
+        "完成",
+        "完成。",
+        "已完成",
+        "已完成。",
+    }
+
+
+async def _final_user_reply_from_history(messages: list[dict[str, Any]], max_tokens: int | None = None) -> str:
+    last_user_text = next(
+        (
+            str(message.get("content") or "").strip()
+            for message in reversed(messages)
+            if isinstance(message, dict) and str(message.get("role") or "") == "user" and str(message.get("content") or "").strip()
+        ),
+        "",
+    )
+    prompt_messages = [
+        *messages,
+        {
+            "role": "user",
+            "content": (
+                ("Now answer the user's request directly using the gathered tool results.\n" if last_user_text else
+                 "The user uploaded one or more attachments without extra text. Summarize the attachment contents directly using the gathered tool results.\n")
+                + "Do not call tools.\n"
+                + "Do not reply with only 'Done'.\n"
+                + "If the tools extracted file or attachment contents, quote or summarize those contents in your answer."
+            ),
+        },
+    ]
+    response = await (_call_llm_stream(prompt_messages, max_tokens=max_tokens) if _streaming_reply_requested() else _call_llm(prompt_messages, tools=None, max_tokens=max_tokens))
+    return _assistant_text(response).strip()
+
+
+def _tool_result_fallback_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if not isinstance(message, dict) or str(message.get("role") or "") != "tool":
+            continue
+        raw = str(message.get("content") or "").strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            text_preview = str(payload.get("text_preview") or "").strip()
+            if text_preview:
+                return f"我从附件中提取到的内容是：\n\n{text_preview}"
+            stdout = str(payload.get("stdout") or "").strip()
+            if stdout:
+                return f"我从附件中提取到的内容是：\n\n{stdout[:4000]}"
+            preview = str(payload.get("preview") or "").strip()
+            if preview and "no built-in parser" not in preview.lower():
+                return f"我从附件中提取到的内容是：\n\n{preview}"
+        elif raw and not raw.lower().startswith("tool failed:"):
+            return f"我从附件中提取到的内容是：\n\n{raw[:4000]}"
+    return ""
+
+
 async def _final_reply_from_history(messages: list[dict[str, Any]], max_tokens: int | None = None) -> str:
     response = await (_call_llm_stream(messages, max_tokens=max_tokens) if _streaming_reply_requested() else _call_llm(messages, tools=None, max_tokens=max_tokens))
     return _assistant_text(response).strip() or "Done."
@@ -1469,14 +1540,23 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
             "detail": f"Main agent is applying guidance to {len(snapshot)} subagent(s).",
         })
         await _fan_out_guidance_to_subagents(target_round_id, content, bot, chat_id, db_path)
-        interrupted, summary = await _wait_for_subagent_round(target_round_id, bot, chat_id, db_path)
+        interrupted, _summary = await _wait_for_subagent_round(target_round_id, bot, chat_id, db_path)
         if interrupted:
             reply = "[Sub-agents are still working in the background. The guidance was delivered and the round is continuing.]"
         else:
-            reply = await _synthesize_subagent_results(
-                task=content,
-                summary=summary,
-                round_title=round_title,
+            from cyrene.subagent import run_summary_subagent as _run_summary_subagent
+
+            parent_task = next(
+                (
+                    str(msg.get("content") or "").strip()
+                    for msg in context["round_history"]
+                    if str(msg.get("role") or "").strip() == "user" and str(msg.get("content") or "").strip()
+                ),
+                content,
+            )
+            reply = await _run_summary_subagent(
+                round_id=target_round_id,
+                parent_task=parent_task,
                 guidance=content,
                 round_history=context["round_history"],
             )
@@ -2225,13 +2305,19 @@ async def _run_main_agent(
     system_prompt: str = "",
     client_request_id: str = "",
     persist_user_message: bool = True,
+    public_user_message: str | None = None,
+    public_attachments: list[dict[str, Any]] | None = None,
     lang: str = "",
 ) -> str:
     """主 Agent：先轻量判断是否需工具，再决定是否进重循环。"""
     _caller_type.set("main_agent")
     suppress_initial_detail = _ui_round_hide_initial_detail.get()
     round_id = _current_round_id.get()
-    user_entry = {"role": "user", "content": user_message}
+    visible_user_message = user_message if public_user_message is None else str(public_user_message)
+    user_message_id = f"user_{uuid4().hex}"
+    user_entry = {"role": "user", "content": visible_user_message, "message_id": user_message_id}
+    if public_attachments:
+        user_entry["attachments"] = [dict(item) for item in public_attachments if isinstance(item, dict)]
     if round_id:
         user_entry["round_id"] = round_id
     if client_request_id:
@@ -2239,15 +2325,54 @@ async def _run_main_agent(
     if persist_user_message:
         await _append_session_message(user_entry)
     effective_system = system_prompt or _MAIN_AGENT_PROMPT
-    phase1_messages = [{"role": "system", "content": effective_system}, *history, user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
+    llm_user_entry = dict(user_entry)
+    llm_user_entry["content"] = user_message
+    phase1_messages = [{"role": "system", "content": effective_system}, *history, llm_user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
+
+    async def _ensure_text_reply(
+        response_obj: dict[str, Any],
+        base_messages: list[dict[str, Any]],
+        fallback: str = "Done.",
+    ) -> str:
+        text = _assistant_text(response_obj).strip()
+        has_tool_results = any(
+            (
+                str(message.get("role") or "") == "tool"
+                or (
+                    str(message.get("role") or "") == "assistant"
+                    and bool(message.get("tool_calls"))
+                )
+            )
+            for message in base_messages
+            if isinstance(message, dict)
+        )
+        if text and not (has_tool_results and _is_placeholder_reply(text)):
+            return text
+        if has_tool_results:
+            final_user_text = (await _final_user_reply_from_history(base_messages, max_tokens=None)).strip()
+            if final_user_text and not _is_placeholder_reply(final_user_text):
+                return final_user_text
+            fallback_from_tools = _tool_result_fallback_text(base_messages).strip()
+            if fallback_from_tools:
+                return fallback_from_tools
+        final_text = (await _final_reply_from_history(base_messages, max_tokens=None)).strip()
+        if final_text and not _is_placeholder_reply(final_text):
+            return final_text
+        return fallback
 
     def _session_messages_to_save(current_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         _flush_intermediate_user_replies(current_messages)
-        return [
-            message
-            for message in current_messages[1:]
-            if message["role"] != "system" and (persist_user_message or message is not user_entry)
-        ]
+        saved: list[dict[str, Any]] = []
+        for message in current_messages[1:]:
+            if message["role"] == "system":
+                continue
+            if not persist_user_message and message.get("message_id") == user_message_id:
+                continue
+            if message.get("role") == "user" and message.get("message_id") == user_message_id:
+                saved.append(dict(user_entry))
+                continue
+            saved.append(message)
+        return saved
 
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
     response = await _call_llm(phase1_messages, tools=_LIGHT_TOOL_DEFS)
@@ -2277,7 +2402,7 @@ async def _run_main_agent(
         ]
         response = await _call_llm(retry_messages, tools=_LIGHT_TOOL_DEFS)
     tool_calls = response.get("tool_calls") or []
-    messages = [{"role": "system", "content": effective_system}, *history, user_entry]
+    messages = [{"role": "system", "content": effective_system}, *history, llm_user_entry]
     assistant_entry = _assistant_entry_from_response(response, round_id)
     messages.append(assistant_entry)
 
@@ -2294,7 +2419,7 @@ async def _run_main_agent(
             if client_request_id:
                 messages[-1]["client_request_id"] = client_request_id
             await _save_session_messages(_session_messages_to_save(messages))
-            return _assistant_text(response).strip() or "Done."
+            return await _ensure_text_reply(response, messages)
 
     if ask_user_call:
         try:
@@ -2309,7 +2434,7 @@ async def _run_main_agent(
         if _tool_result_requests_user_input(result):
             return _AWAITING_USER_SENTINEL
         await _save_session_messages(_session_messages_to_save(messages))
-        return _assistant_text(response).strip() or str(result)
+        return (await _ensure_text_reply(response, messages, fallback=str(result)))
 
     if use_tools_call:
         event = {
@@ -2320,13 +2445,8 @@ async def _run_main_agent(
         if not suppress_initial_detail:
             event["detail"] = f"Phase 1 decided to use tools. Task: {user_message[:120]}"
         await _publish_runtime_event(event)
-        # Phase 2: 重循环 — 全部工具。使用原始用户消息，不用 LLM 编的 task
-        user_entry = {"role": "user", "content": user_message}
-        if round_id:
-            user_entry["round_id"] = round_id
-        if client_request_id:
-            user_entry["client_request_id"] = client_request_id
-        messages = [{"role": "system", "content": effective_system}, *history, user_entry]
+        # Phase 2: 重循环 — LLM 使用带附件提示的用户消息，持久化仍使用可见版用户消息。
+        messages = [{"role": "system", "content": effective_system}, *history, dict(llm_user_entry)]
 
         for _ in range(_MAX_TOOL_ROUNDS):
             response = await _call_llm(messages, tools=get_active_tool_defs())
@@ -2363,7 +2483,7 @@ async def _run_main_agent(
                 if client_request_id:
                     messages[-1]["client_request_id"] = client_request_id
                 await _save_session_messages(_session_messages_to_save(messages))
-                return _assistant_text(response).strip() or "Done."
+                return await _ensure_text_reply(response, messages)
             if not tcs:
                 if _streaming_reply_requested():
                     messages.pop()
@@ -2379,7 +2499,7 @@ async def _run_main_agent(
                 if client_request_id:
                     messages[-1]["client_request_id"] = client_request_id
                 await _save_session_messages(_session_messages_to_save(messages))
-                return _assistant_text(response).strip() or "Done."
+                return await _ensure_text_reply(response, messages)
 
             awaiting_user = False
             spawned = False
@@ -2423,11 +2543,11 @@ async def _run_main_agent(
                 from cyrene.subagent import (
                     _run_subagent,
                     _spawn_subagent_task,
-                    collect_results as _sub_collect,
                     clear as _sub_clear,
                     get_snapshot as _sub_snapshot,
                     get_raw_messages as _sub_raw_msgs,
                     reactivate as _sub_reactivate,
+                    run_summary_subagent as _run_summary_subagent,
                 )
                 from cyrene.inbox import get_unread_count as _inbox_unread
 
@@ -2478,14 +2598,17 @@ async def _run_main_agent(
                     return "[Sub-agents are still working in the background. You can continue the conversation.]"
                 # 等 quiescent 后，收集结果
                 await asyncio.sleep(2)  # 给 subagent 一点时间写 registry
-                summary = await _sub_collect(round_id=round_id)
                 await _publish_runtime_event({
                     "type": "phase_transition",
                     "from": "subagent_monitoring",
                     "to": "synthesis",
-                    "detail": "All subagents done, synthesizing results",
+                    "detail": "All subagents done, starting summary subagent",
                 })
-                final_text = await _synthesize_subagent_results(task=user_message, summary=summary, round_history=messages)
+                final_text = await _run_summary_subagent(
+                    round_id=round_id,
+                    parent_task=user_message,
+                    round_history=messages,
+                )
                 synthesis_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
                 if client_request_id:
                     synthesis_entry["client_request_id"] = client_request_id
@@ -2523,7 +2646,7 @@ async def _run_main_agent(
     if client_request_id:
         messages[-1]["client_request_id"] = client_request_id
     await _save_session_messages(_session_messages_to_save(messages))
-    return _assistant_text(response).strip() or "Done."
+    return await _ensure_text_reply(response, messages)
 
 
 # ---------------------------------------------------------------------------
@@ -2585,15 +2708,41 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 # ---------------------------------------------------------------------------
 
 
-async def run_agent(user_message: str, bot: Any, chat_id: int, db_path: str, client_request_id: str = "", lang: str = "") -> str:
+async def run_agent(
+    user_message: str,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    client_request_id: str = "",
+    lang: str = "",
+    public_user_message: str | None = None,
+    public_attachments: list[dict[str, Any]] | None = None,
+) -> str:
     """Main entry point. Runs the main agent loop with full tools."""
     if _agent_lock.locked():
         interrupt_active_run()
     async with _agent_lock:
         _interrupt_event.clear()
         if client_request_id:
-            return await _run_chat_agent(user_message, bot, chat_id, db_path, client_request_id=client_request_id, lang=lang)
-        return await _run_chat_agent(user_message, bot, chat_id, db_path, lang=lang)
+            return await _run_chat_agent(
+                user_message,
+                bot,
+                chat_id,
+                db_path,
+                client_request_id=client_request_id,
+                lang=lang,
+                public_user_message=public_user_message,
+                public_attachments=public_attachments,
+            )
+        return await _run_chat_agent(
+            user_message,
+            bot,
+            chat_id,
+            db_path,
+            lang=lang,
+            public_user_message=public_user_message,
+            public_attachments=public_attachments,
+        )
 
 
 async def _clear_interrupt_when_idle() -> None:
@@ -2628,6 +2777,8 @@ async def _run_chat_agent(
     persist_insert_at: int | None = None,
     client_request_id: str = "",
     persist_user_message: bool = True,
+    public_user_message: str | None = None,
+    public_attachments: list[dict[str, Any]] | None = None,
     public_prompt: str | None = None,
     refresh_labels: bool = True,
     hide_initial_detail: bool = False,
@@ -2698,6 +2849,8 @@ async def _run_chat_agent(
             main_system,
             client_request_id=client_request_id,
             persist_user_message=persist_user_message,
+            public_user_message=public_user_message,
+            public_attachments=public_attachments,
             lang=lang,
         )
 

@@ -22,6 +22,7 @@ from urllib.parse import quote
 import httpx
 from croniter import croniter
 
+from cyrene.attachments import analyze_attachment, is_uploaded_attachment_path
 from cyrene import db
 from cyrene.config import (
     DATA_DIR,
@@ -42,6 +43,13 @@ from cyrene.soul import read_shallow_memory
 
 logger = logging.getLogger(__name__)
 _CC_PROJECT_DIR = WORKSPACE_DIR.parent
+_MAIN_ONLY_TOOLS = {
+    "send_telegram",
+    "send_message",
+    "ask_user",
+    "spawn_subagent",
+    "query_round",
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,6 +70,12 @@ def _json_result(payload: Any) -> str:
     if isinstance(payload, str):
         return payload
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _resolve_tool_path(path_str: str) -> Path:
+    if is_uploaded_attachment_path(path_str):
+        return Path(path_str).resolve()
+    return _resolve_workspace_path(path_str)
 
 
 def _normalize_schedule_datetime(raw_value: str) -> str:
@@ -104,14 +118,7 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     )
 
     if _current_agent_id.get() != "main":
-        await append_system_message(
-            text,
-            message_meta={"scheduled": True},
-            publish_event={"scheduled": True},
-        )
-        if _notify_state is not None:
-            _notify_state["sent"] = True
-        return "Scheduled message sent to the user."
+        return "Only the main agent can send a user-visible WebUI message. Subagents must report via quit or send_agent_message."
 
     round_id = str(_current_round_id.get() or "").strip()
     if not round_id:
@@ -225,7 +232,7 @@ async def _tool_read(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     from cyrene.settings_store import is_workspace_active
     if not is_workspace_active():
         return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
-    path = _resolve_workspace_path(str(args["path"]))
+    path = _resolve_tool_path(str(args["path"]))
     return _truncate(path.read_text(encoding="utf-8"))
 
 
@@ -259,6 +266,14 @@ async def _tool_edit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     path.write_text(updated, encoding="utf-8")
     replaced = occurrences if replace_all else 1
     return f"Edited {path}. Replacements: {replaced}"
+
+
+async def _tool_analyze_attachment(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    path = _resolve_tool_path(str(args["path"]))
+    prompt = str(args.get("prompt", "") or "")
+    force_refresh = bool(args.get("force_refresh", False))
+    result = await analyze_attachment(str(path), prompt=prompt, force_refresh=force_refresh)
+    return _json_result(result)
 
 
 async def _tool_glob(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -461,7 +476,9 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
     task = str(args.get("task", ""))
     if not agent_id or not task:
         return "Error: agent_id and task are required."
-    from cyrene.agent import _current_round_id
+    from cyrene.agent import _current_agent_id, _current_round_id
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can spawn subagents."
     await _reg_subagent(agent_id, task, round_id=_current_round_id.get())
     _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path), agent_id)
     return f"Sub-agent '{agent_id}' spawned. Task: {task[:80]}"
@@ -469,6 +486,10 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
 
 async def _tool_query_round(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     """Query live round status for the main agent."""
+    from cyrene.agent import _current_agent_id
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can inspect live round status."
     from cyrene.agent import query_live_rounds
 
     return query_live_rounds(round_id=str(args.get("round_id", "")).strip())
@@ -603,7 +624,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "send_message",
-            "description": "Send a brief user-visible mid-run reply in the current chat. Use this sparingly when there is meaningful progress or a useful intermediate result, then continue working toward the final answer.",
+            "description": "Main agent only. Send a brief user-visible mid-run reply in the current chat. Never use this for subagent coordination or subagent final delivery.",
             "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
         },
     },
@@ -704,6 +725,22 @@ TOOL_DEFS = [
                     "replace_all": {"type": "boolean"},
                 },
                 "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "AnalyzeAttachment",
+            "description": "Analyze an uploaded attachment or workspace file. PDFs are parsed to text locally. Images return metadata and, when the current model appears multimodal, a vision-based description/OCR. Use this whenever the user uploaded a PDF or image and you need its contents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the uploaded file or a workspace-relative path."},
+                    "prompt": {"type": "string", "description": "Optional custom instruction for image analysis."},
+                    "force_refresh": {"type": "boolean", "description": "Recompute analysis instead of using cached sidecar output."},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -858,7 +895,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "spawn_subagent",
-            "description": "Spawn a sub-agent. A sub-agent has independent full tool access and can communicate with other agents via send_agent_message. The parent agent automatically collects each sub-agent's final result from its quit text, so do not invent a separate coordinator agent.",
+            "description": "Main agent only. Spawn a sub-agent. Subagents must not spawn more subagents; they should coordinate with peers via send_agent_message and finish via quit.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -928,6 +965,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "Read": _tool_read,
     "Write": _tool_write,
     "Edit": _tool_edit,
+    "AnalyzeAttachment": _tool_analyze_attachment,
     "Glob": _tool_glob,
     "Grep": _tool_grep,
     "Bash": _tool_bash,
@@ -948,11 +986,25 @@ def get_active_tool_defs() -> list[dict]:
 
     Protected tools (quit) are always included.
     """
+    return get_active_tool_defs_for_actor()
+
+
+def _tool_blocklist_for_actor(actor: str) -> set[str]:
+    return set(_MAIN_ONLY_TOOLS) if actor == "subagent" else set()
+
+
+def is_tool_allowed_for_actor(name: str, actor: str = "main") -> bool:
+    return str(name or "") not in _tool_blocklist_for_actor(actor)
+
+
+def get_active_tool_defs_for_actor(actor: str = "main") -> list[dict]:
+    """Return enabled tool defs filtered for the requested actor type."""
     from cyrene.settings_store import is_tool_enabled
 
+    blocked = _tool_blocklist_for_actor(actor)
     defs = [
         td for td in TOOL_DEFS
-        if is_tool_enabled(td["function"]["name"])
+        if is_tool_enabled(td["function"]["name"]) and td["function"]["name"] not in blocked
     ]
 
     # Append MCP tools from connected servers
@@ -962,7 +1014,7 @@ def get_active_tool_defs() -> list[dict]:
         manager = _get_mcp_mgr()
         for mcp_td in manager.get_tool_defs():
             name = mcp_td["function"]["name"]
-            if is_tool_enabled(name):
+            if is_tool_enabled(name) and name not in blocked:
                 defs.append(mcp_td)
     except Exception:
         logger.warning("Failed to fetch MCP tool defs", exc_info=True)

@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from cyrene import debug
+from cyrene.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ TIMEOUT = "timeout"          # 超时退出
 _MAX_WAITING_RESULT_CHARS = 6000
 _MAX_FINAL_RESULT_CHARS = 16000
 _MAX_COLLECT_RESULT_CHARS = 12000
+_MAX_SUMMARY_MESSAGE_CHARS = 2400
+_MAX_SUMMARY_TOTAL_CHARS = 48000
+_SUMMARY_AGENT_PREFIX = "agent_summary_"
 
 # 全局注册表
 _registry: dict[str, dict] = {}
@@ -359,6 +363,213 @@ async def get_snapshot(round_id: str = "") -> dict:
         return snapshot
 
 
+def _summary_agent_id(round_id: str) -> str:
+    suffix = str(round_id or "").removeprefix("round_").strip() or "adhoc"
+    suffix = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in suffix)
+    return f"{_SUMMARY_AGENT_PREFIX}{suffix[:32]}"
+
+
+def _truncate_summary_text(text: str, limit: int = _MAX_SUMMARY_MESSAGE_CHARS) -> str:
+    source = str(text or "")
+    if len(source) <= limit:
+        return source
+    return source[:limit] + "\n...[truncated]..."
+
+
+def _render_summary_message(message: dict[str, Any]) -> str:
+    role = str(message.get("role", "") or "").strip() or "unknown"
+    if role == "system":
+        return ""
+
+    chunks: list[str] = []
+    content = str(message.get("content") or "").strip()
+    reasoning = str(message.get("reasoning_content") or "").strip()
+    if role == "assistant" and reasoning:
+        chunks.append(f"[reasoning]\n{_truncate_summary_text(reasoning)}")
+    if content:
+        chunks.append(_truncate_summary_text(content))
+
+    tool_calls = message.get("tool_calls") or []
+    for tc in tool_calls:
+        fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+        name = str(fn.get("name") or "tool").strip()
+        args = str(fn.get("arguments") or "").strip()
+        rendered = f"[tool_call] {name}"
+        if args:
+            rendered += f"\nargs: {_truncate_summary_text(args, 600)}"
+        chunks.append(rendered)
+
+    if role == "tool" and not chunks:
+        chunks.append(_truncate_summary_text(str(message.get("content") or "")))
+
+    if not chunks:
+        return ""
+    return f"{role}:\n" + "\n".join(chunks)
+
+
+async def _registry_entries_for_round(round_id: str = "", exclude_ids: set[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
+    blocked = exclude_ids or set()
+    async with _lock:
+        entries = [
+            (aid, dict(info))
+            for aid, info in _registry.items()
+            if aid not in blocked and _matches_round(info, round_id)
+        ]
+    entries.sort(key=lambda item: str(item[1].get("created_at") or ""))
+    return entries
+
+
+def _round_comm_messages(agent_ids: set[str], round_id: str = "") -> list[dict[str, Any]]:
+    inbox_root = DATA_DIR / "inbox"
+    if not agent_ids or not inbox_root.exists():
+        return []
+
+    messages: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for msg_file in inbox_root.glob("*/*.json"):
+        try:
+            payload = json.loads(msg_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if round_id and str(payload.get("round_id", "")).strip() != round_id:
+            continue
+        from_agent = str(payload.get("from", "")).strip()
+        to_agent = str(payload.get("to", "")).strip()
+        if from_agent not in agent_ids or to_agent not in agent_ids:
+            continue
+        message_id = str(payload.get("message_id") or msg_file.stem).strip()
+        if message_id in seen_ids:
+            continue
+        seen_ids.add(message_id)
+        messages.append(payload)
+    messages.sort(key=lambda item: str(item.get("timestamp") or ""))
+    return messages
+
+
+async def build_round_summary_transcript(round_id: str, exclude_ids: set[str] | None = None) -> str:
+    entries = await _registry_entries_for_round(round_id=round_id, exclude_ids=exclude_ids)
+    if not entries:
+        return "No peer subagent transcript was captured for this round."
+
+    sections: list[str] = []
+    total_chars = 0
+    agent_ids = {agent_id for agent_id, _ in entries}
+    for agent_id, info in entries:
+        rendered_messages = [
+            block
+            for block in (_render_summary_message(message) for message in (info.get("messages") or []))
+            if block
+        ]
+        section = (
+            f"## {agent_id}\n"
+            f"task: {str(info.get('task') or '').strip() or '—'}\n"
+            f"status: {str(info.get('status') or '').strip() or 'unknown'}\n"
+            f"result:\n{_truncate_summary_text(str(info.get('result') or ''), 5000) or '—'}\n\n"
+            f"transcript:\n" + ("\n\n".join(rendered_messages) if rendered_messages else "—")
+        )
+        if total_chars + len(section) > _MAX_SUMMARY_TOTAL_CHARS:
+            remaining = _MAX_SUMMARY_TOTAL_CHARS - total_chars
+            if remaining <= 0:
+                sections.append("[older peer transcript omitted]")
+                break
+            sections.append(_truncate_summary_text(section, remaining))
+            sections.append("[older peer transcript omitted]")
+            break
+        sections.append(section)
+        total_chars += len(section)
+
+    comms = _round_comm_messages(agent_ids, round_id=round_id)
+    if comms and total_chars < _MAX_SUMMARY_TOTAL_CHARS:
+        lines = ["## Inter-agent messages"]
+        for item in comms:
+            lines.append(
+                f"[{item.get('timestamp', '—')}] {item.get('from', '?')} -> {item.get('to', '?')} ({item.get('type', 'chat')})\n"
+                f"{_truncate_summary_text(str(item.get('content') or ''))}"
+            )
+        comms_block = "\n\n".join(lines)
+        remaining = _MAX_SUMMARY_TOTAL_CHARS - total_chars
+        if len(comms_block) > remaining:
+            comms_block = _truncate_summary_text(comms_block, remaining)
+        sections.append(comms_block)
+
+    return "\n\n".join(sections).strip() or "No peer subagent transcript was captured for this round."
+
+
+async def run_summary_subagent(
+    round_id: str,
+    parent_task: str,
+    guidance: str = "",
+    round_history: list[dict[str, Any]] | None = None,
+) -> str:
+    """Run a dedicated summary subagent after peer subagents finish."""
+    from cyrene.agent import _call_llm
+    from cyrene.llm import _assistant_text
+
+    summary_agent_id = _summary_agent_id(round_id)
+    summary_task = "Summarize every peer subagent transcript and their communication for the main agent."
+    transcript = await build_round_summary_transcript(round_id=round_id, exclude_ids={summary_agent_id})
+
+    history_lines: list[str] = []
+    for msg in (round_history or [])[-12:]:
+        role = str(msg.get("role", "") or "").strip()
+        if role == "system":
+            continue
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        history_lines.append(f"[{role}] {_truncate_summary_text(content, 800)}")
+    history_block = "\n".join(history_lines) if history_lines else "—"
+
+    await register(summary_agent_id, summary_task, round_id=round_id)
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are the dedicated summary subagent.\n"
+                "You never speak to the user directly.\n"
+                "Your output goes only to the main agent.\n"
+                "Read every peer subagent transcript and the inter-agent message log, then produce a faithful integrated summary.\n"
+                "Requirements:\n"
+                "- Attribute important findings to the correct subagent.\n"
+                "- Preserve concrete conclusions, disagreements, and unresolved gaps.\n"
+                "- Do not invent facts that are not in the supplied transcript.\n"
+                "- Do not ask the user questions.\n"
+                "- Do not spawn or message any other agent.\n"
+                "- Return a final summary that the main agent can forward to the WebUI."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Original user task:\n{parent_task or '—'}\n\n"
+                f"Round guidance:\n{guidance or '—'}\n\n"
+                f"Main-agent round context:\n{history_block}\n\n"
+                f"Peer subagent transcript bundle:\n{transcript}"
+            ),
+        },
+    ]
+    await save_messages(summary_agent_id, messages)
+
+    try:
+        response = await _call_llm(messages, tools=None, max_tokens=None)
+        assistant_entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
+        if response.get("reasoning_content"):
+            assistant_entry["reasoning_content"] = response["reasoning_content"]
+        if response.get("usage"):
+            assistant_entry["usage"] = response["usage"]
+        messages.append(assistant_entry)
+        await save_messages(summary_agent_id, messages)
+        final_text = _assistant_text(response).strip() or "No summary was produced."
+    except Exception as exc:
+        logger.exception("Summary sub-agent %s crashed", summary_agent_id)
+        final_text = f"Summary sub-agent crashed: {exc}"
+
+    await mark_done(summary_agent_id, final_text)
+    return final_text
+
+
 # ---------------------------------------------------------------------------
 # Sub-agent execution loop (moved from agent.py)
 # ---------------------------------------------------------------------------
@@ -403,7 +614,7 @@ async def _run_subagent(
     """
     from cyrene.agent import _MAIN_AGENT_PROMPT, _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
     from cyrene.llm import _assistant_text, _truncate
-    from cyrene.tools import get_active_tool_defs, _execute_tool
+    from cyrene.tools import get_active_tool_defs_for_actor, is_tool_allowed_for_actor, _execute_tool
 
     _caller_type.set(f"subagent_{agent_id}")
     round_id = await get_round_id(agent_id)
@@ -416,7 +627,9 @@ async def _run_subagent(
 
 ## Sub-agent Context
 - You are a sub-agent, ID: {agent_id}. Complete the assigned task directly.
-- You can use the full toolset, including `send_agent_message`, to coordinate with other sub-agents.
+- You can use regular work tools plus `send_agent_message` to coordinate with other sub-agents.
+- You MUST NOT call `send_message`, `send_telegram`, `ask_user`, `spawn_subagent`, or `query_round`.
+- If you need the user, report that need in your final result for the main agent instead of contacting the user directly.
 - Active sub-agents and inbox context may be injected as separate user messages before each turn.
 - Your final text is collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
 """
@@ -460,7 +673,7 @@ async def _run_subagent(
                 # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
                 await _mark_inbox_read(agent_id)
 
-            response = await _call_llm(messages, tools=get_active_tool_defs(), max_tokens=None)
+            response = await _call_llm(messages, tools=get_active_tool_defs_for_actor("subagent"), max_tokens=None)
 
             entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):
@@ -529,6 +742,10 @@ async def _run_subagent(
 
             for tc in tcs:
                 name = tc["function"]["name"]
+                if not is_tool_allowed_for_actor(name, "subagent"):
+                    result = f"Tool {name} is reserved for the main agent. Subagents must coordinate via send_agent_message and return their final result via quit."
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                    continue
                 try:
                     args = json.loads(tc["function"].get("arguments") or "{}")
                     token = _current_agent_id.set(agent_id)

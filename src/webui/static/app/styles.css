@@ -1554,6 +1554,15 @@ html[data-theme="light"] .msg.user .msg-body {
   background: var(--accent-faint);
   color: var(--accent);
 }
+.chip-attachment {
+  max-width: 100%;
+}
+.chip-attachment > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .context-picker {
   margin-bottom: 8px;
   border: 1px solid var(--line);
@@ -1618,6 +1627,51 @@ html[data-theme="light"] .msg.user .msg-body {
   max-height: 200px;
   line-height: 1.55;
 }
+.composer-attachments {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.composer-attachment-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 8px;
+  border-radius: var(--r-l);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  min-width: 0;
+}
+.composer-attachment-card.image {
+  align-items: flex-start;
+}
+.composer-attachment-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  min-height: 72px;
+  border-radius: var(--r-m);
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.composer-attachment-thumb img {
+  display: block;
+  object-fit: contain;
+  border-radius: inherit;
+}
+.composer-attachment-file {
+  width: 112px;
+  min-width: 112px;
+  height: 72px;
+  border-radius: var(--r-m);
+  border: 1px dashed var(--line-2);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0)),
+    var(--bg-3);
+}
 .composer-actions {
   display: flex; align-items: center; gap: 6px; margin-top: 8px;
 }
@@ -1661,6 +1715,52 @@ html[data-theme="light"] .msg.user .msg-body {
   color: var(--text-4);
 }
 .kbd { border: 1px solid var(--line); padding: 1px 5px; border-radius: 5px; }
+.msg-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+.msg-attachment {
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px;
+  border-radius: var(--r-m);
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.msg-attachment.image {
+  width: auto;
+}
+.msg-attachment-image {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  border-radius: var(--r-m);
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.msg-attachment-image img {
+  display: block;
+  max-width: 100%;
+  object-fit: contain;
+}
+.msg-attachment-file {
+  width: 168px;
+  max-width: min(42vw, 168px);
+  height: 72px;
+  border-radius: var(--r-m);
+  border: 1px dashed var(--line-2);
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0)),
+    var(--bg-3);
+}
 
 /* Chat right pane */
 .chat-side {
