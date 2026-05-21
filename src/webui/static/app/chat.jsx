@@ -674,6 +674,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const [notice, setNotice] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [command, setCommand] = useState("");
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [ccStatus, setCcStatus] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
@@ -787,6 +789,16 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     return function () { window.clearInterval(timer); };
   }, [sending, runtimeState.startedAt]);
 
+  useEffect(function () {
+    if (!slashMenuOpen) return;
+    function onDown(e) {
+      if (e.target.closest(".slash-menu") || e.target.closest(".iconbtn")) return;
+      setSlashMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return function () { document.removeEventListener("mousedown", onDown); };
+  }, [slashMenuOpen]);
+
   function autosize(e) {
     setDraft(e.target.value);
     syncTextareaHeight(taRef.current);
@@ -896,6 +908,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           client_request_id: requestId,
           stream: true,
           lang: lang,
+          command: command || undefined,
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1543,6 +1556,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               placeholder={
                 pendingQuestion
                   ? t("chat.answerPending")
+                  : command === "deep-research"
+                  ? t("chat.deepResearchPlaceholder")
                   : t("chat.messagePlaceholder", { name: DATA.assistantName })
               }
             />
@@ -1586,7 +1601,41 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               >
                 {uploadingAttachments ? "…" : "+"}
               </button>
-              <button className="iconbtn" title={t("chat.slashCommand")}>/</button>
+              <span style={{ position: "relative" }}>
+                <button
+                  className={"iconbtn" + (command ? " active" : "")}
+                  title={command ? t("chat.commandDeepResearch") + ": " + t("chat.commandDeepResearchDesc") : t("chat.slashCommand")}
+                  onClick={function () { setSlashMenuOpen(!slashMenuOpen); }}
+                  style={command ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
+                >/</button>
+                {slashMenuOpen && (
+                  <div className="slash-menu">
+                    <div className="slash-menu-head">{t("chat.commands")}</div>
+                    {[
+                      { id: "deep-research", icon: "🔬", label: t("chat.commandDeepResearch"), desc: t("chat.commandDeepResearchDesc") },
+                    ].map(function (cmd) {
+                      var active = command === cmd.id;
+                      return (
+                        <button
+                          key={cmd.id}
+                          className={"slash-option" + (active ? " active" : "")}
+                          onClick={function () {
+                            setCommand(active ? "" : cmd.id);
+                            setSlashMenuOpen(false);
+                          }}
+                        >
+                          <span className="slash-option-icon">{cmd.icon}</span>
+                          <span className="slash-option-body">
+                            <span className="slash-option-label">{cmd.label}</span>
+                            <span className="slash-option-desc">{cmd.desc}</span>
+                          </span>
+                          {active && <span className="slash-option-check">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </span>
               <button className="iconbtn" title={t("chat.mention")}>@</button>
               <span style={{ flex: 1 }}></span>
               <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>

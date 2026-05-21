@@ -449,6 +449,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         client_request_id = str(body.get("client_request_id") or "").strip()
         wants_stream = bool(body.get("stream"))
         lang = str(body.get("lang") or "").strip()
+        command = str(body.get("command") or "").strip()
         normalized_attachments = [
             {
                 "id": str(item.get("id") or "").strip(),
@@ -525,6 +526,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                         _db_path,
                         client_request_id=client_request_id,
                         lang=lang,
+                        command=command,
                         public_user_message=message,
                         public_attachments=public_attachments,
                     ),
@@ -537,6 +539,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 _db_path,
                 client_request_id=client_request_id,
                 lang=lang,
+                command=command,
                 public_user_message=message,
                 public_attachments=public_attachments,
             )
@@ -2034,8 +2037,8 @@ def _prune_flow_rounds(rounds: list[list[dict]]) -> tuple[list[list[dict]], int]
 
 
 def _round_registry_for_flow(raw_msgs: list[dict], live_registry: dict[str, dict]) -> dict[str, dict]:
-    entries: dict[str, dict] = {}
     round_id = _latest_round_id_from_messages(raw_msgs)
+    entries: dict[str, dict] = _snapshot_entries_from_messages(raw_msgs, round_id=round_id)
     for msg in raw_msgs:
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {})
@@ -2051,15 +2054,28 @@ def _round_registry_for_flow(raw_msgs: list[dict], live_registry: dict[str, dict
             if round_id and live.get("round_id") and live.get("round_id") != round_id:
                 live = {}
             task = str(args.get("task") or live.get("task") or "")
-            entries[agent_id] = {
+            _merge_subagent_record(entries, agent_id, {
                 "task": task,
-                "status": live.get("status", "done"),
-                "result": live.get("result", ""),
-                "messages": list(live.get("messages", [])),
-                "created_at": live.get("created_at"),
-                "updated_at": live.get("updated_at"),
-                "round_id": round_id or live.get("round_id", ""),
-            }
+                "status": live.get("status", entries.get(agent_id, {}).get("status", "done")),
+                "result": live.get("result", entries.get(agent_id, {}).get("result", "")),
+                "messages": list(live.get("messages", [])) or list(entries.get(agent_id, {}).get("messages", [])),
+                "created_at": live.get("created_at", entries.get(agent_id, {}).get("created_at")),
+                "updated_at": live.get("updated_at", entries.get(agent_id, {}).get("updated_at")),
+                "round_id": round_id or live.get("round_id", entries.get(agent_id, {}).get("round_id", "")),
+            })
+    for agent_id, live in live_registry.items():
+        live_round_id = str(live.get("round_id", "")).strip()
+        if round_id and live_round_id and live_round_id != round_id:
+            continue
+        _merge_subagent_record(entries, agent_id, {
+            "task": live.get("task", ""),
+            "status": live.get("status", "done"),
+            "result": live.get("result", ""),
+            "messages": list(live.get("messages", [])),
+            "created_at": live.get("created_at"),
+            "updated_at": live.get("updated_at"),
+            "round_id": round_id or live_round_id,
+        })
     return entries
 
 
@@ -2132,6 +2148,91 @@ def _registry_status_from_ui(status: str) -> str:
         "done": "done",
         "err": "timeout",
     }.get(status, status)
+
+
+def _is_summary_agent_id(agent_id: str) -> bool:
+    return str(agent_id or "").startswith("agent_summary_")
+
+
+def _iter_flow_snapshots(raw_msgs: list[dict], round_id: str = "") -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for msg in raw_msgs:
+        snapshot = msg.get("subagent_flow_snapshot")
+        if not isinstance(snapshot, dict):
+            continue
+        snapshot_round_id = str(snapshot.get("round_id", "")).strip() or str(msg.get("round_id", "")).strip()
+        if round_id and snapshot_round_id and snapshot_round_id != round_id:
+            continue
+        snapshots.append(snapshot)
+    return snapshots
+
+
+def _merge_subagent_record(entries: dict[str, dict[str, Any]], agent_id: str, meta: dict[str, Any]) -> None:
+    incoming = dict(meta)
+    incoming_round_id = str(incoming.get("round_id", "")).strip()
+    existing = entries.get(agent_id)
+    if existing is None:
+        entries[agent_id] = incoming
+        return
+
+    existing_round_id = str(existing.get("round_id", "")).strip()
+    if incoming_round_id and existing_round_id and incoming_round_id != existing_round_id:
+        entries[agent_id] = incoming
+        return
+
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key == "messages":
+            if value:
+                merged["messages"] = value
+            else:
+                merged.setdefault("messages", [])
+            continue
+        if value not in (None, "", []):
+            merged[key] = value
+        else:
+            merged.setdefault(key, value)
+    entries[agent_id] = merged
+
+
+def _snapshot_entries_from_messages(raw_msgs: list[dict], round_id: str = "") -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for snapshot in _iter_flow_snapshots(raw_msgs, round_id=round_id):
+        agents = snapshot.get("agents") or {}
+        if not isinstance(agents, dict):
+            continue
+        snapshot_round_id = str(snapshot.get("round_id", "")).strip()
+        for agent_id, info in agents.items():
+            if not isinstance(info, dict):
+                continue
+            meta = dict(info)
+            meta.setdefault("round_id", snapshot_round_id)
+            meta.setdefault("messages", [])
+            _merge_subagent_record(entries, str(agent_id), meta)
+    return entries
+
+
+def _snapshot_comm_messages_from_messages(raw_msgs: list[dict], round_id: str = "") -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for snapshot in _iter_flow_snapshots(raw_msgs, round_id=round_id):
+        comm_messages = snapshot.get("comm_messages") or []
+        if not isinstance(comm_messages, list):
+            continue
+        for item in comm_messages:
+            if not isinstance(item, dict):
+                continue
+            from_agent = str(item.get("from", "")).strip()
+            to_agent = str(item.get("to", "")).strip()
+            body = str(item.get("content", ""))
+            message_id = str(item.get("message_id") or "").strip()
+            dedupe_key = (message_id, from_agent, to_agent, body)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            items.append(dict(item))
+    items.sort(key=lambda item: str(item.get("timestamp") or ""))
+    return items
 
 
 def _subagent_cards_from_registry(round_registry: dict[str, dict]) -> list[dict]:
@@ -2265,6 +2366,7 @@ def _build_live_flow_round(
     for i, sa in enumerate(subagents):
         nid = f"{prefix}n_sa_{i}"
         agent_node_ids[sa["name"]] = nid
+        is_summary_agent = _is_summary_agent_id(sa["name"])
         info = registry.get(sa["name"], {})
         agent_messages = info.get("messages", [])
         latest_subassistant = next((m for m in reversed(agent_messages) if m.get("role") == "assistant"), None)
@@ -2277,13 +2379,14 @@ def _build_live_flow_round(
         nodes.append({
             "id": nid, "kind": "subagent",
             "x": subagent_x, "y": subagent_y,
-            "title": f"subagent · {sa['name']}",
-            "subtitle": sa["task"][:30],
+            "title": f"{'summary subagent' if is_summary_agent else 'subagent'} · {sa['name']}",
+            "subtitle": ("synthesizer" if is_summary_agent else sa["task"][:30]),
             "status": sa["status"],
             "detail": {
                 "name": sa["name"],
                 "task": sa["task"],
                 "parent": "main agent",
+                "role": "summary" if is_summary_agent else "worker",
                 "spawnedAt": sa.get("createdAt", "—"),
                 "tokensIn": sub_usage.get("prompt_tokens") if sub_usage.get("prompt_tokens") is not None else "—",
                 "tokensOut": sub_usage.get("completion_tokens") if sub_usage.get("completion_tokens") is not None else "—",
@@ -2293,8 +2396,9 @@ def _build_live_flow_round(
             },
         })
         edges.append({
-            "from": main_id, "to": nid,
-            "kind": "active" if sa["status"] == "running" else None,
+            "from": main_id,
+            "to": nid,
+            "kind": "dashed" if is_summary_agent else ("active" if sa["status"] == "running" else None),
         })
 
         sub_nodes, sub_edges = _build_tool_nodes_for_owner(
@@ -2315,7 +2419,20 @@ def _build_live_flow_round(
         subagent_bottoms.append(subagent_y + lane_height)
         subagent_y += lane_height + subagent_gap_y
 
-    edges.extend(_build_comm_edges(agent_node_ids, round_id=round_id))
+    summary_agent_name = next((name for name in agent_node_ids if _is_summary_agent_id(name)), "")
+    if summary_agent_name:
+        summary_node_id = agent_node_ids[summary_agent_name]
+        for agent_name, node_id in agent_node_ids.items():
+            if agent_name == summary_agent_name:
+                continue
+            edges.append({"from": node_id, "to": summary_node_id, "kind": "dashed"})
+
+    edges.extend(_build_comm_edges(
+        agent_node_ids,
+        agent_entries=registry,
+        round_id=round_id,
+        persisted_messages=_snapshot_comm_messages_from_messages(raw_msgs, round_id=round_id),
+    ))
 
     output_content = str(latest_agent.get("body") or "") if latest_agent else ""
     output_status = "done" if output_content else ("running" if subagents else "queued")
@@ -2335,6 +2452,12 @@ def _build_live_flow_round(
             "to": output_id,
             "kind": "active" if output_status == "running" else None,
         })
+        if summary_agent_name:
+            edges.append({
+                "from": agent_node_ids[summary_agent_name],
+                "to": output_id,
+                "kind": "dashed",
+            })
 
     bottom = max((node["y"] + 86) for node in nodes) if nodes else y_offset
     return nodes, edges, bottom
@@ -3056,10 +3179,9 @@ def _load_state_messages() -> list[dict]:
 
 
 def _infer_subagent_entries(raw_msgs: list[dict], registry: dict[str, dict]) -> dict[str, dict]:
-    entries: dict[str, dict] = {
-        agent_id: dict(info)
-        for agent_id, info in registry.items()
-    }
+    entries: dict[str, dict] = _snapshot_entries_from_messages(raw_msgs)
+    for agent_id, info in registry.items():
+        _merge_subagent_record(entries, agent_id, dict(info))
     for entry in entries.values():
         entry.setdefault("messages", [])
 
@@ -3562,12 +3684,96 @@ def _agent_lane_height(tool_count: int) -> int:
     return max(base_height, base_height + (tool_count - 1) * 112)
 
 
-def _build_comm_edges(agent_node_ids: dict[str, str], round_id: str = "") -> list[dict]:
+def _build_comm_edges(
+    agent_node_ids: dict[str, str],
+    agent_entries: dict[str, dict[str, Any]] | None = None,
+    round_id: str = "",
+    persisted_messages: list[dict[str, Any]] | None = None,
+) -> list[dict]:
     edges: list[dict] = []
     if not agent_node_ids:
         return edges
-    seen: set[tuple[str, str, str]] = set()
-    for agent_name, target_node_id in agent_node_ids.items():
+    edge_index: dict[tuple[str, str, str, str], int] = {}
+
+    def _upsert_edge(
+        from_agent: str,
+        to_agent: str,
+        body: str,
+        *,
+        label: str = "chat",
+        timestamp: str = "",
+        source: str = "",
+    ) -> None:
+        if from_agent not in agent_node_ids or to_agent not in agent_node_ids:
+            return
+        if not body.strip():
+            return
+        edge_key = (from_agent, to_agent, label, body)
+        if edge_key in edge_index:
+            existing = edges[edge_index[edge_key]]
+            message = existing.setdefault("message", {})
+            if (not message.get("time") or message.get("time") == "—") and timestamp:
+                message["time"] = _short_time(timestamp)
+            if source and not message.get("source"):
+                message["source"] = source
+            return
+
+        edges.append({
+            "from": agent_node_ids[from_agent],
+            "to": agent_node_ids[to_agent],
+            "kind": "comm",
+            "label": label,
+            "message": {
+                "time": _short_time(timestamp) if timestamp else "—",
+                "summary": _summarize_text(body, 90),
+                "body": body,
+                "source": source or "tool_call",
+            },
+        })
+        edge_index[edge_key] = len(edges) - 1
+
+    for agent_name, info in (agent_entries or {}).items():
+        if agent_name not in agent_node_ids:
+            continue
+        messages = info.get("messages", []) or []
+        tool_outputs = {
+            str(msg.get("tool_call_id") or ""): str(msg.get("content") or "")
+            for msg in messages
+            if isinstance(msg, dict) and msg.get("role") == "tool" and msg.get("tool_call_id")
+        }
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                if str(fn.get("name") or "").strip() != "send_agent_message":
+                    continue
+                args = _safe_json_loads(fn.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    continue
+                output = tool_outputs.get(str(tc.get("id") or ""), "")
+                output_lower = output.lower()
+                if output and "message sent to" not in output_lower:
+                    continue
+                to_agent = str(args.get("to") or "").strip()
+                body = str(args.get("content") or "")
+                _upsert_edge(agent_name, to_agent, body, source="tool_call")
+
+    for payload in persisted_messages or []:
+        if not isinstance(payload, dict):
+            continue
+        if round_id and str(payload.get("round_id", "")).strip() != round_id:
+            continue
+        _upsert_edge(
+            str(payload.get("from", "")).strip(),
+            str(payload.get("to", "")).strip(),
+            str(payload.get("content", "")),
+            label=str(payload.get("type", "chat") or "chat"),
+            timestamp=str(payload.get("timestamp", "") or ""),
+            source="snapshot_log",
+        )
+
+    for agent_name in agent_node_ids:
         inbox_dir = DATA_DIR / "inbox" / agent_name
         if not inbox_dir.exists():
             continue
@@ -3580,24 +3786,14 @@ def _build_comm_edges(agent_node_ids: dict[str, str], round_id: str = "") -> lis
             to_agent = str(payload.get("to", ""))
             if round_id and str(payload.get("round_id", "")) != round_id:
                 continue
-            if from_agent not in agent_node_ids or to_agent not in agent_node_ids:
-                continue
-            edge_key = (from_agent, to_agent, str(payload.get("message_id", msg_file.stem)))
-            if edge_key in seen:
-                continue
-            seen.add(edge_key)
-            body = str(payload.get("content", ""))
-            edges.append({
-                "from": agent_node_ids[from_agent],
-                "to": agent_node_ids[to_agent],
-                "kind": "comm",
-                "label": payload.get("type", "chat"),
-                "message": {
-                    "time": _short_time(payload.get("timestamp")),
-                    "summary": _summarize_text(body, 90),
-                    "body": body,
-                },
-            })
+            _upsert_edge(
+                from_agent,
+                to_agent,
+                str(payload.get("content", "")),
+                label=str(payload.get("type", "chat") or "chat"),
+                timestamp=str(payload.get("timestamp", "") or ""),
+                source="inbox_log",
+            )
     return edges
 
 

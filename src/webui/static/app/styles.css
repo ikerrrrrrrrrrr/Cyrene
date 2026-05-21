@@ -1563,6 +1563,81 @@ html[data-theme="light"] .msg.user .msg-body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.slash-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 280px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  background: var(--bg-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  z-index: 100;
+}
+.slash-menu-head {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-4);
+  padding: 10px 14px 6px;
+}
+.slash-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  transition: background 0.1s;
+}
+.slash-option:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+.slash-option.active {
+  background: var(--accent-faint);
+}
+.slash-option-icon {
+  font-size: 16px;
+  line-height: 1.3;
+  flex-shrink: 0;
+}
+.slash-option-body {
+  min-width: 0;
+}
+.slash-option-label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.slash-option.active .slash-option-label {
+  color: var(--accent);
+}
+.slash-option-desc {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-4);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+.slash-option-check {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
+  align-self: center;
+}
+html[data-text-size="large"] .slash-option { font-size: 15px; }
+html[data-text-size="large"] .slash-option-desc { font-size: 13px; }
+
 .context-picker {
   margin-bottom: 8px;
   border: 1px solid var(--line);

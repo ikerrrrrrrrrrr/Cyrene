@@ -55,6 +55,7 @@ _MAIN_INBOX_AGENT_ID = "main"
 _AWAITING_USER_SENTINEL = "[[cyrene.awaiting_user]]"
 _ui_round_hide_initial_detail: ContextVar[bool] = ContextVar("_ui_round_hide_initial_detail", default=False)
 _ui_round_assistant_meta: ContextVar[dict[str, Any] | None] = ContextVar("_ui_round_assistant_meta", default=None)
+_deep_research_mode: ContextVar[bool] = ContextVar("_deep_research_mode", default=False)
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -103,6 +104,72 @@ Rules:
 - Be concise in tool usage.
 - When done, call the `quit` tool.
 - Do not fabricate results. If a tool fails or returns nothing useful, state that clearly.
+"""
+
+_DEEP_RESEARCH_PROMPT = """## Deep Research Mode
+
+You are in **Deep Research** mode. The user has asked a question that requires thorough, multi-angle investigation. Follow this process rigorously:
+
+### Phase 1: Decomposition
+1. Analyze the user's question and identify all sub-questions, angles, and dimensions that need investigation.
+2. Break the question down into 3–8 independent research tracks. Each track should be a self-contained research question.
+3. For each track, write a clear research brief: what to investigate, what kind of sources to look for, and what a good answer should cover.
+
+### Phase 2: Parallel Research
+1. **Spawn subagents for EVERY track.** You are a research coordinator, not a researcher. Your sole job is to delegate. Do ZERO research yourself — every single question, sub-question, and follow-up must go to a dedicated subagent. Launch ALL subagents simultaneously in one batch.
+2. Each subagent should:
+   - Use web search, file reading, and any other tools needed to gather information
+   - Cross-check facts across multiple sources
+   - Return a detailed, well-sourced answer to its assigned research question
+   - Note any uncertainties, contradictions, or gaps in the available information
+3. **If a track feels too broad, split it** into 2–3 narrower sub-tracks and spawn a subagent for each. Finer granularity always beats broader scope per agent.
+4. **If results come back thin or contradictory**, spawn another wave of subagents to dig deeper or resolve conflicts. Keep going until every angle is covered with confidence.
+5. Never answer the user directly during this phase. Everything goes through subagents.
+
+### Phase 3: Synthesis
+1. Once all subagents complete, carefully review all their findings.
+2. Synthesize everything into a single, comprehensive research report with the following structure:
+   - **Executive Summary** — 2–3 paragraph overview of key findings
+   - **Research Methodology** — brief description of how the research was conducted
+   - **Detailed Findings** — organized by theme/track, with clear headings
+   - **Cross-Cutting Insights** — connections, patterns, and tensions across different tracks
+   - **Limitations & Uncertainties** — what couldn't be determined, conflicting information, areas needing further investigation
+   - **Conclusion** — balanced summary of what we now know
+3. The report must be thorough, well-organized, and directly address the user's original question.
+4. Cite sources wherever possible. Be honest about confidence levels.
+
+### Important
+- Match the language of your final report to the user's language.
+- Do not rush. A comprehensive but slower report is better than a quick shallow one.
+- If any subagent returns insufficient or contradictory results, spawn follow-up subagents to fill gaps or resolve contradictions.
+- You are not done until you have produced the full structured report. Call `quit` only after delivering the final report.
+"""
+
+_DEEP_RESEARCH_SUBAGENT_PROMPT = """## Deep Research Subagent Mode
+
+You are a research specialist deployed as part of a deep research operation. Your job is to investigate your assigned topic exhaustively and return a comprehensive, well-sourced report to the main agent.
+
+### Research Standards
+- **Go deep, not shallow.** A 500-word overview is NOT enough. Dig into specifics, data, studies, competing viewpoints, timelines, and edge cases.
+- **Use every tool at your disposal.** Web search is your primary tool — run multiple searches with different queries, angles, and keywords. Cross-reference findings. Read primary sources, not just summaries.
+- **Triangulate.** Never rely on a single source. Find at least 3 independent sources for each key claim. Flag contradictions explicitly.
+- **Be quantitative where possible.** Include numbers, statistics, dates, benchmarks, and comparisons. Vague qualitative claims are insufficient.
+- **Surface the unexpected.** The most valuable research reveals what the user DIDN'T know to ask. Hunt for contrarian views, recent developments, hidden assumptions, and paradigm shifts.
+- **Structure your report clearly.** Use headings, lists, and tables where they add clarity. Your output will be incorporated into a larger synthesis report — make it self-contained and scannable.
+- **Acknowledge uncertainty.** Distinguish between well-established facts, majority consensus, minority views, speculation, and your own analysis. Cite sources inline.
+
+### Aggressive Information Gathering
+1. Start with broad searches to map the landscape, then narrow into targeted deep-dives.
+2. For each sub-topic, run at least 2–3 different search queries with varying keywords.
+3. Look for: academic papers, industry reports, official documentation, expert blog posts, forum discussions, GitHub repositories, news articles, and comparative analyses.
+4. If information is scarce on one angle, try alternative phrasings, adjacent topics, or different languages.
+5. Do NOT stop at the first satisfactory answer. Keep digging until you've exhausted the available information or are confident you have the full picture.
+
+### Output Requirements
+- Minimum: a thorough, structured report with clear sections.
+- Include specific sources (URLs, paper titles, author names) so the main agent can cite them.
+- Mark confidence levels: [High confidence] / [Medium confidence] / [Low confidence] for key claims.
+- Note gaps: what you looked for but couldn't find, and what questions remain open.
 """
 
 
@@ -1149,6 +1216,7 @@ async def _insert_guidance_reply(
     content: str,
     round_title: str = "",
     client_request_id: str = "",
+    subagent_flow_snapshot: dict[str, Any] | None = None,
 ) -> None:
     assistant_entry: dict[str, Any] = {
         "role": "assistant",
@@ -1160,6 +1228,8 @@ async def _insert_guidance_reply(
         assistant_entry["round_title"] = round_title
     if client_request_id:
         assistant_entry["client_request_id"] = client_request_id
+    if subagent_flow_snapshot:
+        assistant_entry["subagent_flow_snapshot"] = subagent_flow_snapshot
 
     async with _session_state_lock:
         state = _load_session_state()
@@ -1561,6 +1631,7 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
             reply = "[Sub-agents are still working in the background. The guidance was delivered and the round is continuing.]"
         else:
             from cyrene.subagent import run_summary_subagent as _run_summary_subagent
+            from cyrene.subagent import build_flow_snapshot as _build_subagent_flow_snapshot
 
             parent_task = next(
                 (
@@ -1576,6 +1647,7 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
                 guidance=content,
                 round_history=context["round_history"],
             )
+            flow_snapshot = await _build_subagent_flow_snapshot(target_round_id)
             await _sub_clear(round_id=target_round_id)
         await _insert_guidance_reply(
             target_round_id,
@@ -1583,6 +1655,7 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
             reply,
             round_title=round_title,
             client_request_id=context["client_request_id"],
+            subagent_flow_snapshot=flow_snapshot if not interrupted else None,
         )
         _schedule_session_label_refresh(content, target_round_id)
         return reply
@@ -2563,6 +2636,7 @@ async def _run_main_agent(
                 from cyrene.subagent import (
                     _run_subagent,
                     _spawn_subagent_task,
+                    build_flow_snapshot as _build_subagent_flow_snapshot,
                     clear as _sub_clear,
                     get_snapshot as _sub_snapshot,
                     get_raw_messages as _sub_raw_msgs,
@@ -2630,10 +2704,13 @@ async def _run_main_agent(
                     round_history=messages,
                 )
                 synthesis_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
+                flow_snapshot = await _build_subagent_flow_snapshot(round_id)
                 if client_request_id:
                     synthesis_entry["client_request_id"] = client_request_id
                 if round_id:
                     synthesis_entry["round_id"] = round_id
+                if flow_snapshot:
+                    synthesis_entry["subagent_flow_snapshot"] = flow_snapshot
                 messages.append(_apply_assistant_meta(synthesis_entry))
                 # 清空 registry，避免下一轮 spawn 把旧结果混入新 context
                 await _sub_clear(round_id=round_id)
@@ -2735,6 +2812,7 @@ async def run_agent(
     db_path: str,
     client_request_id: str = "",
     lang: str = "",
+    command: str = "",
     public_user_message: str | None = None,
     public_attachments: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -2751,6 +2829,7 @@ async def run_agent(
                 db_path,
                 client_request_id=client_request_id,
                 lang=lang,
+                command=command,
                 public_user_message=public_user_message,
                 public_attachments=public_attachments,
             )
@@ -2760,6 +2839,7 @@ async def run_agent(
             chat_id,
             db_path,
             lang=lang,
+            command=command,
             public_user_message=public_user_message,
             public_attachments=public_attachments,
         )
@@ -2804,6 +2884,7 @@ async def _run_chat_agent(
     hide_initial_detail: bool = False,
     assistant_message_meta: dict[str, Any] | None = None,
     lang: str = "",
+    command: str = "",
 ) -> str:
     """Coordinator: main agent loop."""
     import time as _time
@@ -2857,7 +2938,24 @@ async def _run_chat_agent(
             main_system += f"\n\nThe user has set their preferred language to {lang}. Reply in this language."
         if memory_context:
             main_system = main_system + "\n\n## Memory Context\n" + memory_context
-        main_system = main_system + "\n\n" + _spawn_policy_prompt_block(get_spawn_policy())
+
+        is_deep_research = command == "deep-research"
+        dr_token = _deep_research_mode.set(is_deep_research)
+        if is_deep_research:
+            main_system = main_system + "\n\n" + _DEEP_RESEARCH_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: deep-research (maximum parallelism).\n"
+                "- You MUST spawn subagents for EVERY research track. Never do research yourself — your only job is to decompose, delegate, and synthesize.\n"
+                "- Launch ALL subagents at once in a single batch. Do not wait for some to finish before spawning others.\n"
+                "- If a research track is broad, split it further into narrower sub-tracks and spawn additional subagents.\n"
+                "- Err on the side of MORE subagents. 5–10 subagents is normal; 10+ is acceptable for complex questions.\n"
+                "- Even small, focused questions within a track deserve their own subagent. Granularity beats breadth per agent.\n"
+                "- If any subagent result is thin, contradictory, or incomplete, immediately spawn follow-up subagents to fill the gap.\n"
+                "- The ONLY reason not to spawn a subagent is if the task is already fully answered with high confidence. When in doubt, spawn."
+            )
+        else:
+            main_system = main_system + "\n\n" + _spawn_policy_prompt_block(get_spawn_policy())
 
         # ====== 主 Agent ======
         main_text = await _run_main_agent(
@@ -2884,6 +2982,7 @@ async def _run_chat_agent(
         })
         return main_text or "Done."
     finally:
+        _deep_research_mode.reset(dr_token)
         _ui_round_assistant_meta.reset(assistant_meta_token)
         _ui_round_hide_initial_detail.reset(hide_initial_detail_token)
         _pending_intermediate_user_replies.reset(intermediate_reply_token)

@@ -363,6 +363,90 @@ async def get_snapshot(round_id: str = "") -> dict:
         return snapshot
 
 
+def _flow_message_copy(message: dict[str, Any]) -> dict[str, Any]:
+    """Return a compact, JSON-safe message copy for flow persistence."""
+    role = str(message.get("role", "") or "").strip()
+    entry: dict[str, Any] = {"role": role}
+
+    if "content" in message:
+        content = message.get("content")
+        if role == "system":
+            entry["content"] = str(content or "")[:200]
+        else:
+            entry["content"] = content
+    if message.get("reasoning_content"):
+        entry["reasoning_content"] = message.get("reasoning_content")
+    if message.get("tool_call_id"):
+        entry["tool_call_id"] = str(message.get("tool_call_id") or "")
+    if message.get("usage"):
+        entry["usage"] = message.get("usage")
+
+    tool_calls = message.get("tool_calls") or []
+    if tool_calls:
+        compact_calls: list[dict[str, Any]] = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) if isinstance(tc.get("function"), dict) else {}
+            compact_fn = {
+                "name": str(fn.get("name") or "").strip(),
+                "arguments": fn.get("arguments", ""),
+            }
+            compact_calls.append({
+                "id": str(tc.get("id") or ""),
+                "type": tc.get("type", "function"),
+                "function": compact_fn,
+            })
+        if compact_calls:
+            entry["tool_calls"] = compact_calls
+
+    return entry
+
+
+async def build_flow_snapshot(round_id: str) -> dict[str, Any]:
+    """Persist the minimum completed-round subagent data needed by the WebUI."""
+    entries = await _registry_entries_for_round(round_id=round_id)
+    agent_ids = {agent_id for agent_id, _ in entries}
+    comm_messages = _round_comm_messages(agent_ids, round_id=round_id)
+
+    snapshot_agents: dict[str, dict[str, Any]] = {}
+    for agent_id, info in entries:
+        snapshot_agents[agent_id] = {
+            "task": info.get("task", ""),
+            "status": info.get("status", ""),
+            "result": info.get("result", ""),
+            "messages": [
+                _flow_message_copy(message)
+                for message in (info.get("messages") or [])
+                if isinstance(message, dict)
+            ],
+            "created_at": info.get("created_at"),
+            "updated_at": info.get("updated_at"),
+            "round_id": str(info.get("round_id", "") or round_id),
+        }
+
+    compact_comm_messages = [
+        {
+            "message_id": str(item.get("message_id") or ""),
+            "from": str(item.get("from") or ""),
+            "to": str(item.get("to") or ""),
+            "type": str(item.get("type") or "chat"),
+            "content": str(item.get("content") or ""),
+            "timestamp": item.get("timestamp"),
+            "round_id": str(item.get("round_id") or round_id),
+        }
+        for item in comm_messages
+        if isinstance(item, dict)
+    ]
+
+    return {
+        "round_id": round_id,
+        "summary_agent_id": _summary_agent_id(round_id),
+        "agents": snapshot_agents,
+        "comm_messages": compact_comm_messages,
+    }
+
+
 def _summary_agent_id(round_id: str) -> str:
     suffix = str(round_id or "").removeprefix("round_").strip() or "adhoc"
     suffix = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in suffix)
@@ -612,7 +696,7 @@ async def _run_subagent(
 
     Uses lazy imports from agent.py to avoid circular dependencies.
     """
-    from cyrene.agent import _MAIN_AGENT_PROMPT, _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
+    from cyrene.agent import _MAIN_AGENT_PROMPT, _DEEP_RESEARCH_SUBAGENT_PROMPT, _deep_research_mode, _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
     from cyrene.llm import _assistant_text, _truncate
     from cyrene.tools import get_active_tool_defs_for_actor, is_tool_allowed_for_actor, _execute_tool
 
@@ -621,8 +705,10 @@ async def _run_subagent(
     round_token = _current_round_id.set(round_id) if round_id else None
     from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
 
+    dr_prompt = _DEEP_RESEARCH_SUBAGENT_PROMPT if _deep_research_mode.get() else ""
     subagent_prompt = (
         _MAIN_AGENT_PROMPT
+        + dr_prompt
         + f"""
 
 ## Sub-agent Context

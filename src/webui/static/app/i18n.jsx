@@ -222,6 +222,10 @@ const TRANSLATIONS = {
     "chat.liveSessionLink": "live session",
     "chat.toSendMessages": " to send messages.",
     "chat.guidanceChipPrefix": "↳ guide",
+    "chat.commands": "Commands",
+    "chat.commandDeepResearch": "Deep Research",
+    "chat.commandDeepResearchDesc": "Decompose the question, research in parallel, and produce a comprehensive report",
+    "chat.deepResearchPlaceholder": "What would you like me to research in depth?",
 
     // ── Agents Page ──────────────────────────────────────────────────────
     "agents.rounds": "Rounds",
@@ -748,6 +752,10 @@ const TRANSLATIONS = {
     "chat.liveSessionLink": "实时会话",
     "chat.toSendMessages": " 来发送消息。",
     "chat.guidanceChipPrefix": "↳ 指引",
+    "chat.commands": "命令",
+    "chat.commandDeepResearch": "深度研究",
+    "chat.commandDeepResearchDesc": "拆解问题、并行研究，生成全面详尽的研究报告",
+    "chat.deepResearchPlaceholder": "你想要我深入研究什么问题？",
 
     // ── 代理流程页 ──────────────────────────────────────────────────────
     "agents.rounds": "轮次",
