@@ -676,6 +676,22 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [command, setCommand] = useState("");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+
+  var ALL_COMMANDS = [
+    { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
+    { id: "deep-research",   icon: "🔬", label: t("chat.commandDeepResearch"),   desc: t("chat.commandDeepResearchDesc"),   placeholder: t("chat.deepResearchPlaceholder") },
+    { id: "help-me-decide",  icon: "🤔", label: t("chat.commandHelpMeDecide"),   desc: t("chat.commandHelpMeDecideDesc"),   placeholder: t("chat.helpMeDecidePlaceholder") },
+    { id: "learning-plan",   icon: "📚", label: t("chat.commandLearningPlan"),   desc: t("chat.commandLearningPlanDesc"),   placeholder: t("chat.learningPlanPlaceholder") },
+    { id: "daily-review",    icon: "🌙", label: t("chat.commandDailyReview"),    desc: t("chat.commandDailyReviewDesc"),    placeholder: t("chat.dailyReviewPlaceholder") },
+    { id: "deep-compare",    icon: "🔄", label: t("chat.commandDeepCompare"),    desc: t("chat.commandDeepCompareDesc"),    placeholder: t("chat.deepComparePlaceholder") },
+    { id: "claude-code",     icon: "💻", label: t("chat.commandClaudeCode"),     desc: t("chat.commandClaudeCodeDesc"),     placeholder: t("chat.claudeCodePlaceholder") },
+  ];
+  function findCommand(id) {
+    for (var i = 0; i < ALL_COMMANDS.length; i++) {
+      if (ALL_COMMANDS[i].id === id) return ALL_COMMANDS[i];
+    }
+    return null;
+  }
   const [ccStatus, setCcStatus] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
@@ -1468,6 +1484,12 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                   <span className="x" onClick={function () { setSelectedGuideRoundId(""); setSelectedGuideRoundTitle(""); setContextPickerOpen(false); }}>×</span>
                 </span>
               )}
+              {command && findCommand(command) && (
+                <span className="chip chip-command" key="cmd">
+                  {findCommand(command).icon} {findCommand(command).label}
+                  <span className="x" onClick={function () { setCommand(""); }}>×</span>
+                </span>
+              )}
               <span
                 className={"chip chip-add-context" + (hasAddable ? "" : " disabled")}
                 style={{ borderStyle: "dashed", cursor: hasAddable ? "pointer" : "default" }}
@@ -1556,8 +1578,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               placeholder={
                 pendingQuestion
                   ? t("chat.answerPending")
-                  : command === "deep-research"
-                  ? t("chat.deepResearchPlaceholder")
+                  : command && findCommand(command)
+                  ? findCommand(command).placeholder
                   : t("chat.messagePlaceholder", { name: DATA.assistantName })
               }
             />
@@ -1604,16 +1626,14 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               <span style={{ position: "relative" }}>
                 <button
                   className={"iconbtn" + (command ? " active" : "")}
-                  title={command ? t("chat.commandDeepResearch") + ": " + t("chat.commandDeepResearchDesc") : t("chat.slashCommand")}
+                  title={command && findCommand(command) ? findCommand(command).label + ": " + findCommand(command).desc : t("chat.slashCommand")}
                   onClick={function () { setSlashMenuOpen(!slashMenuOpen); }}
                   style={command ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
                 >/</button>
                 {slashMenuOpen && (
                   <div className="slash-menu">
                     <div className="slash-menu-head">{t("chat.commands")}</div>
-                    {[
-                      { id: "deep-research", icon: "🔬", label: t("chat.commandDeepResearch"), desc: t("chat.commandDeepResearchDesc") },
-                    ].map(function (cmd) {
+                    {ALL_COMMANDS.map(function (cmd) {
                       var active = command === cmd.id;
                       return (
                         <button

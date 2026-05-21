@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import json
 import logging
+import random
 from datetime import datetime, timezone
 from typing import Any
 
@@ -243,8 +244,8 @@ async def all_willing_to_quit(round_id: str = "") -> bool:
 async def wait_for_others(agent_id: str, inbox_check_func, mark_read_func=None, max_wait: int = 600, result: str = "") -> str:
     """Subagent 干完活后调用：标记 waiting（带 result），等其他人。
 
-    每 5 秒检查一次：
-    - inbox 有新消息 → 返回消息内容（回去继续干活）
+    每 2 秒检查一次（加随机抖动避免惊群效应）：
+    - inbox 有新消息 → 短暂等待 0.5s 允许批量投递，然后返回消息内容（回去继续干活）
     - 所有 agent 都不在干活 (RUNNING/RESUMED) → 返回 ""（一起退出）
     - 超时 → 返回 "timeout"
 
@@ -256,6 +257,8 @@ async def wait_for_others(agent_id: str, inbox_check_func, mark_read_func=None, 
     while waited < max_wait:
         new_msgs = inbox_check_func(agent_id)
         if new_msgs:
+            # 短暂等待让批量消息有机会全部到达
+            await asyncio.sleep(0.5)
             if mark_read_func:
                 maybe_awaitable = mark_read_func(agent_id)
                 if inspect.isawaitable(maybe_awaitable):
@@ -263,8 +266,9 @@ async def wait_for_others(agent_id: str, inbox_check_func, mark_read_func=None, 
             return new_msgs
         if await all_willing_to_quit(round_id=round_id):
             return ""
-        await asyncio.sleep(5)
-        waited += 5
+        interval = 2 + random.uniform(-0.3, 0.3)
+        await asyncio.sleep(interval)
+        waited += interval
     return "timeout"
 
 
@@ -696,7 +700,12 @@ async def _run_subagent(
 
     Uses lazy imports from agent.py to avoid circular dependencies.
     """
-    from cyrene.agent import _MAIN_AGENT_PROMPT, _DEEP_RESEARCH_SUBAGENT_PROMPT, _deep_research_mode, _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS
+    from cyrene.agent import (
+        _MAIN_AGENT_PROMPT, _DEEP_RESEARCH_SUBAGENT_PROMPT,
+        _DECISION_SUBAGENT_PROMPT, _LEARNING_SUBAGENT_PROMPT, _COMPARE_SUBAGENT_PROMPT,
+        _deep_research_mode, _current_command,
+        _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS,
+    )
     from cyrene.llm import _assistant_text, _truncate
     from cyrene.tools import get_active_tool_defs_for_actor, is_tool_allowed_for_actor, _execute_tool
 
@@ -705,19 +714,37 @@ async def _run_subagent(
     round_token = _current_round_id.set(round_id) if round_id else None
     from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
 
-    dr_prompt = _DEEP_RESEARCH_SUBAGENT_PROMPT if _deep_research_mode.get() else ""
+    cmd = _current_command.get()
+    if cmd == "help-me-decide":
+        extra_prompt = _DECISION_SUBAGENT_PROMPT
+    elif cmd == "learning-plan":
+        extra_prompt = _LEARNING_SUBAGENT_PROMPT
+    elif cmd == "deep-compare":
+        extra_prompt = _COMPARE_SUBAGENT_PROMPT
+    elif _deep_research_mode.get():
+        extra_prompt = _DEEP_RESEARCH_SUBAGENT_PROMPT
+    else:
+        extra_prompt = ""
     subagent_prompt = (
         _MAIN_AGENT_PROMPT
-        + dr_prompt
+        + extra_prompt
         + f"""
 
 ## Sub-agent Context
 - You are a sub-agent, ID: {agent_id}. Complete the assigned task directly.
-- You can use regular work tools plus `send_agent_message` to coordinate with other sub-agents.
+- You can use regular work tools plus `send_agent_message` and `broadcast_agent_message` to coordinate with other sub-agents.
 - You MUST NOT call `send_message`, `send_telegram`, `ask_user`, `spawn_subagent`, or `query_round`.
 - If you need the user, report that need in your final result for the main agent instead of contacting the user directly.
 - Active sub-agents and inbox context may be injected as separate user messages before each turn.
 - Your final text is collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
+
+## Inter-Agent Coordination (REQUIRED)
+- **Share progress frequently.** After every 2-3 tool calls, send a brief progress update to ALL peer sub-agents via `broadcast_agent_message`. Tell them what you found so far, what you're working on next, and any key data points you've uncovered.
+- **Cross-pollinate findings.** If the registry context shows another sub-agent working on a related topic, proactively send them relevant data, links, or insights via `send_agent_message` — even if it's partial. Early sharing is better than waiting until you're done.
+- **Validate before concluding.** Before settling on a major conclusion, broadcast your draft finding to peers and ask if they have contradictory or supporting evidence. This prevents each sub-agent from operating in an echo chamber.
+- **Acknowledge and incorporate.** When you receive a message from another sub-agent, read it carefully. Acknowledge receipt and explicitly incorporate their findings into your own work. Do NOT ignore peer messages.
+- **Think like a team.** You are part of a research team, not a solo worker. The combined output should be greater than the sum of individual efforts. If you discover something that could help another agent's task, share it immediately.
+- **Minimum bar:** You MUST call `send_agent_message` or `broadcast_agent_message` at least 2-3 times during your work. Sub-agents that never communicate are underperforming.
 """
     )
 
@@ -734,6 +761,9 @@ async def _run_subagent(
     await set_running(agent_id)
 
     final_text = ""
+    tool_calls_since_checkpoint = 0
+    _COORDINATION_CHECKPOINT_INTERVAL = 3
+
     async def _save_if_registered() -> None:
         """Keep registry messages resumable after any local history mutation."""
         await save_messages(agent_id, messages)
@@ -748,7 +778,8 @@ async def _run_subagent(
             messages = [m for m in messages if not (
                 m.get("role") == "user" and (
                     str(m.get("content", "")).startswith("[活跃子 agent]") or
-                    str(m.get("content", "")).startswith("[收件箱]")
+                    str(m.get("content", "")).startswith("[收件箱]") or
+                    str(m.get("content", "")).startswith("[Coordination Checkpoint]")
                 )
             )]
             # 注入新上下文
@@ -758,6 +789,20 @@ async def _run_subagent(
                 messages.append({"role": "user", "content": f"[收件箱]\n{inbox_text}"})
                 # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
                 await _mark_inbox_read(agent_id)
+
+            # 定期注入协调检查点，鼓励 subagent 之间主动沟通
+            if tool_calls_since_checkpoint >= _COORDINATION_CHECKPOINT_INTERVAL:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[Coordination Checkpoint]\n"
+                        "Pause briefly: Have you shared your latest progress with peer sub-agents?\n"
+                        "Have you read and incorporated any new messages from peers?\n"
+                        "If yes, continue working. If no, use send_agent_message or broadcast_agent_message now before proceeding.\n"
+                        "Remember: early sharing of findings prevents duplicated work and catches errors sooner."
+                    ),
+                })
+                tool_calls_since_checkpoint = 0
 
             response = await _call_llm(messages, tools=get_active_tool_defs_for_actor("subagent"), max_tokens=None)
 
@@ -797,11 +842,11 @@ async def _run_subagent(
                         continue
                     for tc in (msg.get("tool_calls") or []):
                         fn = tc.get("function", {})
-                        if fn.get("name") == "send_agent_message":
+                        if fn.get("name") in ("send_agent_message", "broadcast_agent_message"):
                             try:
                                 args = json.loads(fn.get("arguments", "{}"))
                                 content = args.get("content", "")
-                                target = args.get("to", "?")
+                                target = args.get("to", "all") if fn.get("name") == "broadcast_agent_message" else args.get("to", "?")
                                 if content:
                                     sent_output.append(f"[to {target}]\n{content}")
                             except Exception:
@@ -842,6 +887,11 @@ async def _run_subagent(
                 except Exception as e:
                     result = f"Tool {name} failed: {e}"
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": _truncate(result)})
+                # 如果刚执行的是通讯类工具，重置检查点计数器（已满足协调要求）
+                if name in ("send_agent_message", "broadcast_agent_message"):
+                    tool_calls_since_checkpoint = 0
+                else:
+                    tool_calls_since_checkpoint += 1
             if tcs:
                 await _save_if_registered()
         else:

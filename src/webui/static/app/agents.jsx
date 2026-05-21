@@ -446,11 +446,30 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
             </defs>
             {edges.map((e, i) => {
               const edgeKey = edgeSelectionKey(e);
+              const weight = Number(e.weight) || 1;
+              const weightCls = e.kind === "comm" && weight >= 2
+                ? " weight-" + Math.min(weight, 4)
+                : "";
+              const priorityCls = e.kind === "comm" && e.message && e.message.priority === "high"
+                ? " priority-high"
+                : "";
+              // Check if this comm edge has a recent message (< 30s ago)
+              const rawTs = e.message && e.message.raw_timestamp ? e.message.raw_timestamp : "";
+              const recentCls = e.kind === "comm" && rawTs
+                ? (function () {
+                    try {
+                      var msgDate = new Date(rawTs);
+                      if (isNaN(msgDate.getTime())) return "";
+                      return (Date.now() - msgDate.getTime()) < 30000 ? " recent" : "";
+                    } catch (_) { return ""; }
+                  })()
+                : "";
               const cls =
                 "edge " +
                 (e.kind === "active" ? "active" :
                  e.kind === "dashed" ? "dashed" :
                  e.kind === "comm"   ? "comm" : "") +
+                weightCls + priorityCls + recentCls +
                 (selectedEdgeKey === edgeKey ? " selected" : "");
               const marker =
                 e.kind === "active" ? "url(#arrow-active)" :
@@ -512,6 +531,8 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
             {t("agents.canvasHelp")}
           </div>
         </div>
+
+        <CommLog edges={edges} flow={round.flow} onSelectNode={function (id) { selectNodeForRound(id); }} />
       </div>
 
       <Inspector node={sel} edge={selectedEdge}
@@ -811,13 +832,39 @@ function CommsSection({ nodeId, flow, onSelectNode }) {
 }
 
 function EdgeInspector({ edge, flow, onSelectNode }) {
+  const { t } = useI18n();
   const from = flow.nodes.find((n) => n.id === edge.from);
   const to = flow.nodes.find((n) => n.id === edge.to);
   const kindLabel =
-    edge.kind === "comm" ? "Communication" :
-    edge.kind === "active" ? "Active edge" :
-    edge.kind === "dashed" ? "Pending edge" :
+    edge.kind === "comm" ? (t && t("agents.Communication") || "Communication") :
+    edge.kind === "active" ? (t && t("agents.ActiveEdge") || "Active edge") :
+    edge.kind === "dashed" ? (t && t("agents.PendingEdge") || "Pending edge") :
     "Edge";
+  const weight = Number(edge.weight) || 1;
+  const msgType = edge.message && edge.message.msg_type ? edge.message.msg_type : "chat";
+  const priority = edge.message && edge.message.priority ? edge.message.priority : "normal";
+  const typeLabel =
+    msgType === "progress" ? (t && t("agents.commTypeProgress") || "Progress") :
+    msgType === "question" ? (t && t("agents.commTypeQuestion") || "Question") :
+    msgType === "finding"  ? (t && t("agents.commTypeFinding")  || "Finding")  :
+    msgType === "result"   ? (t && t("agents.commTypeResult")   || "Result")   :
+    msgType === "ack"      ? (t && t("agents.commTypeAck")      || "Ack")      :
+    (t && t("agents.commTypeChat") || "Chat");
+
+  // Collect all messages on this edge
+  const allMessages = Array.isArray(edge.messages) ? edge.messages : (
+    edge.message ? [{
+      from: (from && from.title) || edge.from,
+      to: (to && to.title) || edge.to,
+      body: edge.message.body || "",
+      label: msgType,
+      time: edge.message.time || "—",
+      summary: edge.message.summary || "",
+      priority: priority,
+      source: edge.message.source || "",
+    }] : []
+  );
+
   return (
     <div className="inspector">
       <div className="insp-head">
@@ -825,9 +872,10 @@ function EdgeInspector({ edge, flow, onSelectNode }) {
         <div className="insp-title">{edge.label || (from?.title + " → " + to?.title)}</div>
         <div className="insp-id">{edge.from} → {edge.to}</div>
       </div>
+
       <div className="insp-section">
-        <div className="insp-label">participants</div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", fontFamily: "var(--mono)", fontSize: 11.5 }}>
+        <div className="insp-label">{t && t("agents.participants") || "participants"}</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", fontFamily: "var(--mono)", fontSize: 11.5, flexWrap: "wrap" }}>
           <span className="comm-partner"
                 onClick={() => onSelectNode && onSelectNode(edge.from)}
                 style={{ cursor: "pointer", color: "var(--text)" }}>
@@ -840,32 +888,136 @@ function EdgeInspector({ edge, flow, onSelectNode }) {
             {to ? to.title : edge.to}
           </span>
         </div>
+        <div className="comm-jump-links">
+          <span className="comm-jump-link" onClick={() => onSelectNode && onSelectNode(edge.from)}>
+            ← {t && t("agents.commJumpSender") || "Jump to sender"}
+          </span>
+          <span className="comm-jump-link" onClick={() => onSelectNode && onSelectNode(edge.to)}>
+            {t && t("agents.commJumpReceiver") || "Jump to receiver"} →
+          </span>
+        </div>
       </div>
-      {edge.message && (
-        <>
-          <div className="insp-section">
-            <div className="insp-label">sent at</div>
-            <div className="insp-val">{edge.message.time}</div>
-          </div>
-          {edge.message.summary && (
-            <div className="insp-section">
-              <div className="insp-label">summary</div>
-              <div className="insp-val" style={{ color: "var(--text)" }}>{edge.message.summary}</div>
-            </div>
+
+      <div className="insp-section">
+        <div className="kv">
+          <span className="k">{t && t("agents.commType") || "type"}</span>
+          <span className="v" style={{ color: msgType === "finding" ? "var(--accent)" : msgType === "question" ? "var(--warn)" : "var(--text)" }}>{typeLabel}</span>
+          <span className="k">{t && t("agents.commWeight") || "weight"}</span>
+          <span className="v">{weight} {t && t("agents.commMessages") || "messages"}</span>
+          {priority === "high" && (
+            <>
+              <span className="k">{t && t("agents.commPriority") || "priority"}</span>
+              <span className="v" style={{ color: "var(--warn)" }}>HIGH</span>
+            </>
           )}
-          <div className="insp-section">
-            <div className="insp-label">message</div>
-            <div className="code-block" style={{ color: "var(--text)" }}>{edge.message.body}</div>
-          </div>
-        </>
-      )}
-      {!edge.message && (
+        </div>
+      </div>
+
+      {allMessages.length === 0 && (
         <div className="insp-section">
           <div className="insp-val" style={{ color: "var(--text-3)" }}>
-            No payload recorded for this edge.
+            {t && t("agents.commNoMessages") || "No messages between these agents."}
           </div>
         </div>
       )}
+
+      {allMessages.length > 0 && (
+        <div className="insp-section">
+          <div className="insp-label">
+            {allMessages.length === 1
+              ? (t && t("agents.message") || "message")
+              : (t && t("agents.commAllMessages") || "All messages") + " (" + allMessages.length + ")"}
+          </div>
+          <div className="comm-thread">
+            {allMessages.map(function (msg, idx) {
+              var mType = msg.label || "chat";
+              var mPriority = msg.priority || "normal";
+              var clsCard = "comm-card type-" + mType + (mPriority === "high" ? " priority-high" : "");
+              return (
+                <div key={idx} className={clsCard}>
+                  <div className="comm-card-head">
+                    <span className={"comm-dir " + (msg.from === (from && from.title) ? "out" : "in")}>
+                      {msg.from === (from && from.title) ? (t && t("agents.out") || "out →") : (t && t("agents.in") || "← in")}
+                    </span>
+                    <span className="comm-time">{msg.time}</span>
+                  </div>
+                  {msg.summary && (
+                    <div className="comm-summary">{msg.summary}</div>
+                  )}
+                  <div className="comm-body">{msg.body}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CommLog({ edges, flow, onSelectNode }) {
+  const { t } = useI18n();
+  // Gather all unique comm messages from edges, sorted by time
+  const allComms = [];
+  const seen = new Set();
+  (edges || []).forEach(function (edge) {
+    if (edge.kind !== "comm") return;
+    const msgs = Array.isArray(edge.messages) ? edge.messages : (
+      edge.message ? [{ ...edge.message, from: edge.from, to: edge.to }] : []
+    );
+    msgs.forEach(function (msg) {
+      var key = (msg.time || "") + "::" + (msg.body || "").slice(0, 40);
+      if (seen.has(key)) return;
+      seen.add(key);
+      allComms.push({
+        fromId: edge.from,
+        toId: edge.to,
+        fromTitle: (flow.nodes.find(function (n) { return n.id === edge.from; }) || {}).title || edge.from,
+        toTitle: (flow.nodes.find(function (n) { return n.id === edge.to; }) || {}).title || edge.to,
+        body: msg.body || "",
+        label: msg.label || msg.msg_type || "chat",
+        time: msg.time || "—",
+        summary: msg.summary || "",
+      });
+    });
+  });
+  allComms.sort(function (a, b) { return String(a.time).localeCompare(String(b.time)); });
+
+  if (allComms.length === 0) return null;
+
+  return (
+    <div className="comm-log-panel">
+      <div className="comm-log-head">
+        <span>{t("agents.commLog")}</span>
+        <span className="count">{allComms.length}</span>
+      </div>
+      {allComms.map(function (comm, idx) {
+        var typeLabel =
+          comm.label === "progress" ? (t("agents.commTypeProgress")) :
+          comm.label === "question" ? (t("agents.commTypeQuestion")) :
+          comm.label === "finding"  ? (t("agents.commTypeFinding"))  :
+          comm.label === "result"   ? (t("agents.commTypeResult"))   :
+          comm.label === "ack"      ? (t("agents.commTypeAck"))      :
+          comm.label;
+        return (
+          <div key={idx} className="comm-log-entry" title={comm.body}>
+            <span className="comm-log-time">{comm.time}</span>
+            <span className="comm-log-from"
+                  onClick={function () { onSelectNode && onSelectNode(comm.fromId); }}
+                  style={{ cursor: "pointer" }}>
+              {comm.fromTitle}
+            </span>
+            <span className="comm-log-arrow">→</span>
+            <span className="comm-log-to"
+                  onClick={function () { onSelectNode && onSelectNode(comm.toId); }}
+                  style={{ cursor: "pointer" }}>
+              {comm.toTitle}
+            </span>
+            <span className="comm-log-type">({typeLabel || comm.label})</span>
+            <span className="comm-log-body">{comm.summary || comm.body}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

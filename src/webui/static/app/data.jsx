@@ -222,6 +222,7 @@ function connectEvents() {
           "session_update",
           "shell_update",
           "round_guidance_update",
+          "agent_comm",
         ].includes(data.type)) {
           scheduleRealtimeRefresh();
         }

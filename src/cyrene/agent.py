@@ -56,6 +56,7 @@ _AWAITING_USER_SENTINEL = "[[cyrene.awaiting_user]]"
 _ui_round_hide_initial_detail: ContextVar[bool] = ContextVar("_ui_round_hide_initial_detail", default=False)
 _ui_round_assistant_meta: ContextVar[dict[str, Any] | None] = ContextVar("_ui_round_assistant_meta", default=None)
 _deep_research_mode: ContextVar[bool] = ContextVar("_deep_research_mode", default=False)
+_current_command: ContextVar[str] = ContextVar("_current_command", default="")
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -170,6 +171,184 @@ You are a research specialist deployed as part of a deep research operation. You
 - Include specific sources (URLs, paper titles, author names) so the main agent can cite them.
 - Mark confidence levels: [High confidence] / [Medium confidence] / [Low confidence] for key claims.
 - Note gaps: what you looked for but couldn't find, and what questions remain open.
+"""
+
+_QUICK_ANSWER_PROMPT = """## Quick Answer Mode
+
+You are in **Quick Answer** mode. The user wants a fast, direct, text-only answer.
+
+### Rules
+- Answer in pure text. Do NOT call any tools — not even Read, WebSearch, or Bash.
+- Your ONLY available tool is `quit` — use it after delivering your answer.
+- This is for pure conversation, explanations, opinions, and conceptual questions.
+- If the question genuinely requires tools to answer (e.g. "what files are in my directory"), briefly explain that Quick Answer mode cannot use tools, and suggest deselecting the command.
+- Be concise. No research, no file access, no web search.
+- Match the user's language.
+"""
+
+_HELP_ME_DECIDE_PROMPT = """## Help Me Decide Mode
+
+You are in **Help Me Decide** mode. The user is facing a decision and needs a structured analysis to choose.
+
+### Phase 1: Clarify the Decision
+1. Identify what the user is deciding between (the options).
+2. Decompose the decision into 3-6 evaluation dimensions (e.g. cost, time, risk, long-term value, personal fit, flexibility).
+3. For each option, write a clear research brief covering all dimensions.
+
+### Phase 2: Parallel Research
+1. **Spawn one subagent per option.** Launch ALL simultaneously.
+2. Each subagent researches its assigned option across ALL dimensions, gathering data, reviews, comparisons, and expert opinions.
+3. Do ZERO research yourself — your job is to coordinate.
+
+### Phase 3: Synthesis
+1. Once all subagents return, synthesize into a decision report:
+   - **Decision at Hand** — restate the choice
+   - **Option-by-Option Analysis** — one section per option, covering performance on each dimension
+   - **Cross-Comparison** — side-by-side comparison on the most important dimensions
+   - **Recommendation** — which option to choose and WHY, with confidence level
+   - **Key Trade-offs** — what the user gives up with the recommended choice
+2. Be honest about which option is best. Do not force false balance.
+3. Cite sources. Be clear about what is data-backed vs. inferred.
+"""
+
+_DECISION_SUBAGENT_PROMPT = """## Decision Research Subagent
+
+You are researching ONE specific option in a decision analysis. Your job is to gather and present comprehensive information about this option.
+
+### Rules
+- Use every available tool (web search, file reading, etc.) to research your assigned option.
+- Cover ALL evaluation dimensions provided in your task brief.
+- For each dimension: find data, reviews, expert opinions, pricing, and real user experiences.
+- Cross-check facts across at least 3 independent sources.
+- Structure your report:
+  1. **Option Overview** — what it is, key facts
+  2. **Dimension-by-Dimension Analysis** — detailed findings per dimension
+  3. **Pros & Cons** — weighted by importance
+  4. **Confidence Levels** — [High]/[Medium]/[Low] for each key claim
+- Be fair. Acknowledge both strengths and weaknesses of your option.
+- Return your report to the main agent for synthesis.
+"""
+
+_LEARNING_PLAN_PROMPT = """## Learning Plan Mode
+
+You are in **Learning Plan** mode. The user wants to learn a skill or subject, and you will design a structured learning plan.
+
+### Phase 1: Deconstruct the Subject
+1. Clarify the user's goal, current level, time commitment, and learning style.
+2. Decompose the subject into 3-6 knowledge modules. Each module should be a coherent learning unit.
+
+### Phase 2: Parallel Research
+1. **Spawn one subagent per knowledge module.** Launch ALL simultaneously.
+2. Each subagent researches the BEST learning resources for its module: books, courses, tutorials, projects, communities.
+3. Do ZERO research yourself — delegate everything.
+
+### Phase 3: Build the Plan
+1. Synthesize all subagent findings into a structured learning plan:
+   - **Goal & Prerequisites** — what the user wants to achieve and what they need first
+   - **Learning Roadmap** — phased modules in order, with dependencies
+   - **Per Module**: topic overview, recommended resources (with links/names), estimated hours, practice exercises, completion criteria
+   - **Milestones** — checkpoints to verify progress
+   - **Total Time Estimate** — realistic time budget
+   - **Tips & Pitfalls** — common mistakes and how to avoid them
+2. Make the plan actionable. The user should be able to start immediately after reading it.
+"""
+
+_LEARNING_SUBAGENT_PROMPT = """## Learning Resource Subagent
+
+You are researching ONE knowledge module for a learning plan. Your job is to find the best learning resources and design a mini-syllabus.
+
+### Rules
+- Use web search extensively to find learning resources: books, online courses, tutorials, documentation, projects, communities.
+- For each resource, evaluate: quality, difficulty level, cost, time commitment, and prerequisite knowledge.
+- Find resources for different budgets and learning styles (video vs. text vs. hands-on).
+- Structure your report:
+  1. **Module Overview** — what this module covers
+  2. **Recommended Resources** — ranked list with evaluation, links, and why each is good
+  3. **Suggested Order** — how to consume the resources (what first, what next)
+  4. **Practice Suggestions** — exercises, projects, or ways to apply the knowledge
+  5. **Estimated Time** — realistic hours needed
+- Flag free vs. paid resources clearly.
+- Return your report to the main agent for synthesis.
+"""
+
+_DAILY_REVIEW_PROMPT = """## Daily Review Mode
+
+You are in **Daily Review** mode. Review today's activity and produce a personal daily report.
+
+### What to Do
+1. Read the available memory context (SOUL.md, short-term memory, today's conversation history).
+2. Reflect on what happened today: topics discussed, decisions made, insights gained, emotions observed.
+3. Produce a structured daily report:
+   - **Today's Topics** — what was discussed or worked on
+   - **Key Insights** — things learned or realized today
+   - **Emotional Arc** — mood or emotional patterns observed (if any)
+   - **Open Loops** — things mentioned but not completed, promises made, follow-ups needed
+   - **Tomorrow's Suggestions** — what to focus on next, based on today's context
+4. Be warm, personal, and insightful. This is a life companion reflecting with the user.
+5. Use the user's language. Keep it concise but meaningful.
+6. Do NOT spawn subagents. This is a solo reflection task.
+"""
+
+_DEEP_COMPARE_PROMPT = """## Deep Compare Mode
+
+You are in **Deep Compare** mode. Compare multiple items across dimensions with parallel, web-driven research.
+
+### Phase 1: Define the Comparison
+1. Identify what items the user wants to compare (2-5 items).
+2. Define 3-6 comparison dimensions (e.g. price, quality, features, reliability, user experience, long-term value).
+3. For each dimension, write a clear research brief: what data to look for, what makes a good source, and what a complete answer looks like.
+
+### Phase 2: Parallel Research
+1. **Spawn one subagent per dimension.** Launch ALL simultaneously.
+2. Each subagent MUST use web search extensively to gather real-world data: prices, reviews, benchmarks, expert comparisons, user ratings, news articles.
+3. Do ZERO research yourself — delegate everything.
+
+### Phase 3: Synthesis
+1. Synthesize into a comparison report:
+   - **Items Compared** — brief description of each
+   - **Comparison Matrix** — table of items × dimensions with ratings and brief justifications
+   - **Dimension-by-Dimension Analysis** — detailed comparison per dimension, with specific data points and sources
+   - **Scenario Recommendations** — best pick for different use cases/priorities
+   - **Overall Winner** — which item wins overall, and why
+2. Be specific. Every claim must be backed by data from web search.
+3. Cite sources inline with URLs. Flag when data is estimated vs. verified.
+"""
+
+_COMPARE_SUBAGENT_PROMPT = """## Comparison Subagent
+
+You are comparing ALL items on a SINGLE dimension. Your PRIMARY tool is web search — you MUST use it aggressively to find real data.
+
+### Search Methodology
+1. **Start broad**: search for "[dimension] comparison [item1] vs [item2]" to find existing comparisons.
+2. **Go specific**: search each item individually for its data on this dimension (e.g. "[item1] price 2024", "[item2] user reviews reddit").
+3. **Cross-validate**: find at least 3 independent sources for each key data point. Never rely on a single source.
+4. **Go deep**: search for expert reviews, user forums, official specs, third-party benchmarks, and news articles. Different source types reveal different angles.
+5. **Look for controversy**: search for negative reviews, complaints, and criticisms of each item on this dimension. The weaknesses are as important as the strengths.
+
+### Output Requirements
+- Compare ALL items on your assigned dimension. Rank them from best to worst with clear justification.
+- Include specific numbers wherever possible: prices, scores, ratings, percentages, benchmarks.
+- Structure your report:
+  1. **Dimension** — what you're comparing and why it matters
+  2. **Ranked Results** — each item's score/rating with detailed explanation and source URLs
+  3. **Key Data Points** — table of specific numbers/quotes with sources
+  4. **Data Sources** — all URLs consulted, with brief credibility assessment
+  5. **Confidence** — how reliable the comparison is on this dimension, what data was missing
+- Be fair and precise. If data is incomplete or items are too close to call, say so explicitly.
+- Return your report to the main agent for synthesis.
+"""
+
+_CLAUDE_CODE_PROMPT = """## Claude Code Mode
+
+You are in **Claude Code** mode. The user wants to use Claude Code — launch it and direct tasks to it.
+
+### What to Do
+1. First, call `CheckClaudeCode` to see if Claude Code is already running.
+2. If not running, call `StartClaudeCode` to launch it in a tmux session.
+3. After launching, inform the user that Claude Code is ready in the side panel.
+4. If the user gave a specific task, tell them to execute it in the Claude Code terminal (or offer to guide them through it).
+5. If the user didn't give a task, let them know Claude Code is launched and ready for their commands.
+6. Do NOT try to do the user's task yourself — your job is to launch Claude Code and hand off.
 """
 
 
@@ -2416,7 +2595,16 @@ async def _run_main_agent(
     effective_system = system_prompt or _MAIN_AGENT_PROMPT
     llm_user_entry = dict(user_entry)
     llm_user_entry["content"] = user_message
-    phase1_messages = [{"role": "system", "content": effective_system}, *history, llm_user_entry, {"role": "user", "content": _PHASE1_DECISION_PROMPT}]
+    phase1_decision = _PHASE1_DECISION_PROMPT
+    if _current_command.get() == "quick-answer":
+        phase1_decision = (
+            "Decision phase rules:\n"
+            "- You are in Quick Answer mode. The user wants a fast, text-only answer.\n"
+            "- Call `quit` immediately with your answer. Do NOT call `use_tools`.\n"
+            "- Call `ask_user` ONLY if the question is genuinely unclear.\n"
+            "- This mode is for pure conversation only — no tools, no research."
+        )
+    phase1_messages = [{"role": "system", "content": effective_system}, *history, llm_user_entry, {"role": "user", "content": phase1_decision}]
 
     async def _ensure_text_reply(
         response_obj: dict[str, Any],
@@ -2941,7 +3129,9 @@ async def _run_chat_agent(
 
         is_deep_research = command == "deep-research"
         dr_token = _deep_research_mode.set(is_deep_research)
-        if is_deep_research:
+        cmd_token = _current_command.set(command)
+
+        if command == "deep-research":
             main_system = main_system + "\n\n" + _DEEP_RESEARCH_PROMPT
             main_system += (
                 "\n\n## Subagent Spawn Policy\n"
@@ -2954,6 +3144,40 @@ async def _run_chat_agent(
                 "- If any subagent result is thin, contradictory, or incomplete, immediately spawn follow-up subagents to fill the gap.\n"
                 "- The ONLY reason not to spawn a subagent is if the task is already fully answered with high confidence. When in doubt, spawn."
             )
+        elif command == "quick-answer":
+            main_system = main_system + "\n\n" + _QUICK_ANSWER_PROMPT
+        elif command == "help-me-decide":
+            main_system = main_system + "\n\n" + _HELP_ME_DECIDE_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: help-me-decide.\n"
+                "- Spawn exactly ONE subagent per option. Launch all simultaneously.\n"
+                "- Do NOT do any option research yourself — delegate every option to its own subagent.\n"
+                "- After all subagents return, synthesize into a decision report."
+            )
+        elif command == "learning-plan":
+            main_system = main_system + "\n\n" + _LEARNING_PLAN_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: learning-plan.\n"
+                "- Spawn exactly ONE subagent per knowledge module. Launch all simultaneously.\n"
+                "- Do NOT research learning resources yourself — delegate every module to its own subagent.\n"
+                "- After all subagents return, synthesize into a structured learning plan."
+            )
+        elif command == "daily-review":
+            main_system = main_system + "\n\n" + _DAILY_REVIEW_PROMPT
+            main_system = main_system + "\n\n" + _spawn_policy_prompt_block("off")
+        elif command == "deep-compare":
+            main_system = main_system + "\n\n" + _DEEP_COMPARE_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: deep-compare.\n"
+                "- Spawn exactly ONE subagent per comparison dimension. Launch all simultaneously.\n"
+                "- Do NOT do any comparison research yourself — delegate every dimension to its own subagent.\n"
+                "- After all subagents return, synthesize into a comparison matrix and recommendation."
+            )
+        elif command == "claude-code":
+            main_system = main_system + "\n\n" + _CLAUDE_CODE_PROMPT
         else:
             main_system = main_system + "\n\n" + _spawn_policy_prompt_block(get_spawn_policy())
 
@@ -2982,6 +3206,7 @@ async def _run_chat_agent(
         })
         return main_text or "Done."
     finally:
+        _current_command.reset(cmd_token)
         _deep_research_mode.reset(dr_token)
         _ui_round_assistant_meta.reset(assistant_meta_token)
         _ui_round_hide_initial_detail.reset(hide_initial_detail_token)

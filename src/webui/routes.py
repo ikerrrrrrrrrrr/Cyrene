@@ -3693,9 +3693,14 @@ def _build_comm_edges(
     edges: list[dict] = []
     if not agent_node_ids:
         return edges
-    edge_index: dict[tuple[str, str, str, str], int] = {}
 
-    def _upsert_edge(
+    # Track per-pair messages for threading and weight
+    pair_messages: dict[tuple[str, str], list[dict]] = {}
+    pair_index: dict[tuple[str, str, str, str], int] = {}
+    # Map to deduplicate: (from_agent, to_agent, content[:80]) -> edge_index
+    content_index: dict[tuple[str, str, str], int] = {}
+
+    def _add_message_to_pair(
         from_agent: str,
         to_agent: str,
         body: str,
@@ -3703,34 +3708,76 @@ def _build_comm_edges(
         label: str = "chat",
         timestamp: str = "",
         source: str = "",
+        summary: str = "",
+        priority: str = "normal",
+        raw_timestamp: str = "",
     ) -> None:
         if from_agent not in agent_node_ids or to_agent not in agent_node_ids:
             return
         if not body.strip():
             return
-        edge_key = (from_agent, to_agent, label, body)
-        if edge_key in edge_index:
-            existing = edges[edge_index[edge_key]]
-            message = existing.setdefault("message", {})
-            if (not message.get("time") or message.get("time") == "—") and timestamp:
-                message["time"] = _short_time(timestamp)
-            if source and not message.get("source"):
-                message["source"] = source
+
+        pair_key = (from_agent, to_agent)
+        content_key = (from_agent, to_agent, body[:80])
+
+        if content_key in content_index:
+            # Update existing edge with richer metadata
+            idx = content_index[content_key]
+            existing_msg = edges[idx].setdefault("message", {})
+            if (not existing_msg.get("time") or existing_msg.get("time") == "—") and timestamp:
+                existing_msg["time"] = _short_time(timestamp)
+            if summary and not existing_msg.get("summary"):
+                existing_msg["summary"] = summary
+            if priority == "high":
+                existing_msg["priority"] = "high"
+            # Increment weight even for duplicates (counts total messages)
+            edges[idx]["weight"] = edges[idx].get("weight", 1) + 1
+            pair_messages.setdefault(pair_key, []).append({
+                "from": from_agent,
+                "to": to_agent,
+                "body": body,
+                "label": label,
+                "time": _short_time(timestamp) if timestamp else "—",
+                "summary": summary,
+                "priority": priority,
+                "source": source,
+            })
             return
 
-        edges.append({
+        edge_summary = summary if summary else _summarize_text(body, 90)
+        edge_label = label
+        if priority == "high":
+            edge_label = label + " !"
+
+        edge_entry = {
             "from": agent_node_ids[from_agent],
             "to": agent_node_ids[to_agent],
             "kind": "comm",
-            "label": label,
+            "label": edge_label,
+            "weight": 1,
             "message": {
                 "time": _short_time(timestamp) if timestamp else "—",
-                "summary": _summarize_text(body, 90),
+                "raw_timestamp": raw_timestamp or timestamp or "",
+                "summary": edge_summary,
                 "body": body,
                 "source": source or "tool_call",
+                "msg_type": label,
+                "priority": priority,
             },
+        }
+        edges.append(edge_entry)
+        content_index[content_key] = len(edges) - 1
+        pair_messages.setdefault(pair_key, []).append({
+            "from": from_agent,
+            "to": to_agent,
+            "body": body,
+            "label": label,
+            "time": _short_time(timestamp) if timestamp else "—",
+            "raw_timestamp": raw_timestamp or timestamp or "",
+            "summary": edge_summary,
+            "priority": priority,
+            "source": source,
         })
-        edge_index[edge_key] = len(edges) - 1
 
     for agent_name, info in (agent_entries or {}).items():
         if agent_name not in agent_node_ids:
@@ -3746,31 +3793,40 @@ def _build_comm_edges(
                 continue
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function", {}) if isinstance(tc, dict) else {}
-                if str(fn.get("name") or "").strip() != "send_agent_message":
+                tool_name = str(fn.get("name") or "").strip()
+                if tool_name not in ("send_agent_message", "broadcast_agent_message"):
                     continue
                 args = _safe_json_loads(fn.get("arguments") or "{}")
                 if not isinstance(args, dict):
                     continue
                 output = tool_outputs.get(str(tc.get("id") or ""), "")
                 output_lower = output.lower()
-                if output and "message sent to" not in output_lower:
+                if output and "message sent to" not in output_lower and "broadcast sent to" not in output_lower:
                     continue
-                to_agent = str(args.get("to") or "").strip()
                 body = str(args.get("content") or "")
-                _upsert_edge(agent_name, to_agent, body, source="tool_call")
+                if tool_name == "broadcast_agent_message":
+                    # Broadcast edges go to each peer
+                    peer_ids = [aid for aid in agent_node_ids if aid != agent_name]
+                    for peer_id in peer_ids:
+                        _add_message_to_pair(agent_name, peer_id, body, label="progress", source="tool_call")
+                else:
+                    to_agent = str(args.get("to") or "").strip()
+                    _add_message_to_pair(agent_name, to_agent, body, source="tool_call")
 
     for payload in persisted_messages or []:
         if not isinstance(payload, dict):
             continue
         if round_id and str(payload.get("round_id", "")).strip() != round_id:
             continue
-        _upsert_edge(
+        _add_message_to_pair(
             str(payload.get("from", "")).strip(),
             str(payload.get("to", "")).strip(),
             str(payload.get("content", "")),
             label=str(payload.get("type", "chat") or "chat"),
             timestamp=str(payload.get("timestamp", "") or ""),
             source="snapshot_log",
+            summary=str(payload.get("summary", "") or ""),
+            priority=str(payload.get("priority", "normal") or "normal"),
         )
 
     for agent_name in agent_node_ids:
@@ -3786,14 +3842,28 @@ def _build_comm_edges(
             to_agent = str(payload.get("to", ""))
             if round_id and str(payload.get("round_id", "")) != round_id:
                 continue
-            _upsert_edge(
+            _add_message_to_pair(
                 from_agent,
                 to_agent,
                 str(payload.get("content", "")),
                 label=str(payload.get("type", "chat") or "chat"),
                 timestamp=str(payload.get("timestamp", "") or ""),
                 source="inbox_log",
+                summary=str(payload.get("summary", "") or ""),
+                priority=str(payload.get("priority", "normal") or "normal"),
             )
+
+    # Attach all messages for each pair to the edge
+    for i, edge in enumerate(edges):
+        pair = None
+        for (f, t), msgs in pair_messages.items():
+            if edge["from"] == agent_node_ids.get(f) and edge["to"] == agent_node_ids.get(t):
+                pair = (f, t)
+                edge["messages"] = msgs
+                break
+        if pair:
+            edge["weight"] = len(pair_messages.get(pair, []))
+
     return edges
 
 
