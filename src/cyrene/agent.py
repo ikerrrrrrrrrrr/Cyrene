@@ -225,6 +225,7 @@ def _is_replaceable_live_message(entry: dict[str, Any], round_id: str) -> bool:
 async def _write_session_messages_locked(state: dict[str, Any], messages: list[dict[str, Any]]) -> None:
     _ensure_archive_session_id(state)
     messages = _ensure_message_identity(messages)
+    messages = _dedupe_messages_by_id(messages)
     trimmed = _trim_session_messages(messages)
     state["messages"] = trimmed
     if not str(state.get("session_title", "")).strip():
@@ -244,6 +245,7 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
 
 async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     """保存 session 消息。如果超过上限，触发后台压缩。"""
+    messages = _ensure_message_identity(list(messages))
     async with _session_state_lock:
         state = _load_session_state()
         effective_messages = messages
@@ -261,15 +263,25 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
             replace_end = insert_at
             while replace_end < len(base_messages) and _is_replaceable_live_message(base_messages[replace_end], round_id):
                 replace_end += 1
-            effective_messages = [*base_messages[:insert_at], *suffix, *base_messages[replace_end:]]
+            effective_messages = [
+                *base_messages[:insert_at],
+                *_merge_message_sequence(base_messages[insert_at:replace_end], suffix),
+                *base_messages[replace_end:],
+            ]
         elif base_messages is not None:
+            current = state.get("messages", [])
+            current_messages = list(current) if isinstance(current, list) else []
             prefix_len = max(0, min(_persist_history_prefix_len.get(), len(messages)))
             insert_at = _persist_insert_at.get()
             if insert_at is None:
                 insert_at = len(base_messages)
             insert_at = max(0, min(insert_at, len(base_messages)))
             suffix = messages[prefix_len:]
-            effective_messages = [*base_messages[:insert_at], *suffix, *base_messages[insert_at:]]
+            existing_tail = current_messages[insert_at:] if insert_at < len(current_messages) else []
+            effective_messages = [
+                *base_messages[:insert_at],
+                *_merge_message_sequence(existing_tail or base_messages[insert_at:], suffix),
+            ]
         await _write_session_messages_locked(state, effective_messages)
 
 
@@ -648,6 +660,70 @@ def _ensure_message_identity(messages: list[dict[str, Any]]) -> list[dict[str, A
         if not str(message.get("message_id", "")).strip():
             message["message_id"] = f"msg_{uuid4().hex}"
     return messages
+
+
+def _dedupe_messages_by_id(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep message order while preferring the latest version for each message_id.
+
+    Session state should never contain the same logical message twice. When the
+    same message_id appears multiple times, later entries may carry richer
+    metadata or updated content, so we keep the last version while preserving
+    the position of the first occurrence.
+    """
+    deduped: list[dict[str, Any]] = []
+    seen_index: dict[str, int] = {}
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_id = str(message.get("message_id", "")).strip()
+        if message_id and message_id in seen_index:
+            deduped[seen_index[message_id]] = message
+            continue
+        if message_id:
+            seen_index[message_id] = len(deduped)
+        deduped.append(message)
+    return deduped
+
+
+def _merge_message_sequence(existing: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge two persisted message sequences without regressing newer entries.
+
+    ``incoming`` is usually the latest local snapshot for the active round, but
+    callers may occasionally save an older partial snapshot after a newer one
+    has already been persisted. When that happens we should keep the existing
+    later messages instead of deleting them.
+    """
+    incoming_by_id = {
+        str(message.get("message_id", "")).strip(): message
+        for message in incoming
+        if isinstance(message, dict) and str(message.get("message_id", "")).strip()
+    }
+
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for message in existing:
+        if not isinstance(message, dict):
+            continue
+        message_id = str(message.get("message_id", "")).strip()
+        if message_id and message_id in incoming_by_id:
+            merged.append(incoming_by_id[message_id])
+            seen_ids.add(message_id)
+            continue
+        merged.append(message)
+        if message_id:
+            seen_ids.add(message_id)
+
+    for message in incoming:
+        if not isinstance(message, dict):
+            continue
+        message_id = str(message.get("message_id", "")).strip()
+        if message_id and message_id in seen_ids:
+            continue
+        merged.append(message)
+        if message_id:
+            seen_ids.add(message_id)
+
+    return _dedupe_messages_by_id(merged)
 
 
 def _round_epoch_ms(round_id: str) -> int | None:
@@ -1625,11 +1701,15 @@ def get_session_labels(round_id: str = "") -> dict[str, str]:
         ),
         "",
     )
+    had_archive_session_id = bool(str(state.get("archive_session_id", "")).strip())
+    archive_session_id = _ensure_archive_session_id(state)
+    if not had_archive_session_id:
+        _write_session_state(state)
     return {
         "session_title": str(state.get("session_title", "")).strip(),
         "round_title": round_title,
         "round_id": target_round_id,
-        "archive_session_id": _ensure_archive_session_id(state),
+        "archive_session_id": archive_session_id,
     }
 
 
