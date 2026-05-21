@@ -681,26 +681,42 @@ async def run_summary_subagent(
         {
             "role": "system",
             "content": (
-                "You are the dedicated summary subagent.\n"
-                "You never speak to the user directly.\n"
-                "Your output goes only to the main agent.\n"
-                "Read every peer subagent transcript and the inter-agent message log, then produce a faithful integrated summary.\n"
-                "Requirements:\n"
-                "- Attribute important findings to the correct subagent.\n"
-                "- Preserve concrete conclusions, disagreements, and unresolved gaps.\n"
-                "- Do not invent facts that are not in the supplied transcript.\n"
-                "- Do not ask the user questions.\n"
-                "- Do not spawn or message any other agent.\n"
-                "- Return a final summary that the main agent can forward to the WebUI."
+                "You are a synthesis agent. Your job is to read the materials below "
+                "and produce a clear, well-organised answer that directly addresses the user's question.\n\n"
+                "### How to Synthesise\n"
+                "1. Read ALL the materials thoroughly. Identify: what was the user asking, "
+                "what are the key findings, where do different sources agree or conflict.\n"
+                "2. Write a direct answer to the user. Do NOT describe the research process or mention "
+                "how the information was gathered. Write as if you personally found everything.\n"
+                "3. Organise your answer for clarity:\n"
+                "   - Start by directly addressing the user's question.\n"
+                "   - Present findings in a logical order — group related information together.\n"
+                "   - Use headings to separate major topics if the answer is long.\n"
+                "   - Use bullet points or numbered lists when comparing items or listing options.\n"
+                "   - End with a brief conclusion or recommendation when appropriate.\n"
+                "4. Preserve ALL important data: specific numbers, concrete facts, key quotes, "
+                "and important nuances from the materials. Do not over-summarise — "
+                "a detailed answer is better than a vague one.\n"
+                "5. When sources disagree, present both sides rather than arbitrarily picking one.\n"
+                "6. Be honest about uncertainty. If information is incomplete, say so.\n\n"
+                "### Forbidden\n"
+                "- Do NOT reference 'subagents', 'research tracks', 'transcripts', or the process.\n"
+                "- Do NOT preface your answer with meta-commentary like 'Based on the research...'.\n"
+                "- Do NOT end with 'I hope this helps' or similar filler.\n"
+                "- Do NOT ask the user questions.\n"
+                "- Do NOT invent facts not in the materials.\n\n"
+                "### Language\n"
+                "Match the user's language. If the user wrote in Chinese, reply in Chinese. "
+                "If in English, reply in English."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Original user task:\n{parent_task or '—'}\n\n"
-                f"Round guidance:\n{guidance or '—'}\n\n"
-                f"Main-agent round context:\n{history_block}\n\n"
-                f"Peer subagent transcript bundle:\n{transcript}"
+                f"User's question:\n{parent_task or '—'}\n\n"
+                f"Additional guidance:\n{guidance or '—'}\n\n"
+                f"Context from the conversation:\n{history_block}\n\n"
+                f"Research materials:\n{transcript}"
             ),
         },
     ]
