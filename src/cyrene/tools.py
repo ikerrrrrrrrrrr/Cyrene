@@ -611,7 +611,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "ask_user",
-            "description": "Ask the user a clarification question and pause the current round until they answer. For a direct freeform question, send only text. For a choice-based question, also provide a short options array. The UI will still allow the user to type a custom answer even when options are present.",
+            "description": "Ask the user a clarification question and pause until they answer. Use this liberally — asking is better than assuming. Trigger when: the request is ambiguous, details are missing, multiple reasonable approaches exist, or you need sign-off before a risky action. Use freeform text for open questions, or add a short options array for structured choices. The UI always allows custom answers even with options.",
             "parameters": {
                 "type": "object",
                 "properties": {

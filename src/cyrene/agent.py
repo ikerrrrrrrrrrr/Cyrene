@@ -80,7 +80,7 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 - When in doubt, use tools. A tool-backed answer is always better than a guess.
 - For **Claude Code** operations: use `CheckClaudeCode` to see if it's running, and `StartClaudeCode` to launch it. Never use Bash to start or manage Claude Code — these dedicated tools handle tmux session creation, naming, and WebUI integration automatically.
 - If it helps the user stay oriented during a long task, you may call `send_message` to post a brief in-progress update before the final answer. Use it sparingly and only when there is real new information.
-- If the user's request is ambiguous or missing a key detail, call `ask_user` instead of guessing. Use it either as a freeform question or with a short option list when structured choices would help.
+- Call `ask_user` proactively. Ask when: the request is ambiguous, a key detail is missing, multiple valid approaches exist and the choice matters, or you need confirmation before a high-stakes action. Guessing wrong costs more than asking. Use freeform text or add a short options list when structured choices help.
 - When a task is complete, call the `quit` tool.
 """
 
@@ -88,7 +88,7 @@ _PHASE1_DECISION_PROMPT = """Decision phase rules:
 - The only available tools right now are `use_tools`, `ask_user`, and `quit`. You cannot call concrete tools (WebSearch, Bash, Read, etc.) directly — you must use `use_tools` to unlock them.
 - ALWAYS call `use_tools` when the user asks you to DO anything — file ops, search, web, code, shell, scheduling, data queries, sub-agents, etc.
 - Call `quit` ONLY when the request is pure conversation (opinions, greetings, conceptual explanations) AND you are completely sure no tool could improve the answer.
-- Call `ask_user` when the request is genuinely ambiguous and you need clarification before acting.
+- Call `ask_user` when the request is unclear, incomplete, or has multiple valid interpretations. Prefer asking over guessing — a quick question avoids wrong work. Common triggers: missing file paths, ambiguous scope, conflicting instructions, unclear preferences among reasonable alternatives.
 - When in doubt between answering directly or calling `use_tools`, call `use_tools`. It is always better to have tools available than to answer blindly.
 """
 
@@ -98,7 +98,7 @@ Rules:
 - Use tools to complete the task efficiently.
 - Read/Write/Edit files, run Bash commands, search the web as needed.
 - You may call `send_message` to post a brief user-visible progress reply mid-run when helpful, but do not overuse it and do not treat it as the final answer.
-- If you cannot continue safely without user clarification, call `ask_user` and stop until the user answers.
+- Call `ask_user` whenever you encounter ambiguity, missing information, or a decision point that affects the outcome. Ask early — don't wait until you're stuck. Stop and wait for the user's answer before continuing.
 - Return the RESULT of what you did, not a conversation.
 - Be concise in tool usage.
 - When done, call the `quit` tool.
@@ -2211,7 +2211,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
 # 轻量 tool：只有 use_tools + quit，用于第一阶段判断是否进重循环
 _LIGHT_TOOL_DEFS = [
     {"type": "function", "function": {"name": "use_tools", "description": "MANDATORY gateway to full tool access. Call this for ANY request that involves doing things — file ops, search, web, code, shell, scheduling, sub-agents, data, etc. This is the ONLY way to reach real tools. Skip ONLY for pure conversation (opinions, greetings, conceptual explanations). IMPORTANT: set task to the user's EXACT original message, do not rewrite it.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
-    {"type": "function", "function": {"name": "ask_user", "description": "Ask the user a clarification question when their request is ambiguous or missing a critical detail. Use freeform by sending only text, or add a short options array when offering structured choices would help. Do not combine this with other tools in the same assistant turn.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["text"]}}},
+    {"type": "function", "function": {"name": "ask_user", "description": "Ask the user a clarification question. Use this proactively whenever: the request is ambiguous, a critical detail is missing, multiple approaches exist and the choice matters, or you need confirmation before a destructive/irreversible action. Guessing is worse than asking. Use freeform text, or add a short options array when structured choices help. Do not combine with other tools in the same turn.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["text"]}}},
     {"type": "function", "function": {"name": "quit", "description": "Call this when the interaction is done.", "parameters": {"type": "object", "properties": {}}}},
 ]
 

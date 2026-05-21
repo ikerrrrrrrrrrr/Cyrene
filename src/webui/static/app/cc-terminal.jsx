@@ -223,6 +223,20 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
     return null;
   }
 
+  function fillChatInput(text) {
+    var el = document.querySelector(".chat-input textarea, .chat-input input, [data-cc-launch-input]");
+    if (!el) return;
+    var proto = window.HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    var nativeSetter = Object.getOwnPropertyDescriptor(proto, "value");
+    if (nativeSetter && nativeSetter.set) {
+      nativeSetter.set.call(el, text);
+    } else {
+      el.value = text;
+    }
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.focus();
+  }
+
   if (!available) {
     return (
       <div className="cc-terminal cc-terminal--inactive">
@@ -231,12 +245,27 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
             <span className="cc-terminal__eyebrow">Claude Code</span>
             <span className="cc-terminal__title">{ccText("chat.ccUnavailable", "Terminal unavailable")}</span>
           </div>
-          <button className="cc-terminal__button" onClick={onRefresh}>
-            {ccText("chat.ccRetry", "Retry")}
-          </button>
+          <div className="cc-terminal__actions">
+            {statusInfo.can_launch && (
+              <button
+                className="cc-terminal__button cc-terminal__button--accent"
+                onClick={function () { fillChatInput(ccText("chat.ccLaunchHint", "请帮我启动 Claude Code")); }}
+              >
+                {ccText("chat.ccLaunch", "Launch Claude Code")}
+              </button>
+            )}
+            <button className="cc-terminal__button" onClick={onRefresh}>
+              {ccText("chat.ccRetry", "Retry")}
+            </button>
+          </div>
         </div>
         <div className="cc-terminal__empty">
           <div className="cc-terminal__emptyReason">{statusInfo.reason || "No usable tmux session was found."}</div>
+          {statusInfo.can_launch && (
+            <div className="cc-terminal__emptyHint">
+              {ccText("chat.ccLaunchHintText", "Ask Cyrene to launch Claude Code for you, or click the button above.")}
+            </div>
+          )}
           {statusInfo.project_dir && (
             <div className="cc-terminal__emptyMeta">{statusInfo.project_dir}</div>
           )}

@@ -1869,6 +1869,12 @@ html[data-theme="light"] .msg.user .msg-body {
   color: var(--text-4);
   word-break: break-all;
 }
+.cc-terminal__emptyHint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--accent);
+  line-height: 1.5;
+}
 .cc-terminal--inactive .cc-terminal__header {
   padding-left: 0;
   padding-right: 0;
