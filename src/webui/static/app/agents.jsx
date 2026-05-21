@@ -546,7 +546,6 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
           </div>
         </div>
 
-        <CommLog edges={edges} nodeMap={nodeMap} onSelectNode={function (id) { selectNodeForRound(id); }} />
       </div>
 
       <Inspector node={sel} edge={selectedEdge}
@@ -993,72 +992,4 @@ function EdgeInspector({ edge, nodeMap, onSelectNode }) {
     </div>
   );
 }
-
-function CommLog({ edges, nodeMap, onSelectNode }) {
-  const { t } = useI18n();
-  // Gather all unique comm messages from edges, sorted by time
-  const allComms = [];
-  const seen = new Set();
-  (edges || []).forEach(function (edge) {
-    if (edge.kind !== "comm") return;
-    const msgs = Array.isArray(edge.messages) ? edge.messages : (
-      edge.message ? [{ ...edge.message, from: edge.from, to: edge.to }] : []
-    );
-    msgs.forEach(function (msg) {
-      var key = (msg.time || "") + "::" + (msg.body || "").slice(0, 40);
-      if (seen.has(key)) return;
-      seen.add(key);
-      allComms.push({
-        fromId: edge.from,
-        toId: edge.to,
-        fromTitle: (nodeMap.get(edge.from) || {}).title || edge.from,
-        toTitle: (nodeMap.get(edge.to) || {}).title || edge.to,
-        body: msg.body || "",
-        label: msg.label || msg.msg_type || "chat",
-        time: msg.time || "—",
-        summary: msg.summary || "",
-      });
-    });
-  });
-  allComms.sort(function (a, b) { return String(a.time).localeCompare(String(b.time)); });
-
-  if (allComms.length === 0) return null;
-
-  return (
-    <div className="comm-log-panel">
-      <div className="comm-log-head">
-        <span>{t("agents.commLog")}</span>
-        <span className="count">{allComms.length}</span>
-      </div>
-      {allComms.map(function (comm, idx) {
-        var typeLabel =
-          comm.label === "progress" ? (t("agents.commTypeProgress")) :
-          comm.label === "question" ? (t("agents.commTypeQuestion")) :
-          comm.label === "finding"  ? (t("agents.commTypeFinding"))  :
-          comm.label === "result"   ? (t("agents.commTypeResult"))   :
-          comm.label === "ack"      ? (t("agents.commTypeAck"))      :
-          comm.label;
-        return (
-          <div key={idx} className="comm-log-entry" title={comm.body}>
-            <span className="comm-log-time">{comm.time}</span>
-            <span className="comm-log-from"
-                  onClick={function () { onSelectNode && onSelectNode(comm.fromId); }}
-                  style={{ cursor: "pointer" }}>
-              {comm.fromTitle}
-            </span>
-            <span className="comm-log-arrow">→</span>
-            <span className="comm-log-to"
-                  onClick={function () { onSelectNode && onSelectNode(comm.toId); }}
-                  style={{ cursor: "pointer" }}>
-              {comm.toTitle}
-            </span>
-            <span className="comm-log-type">({typeLabel || comm.label})</span>
-            <span className="comm-log-body">{comm.summary || comm.body}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 window.AgentsPage = AgentsPage;

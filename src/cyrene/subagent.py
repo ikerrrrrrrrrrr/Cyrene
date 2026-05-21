@@ -38,7 +38,19 @@ _MAX_FINAL_RESULT_CHARS = 16000
 _MAX_COLLECT_RESULT_CHARS = 12000
 _MAX_SUMMARY_MESSAGE_CHARS = 2400
 _MAX_SUMMARY_TOTAL_CHARS = 48000
+
+_NO_LIMIT = 1_000_000_000
 _SUMMARY_AGENT_PREFIX = "agent_summary_"
+
+def _is_deep_research() -> bool:
+    try:
+        from cyrene.agent import _deep_research_mode
+        return _deep_research_mode.get()
+    except Exception:
+        return False
+
+def _limit(val: int) -> int:
+    return _NO_LIMIT if _is_deep_research() else val
 
 # 全局注册表
 _registry: dict[str, dict] = {}
@@ -116,11 +128,11 @@ async def mark_done(agent_id: str, result: str = "") -> None:
                     # 如果 existing 是 result 的前缀（说明是 set_waiting 截断的版本），
                     # 直接用完整 result，避免重复拼接。
                     if result.startswith(existing):
-                        _registry[agent_id]["result"] = result[:_MAX_FINAL_RESULT_CHARS]
+                        _registry[agent_id]["result"] = result[:_limit(_MAX_FINAL_RESULT_CHARS)]
                     else:
-                        _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:_MAX_FINAL_RESULT_CHARS]
+                        _registry[agent_id]["result"] = (existing + "\n---\n" + result)[:_limit(_MAX_FINAL_RESULT_CHARS)]
                 else:
-                    _registry[agent_id]["result"] = result[:_MAX_FINAL_RESULT_CHARS]
+                    _registry[agent_id]["result"] = result[:_limit(_MAX_FINAL_RESULT_CHARS)]
     await _publish_registry_event(agent_id)
 
 
@@ -183,7 +195,7 @@ async def set_waiting(agent_id: str, result: str = "") -> None:
             _registry[agent_id]["status"] = WAITING
             _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
             if result:
-                _registry[agent_id]["result"] = result[:_MAX_WAITING_RESULT_CHARS]
+                _registry[agent_id]["result"] = result[:_limit(_MAX_WAITING_RESULT_CHARS)]
     await _publish_registry_event(agent_id)
 
 
@@ -327,7 +339,7 @@ async def collect_results(round_id: str = "") -> str:
                 lines.append(
                     f"[{aid}] task: {task or '—'}\n"
                     f"status: {status or 'unknown'}\n"
-                    f"result:\n{str(result)[:_MAX_COLLECT_RESULT_CHARS]}"
+                    f"result:\n{str(result)[:_limit(_MAX_COLLECT_RESULT_CHARS)]}"
                 )
             else:
                 lines.append(
@@ -457,7 +469,9 @@ def _summary_agent_id(round_id: str) -> str:
     return f"{_SUMMARY_AGENT_PREFIX}{suffix[:32]}"
 
 
-def _truncate_summary_text(text: str, limit: int = _MAX_SUMMARY_MESSAGE_CHARS) -> str:
+def _truncate_summary_text(text: str, limit: int | None = None) -> str:
+    if limit is None:
+        limit = _limit(_MAX_SUMMARY_MESSAGE_CHARS)
     source = str(text or "")
     if len(source) <= limit:
         return source
@@ -554,11 +568,12 @@ async def build_round_summary_transcript(round_id: str, exclude_ids: set[str] | 
             f"## {agent_id}\n"
             f"task: {str(info.get('task') or '').strip() or '—'}\n"
             f"status: {str(info.get('status') or '').strip() or 'unknown'}\n"
-            f"result:\n{_truncate_summary_text(str(info.get('result') or ''), 5000) or '—'}\n\n"
+            f"result:\n{_truncate_summary_text(str(info.get('result') or ''), _limit(5000)) or '—'}\n\n"
             f"transcript:\n" + ("\n\n".join(rendered_messages) if rendered_messages else "—")
         )
-        if total_chars + len(section) > _MAX_SUMMARY_TOTAL_CHARS:
-            remaining = _MAX_SUMMARY_TOTAL_CHARS - total_chars
+        summary_total_limit = _limit(_MAX_SUMMARY_TOTAL_CHARS)
+        if total_chars + len(section) > summary_total_limit:
+            remaining = summary_total_limit - total_chars
             if remaining <= 0:
                 sections.append("[older peer transcript omitted]")
                 break
@@ -569,7 +584,7 @@ async def build_round_summary_transcript(round_id: str, exclude_ids: set[str] | 
         total_chars += len(section)
 
     comms = _round_comm_messages(agent_ids, round_id=round_id)
-    if comms and total_chars < _MAX_SUMMARY_TOTAL_CHARS:
+    if comms and total_chars < summary_total_limit:
         lines = ["## Inter-agent messages"]
         for item in comms:
             lines.append(
@@ -577,7 +592,7 @@ async def build_round_summary_transcript(round_id: str, exclude_ids: set[str] | 
                 f"{_truncate_summary_text(str(item.get('content') or ''))}"
             )
         comms_block = "\n\n".join(lines)
-        remaining = _MAX_SUMMARY_TOTAL_CHARS - total_chars
+        remaining = summary_total_limit - total_chars
         if len(comms_block) > remaining:
             comms_block = _truncate_summary_text(comms_block, remaining)
         sections.append(comms_block)
@@ -591,13 +606,27 @@ async def run_summary_subagent(
     guidance: str = "",
     round_history: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Run a dedicated summary subagent after peer subagents finish."""
+    """Run a dedicated summary subagent after peer subagents finish.
+
+    In deep research mode, skip the LLM summariser and just concatenate all
+    subagent transcripts directly — the main agent will synthesise from the
+    full raw material without any intermediate compression.
+    """
     from cyrene.agent import _call_llm
     from cyrene.llm import _assistant_text
 
     summary_agent_id = _summary_agent_id(round_id)
-    summary_task = "Summarize every peer subagent transcript and their communication for the main agent."
     transcript = await build_round_summary_transcript(round_id=round_id, exclude_ids={summary_agent_id})
+
+    # Deep research: return raw concatenated transcript, no LLM compression
+    if _is_deep_research():
+        header = f"## Deep Research Raw Transcript\nParent task: {parent_task or '—'}\n\n"
+        final_text = header + transcript
+        await register(summary_agent_id, "Concatenate all subagent transcripts (deep research)", round_id=round_id)
+        await mark_done(summary_agent_id, final_text)
+        return final_text
+
+    summary_task = "Summarize every peer subagent transcript and their communication for the main agent."
 
     history_lines: list[str] = []
     for msg in (round_history or [])[-12:]:
