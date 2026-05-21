@@ -92,3 +92,4 @@ Each module has a single responsibility. Cross-module communication uses:
 ## CI
 
 GitHub Actions workflow at `.github/workflows/ci.yml` runs tests on each push.
+It currently runs `uv run pytest -q` and `python -m compileall src`.

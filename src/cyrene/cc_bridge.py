@@ -67,28 +67,22 @@ def list_tmux_sessions() -> list[dict[str, Any]]:
     return sessions
 
 
-def find_cc_tmux_session(cwd: Path | None = None) -> str:
-    """Pick the most likely Claude Code tmux session for the current project."""
-    sessions = list_tmux_sessions()
-    if not sessions:
-        return ""
-
+def resolve_cc_session_name(cwd: Path | None = None) -> str:
+    """Resolve the fixed tmux session name for the current project."""
+    cwd = (cwd or Path.cwd()).resolve()
     preferred = str(os.environ.get("CYRENE_CC_TMUX_SESSION", "")).strip()
     if preferred and _TMUX_SESSION_RE.fullmatch(preferred):
-        for session in sessions:
-            if session["name"] == preferred:
-                return preferred
+        return preferred
+    return "claude-" + _session_name_from_path(cwd)
 
-    keywords = _session_keywords(cwd or Path.cwd())
-    best_name = ""
-    best_score = -1
-    for session in sessions:
-        name = str(session["name"])
-        score = _score_tmux_session(name, session, keywords)
-        if score > best_score:
-            best_score = score
-            best_name = name
-    return best_name
+
+def find_cc_tmux_session(cwd: Path | None = None) -> str:
+    """Return the configured Claude Code tmux session when it exists."""
+    target_name = resolve_cc_session_name(cwd)
+    for session in list_tmux_sessions():
+        if session["name"] == target_name:
+            return target_name
+    return ""
 
 
 def find_claude_project_dir(cwd: Path | None = None) -> Path | None:
@@ -151,25 +145,25 @@ def get_cc_status(cwd: Path | None = None) -> dict[str, Any]:
     """Return a frontend-friendly status summary for the CC terminal integration."""
     sync_cc_shell_status()
     cwd = (cwd or Path.cwd()).resolve()
+    expected_session = resolve_cc_session_name(cwd)
     project_dir = find_claude_project_dir(cwd)
     latest_jsonl = find_latest_jsonl(project_dir)
     tmux_sessions = list_tmux_sessions()
-    tmux_session = find_cc_tmux_session(cwd) if tmux_sessions else ""
+    tmux_session = expected_session if any(session["name"] == expected_session for session in tmux_sessions) else ""
 
     available = bool(tmux_session)
     can_launch = False
     if available:
+        _register_cc_shell(tmux_session, cwd)
         reason = ""
     elif not tmux_available():
         reason = "tmux is not installed or not on PATH."
     elif not tmux_sessions:
-        reason = "No tmux sessions are currently running."
-        can_launch = True
-    elif project_dir is None:
-        reason = "No Claude Code project transcripts were found for this repo."
+        reason = f"Claude Code session '{expected_session}' is not running."
         can_launch = True
     else:
-        reason = "Cyrene found Claude transcripts but could not confidently match a tmux session."
+        reason = f"Claude Code session '{expected_session}' is not running."
+        can_launch = True
 
     latest_updated_at = ""
     if latest_jsonl is not None:
@@ -179,6 +173,7 @@ def get_cc_status(cwd: Path | None = None) -> dict[str, Any]:
         "available": available,
         "can_launch": can_launch,
         "tmux_available": tmux_available(),
+        "expected_session": expected_session,
         "tmux_session": tmux_session,
         "reason": reason,
         "project_dir": str(project_dir) if project_dir else "",
@@ -201,16 +196,18 @@ def launch_cc_tmux(cwd: Path | None = None, session_name: str = "") -> dict[str,
         return {"ok": False, "reason": "tmux is not installed or not on PATH."}
 
     cwd = (cwd or Path.cwd()).resolve()
+    _run_command(["tmux", "set-option", "-g", "default-terminal", "xterm-256color"])
 
     # 优先使用调用方指定的名字，否则根据项目目录自动生成
     if session_name and _TMUX_SESSION_RE.fullmatch(session_name):
         name = session_name
     else:
-        name = "claude-" + _session_name_from_path(cwd)
+        name = resolve_cc_session_name(cwd)
 
     # 检查同名 session 是否已存在
     for session in list_tmux_sessions():
         if session["name"] == name:
+            _register_cc_shell(name, cwd)
             return {"ok": True, "session": name, "detail": "Session already exists."}
 
     # 找到 claude 可执行文件
@@ -219,6 +216,8 @@ def launch_cc_tmux(cwd: Path | None = None, session_name: str = "") -> dict[str,
     # tmux new-session -d: 后台创建, 不 attach
     result = _run_command([
         "tmux", "new-session", "-d", "-s", name,
+        "-e", "TERM=xterm-256color",
+        "-e", "COLORTERM=truecolor",
         "-c", str(cwd),
         cc_bin,
     ])

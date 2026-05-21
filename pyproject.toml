@@ -17,6 +17,7 @@ dependencies = [
     "simplexng>=0.1.0",
     "mcp>=1.27.0",
     "uvicorn>=0.34.0",
+    "websockets>=15.0.1",
 ]
 
 [project.scripts]

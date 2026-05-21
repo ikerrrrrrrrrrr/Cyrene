@@ -54,6 +54,7 @@ from cyrene.short_term import load_entries
 from cyrene.soul import read_soul, get_soul_path
 
 logger = logging.getLogger(__name__)
+_CC_PROJECT_DIR = WORKSPACE_DIR.parent
 
 _bot: Any = None
 _db_path: str = ""
@@ -128,7 +129,7 @@ async def _publish_cc_learning(text: str, tmux_session: str = "") -> None:
     if not prompt:
         return
 
-    status = get_cc_status()
+    status = get_cc_status(_CC_PROJECT_DIR)
     latest_jsonl = str(status.get("latest_jsonl") or "").strip()
     await debug.publish_event(
         {
@@ -511,11 +512,11 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/api/cc/status")
     async def api_cc_status():
-        return get_cc_status()
+        return get_cc_status(_CC_PROJECT_DIR)
 
     @router.get("/api/cc/learning")
     async def api_cc_learning():
-        status = get_cc_status()
+        status = get_cc_status(_CC_PROJECT_DIR)
         latest_jsonl = str(status.get("latest_jsonl") or "").strip()
         if not latest_jsonl:
             return {
@@ -531,7 +532,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.post("/api/cc/learn")
     async def api_cc_learn():
-        status = get_cc_status()
+        status = get_cc_status(_CC_PROJECT_DIR)
         latest_jsonl = str(status.get("latest_jsonl") or "").strip()
         if not latest_jsonl:
             return JSONResponse({"error": "no Claude transcript found"}, status_code=404)
