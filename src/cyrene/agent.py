@@ -124,25 +124,24 @@ You are in **Deep Research** mode. The user has asked a question that requires t
 5. Never answer the user directly during this phase. Everything goes through subagents.
 
 ### Phase 3: Write the Research Report
-1. You are a **research editor**. The subagents have delivered raw findings — your job is to weave them into a single, coherent, logically structured research report. This is NOT a copy-paste job and NOT a summarization job. It is an act of writing.
-2. Read ALL subagent findings thoroughly. Identify the narrative arc: what is the central question, what are the key themes, how do different findings connect to and build on each other, where do they conflict.
-3. Write a unified research report that flows like a well-written long-form article:
+1. You have been given research materials gathered from multiple angles. Your job is to write the final research report AS IF you personally conducted all the research. You are the author — not a coordinator, not an editor summarizing others' work.
+2. Read ALL the research materials thoroughly. Identify the narrative arc: what is the central question, what are the key themes, how do different findings connect to and build on each other, where do they conflict.
+3. Write a unified research report as a single expert author:
    - Start with a compelling title that captures the research question.
    - **Executive Summary** — the key takeaways a busy reader needs. Frame the question, preview the answer, highlight the most important finding.
    - **Background & Context** — set the stage. Why does this question matter? What does the reader need to know before diving in?
-   - **Findings** — the body of the report. Organize by theme (not by subagent). Cross-reference subagent findings within each theme. When two subagents found complementary information on the same topic, merge them into one seamless narrative. When they found conflicting information, present both sides and analyze the tension. Use sub-headings to guide the reader. Every data point, number, source URL, and key quote must be preserved — the difference from concatenation is in the structure and flow, not in cutting content.
-   - **Analysis & Implications** — what do these findings mean? Connect the dots. Identify patterns, contradictions, and gaps. This is where you add value beyond what any single subagent could see.
-   - **Limitations** — what couldn't be determined, what sources were unavailable, what would require further investigation.
+   - **Findings** — the body of the report. Organize by theme. When different research materials cover complementary angles on the same topic, merge them into one seamless narrative. When they contain conflicting information, present both sides and analyze the tension. Use sub-headings to guide the reader.
+   - **Analysis & Implications** — what do these findings mean? Connect the dots. Identify patterns, contradictions, and gaps. Add your own analytical perspective.
+   - **Limitations** — what couldn't be determined, what information was unavailable, what would require further investigation.
    - **Conclusion** — tie everything together. Answer the original question directly. Be decisive where the evidence supports it, measured where it doesn't.
    - **References** — the FINAL section. List EVERY source cited in the report with: author/organization, title, publication date (if available), and full URL. Number them [1], [2], [3]... so they can be cross-referenced.
-4. **Citation format**: Every factual claim, data point, statistic, and quote in the report body MUST be marked with its source number in brackets — e.g. "according to a 2024 industry report [3], the market grew 27%". This applies to ALL claims, not just direct quotes. The numbered references must exactly match the References section at the end.
-5. The finished report should read as if written by a single expert author, not stitched together from multiple sources. The reader should feel they are reading one article, not a collection of separate reports.
-6. Preserve ALL substantive content from subagents — every data point, every source URL, every important quote. The integration is in the narrative structure, not in deleting information.
+4. **Citation format**: Every factual claim, data point, statistic, and quote MUST be marked with its source number in brackets — e.g. "according to a 2024 industry report [3], the market grew 27%". The numbered references must exactly match the References section.
+5. **Forbidden**: Do NOT mention "subagents", "research tracks", "delegation", or the research process. Do NOT say things like "Subagent A found..." or "Research track 3 revealed...". The reader must believe YOU did all the research. Your report is the only thing they see — make it complete and self-contained.
+6. Preserve ALL data points, specific numbers, source URLs, and important quotes from the research materials. Do not cut content — integrate it into a flowing narrative.
 
 ### Critical Output Rules
-- Output ONLY the research report and nothing else. No "Here is your report", no "I hope this helps", no sign-offs. The title is the first thing the user sees.
-- **Language**: The report MUST be written in the user's language. This is strict. Check the user's messages and the system language setting — if the user communicates in Chinese, the entire report must be in Chinese. If in English, the entire report in English. Do not mix languages.
-- Every subagent finding must be represented somewhere in the report.
+- Output ONLY the research report. No preamble, no sign-offs, no meta-commentary. The title is the first thing the user sees.
+- **Language**: The report MUST be written in the user's language. This is strict. Check the user's messages and the system language setting — the entire report in Chinese or the entire report in English. Do not mix languages.
 - Call `quit` immediately after the report ends.
 """
 
@@ -2863,6 +2862,7 @@ async def _run_main_agent(
                 from cyrene.subagent import (
                     _run_subagent,
                     _spawn_subagent_task,
+                    build_deep_research_source as _build_deep_research_source,
                     build_flow_snapshot as _build_subagent_flow_snapshot,
                     clear as _sub_clear,
                     get_snapshot as _sub_snapshot,
@@ -2925,21 +2925,21 @@ async def _run_main_agent(
                     "to": "synthesis",
                     "detail": "All subagents done, starting summary subagent",
                 })
-                raw_transcript = await _run_summary_subagent(
+                summary_result = await _run_summary_subagent(
                     round_id=round_id,
                     parent_task=user_message,
                     round_history=messages,
                 )
 
-                # Deep research: 拼接后的原始材料交给主 agent 做最终综合（Phase 3）
-                # 不能让拼接结果直接返回给用户 —— 主 agent 需要按照 _DEEP_RESEARCH_PROMPT
-                # 中的 Phase 3 指令写成一篇完整的研究报告
+                # Deep research: 只提取子代理的研究结果（不含内部对话），交给主 agent 写最终报告
                 if _deep_research_mode.get():
+                    source_material = await _build_deep_research_source(round_id)
                     messages.append({"role": "user", "content": (
-                        "## 子代理研究原始材料\n\n"
-                        "以下是所有子代理的研究结果全文。请严格按照你的系统提示中的 Phase 3 要求，"
-                        "将这些材料写成一篇完整、连贯的研究报告。\n\n"
-                        + raw_transcript
+                        "## Research Materials\n\n"
+                        "Below are the research findings gathered on this question. "
+                        "Write the final research report based on these materials. "
+                        "Write as if YOU did all the research — never mention how the materials were collected.\n\n"
+                        + source_material
                     )})
                     response = None
                     try:
@@ -2949,15 +2949,15 @@ async def _run_main_agent(
                         logger.exception("Deep research Phase 3 synthesis failed")
                         final_text = ""
                     if not final_text or not final_text.strip():
-                        logger.warning("Deep research Phase 3 returned empty, falling back to raw transcript")
-                        final_text = raw_transcript
+                        logger.warning("Deep research Phase 3 returned empty, falling back to research materials")
+                        final_text = source_material
                     synthesis_entry = {"role": "assistant", "content": final_text}
                     if response and response.get("reasoning_content"):
                         synthesis_entry["reasoning_content"] = response["reasoning_content"]
                     if response and response.get("usage"):
                         synthesis_entry["usage"] = response["usage"]
                 else:
-                    final_text = raw_transcript
+                    final_text = summary_result
                     synthesis_entry = {"role": "assistant", "content": final_text}
 
                 flow_snapshot = await _build_subagent_flow_snapshot(round_id)

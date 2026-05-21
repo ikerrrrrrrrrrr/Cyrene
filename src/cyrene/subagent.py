@@ -350,6 +350,43 @@ async def collect_results(round_id: str = "") -> str:
         return "\n\n".join(lines) if lines else "无 subagent 结果。"
 
 
+async def build_deep_research_source(round_id: str = "") -> str:
+    """Collect only subagent research RESULTS for the final Phase 3 report.
+
+    Unlike build_round_summary_transcript, this does NOT include:
+    - Subagent internal transcripts (tool calls, reasoning, messages)
+    - Inter-agent communication messages
+    - Agent IDs, status labels, or process metadata
+
+    Output is pure research material, formatted as clean sections the main
+    agent can directly incorporate into the final report.
+    """
+    entries = await _registry_entries_for_round(round_id=round_id)
+    if not entries:
+        return "No research material available."
+
+    # Sort by creation time for consistent ordering
+    entries.sort(key=lambda item: str(item[1].get("created_at") or ""))
+
+    sections: list[str] = []
+    for index, (agent_id, info) in enumerate(entries, start=1):
+        task = str(info.get("task") or "").strip()
+        result = str(info.get("result") or "").strip()
+        if not result:
+            continue
+
+        section = (
+            f"## Research Topic {index}: {task or 'Untitled'}\n\n"
+            f"{result}"
+        )
+        sections.append(section)
+
+    if not sections:
+        return "No research material available."
+
+    return "\n\n---\n\n".join(sections)
+
+
 async def get_snapshot(round_id: str = "") -> dict:
     """Return a JSON-safe snapshot of all subagents for the WebUI."""
     async with _lock:
