@@ -1474,6 +1474,22 @@ async def _final_user_reply_from_history(messages: list[dict[str, Any]], max_tok
     return _assistant_text(response).strip()
 
 
+async def _final_plain_reply_from_history(messages: list[dict[str, Any]], max_tokens: int | None = None) -> str:
+    prompt_messages = [
+        *messages,
+        {
+            "role": "user",
+            "content": (
+                "Answer the latest user message directly.\n"
+                "Do not call tools.\n"
+                "Do not reply with only 'Done'."
+            ),
+        },
+    ]
+    response = await (_call_llm_stream(prompt_messages, max_tokens=max_tokens) if _streaming_reply_requested() else _call_llm(prompt_messages, tools=None, max_tokens=max_tokens))
+    return _assistant_text(response).strip()
+
+
 def _tool_result_fallback_text(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages):
         if not isinstance(message, dict) or str(message.get("role") or "") != "tool":
@@ -2355,6 +2371,10 @@ async def _run_main_agent(
             fallback_from_tools = _tool_result_fallback_text(base_messages).strip()
             if fallback_from_tools:
                 return fallback_from_tools
+        else:
+            final_plain_text = (await _final_plain_reply_from_history(base_messages, max_tokens=None)).strip()
+            if final_plain_text and not _is_placeholder_reply(final_plain_text):
+                return final_plain_text
         final_text = (await _final_reply_from_history(base_messages, max_tokens=None)).strip()
         if final_text and not _is_placeholder_reply(final_text):
             return final_text
