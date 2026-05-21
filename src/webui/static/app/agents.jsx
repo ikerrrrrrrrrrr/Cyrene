@@ -214,31 +214,49 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
   useEffectAg(() => {
     const el = wrapRef.current;
     if (!el) return;
+    let timer = null;
     function measure() {
-      setViewport({
-        width: el.clientWidth || 1400,
-        height: el.clientHeight || 900,
-      });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () {
+        setViewport({
+          width: el.clientWidth || 1400,
+          height: el.clientHeight || 900,
+        });
+      }, 150);
     }
     measure();
     if (typeof ResizeObserver === "undefined") {
       window.addEventListener("resize", measure);
-      return () => window.removeEventListener("resize", measure);
+      return function () {
+        window.removeEventListener("resize", measure);
+        if (timer) clearTimeout(timer);
+      };
     }
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    return function () {
+      ro.disconnect();
+      if (timer) clearTimeout(timer);
+    };
   }, []);
 
   const { nodes, edges } = round.flow;
-  const sel = nodes.find((n) => n.id === selectedNode);
+
+  // O(1) node lookup map — eliminates O(n*m) find() calls in sub-components
+  const nodeMap = useMemo(function () {
+    const m = new Map();
+    nodes.forEach(function (n) { m.set(n.id, n); });
+    return m;
+  }, [nodes]);
+
+  const sel = nodeMap.get(selectedNode);
   const selectedEdge = selectedEdgeKey
-    ? edges.find((edge) => edgeSelectionKey(edge) === selectedEdgeKey) || null
+    ? edges.find(function (edge) { return edgeSelectionKey(edge) === selectedEdgeKey; }) || null
     : null;
 
   // Drag-to-pan
   const dragRef = useRefAg(null);
-  useEffectAg(() => {
+  useEffectAg(function () {
     const el = wrapRef.current;
     if (!el) return;
     function onDown(e) {
@@ -256,7 +274,7 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
     el.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
-    return () => {
+    return function () {
       el.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
@@ -267,20 +285,20 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
   function onWheel(e) {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
-      setZoom((z) => Math.max(0.4, Math.min(1.6, z + (e.deltaY < 0 ? 0.05 : -0.05))));
+      setZoom(function (z) { return Math.max(0.4, Math.min(1.6, z + (e.deltaY < 0 ? 0.05 : -0.05))); });
       return;
     }
     e.preventDefault();
-    setPan((p) => ({
+    setPan(function (p) { return {
       x: p.x - (e.shiftKey ? e.deltaY : e.deltaX),
       y: p.y - (e.shiftKey ? 0 : e.deltaY),
-    }));
+    }; });
   }
 
   // Compute node rects with wrapping:
   // horizontal = preserve backend lane layout per round
   // vertical   = transpose the same layout for top-to-bottom reading
-  const nodeRects = useMemo(() => {
+  const nodeRects = useMemo(function () {
     const padding = 20;
     const roundGapY = 120;
     const rects = {};
@@ -299,32 +317,30 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
 
     function layoutRound(roundNodes, topOffset) {
       if (!roundNodes.length) return topOffset;
-      const minX = Math.min(...roundNodes.map((n) => Number(n.x) || 0));
-      const minY = Math.min(...roundNodes.map((n) => Number(n.y) || 0));
+      const minX = Math.min.apply(null, roundNodes.map(function (n) { return Number(n.x) || 0; }));
+      const minY = Math.min.apply(null, roundNodes.map(function (n) { return Number(n.y) || 0; }));
       const subagentOffsets = new Map();
       roundNodes
-        .filter((node) => node.kind === "subagent")
+        .filter(function (node) { return node.kind === "subagent"; })
         .slice()
-        .sort((a, b) => {
+        .sort(function (a, b) {
           if ((a.y || 0) !== (b.y || 0)) return (a.y || 0) - (b.y || 0);
           return (a.x || 0) - (b.x || 0);
         })
-        .forEach((node, index) => {
+        .forEach(function (node, index) {
           subagentOffsets.set(node.id, staggerLevel(index));
         });
       let roundBottom = topOffset;
 
-      for (const n of roundNodes.slice().sort((a, b) => {
-        if ((a.y || 0) !== (b.y || 0)) return (a.y || 0) - (b.y || 0);
-        return (a.x || 0) - (b.x || 0);
-      })) {
-        const { w, h } = nodeSize(n);
-        const relX = (Number(n.x) || 0) - minX;
-        const relY = (Number(n.y) || 0) - minY;
-        let x = orientation === "vertical" ? padding + relY : padding + relX;
-        let y = orientation === "vertical" ? topOffset + padding + relX : topOffset + padding + relY;
+      for (var i = 0; i < roundNodes.length; i++) {
+        var n = roundNodes[i];
+        var _a = nodeSize(n), w = _a.w, h = _a.h;
+        var relX = (Number(n.x) || 0) - minX;
+        var relY = (Number(n.y) || 0) - minY;
+        var x = orientation === "vertical" ? padding + relY : padding + relX;
+        var y = orientation === "vertical" ? topOffset + padding + relX : topOffset + padding + relY;
         if (n.kind === "subagent") {
-          const lane = subagentOffsets.get(n.id) || 0;
+          var lane = subagentOffsets.get(n.id) || 0;
           if (orientation === "vertical") {
             x += lane * 78;
             y += Math.abs(lane) * 26;
@@ -333,72 +349,117 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
             y += lane * 72;
           }
         }
-        rects[n.id] = { x, y, w, h };
+        rects[n.id] = { x: x, y: y, w: w, h: h };
         roundBottom = Math.max(roundBottom, y + h);
       }
 
       return roundBottom;
     }
 
-    const rounds = new Map();
-    for (const n of nodes) {
-      const roundKey = roundKeyForNode(n);
-      if (!rounds.has(roundKey)) rounds.set(roundKey, []);
-      rounds.get(roundKey).push(n);
+    var roundsMap = new Map();
+    for (var j = 0; j < nodes.length; j++) {
+      var n = nodes[j];
+      var roundKey = roundKeyForNode(n);
+      if (!roundsMap.has(roundKey)) roundsMap.set(roundKey, []);
+      roundsMap.get(roundKey).push(n);
     }
 
-    const sortedRounds = Array.from(rounds.entries())
-      .map(([key, list]) => ({ key, list }))
-      .sort((a, b) => Number(a.key.slice(1)) - Number(b.key.slice(1)));
+    var sortedRounds = Array.from(roundsMap.entries())
+      .map(function (entry) { return { key: entry[0], list: entry[1] }; })
+      .sort(function (a, b) { return Number(a.key.slice(1)) - Number(b.key.slice(1)); });
 
-    let roundTop = 0;
-    for (const round of sortedRounds) {
-      const roundBottom = layoutRound(round.list, roundTop);
+    var roundTop = 0;
+    for (var k = 0; k < sortedRounds.length; k++) {
+      var roundBottom = layoutRound(sortedRounds[k].list, roundTop);
       roundTop = roundBottom + roundGapY;
     }
     return rects;
-  }, [nodes, orientation, viewport.height, viewport.width]);
+  }, [nodes, orientation]);
 
-  const canvasSize = useMemo(() => {
-    let maxX = 0, maxY = 0;
-    for (const id in nodeRects) {
-      const r = nodeRects[id];
+  const canvasSize = useMemo(function () {
+    var maxX = 0, maxY = 0;
+    for (var id in nodeRects) {
+      var r = nodeRects[id];
       maxX = Math.max(maxX, r.x + r.w);
       maxY = Math.max(maxY, r.y + r.h);
     }
     return { w: maxX + 80, h: maxY + 80 };
   }, [nodeRects]);
-  function edgePath(e) {
-    const a = nodeRects[e.from];
-    const b = nodeRects[e.to];
-    if (!a || !b) return "";
-    if (orientation === "vertical") {
-      // bottom-mid of a → top-mid of b (or top → bottom for upward edges)
-      let x1 = a.x + a.w / 2, y1 = a.y + a.h;
-      let x2 = b.x + b.w / 2, y2 = b.y;
-      if (b.y < a.y) { y1 = a.y; y2 = b.y + b.h; }
-      const dy = Math.max(30, (y2 - y1) / 2);
-      return `M ${x1} ${y1} C ${x1} ${y1 + dy}, ${x2} ${y2 - dy}, ${x2} ${y2}`;
-    }
-    // horizontal: right-mid of a → left-mid of b
-    let x1 = a.x + a.w, y1 = a.y + a.h / 2;
-    let x2 = b.x,        y2 = b.y + b.h / 2;
-    if (b.x < a.x) { x1 = a.x; x2 = b.x + b.w; }
-    const dx = Math.max(40, (x2 - x1) / 2);
-    return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
-  }
 
-  function edgeLabelPos(e) {
-    const a = nodeRects[e.from];
-    const b = nodeRects[e.to];
-    if (!a || !b) return { x: 0, y: 0 };
-    if (orientation === "vertical") {
-      return { x: (a.x + a.w / 2 + b.x + b.w / 2) / 2,
-               y: (a.y + a.h + b.y) / 2 - 4 };
-    }
-    return { x: (a.x + a.w + b.x) / 2,
-             y: (a.y + a.h / 2 + b.y + b.h / 2) / 2 - 6 };
-  }
+  // Precompute edge paths, labels, and CSS classes (cached)
+  const edgeData = useMemo(function () {
+    return edges.map(function (e) {
+      var a = nodeRects[e.from];
+      var b = nodeRects[e.to];
+      var path = "";
+      var lp = { x: 0, y: 0 };
+      if (a && b) {
+        if (orientation === "vertical") {
+          var x1 = a.x + a.w / 2, y1 = a.y + a.h;
+          var x2 = b.x + b.w / 2, y2 = b.y;
+          if (b.y < a.y) { y1 = a.y; y2 = b.y + b.h; }
+          var dy = Math.max(30, (y2 - y1) / 2);
+          path = "M " + x1 + " " + y1 + " C " + x1 + " " + (y1 + dy) + ", " + x2 + " " + (y2 - dy) + ", " + x2 + " " + y2;
+          lp = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 4 };
+        } else {
+          var _x1 = a.x + a.w, _y1 = a.y + a.h / 2;
+          var _x2 = b.x, _y2 = b.y + b.h / 2;
+          if (b.x < a.x) { _x1 = a.x; _x2 = b.x + b.w; }
+          var dx = Math.max(40, (_x2 - _x1) / 2);
+          path = "M " + _x1 + " " + _y1 + " C " + (_x1 + dx) + " " + _y1 + ", " + (_x2 - dx) + " " + _y2 + ", " + _x2 + " " + _y2;
+          lp = { x: (_x1 + _x2) / 2, y: (_y1 + _y2) / 2 - 6 };
+        }
+      }
+      var edgeKey = edgeSelectionKey(e);
+      var weight = Number(e.weight) || 1;
+      var weightCls = e.kind === "comm" && weight >= 2 ? " weight-" + Math.min(weight, 4) : "";
+      var priorityCls = e.kind === "comm" && e.message && e.message.priority === "high" ? " priority-high" : "";
+      var rawTs = e.message && e.message.raw_timestamp ? e.message.raw_timestamp : "";
+      var recentCls = "";
+      if (e.kind === "comm" && rawTs) {
+        try {
+          var msgDate = new Date(rawTs);
+          if (!isNaN(msgDate.getTime()) && (Date.now() - msgDate.getTime()) < 30000) recentCls = " recent";
+        } catch (_) { /* skip */ }
+      }
+      var cls =
+        "edge " +
+        (e.kind === "active" ? "active" : e.kind === "dashed" ? "dashed" : e.kind === "comm" ? "comm" : "") +
+        weightCls + priorityCls + recentCls +
+        (selectedEdgeKey === edgeKey ? " selected" : "");
+      var marker =
+        e.kind === "active" ? "url(#arrow-active)" : e.kind === "comm" ? "url(#arrow-comm)" : "url(#arrow)";
+      var clickable = e.kind === "comm" && e.message;
+      return { edge: e, edgeKey: edgeKey, path: path, lp: lp, cls: cls, marker: marker, clickable: clickable };
+    });
+  }, [edges, nodeRects, orientation, selectedEdgeKey]);
+
+  // Viewport culling: only render nodes/edges in the visible area
+  const visibleNodes = useMemo(function () {
+    var vpLeft = -pan.x / zoom;
+    var vpTop = -pan.y / zoom;
+    var vpRight = vpLeft + viewport.width / zoom;
+    var vpBottom = vpTop + viewport.height / zoom;
+    var buffer = 300;
+    return nodes.filter(function (n) {
+      var r = nodeRects[n.id];
+      if (!r) return true;
+      return !(r.x + r.w < vpLeft - buffer || r.x > vpRight + buffer ||
+               r.y + r.h < vpTop - buffer || r.y > vpBottom + buffer);
+    });
+  }, [nodes, nodeRects, pan.x, pan.y, zoom, viewport.width, viewport.height]);
+
+  const visibleNodeIds = useMemo(function () {
+    var s = new Set();
+    for (var i = 0; i < visibleNodes.length; i++) { s.add(visibleNodes[i].id); }
+    return s;
+  }, [visibleNodes]);
+
+  const visibleEdgeData = useMemo(function () {
+    return edgeData.filter(function (ed) {
+      return visibleNodeIds.has(ed.edge.from) || visibleNodeIds.has(ed.edge.to);
+    });
+  }, [edgeData, visibleNodeIds]);
 
   return (
     <div className="agents-layout">
@@ -415,9 +476,9 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
           </div>
         </div>
         <div className="canvas-toolbar">
-          <button onClick={() => setZoom(z => Math.min(1.6, z + 0.1))}>＋</button>
-          <button onClick={() => setZoom(z => Math.max(0.4, z - 0.1))}>−</button>
-          <button onClick={() => { setZoom(0.85); setPan({ x: 20, y: 20 }); }}>⊕</button>
+          <button onClick={function () { setZoom(function (z) { return Math.min(1.6, z + 0.1); }); }}>＋</button>
+          <button onClick={function () { setZoom(function (z) { return Math.max(0.4, z - 0.1); }); }}>−</button>
+          <button onClick={function () { setZoom(0.85); setPan({ x: 20, y: 20 }); }}>⊕</button>
           <span style={{
             color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 10,
             alignSelf: "center", padding: "0 6px"
@@ -427,7 +488,7 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
         </div>
 
         <div className="flow" style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`
+          transform: "translate(" + pan.x + "px, " + pan.y + "px) scale(" + zoom + ")"
         }}>
           <svg className="flow-svg" width={canvasSize.w} height={canvasSize.h}>
             <defs>
@@ -444,68 +505,21 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
                 <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--info)" />
               </marker>
             </defs>
-            {edges.map((e, i) => {
-              const edgeKey = edgeSelectionKey(e);
-              const weight = Number(e.weight) || 1;
-              const weightCls = e.kind === "comm" && weight >= 2
-                ? " weight-" + Math.min(weight, 4)
-                : "";
-              const priorityCls = e.kind === "comm" && e.message && e.message.priority === "high"
-                ? " priority-high"
-                : "";
-              // Check if this comm edge has a recent message (< 30s ago)
-              const rawTs = e.message && e.message.raw_timestamp ? e.message.raw_timestamp : "";
-              const recentCls = e.kind === "comm" && rawTs
-                ? (function () {
-                    try {
-                      var msgDate = new Date(rawTs);
-                      if (isNaN(msgDate.getTime())) return "";
-                      return (Date.now() - msgDate.getTime()) < 30000 ? " recent" : "";
-                    } catch (_) { return ""; }
-                  })()
-                : "";
-              const cls =
-                "edge " +
-                (e.kind === "active" ? "active" :
-                 e.kind === "dashed" ? "dashed" :
-                 e.kind === "comm"   ? "comm" : "") +
-                weightCls + priorityCls + recentCls +
-                (selectedEdgeKey === edgeKey ? " selected" : "");
-              const marker =
-                e.kind === "active" ? "url(#arrow-active)" :
-                e.kind === "comm"   ? "url(#arrow-comm)" :
-                "url(#arrow)";
-              const clickable = e.kind === "comm" && e.message;
-              const lp = edgeLabelPos(e);
+            {visibleEdgeData.map(function (ed) {
               return (
-                <g key={edgeKey || i} style={{ pointerEvents: clickable ? "auto" : "none" }}>
-                  {clickable && (
-                    <path d={edgePath(e)} stroke="transparent" strokeWidth="14" fill="none"
-                          style={{ cursor: "pointer" }}
-                          onClick={() => selectEdgeForRound(edgeKey)} />
-                  )}
-                  <path d={edgePath(e)} className={cls} markerEnd={marker}
-                        style={{ cursor: clickable ? "pointer" : "default" }}
-                        onClick={clickable ? () => selectEdgeForRound(edgeKey) : undefined} />
-                  {e.label && (
-                    <text className={"edge-label" + (e.kind === "comm" ? " comm" : "")}
-                          x={lp.x} y={lp.y} textAnchor="middle"
-                          style={{ cursor: clickable ? "pointer" : "default" }}
-                          onClick={clickable ? () => selectEdgeForRound(edgeKey) : undefined}>
-                      {e.label}
-                    </text>
-                  )}
-                </g>
+                <MemoEdge key={ed.edgeKey} ed={ed} onSelect={function () { selectEdgeForRound(ed.edgeKey); }} />
               );
             })}
           </svg>
 
-          {nodes.map((n) => (
-            <FlowNode key={n.id} node={n}
-                      pos={nodeRects[n.id]}
-                      selected={n.id === selectedNode}
-                      onClick={() => selectNodeForRound(n.id)} />
-          ))}
+          {visibleNodes.map(function (n) {
+            return (
+              <FlowNode key={n.id} node={n}
+                        pos={nodeRects[n.id]}
+                        selected={n.id === selectedNode}
+                        onClick={function () { selectNodeForRound(n.id); }} />
+            );
+          })}
         </div>
 
         <div className="canvas-legend">
@@ -532,12 +546,12 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
           </div>
         </div>
 
-        <CommLog edges={edges} flow={round.flow} onSelectNode={function (id) { selectNodeForRound(id); }} />
+        <CommLog edges={edges} nodeMap={nodeMap} onSelectNode={function (id) { selectNodeForRound(id); }} />
       </div>
 
       <Inspector node={sel} edge={selectedEdge}
-                 flow={round.flow}
-                 onSelectNode={(id) => selectNodeForRound(id)} />
+                 flow={round.flow} nodeMap={nodeMap}
+                 onSelectNode={function (id) { selectNodeForRound(id); }} />
     </div>
   );
 }
@@ -552,26 +566,51 @@ function RoundsList({ rounds, selected, onSelect }) {
       {rounds.length === 0 && (
         <div className="runs-empty">{t("agents.noRounds")}</div>
       )}
-      {rounds.map((round) => (
-        <div key={round.id}
-             className={"run-item " + (round.id === selected ? "active" : "")}
-             onClick={() => onSelect(round.id)}>
-          <div className={"sa-dot " + round.status}></div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="run-title">{round.label}</div>
-            <div className="run-meta">
-              <span>{round.sessionTitle}</span>
-              <span>· {round.sessionStarted}</span>
+      {rounds.map(function (round) {
+        return (
+          <div key={round.id}
+               className={"run-item " + (round.id === selected ? "active" : "")}
+               onClick={function () { onSelect(round.id); }}>
+            <div className={"sa-dot " + round.status}></div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="run-title">{round.label}</div>
+              <div className="run-meta">
+                <span>{round.sessionTitle}</span>
+                <span>· {round.sessionStarted}</span>
+              </div>
+              <div className="run-preview">{round.preview}</div>
             </div>
-            <div className="run-preview">{round.preview}</div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
-function FlowNode({ node, pos, selected, onClick }) {
+var MemoEdge = React.memo(function MemoEdge({ ed, onSelect }) {
+  return (
+    <g style={{ pointerEvents: ed.clickable ? "auto" : "none" }}>
+      {ed.clickable && (
+        <path d={ed.path} stroke="transparent" strokeWidth="14" fill="none"
+              style={{ cursor: "pointer" }}
+              onClick={onSelect} />
+      )}
+      <path d={ed.path} className={ed.cls} markerEnd={ed.marker}
+            style={{ cursor: ed.clickable ? "pointer" : "default" }}
+            onClick={ed.clickable ? onSelect : undefined} />
+      {ed.edge.label && (
+        <text className={"edge-label" + (ed.edge.kind === "comm" ? " comm" : "")}
+              x={ed.lp.x} y={ed.lp.y} textAnchor="middle"
+              style={{ cursor: ed.clickable ? "pointer" : "default" }}
+              onClick={ed.clickable ? onSelect : undefined}>
+          {ed.edge.label}
+        </text>
+      )}
+    </g>
+  );
+});
+
+var FlowNode = React.memo(function FlowNode({ node, pos, selected, onClick }) {
   const { t } = useI18n();
   const cls = "node " + node.kind + (selected ? " selected" : "");
   const kindLabel =
@@ -597,13 +636,13 @@ function FlowNode({ node, pos, selected, onClick }) {
       )}
     </div>
   );
-}
+});
 
-function Inspector({ node, edge, flow, onSelectNode }) {
+function Inspector({ node, edge, flow, nodeMap, onSelectNode }) {
   const { t } = useI18n();
   const [tab, setTab] = useStateAg("details");
   if (edge) {
-    return <EdgeInspector edge={edge} flow={flow} onSelectNode={onSelectNode} />;
+    return <EdgeInspector edge={edge} nodeMap={nodeMap} onSelectNode={onSelectNode} />;
   }
   if (!node) {
     return (
@@ -629,12 +668,12 @@ function Inspector({ node, edge, flow, onSelectNode }) {
         <div className="insp-id">{node.id} · {node.status || "—"}</div>
       </div>
       <div className="insp-tabs">
-        <div className={"insp-tab " + (tab === "details" ? "active" : "")} onClick={() => setTab("details")}>{t("agents.details")}</div>
-        <div className={"insp-tab " + (tab === "io" ? "active" : "")} onClick={() => setTab("io")}>{t("agents.inputOutput")}</div>
-        <div className={"insp-tab " + (tab === "raw" ? "active" : "")} onClick={() => setTab("raw")}>{t("agents.raw")}</div>
+        <div className={"insp-tab " + (tab === "details" ? "active" : "")} onClick={function () { setTab("details"); }}>{t("agents.details")}</div>
+        <div className={"insp-tab " + (tab === "io" ? "active" : "")} onClick={function () { setTab("io"); }}>{t("agents.inputOutput")}</div>
+        <div className={"insp-tab " + (tab === "raw" ? "active" : "")} onClick={function () { setTab("raw"); }}>{t("agents.raw")}</div>
       </div>
 
-      {tab === "details" && <InspectorDetails node={node} d={d} flow={flow} onSelectNode={onSelectNode} />}
+      {tab === "details" && <InspectorDetails node={node} d={d} flow={flow} nodeMap={nodeMap} onSelectNode={onSelectNode} />}
       {tab === "io" && <InspectorIO node={node} d={d} />}
       {tab === "raw" && (
         <div className="insp-section" style={{ flex: 1 }}>
@@ -646,7 +685,7 @@ function Inspector({ node, edge, flow, onSelectNode }) {
   );
 }
 
-function InspectorDetails({ node, d, flow, onSelectNode }) {
+function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
   if (node.kind === "main") {
     return (
       <>
@@ -667,7 +706,7 @@ function InspectorDetails({ node, d, flow, onSelectNode }) {
             <span className="k">tokens out</span><span className="v">{d.tokensOut}</span>
           </div>
         </div>
-        <CommsSection nodeId={node.id} flow={flow} onSelectNode={onSelectNode} />
+        <CommsSection nodeId={node.id} flow={flow} nodeMap={nodeMap} onSelectNode={onSelectNode} />
       </>
     );
   }
@@ -688,10 +727,10 @@ function InspectorDetails({ node, d, flow, onSelectNode }) {
             <span className="k">tokens out</span><span className="v">{d.tokensOut ?? "—"}</span>
           </div>
         </div>
-        <CommsSection nodeId={node.id} flow={flow} onSelectNode={onSelectNode} />
+        <CommsSection nodeId={node.id} flow={flow} nodeMap={nodeMap} onSelectNode={onSelectNode} />
         <div className="insp-section">
           <div className="insp-label">connected nodes</div>
-          <ConnectedList nodeId={node.id} flow={flow} />
+          <ConnectedList nodeId={node.id} flow={flow} nodeMap={nodeMap} />
         </div>
       </>
     );
@@ -769,13 +808,13 @@ function InspectorIO({ node, d }) {
   );
 }
 
-function ConnectedList({ nodeId, flow }) {
-  const conn = flow.edges.filter((e) => e.from === nodeId || e.to === nodeId);
+function ConnectedList({ nodeId, flow, nodeMap }) {
+  const conn = flow.edges.filter(function (e) { return e.from === nodeId || e.to === nodeId; });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      {conn.map((e, i) => {
+      {conn.map(function (e, i) {
         const other = e.from === nodeId ? e.to : e.from;
-        const otherNode = flow.nodes.find((n) => n.id === other);
+        const otherNode = nodeMap.get(other);
         const dir = e.from === nodeId ? "→" : "←";
         return (
           <div key={i} style={{
@@ -793,19 +832,19 @@ function ConnectedList({ nodeId, flow }) {
   );
 }
 
-function CommsSection({ nodeId, flow, onSelectNode }) {
+function CommsSection({ nodeId, flow, nodeMap, onSelectNode }) {
   const comms = flow.edges
-    .map((e, i) => ({ ...e, idx: i }))
-    .filter((e) => e.kind === "comm" && e.message && (e.from === nodeId || e.to === nodeId));
+    .map(function (e, i) { return { ...e, idx: i }; })
+    .filter(function (e) { return e.kind === "comm" && e.message && (e.from === nodeId || e.to === nodeId); });
   if (comms.length === 0) return null;
   return (
     <div className="insp-section">
       <div className="insp-label">communications · {comms.length}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {comms.map((e) => {
+        {comms.map(function (e) {
           const outgoing = e.from === nodeId;
           const partnerId = outgoing ? e.to : e.from;
-          const partner = flow.nodes.find((n) => n.id === partnerId);
+          const partner = nodeMap.get(partnerId);
           return (
             <div key={e.idx} className="comm-card">
               <div className="comm-card-head">
@@ -813,7 +852,7 @@ function CommsSection({ nodeId, flow, onSelectNode }) {
                   {outgoing ? "out →" : "← in"}
                 </span>
                 <span className="comm-partner"
-                      onClick={() => onSelectNode && onSelectNode(partnerId)}
+                      onClick={function () { onSelectNode && onSelectNode(partnerId); }}
                       style={{ cursor: onSelectNode ? "pointer" : "default" }}>
                   {partner ? partner.title : partnerId}
                 </span>
@@ -831,10 +870,10 @@ function CommsSection({ nodeId, flow, onSelectNode }) {
   );
 }
 
-function EdgeInspector({ edge, flow, onSelectNode }) {
+function EdgeInspector({ edge, nodeMap, onSelectNode }) {
   const { t } = useI18n();
-  const from = flow.nodes.find((n) => n.id === edge.from);
-  const to = flow.nodes.find((n) => n.id === edge.to);
+  const from = nodeMap.get(edge.from);
+  const to = nodeMap.get(edge.to);
   const kindLabel =
     edge.kind === "comm" ? (t && t("agents.Communication") || "Communication") :
     edge.kind === "active" ? (t && t("agents.ActiveEdge") || "Active edge") :
@@ -877,22 +916,22 @@ function EdgeInspector({ edge, flow, onSelectNode }) {
         <div className="insp-label">{t && t("agents.participants") || "participants"}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", fontFamily: "var(--mono)", fontSize: 11.5, flexWrap: "wrap" }}>
           <span className="comm-partner"
-                onClick={() => onSelectNode && onSelectNode(edge.from)}
+                onClick={function () { onSelectNode && onSelectNode(edge.from); }}
                 style={{ cursor: "pointer", color: "var(--text)" }}>
             {from ? from.title : edge.from}
           </span>
           <span style={{ color: "var(--text-4)" }}>→</span>
           <span className="comm-partner"
-                onClick={() => onSelectNode && onSelectNode(edge.to)}
+                onClick={function () { onSelectNode && onSelectNode(edge.to); }}
                 style={{ cursor: "pointer", color: "var(--text)" }}>
             {to ? to.title : edge.to}
           </span>
         </div>
         <div className="comm-jump-links">
-          <span className="comm-jump-link" onClick={() => onSelectNode && onSelectNode(edge.from)}>
+          <span className="comm-jump-link" onClick={function () { onSelectNode && onSelectNode(edge.from); }}>
             ← {t && t("agents.commJumpSender") || "Jump to sender"}
           </span>
-          <span className="comm-jump-link" onClick={() => onSelectNode && onSelectNode(edge.to)}>
+          <span className="comm-jump-link" onClick={function () { onSelectNode && onSelectNode(edge.to); }}>
             {t && t("agents.commJumpReceiver") || "Jump to receiver"} →
           </span>
         </div>
@@ -955,7 +994,7 @@ function EdgeInspector({ edge, flow, onSelectNode }) {
   );
 }
 
-function CommLog({ edges, flow, onSelectNode }) {
+function CommLog({ edges, nodeMap, onSelectNode }) {
   const { t } = useI18n();
   // Gather all unique comm messages from edges, sorted by time
   const allComms = [];
@@ -972,8 +1011,8 @@ function CommLog({ edges, flow, onSelectNode }) {
       allComms.push({
         fromId: edge.from,
         toId: edge.to,
-        fromTitle: (flow.nodes.find(function (n) { return n.id === edge.from; }) || {}).title || edge.from,
-        toTitle: (flow.nodes.find(function (n) { return n.id === edge.to; }) || {}).title || edge.to,
+        fromTitle: (nodeMap.get(edge.from) || {}).title || edge.from,
+        toTitle: (nodeMap.get(edge.to) || {}).title || edge.to,
         body: msg.body || "",
         label: msg.label || msg.msg_type || "chat",
         time: msg.time || "—",

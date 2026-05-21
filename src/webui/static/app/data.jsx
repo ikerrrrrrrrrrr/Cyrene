@@ -151,6 +151,16 @@ let __sessionsRequestSeq = 0;
 let __statusRequestSeq = 0;
 let __refreshTimer = null;
 
+function sessionsFingerprint(sessions) {
+  if (!Array.isArray(sessions)) return "";
+  return sessions.map(function (s) {
+    var flow = s.flow || {};
+    var nodes = Array.isArray(flow.nodes) ? flow.nodes.length : 0;
+    var edges = Array.isArray(flow.edges) ? flow.edges.length : 0;
+    return s.id + "|" + (s.status || "") + "|" + nodes + "|" + edges;
+  }).join(",");
+}
+
 async function refreshSessions() {
   const seq = ++__sessionsRequestSeq;
   try {
@@ -159,8 +169,10 @@ async function refreshSessions() {
     const { sessions } = await r.json();
     if (seq !== __sessionsRequestSeq) return;
     if (Array.isArray(sessions) && sessions.length) {
+      var prev = sessionsFingerprint(DATA.sessions);
+      var next = sessionsFingerprint(sessions);
       DATA.sessions = sessions;
-      bumpData();
+      if (prev !== next) bumpData();
     }
   } catch (e) { /* swallow */ }
 }
@@ -172,8 +184,10 @@ async function refreshStatus() {
     if (!r.ok) return;
     const status = await r.json();
     if (seq !== __statusRequestSeq) return;
+    var prev = JSON.stringify(DATA.status);
+    var next = JSON.stringify(status);
     DATA.status = status;
-    bumpData();
+    if (prev !== next) bumpData();
   } catch (e) { /* swallow */ }
 }
 
