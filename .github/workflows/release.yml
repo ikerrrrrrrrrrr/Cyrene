@@ -29,7 +29,7 @@ jobs:
         run: |
           pip install pyinstaller>=6.0 pillow packaging
           pip install .
-          pip install pywebview>=5.0 || echo "pywebview skipped, will use browser fallback"
+          pip install pywebview>=5.0 || echo "pywebview skipped (macOS uses native Swift window)"
 
       - name: Build
         run: python build/build.py

@@ -2,6 +2,7 @@
 __pycache__/
 *.py[oc]
 build/build/
+build/cyrene_window
 dist/
 wheels/
 *.egg-info

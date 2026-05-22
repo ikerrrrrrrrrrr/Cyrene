@@ -444,8 +444,19 @@ def _run_web_gui() -> None:
         print("Server failed to start", file=_sys.stderr)
         _sys.exit(1)
 
-    time.sleep(0.5)
     url = f"http://localhost:{WEB_PORT}"
+
+    # Wait for uvicorn to actually bind the port
+    import urllib.request
+    for _ in range(40):
+        try:
+            urllib.request.urlopen(url + "/openapi.json", timeout=0.5)
+            break
+        except Exception:
+            time.sleep(0.25)
+    else:
+        print("Server not responding", file=_sys.stderr)
+        _sys.exit(1)
 
     # macOS: use compiled Swift WKWebView helper (native, zero deps)
     if _sys.platform == "darwin":
