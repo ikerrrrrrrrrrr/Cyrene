@@ -128,6 +128,27 @@ async def _tool_send_message(args: dict[str, Any], bot: Any, chat_id: int, _db_p
     return "Message sent."
 
 
+async def _tool_send_message_to_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    """Send a message directly to the user. Only available to subagents responding to @mentions."""
+    text = str(args.get("text", "") or "").strip()
+    if not text:
+        return "Error: 'text' is required."
+
+    from cyrene.subagent import _direct_message_mode
+    if not _direct_message_mode.get():
+        return (
+            "Error: send_message_to_user is only available when responding to a direct "
+            "user message via @mention. Use quit with your result for normal rounds."
+        )
+
+    from cyrene.agent import append_system_message
+    await append_system_message(text)
+    if _notify_state is not None:
+        _notify_state["sent"] = True
+    _direct_message_mode.set(False)
+    return "Message sent. Now act on the user's guidance — adjust your approach and continue working with your other tools."
+
+
 async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     text = str(args.get("text", "") or "").strip()
     if not text:
@@ -822,6 +843,14 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "send_message_to_user",
+            "description": "Reply directly to the user. Only available when the user has @mentioned you directly. Use this to respond to the user's direct message. Not for normal rounds — use quit for those.",
+            "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "send_file",
             "description": "Main agent only. Send an existing local file to the WebUI as a downloadable attachment. Use this whenever you want the user to open, download, or click a file. Do NOT merely print a filename or path in chat. Optionally include a short user-visible note.",
             "parameters": {
@@ -1188,6 +1217,7 @@ TOOL_DEFS = [
 TOOL_HANDLERS: dict[str, Any] = {
     "send_telegram": _tool_send_message,
     "send_message": _tool_send_user_message,
+    "send_message_to_user": _tool_send_message_to_user,
     "send_file": _tool_send_file,
     "ask_user": _tool_ask_user,
     "PromptClaudeCode": _tool_prompt_claude_code,

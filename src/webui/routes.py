@@ -529,6 +529,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         wants_stream = bool(body.get("stream"))
         lang = str(body.get("lang") or "").strip()
         command = str(body.get("command") or "").strip()
+        mentions = body.get("mentions") if isinstance(body.get("mentions"), list) else []
         normalized_attachments = [
             {
                 "id": str(item.get("id") or "").strip(),
@@ -550,6 +551,65 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         message_with_attachments = (message or "[Attachment upload]") + _attachment_prompt_block(normalized_attachments)
 
         reset_lottery()
+        if mentions and message:
+            from cyrene.inbox import send_message
+            from cyrene.subagent import _registry, reactivate, get_raw_messages, _spawn_subagent_task, _run_subagent
+
+            valid_mentions = []
+            for agent_id in mentions:
+                agent_id = str(agent_id).strip()
+                if not agent_id:
+                    continue
+                info = _registry.get(agent_id)
+                if info is None:
+                    continue
+                valid_mentions.append(agent_id)
+                status = str(info.get("status", "")).strip()
+                if status in ("done", "timeout"):
+                    mention_text = f"User sent you a new task. This is a round — complete it and report your result via quit.\n\n{message}"
+                    await send_message("user", agent_id, "guidance", mention_text)
+                    reactivated = await reactivate(agent_id)
+                    if reactivated:
+                        raw_msgs = await get_raw_messages(agent_id)
+                        _spawn_subagent_task(
+                            _run_subagent(agent_id, str(info.get("task") or ""), _bot, _CHAT_ID, _db_path, resume_messages=raw_msgs),
+                            agent_id,
+                        )
+                else:
+                    mention_text = (
+                        f"[DIRECT_MESSAGE]\n"
+                        f"The user has sent you guidance. This takes priority over your current approach — "
+                        f"adjust your work accordingly. Use send_message_to_user ONCE to acknowledge and "
+                        f"briefly say what you will change. Then continue working with the adjusted approach.\n\n"
+                        f"User guidance:\n{message}"
+                    )
+                    await send_message("user", agent_id, "guidance", mention_text)
+
+            if not valid_mentions:
+                return JSONResponse({"error": "none of the mentioned agents exist"}, status_code=400)
+
+            names = ", ".join(["@" + aid for aid in valid_mentions])
+            response_text = f"Message sent to {names}."
+            mention_prefix = " ".join(["@" + aid for aid in valid_mentions]) + " "
+
+            user_entry = {
+                "role": "user",
+                "content": mention_prefix + message,
+                "mentions": valid_mentions,
+            }
+            if normalized_attachments:
+                user_entry["attachments"] = public_attachments
+            if client_request_id:
+                user_entry["client_request_id"] = client_request_id
+            await _append_session_message(user_entry)
+
+            if wants_stream:
+                return StreamingResponse(
+                    iter([_ndjson_line({"type": "reply_done", "response": response_text})]),
+                    media_type="application/x-ndjson",
+                    headers={"Cache-Control": "no-cache"},
+                )
+            return {"response": response_text}
         if guide_round_id:
             try:
                 item = await queue_round_guidance(

@@ -239,6 +239,7 @@ function connectEvents() {
           "cc_learning",
           "round_guidance_update",
           "agent_comm",
+          "assistant_message",
         ].includes(data.type)) {
           scheduleRealtimeRefresh();
         }

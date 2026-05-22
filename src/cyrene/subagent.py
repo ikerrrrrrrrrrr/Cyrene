@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import json
 import logging
+from contextvars import ContextVar
 import random
 from datetime import datetime, timezone
 from typing import Any
@@ -55,6 +56,7 @@ def _limit(val: int) -> int:
 # 全局注册表
 _registry: dict[str, dict] = {}
 _lock = asyncio.Lock()
+_direct_message_mode: ContextVar[bool] = ContextVar("_direct_message_mode", default=False)
 
 
 def _matches_round(entry: dict[str, Any], round_id: str = "") -> bool:
@@ -815,8 +817,9 @@ async def _run_subagent(
 ## Sub-agent Context
 - You are a sub-agent, ID: {agent_id}. Complete the assigned task directly.
 - You can use regular work tools plus `send_agent_message` and `broadcast_agent_message` to coordinate with other sub-agents.
+- If you receive a [DIRECT_MESSAGE] from the user via your inbox, this is real-time guidance from the user. The user is steering your work — take it seriously. Use `send_message_to_user` ONCE to: (1) acknowledge the guidance, (2) briefly state what you will do differently. Then immediately continue working with your adjusted approach. Do NOT argue, ask follow-up questions, or chat — act on the guidance. The tool disables after one use.
 - You MUST NOT call `send_message`, `send_telegram`, `ask_user`, `spawn_subagent`, or `query_round`.
-- If you need the user, report that need in your final result for the main agent instead of contacting the user directly.
+- For normal rounds, report your result via `quit` — the main agent collects it. Do NOT use `send_message_to_user` in normal rounds.
 - Active sub-agents and inbox context may be injected as separate user messages before each turn.
 - Your final text is collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
 
@@ -871,6 +874,7 @@ async def _run_subagent(
                 messages.append({"role": "user", "content": f"[收件箱]\n{inbox_text}"})
                 # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
                 await _mark_inbox_read(agent_id)
+                _direct_message_mode.set("[DIRECT_MESSAGE]" in inbox_text)
 
             # 定期注入协调检查点，鼓励 subagent 之间主动沟通
             if tool_calls_since_checkpoint >= _COORDINATION_CHECKPOINT_INTERVAL:
@@ -950,6 +954,7 @@ async def _run_subagent(
                     # 有新消息，标记 RESUMED，继续干活
                     await set_resumed(agent_id)
                     messages.append({"role": "user", "content": f"[等待期间收到新消息]\n{inbox_msg}"})
+                    _direct_message_mode.set("[DIRECT_MESSAGE]" in str(inbox_msg))
                     await _save_if_registered()
                     continue
 

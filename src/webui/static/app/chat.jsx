@@ -696,6 +696,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [command, setCommand] = useState("");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
+  const [mentionedAgents, setMentionedAgents] = useState([]);
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -835,6 +837,16 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     return function () { document.removeEventListener("mousedown", onDown); };
   }, [slashMenuOpen]);
 
+  useEffect(function () {
+    if (!mentionMenuOpen) return;
+    function onDown(e) {
+      if (e.target.closest(".mention-menu") || e.target.closest(".iconbtn")) return;
+      setMentionMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return function () { document.removeEventListener("mousedown", onDown); };
+  }, [mentionMenuOpen]);
+
   function autosize(e) {
     setDraft(e.target.value);
     syncTextareaHeight(taRef.current);
@@ -929,6 +941,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     ensureChatRuntimeSseSubscription();
     setDraft("");
     setAttachments([]);
+    setCommand("");
+    setMentionedAgents([]);
     syncTextareaHeight(taRef.current);
 
     let keepWatching = false;
@@ -945,6 +959,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           stream: true,
           lang: lang,
           command: command || undefined,
+          mentions: mentionedAgents.length > 0 ? mentionedAgents : undefined,
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1521,6 +1536,20 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 + add context
               </span>
             </div>
+            {mentionedAgents.length > 0 && (
+              <div className="composer-mentions">
+                {mentionedAgents.map(function (agentId) {
+                  var agent = session.subagents.find(function (a) { return a.id === agentId; });
+                  if (!agent) return null;
+                  return (
+                    <span className="chip chip-mention" key={"mention-" + agentId}>
+                      <span className={"sa-dot " + agent.status} style={{marginTop: 0}} /> @{agent.name}
+                      <span className="x" onClick={function () { setMentionedAgents(function (prev) { return prev.filter(function (id) { return id !== agentId; }); }); }}>×</span>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
             {contextPickerOpen && hasAddable && (
               <div className="context-picker">
                 {addableContexts.length > 0 && (
@@ -1676,14 +1705,53 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                   </div>
                 )}
               </span>
-              <button className="iconbtn" title={t("chat.mention")}>@</button>
+              <span style={{ position: "relative" }}>
+                <button
+                  className={"iconbtn" + (mentionedAgents.length > 0 ? " active" : "")}
+                  title={mentionedAgents.length > 0 ? t("chat.mentionSubagents") : t("chat.mention")}
+                  disabled={session.subagents.length === 0}
+                  onClick={function () { setMentionMenuOpen(!mentionMenuOpen); }}
+                  style={mentionedAgents.length > 0 ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
+                >@</button>
+                {mentionMenuOpen && (
+                  <div className="mention-menu">
+                    <div className="mention-menu-head">{t("chat.mentionMenuHead")}</div>
+                    {session.subagents.length === 0 && (
+                      <div className="mention-option-empty">{t("chat.noSubagentsAvailable")}</div>
+                    )}
+                    {session.subagents.map(function (agent) {
+                      var isSelected = mentionedAgents.indexOf(agent.id) !== -1;
+                      return (
+                        <button
+                          key={agent.id}
+                          className={"mention-option" + (isSelected ? " active" : "")}
+                          onClick={function () {
+                            setMentionedAgents(function (prev) {
+                              var idx = prev.indexOf(agent.id);
+                              if (idx !== -1) return prev.filter(function (id) { return id !== agent.id; });
+                              return prev.concat([agent.id]);
+                            });
+                          }}
+                        >
+                          <span className={"sa-dot " + agent.status} style={{marginTop: 3, flexShrink: 0}} />
+                          <span className="mention-option-body">
+                            <span className="mention-option-name">@{agent.name}</span>
+                            <span className="mention-option-task">{agent.task || agent.status}</span>
+                          </span>
+                          {isSelected && <span className="mention-option-check">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </span>
               <span style={{ flex: 1 }}></span>
               <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>
                 {session.model}
               </span>
               {visibleSending && (
                 <button className="send secondary" disabled={(!draft.trim() && attachments.length === 0) || Boolean(pendingQuestion)} onClick={openNextDialogue}>
-                  {hasSelectedGuideRound ? t("chat.guide") : t("chat.newDialogue")}
+                  {(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.newDialogue")}
                 </button>
               )}
               <button
@@ -1691,19 +1759,19 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 disabled={pendingQuestion ? true : (!visibleSending && !draft.trim() && attachments.length === 0)}
                 onClick={visibleSending ? stopActiveRun : send}
               >
-                {visibleSending ? t("chat.stop") : <>{hasSelectedGuideRound ? t("chat.guide") : t("chat.send")} <span className="kbd">⌘↵</span></>}
+                {visibleSending ? t("chat.stop") : <>{(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.send")} <span className="kbd">⌘↵</span></>}
               </button>
             </div>
           </div>
           <div className="composer-hint">
             <span>
               {visibleSending
-                ? (hasSelectedGuideRound
+                ? ((hasSelectedGuideRound || mentionedAgents.length > 0)
                     ? t("chat.watchingRunGuide")
                     : t("chat.watchingRunNew"))
                 : pendingQuestion
                 ? t("chat.waitingForAnswer")
-                : hasSelectedGuideRound
+                : (hasSelectedGuideRound || mentionedAgents.length > 0)
                 ? t("chat.guidanceMode")
                 : t("chat.agentPlansActs", { name: DATA.assistantName })}
             </span>
