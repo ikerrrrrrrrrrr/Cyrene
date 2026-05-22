@@ -7,6 +7,7 @@
 """
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -288,9 +289,11 @@ exec "$HERE/Cyrene" "$@"
 
     output_path = DIST_DIR / f"Cyrene-{version}-x86_64.AppImage"
     print(f"\n[AppImage] Creating {output_path.name}...")
+    appimage_env = os.environ.copy()
+    appimage_env.setdefault("ARCH", _appimage_arch())
     result = subprocess.run([
         appimagetool, str(appdir), str(output_path),
-    ], check=False)
+    ], check=False, env=appimage_env)
 
     shutil.rmtree(appdir, ignore_errors=True)
 
@@ -308,6 +311,17 @@ exec "$HERE/Cyrene" "$@"
         print("  [error] AppImage output missing after appimagetool completed")
         sys.exit(1)
     return None
+
+
+def _appimage_arch() -> str:
+    machine = platform.machine().lower()
+    arch_map = {
+        "x86_64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "aarch64",
+        "arm64": "aarch64",
+    }
+    return arch_map.get(machine, machine or "x86_64")
 
 
 def _compile_swift_window() -> None:
