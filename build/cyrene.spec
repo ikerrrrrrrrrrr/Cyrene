@@ -10,6 +10,11 @@ _ENTRY = str(Path(SPECPATH).resolve() / "run_cyrene.py")
 _IS_MAC = sys.platform == "darwin"
 _IS_WIN = sys.platform == "win32"
 
+# 从 pyproject.toml 读取版本号
+import tomllib
+with open(_PROJECT_ROOT / "pyproject.toml", "rb") as _f:
+    _version = tomllib.load(_f)["project"]["version"]
+
 # ---- 静态数据文件 ----
 _datas = []
 
@@ -103,7 +108,7 @@ if _IS_MAC:
         info_plist={
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "12.0",
-            "CFBundleShortVersionString": "0.2.1",
+            "CFBundleShortVersionString": _version,
             "CFBundleName": "Cyrene",
         },
     )
