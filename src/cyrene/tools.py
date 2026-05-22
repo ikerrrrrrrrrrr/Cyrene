@@ -22,7 +22,13 @@ from urllib.parse import quote
 import httpx
 from croniter import croniter
 
-from cyrene.attachments import analyze_attachment, is_uploaded_attachment_path
+from cyrene.attachments import (
+    analyze_attachment,
+    build_public_attachment_payload,
+    is_exported_attachment_path,
+    is_uploaded_attachment_path,
+    register_generated_attachment,
+)
 from cyrene import db
 from cyrene.config import (
     DATA_DIR,
@@ -46,6 +52,7 @@ _CC_PROJECT_DIR = WORKSPACE_DIR.parent
 _MAIN_ONLY_TOOLS = {
     "send_telegram",
     "send_message",
+    "send_file",
     "ask_user",
     "spawn_subagent",
     "query_round",
@@ -73,9 +80,25 @@ def _json_result(payload: Any) -> str:
 
 
 def _resolve_tool_path(path_str: str) -> Path:
-    if is_uploaded_attachment_path(path_str):
+    if is_uploaded_attachment_path(path_str) or is_exported_attachment_path(path_str):
         return Path(path_str).resolve()
     return _resolve_workspace_path(path_str)
+
+
+def _resolve_exportable_path(path_str: str) -> Path:
+    candidate = Path(path_str)
+    path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
+    resolved = path.resolve()
+    workspace = WORKSPACE_DIR.resolve()
+    data_root = DATA_DIR.resolve()
+    if (
+        resolved == workspace
+        or workspace in resolved.parents
+        or resolved == data_root
+        or data_root in resolved.parents
+    ):
+        return resolved
+    raise ValueError(f"Path cannot be sent to WebUI: {path_str}")
 
 
 def _normalize_schedule_datetime(raw_value: str) -> str:
@@ -136,6 +159,53 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     if _notify_state is not None:
         _notify_state["sent"] = True
     return "Mid-run message sent to the user."
+
+
+async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    path_arg = str(args.get("path", "") or "").strip()
+    if not path_arg:
+        return "Error: 'path' is required."
+
+    from cyrene.agent import (
+        append_system_message,
+        _current_agent_id,
+        _current_client_request_id,
+        _current_round_id,
+        _insert_intermediate_user_reply,
+    )
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can send a file to the WebUI."
+
+    path = _resolve_exportable_path(path_arg)
+    if not path.exists() or not path.is_file():
+        return f"Error: file not found: {path}"
+
+    text = str(args.get("text", "") or "").strip()
+    attachment = build_public_attachment_payload(
+        register_generated_attachment(str(path), display_name=str(args.get("name", "") or "").strip() or None)
+    )
+
+    round_id = str(_current_round_id.get() or "").strip()
+    client_request_id = str(_current_client_request_id.get() or "").strip()
+    if round_id:
+        await _insert_intermediate_user_reply(
+            text,
+            round_id=round_id,
+            client_request_id=client_request_id,
+            attachments=[attachment],
+        )
+    else:
+        await append_system_message(
+            text,
+            message_meta={"attachments": [attachment]},
+        )
+    if _notify_state is not None:
+        _notify_state["sent"] = True
+    return _json_result({
+        "status": "sent",
+        "attachment": attachment,
+    })
 
 
 async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -696,6 +766,22 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "send_file",
+            "description": "Main agent only. Send an existing local file to the WebUI as a downloadable attachment. Optionally include a short user-visible note.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative or absolute path to an existing file."},
+                    "name": {"type": "string", "description": "Optional display filename shown in the WebUI."},
+                    "text": {"type": "string", "description": "Optional short note to accompany the file."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_user",
             "description": "Ask the user a clarification question and pause until they answer. Use this liberally — asking is better than assuming. Trigger when: the request is ambiguous, details are missing, multiple reasonable approaches exist, or you need sign-off before a risky action. Use freeform text for open questions, or add a short options array for structured choices. The UI always allows custom answers even with options.",
             "parameters": {
@@ -1032,6 +1118,7 @@ TOOL_DEFS = [
 TOOL_HANDLERS: dict[str, Any] = {
     "send_telegram": _tool_send_message,
     "send_message": _tool_send_user_message,
+    "send_file": _tool_send_file,
     "ask_user": _tool_ask_user,
     "send_agent_message": _tool_send_agent_message,
     "broadcast_agent_message": _tool_broadcast_agent_message,

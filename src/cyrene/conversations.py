@@ -184,13 +184,25 @@ def _parse_archive_meta(section: str, key: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _split_archive_entry_blocks(content: str) -> list[str]:
+    blocks: list[str] = []
+    matches = list(re.finditer(r"(?m)^##\s+\S+\s+UTC\s*$", content))
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        block = content[start:end].strip()
+        block = re.sub(r"\n+---\s*\Z", "", block).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
 def _parse_archive_sections(content: str, date_str: str) -> list[dict[str, str]]:
     sections_out: list[dict[str, str]] = []
-    sections = re.split(r"\n---\s*\n", content)
     file_session_title = _parse_archive_meta(content, "session_title")
     round_index = 0
 
-    for section in sections:
+    for section in _split_archive_entry_blocks(content):
         if "**User**:" not in section:
             continue
         ts_match = re.search(r"##\s*(\S+\s+UTC)", section)

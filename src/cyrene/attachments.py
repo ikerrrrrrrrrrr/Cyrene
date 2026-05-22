@@ -1,7 +1,9 @@
 import base64
+import hashlib
 import json
 import mimetypes
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from cyrene.config import DATA_DIR
 from cyrene.llm import _truncate
 
 UPLOADS_DIR = DATA_DIR / "webui_uploads"
+EXPORTS_DIR = DATA_DIR / "webui_exports"
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"}
 _PDF_EXTENSIONS = {".pdf"}
@@ -47,6 +50,15 @@ def is_uploaded_attachment_path(path_str: str) -> bool:
         return False
 
 
+def is_exported_attachment_path(path_str: str) -> bool:
+    try:
+        resolved = Path(path_str).resolve()
+        root = EXPORTS_DIR.resolve()
+        return resolved == root or root in resolved.parents
+    except Exception:
+        return False
+
+
 def is_pdf_path(path: Path) -> bool:
     return path.suffix.lower() in _PDF_EXTENSIONS
 
@@ -63,6 +75,82 @@ def model_supports_multimodal(model: str | None = None) -> bool:
     if not model_name:
         return False
     return any(hint in model_name for hint in _MULTIMODAL_MODEL_HINTS)
+
+
+def _safe_attachment_name(filename: str) -> str:
+    raw = Path(str(filename or "file.bin")).name
+    sanitized = "".join(ch if (ch.isascii() and (ch.isalnum() or ch in "._-")) else "_" for ch in raw).strip("._")
+    return sanitized or "file.bin"
+
+
+def attachment_kind_from_meta(content_type: str, filename: str) -> str:
+    normalized_type = str(content_type or "").strip().lower()
+    suffix = Path(str(filename or "")).suffix.lower()
+    if normalized_type.startswith("image/") or suffix in _IMAGE_EXTENSIONS:
+        return "image"
+    if normalized_type == "application/pdf" or suffix in _PDF_EXTENSIONS:
+        return "pdf"
+    return "file"
+
+
+def build_public_attachment_payload(item: dict[str, Any]) -> dict[str, Any]:
+    attachment_id = str(item.get("id") or "").strip()
+    url = str(item.get("url") or "").strip()
+    if not url and attachment_id:
+        path_str = str(item.get("path") or "").strip()
+        if path_str and is_uploaded_attachment_path(path_str):
+            url = f"/api/chat/upload/{attachment_id}"
+        elif path_str and is_exported_attachment_path(path_str):
+            url = f"/api/chat/export/{attachment_id}"
+    return {
+        "id": attachment_id,
+        "name": str(item.get("name") or "file"),
+        "content_type": str(item.get("content_type") or "application/octet-stream"),
+        "size": int(item.get("size") or 0),
+        "kind": str(item.get("kind") or "file"),
+        "url": url,
+        **({"width": int(item.get("width"))} if isinstance(item.get("width"), int) else {}),
+        **({"height": int(item.get("height"))} if isinstance(item.get("height"), int) else {}),
+    }
+
+
+def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
+    try:
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return None, None
+
+
+def register_generated_attachment(path_str: str, display_name: str | None = None) -> dict[str, Any]:
+    source = Path(path_str).resolve()
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(f"Attachment source not found: {source}")
+
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    safe_display_name = _safe_attachment_name(display_name or source.name)
+    safe_stem = Path(safe_display_name).stem or "file"
+    suffix = Path(safe_display_name).suffix or source.suffix or ".bin"
+    source_hash = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:10]
+    export_id = f"{safe_stem[:40]}_{source_hash}{suffix}"
+    target = EXPORTS_DIR / export_id
+    if source != target:
+        shutil.copy2(source, target)
+
+    content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    kind = attachment_kind_from_meta(content_type, safe_display_name)
+    width, height = _image_dimensions(target) if kind == "image" else (None, None)
+    return {
+        "id": target.name,
+        "name": display_name or source.name,
+        "path": str(target.resolve()),
+        "content_type": content_type,
+        "size": target.stat().st_size,
+        "kind": kind,
+        "url": f"/api/chat/export/{target.name}",
+        **({"width": width} if isinstance(width, int) else {}),
+        **({"height": height} if isinstance(height, int) else {}),
+    }
 
 
 def _build_attachment_preview(result: dict[str, Any]) -> str:

@@ -1848,6 +1848,23 @@ html[data-text-size="large"] .slash-option-desc { font-size: 13px; }
   background:
     linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0)),
     var(--bg-3);
+  color: inherit;
+  text-decoration: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+.msg-attachment-kind {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-4);
+}
+.msg-attachment-name {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text);
+  word-break: break-word;
 }
 
 /* Chat right pane */

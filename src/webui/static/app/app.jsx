@@ -426,7 +426,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
       <div className="sidebar-brand">
         <div className="brand-mark"></div>
         <div className="brand-name">{brandName}</div>
-        <div className="brand-version">{DATA.appVersion || "v0.2.0"}</div>
+        <div className="brand-version">{DATA.appVersion || "v0.2.1"}</div>
       </div>
 
       <div className="nav-section">{t("nav.workspace")}</div>
@@ -495,7 +495,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
         <div className="avatar">{DATA.user.initials}</div>
         <div className="who">
           {DATA.user.name}
-          <small>@{DATA.user.handle} · {DATA.appVersion || "v0.2.0"}</small>
+          <small>@{DATA.user.handle} · {DATA.appVersion || "v0.2.1"}</small>
         </div>
         <button className="iconbtn" title={t("nav.account")}>▾</button>
       </div>

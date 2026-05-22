@@ -23,7 +23,12 @@ from cyrene.cc_bridge import get_cc_status
 from cyrene.cc_learner import analyze_session, learn_from_session
 from cyrene.cc_terminal import CCTerminalSession
 from cyrene import debug
-from cyrene.attachments import model_supports_multimodal
+from cyrene.attachments import (
+    EXPORTS_DIR as _EXPORTS_DIR,
+    attachment_kind_from_meta,
+    build_public_attachment_payload,
+    model_supports_multimodal,
+)
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
     _append_session_message,
@@ -264,37 +269,6 @@ def _safe_upload_name(filename: str) -> str:
     return sanitized or "upload.bin"
 
 
-def _public_attachment_payload(item: dict[str, Any]) -> dict[str, Any]:
-    attachment_id = str(item.get("id") or "").strip()
-    content_type = str(item.get("content_type") or "application/octet-stream")
-    payload = {
-        "id": attachment_id,
-        "name": str(item.get("name") or "file"),
-        "content_type": content_type,
-        "size": int(item.get("size") or 0),
-        "kind": str(item.get("kind") or "file"),
-        "url": f"/api/chat/upload/{attachment_id}" if attachment_id else "",
-    }
-    if content_type.startswith("image/"):
-        width = item.get("width")
-        height = item.get("height")
-        if isinstance(width, int):
-            payload["width"] = width
-        if isinstance(height, int):
-            payload["height"] = height
-    return payload
-
-
-def _attachment_kind_from_meta(content_type: str, filename: str) -> str:
-    normalized_type = str(content_type or "").strip().lower()
-    suffix = Path(str(filename or "")).suffix.lower()
-    if normalized_type.startswith("image/") or suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"}:
-        return "image"
-    if normalized_type == "application/pdf" or suffix == ".pdf":
-        return "pdf"
-    return "file"
-
-
 def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
     try:
         with Image.open(path) as image:
@@ -413,7 +387,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             content = await file.read()
             target.write_bytes(content)
             content_type = str(file.content_type or mimetypes.guess_type(str(target))[0] or "application/octet-stream")
-            kind = _attachment_kind_from_meta(content_type, target.name)
+            kind = attachment_kind_from_meta(content_type, target.name)
             width, height = _image_dimensions(target) if kind == "image" else (None, None)
             uploaded.append({
                 "id": target.name,
@@ -440,6 +414,17 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "upload not found"}, status_code=404)
         return FileResponse(target)
 
+    @router.get("/api/chat/export/{export_id}")
+    async def api_chat_export_file(export_id: str):
+        safe_export_id = _safe_upload_name(export_id)
+        target = (_EXPORTS_DIR / safe_export_id).resolve()
+        exports_root = _EXPORTS_DIR.resolve()
+        if target != exports_root and exports_root not in target.parents:
+            return JSONResponse({"error": "invalid export path"}, status_code=400)
+        if not target.exists() or not target.is_file():
+            return JSONResponse({"error": "export not found"}, status_code=404)
+        return FileResponse(target)
+
     @router.post("/api/chat")
     async def api_chat(request: Request):
         body = await request.json()
@@ -464,7 +449,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             for item in attachments
             if str(item.get("path") or "").strip()
         ]
-        public_attachments = [_public_attachment_payload(item) for item in normalized_attachments]
+        public_attachments = [build_public_attachment_payload(item) for item in normalized_attachments]
         if not message and not normalized_attachments:
             return JSONResponse({"error": "empty message"}, status_code=400)
         all_images = bool(normalized_attachments) and all(str(item.get("kind") or "") == "image" for item in normalized_attachments)
@@ -1509,14 +1494,26 @@ def _parse_archive_session_title(content: str) -> str:
     return _parse_archive_meta(content, "session_title")
 
 
+def _split_archive_entry_blocks(content: str) -> list[str]:
+    blocks: list[str] = []
+    matches = list(re.finditer(r"(?m)^##\s+\S+\s+UTC\s*$", content))
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        block = content[start:end].strip()
+        block = re.sub(r"\n+---\s*\Z", "", block).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
 def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
     """Parse a conversations/YYYY-MM-DD.md file into archive sections with metadata."""
     sections_out: list[dict[str, Any]] = []
-    sections = re.split(r"\n---\s*\n", content)
     file_session_title = _parse_archive_session_title(content)
     round_index = 0
 
-    for section in sections:
+    for section in _split_archive_entry_blocks(content):
         if "**User**:" not in section:
             continue
         ts_match = re.search(r"##\s*(\S+\s+UTC)", section)
@@ -1600,18 +1597,34 @@ def _upsert_archive_session_title(content: str, date_str: str, session_title: st
     return header + marker + content[len(header):]
 
 
+def _is_hidden_internal_message(message: dict[str, Any]) -> bool:
+    if bool(message.get("hidden_from_ui")):
+        return True
+    role = str(message.get("role", "")).strip()
+    content = str(message.get("content", "") or "").strip()
+    if role != "user" or not content:
+        return False
+    return (
+        content.startswith("## Research Materials\n\nBelow are the research findings gathered on this question.")
+        or content.startswith("[Decision-phase correction] You attempted unavailable tool(s):")
+    )
+
+
 def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
     """Convert state.json raw messages → UI message format."""
     out = []
     for i, m in enumerate(raw_msgs):
+        if _is_hidden_internal_message(m):
+            continue
         role = m.get("role", "")
         if role not in ("user", "assistant"):
             continue
         content = (m.get("content") or "").strip()
         has_live_detail = bool(m.get("reasoning_content") or m.get("tool_calls"))
+        has_attachments = isinstance(m.get("attachments"), list) and bool(m.get("attachments"))
         if role == "user" and not content and not m.get("attachments"):
             continue
-        if role == "assistant" and not content and not has_live_detail:
+        if role == "assistant" and not content and not has_live_detail and not has_attachments:
             continue
         ui_role = "user" if role == "user" else "agent"
         message_id = str(m.get("message_id", "")).strip() or f"m{i}"

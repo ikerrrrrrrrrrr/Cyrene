@@ -1794,6 +1794,8 @@ function Message({ msg, assistantName }) {
         <div className="msg-attachments">
           {attachments.map(function (file, index) {
             var isImage = String(file.content_type || "").startsWith("image/");
+            var label = String(file.name || "file");
+            var kind = String(file.kind || "file").toUpperCase();
             return (
               <div className={"msg-attachment" + (isImage ? " image" : "")} key={file.id || (file.name + "_" + index)}>
                 {isImage && file.url ? (
@@ -1804,7 +1806,12 @@ function Message({ msg, assistantName }) {
                       style={attachmentThumbStyle(file, 360, 260)}
                     />
                   </a>
-                ) : <div className="msg-attachment-file" aria-label="uploaded file"></div>}
+                ) : (
+                  <a className="msg-attachment-file" href={file.url || "#"} target="_blank" rel="noreferrer" aria-label={label}>
+                    <span className="msg-attachment-kind">{kind}</span>
+                    <span className="msg-attachment-name">{label}</span>
+                  </a>
+                )}
               </div>
             );
           })}

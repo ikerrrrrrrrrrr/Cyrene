@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
 from cyrene.settings_store import get_spawn_policy
 from cyrene import debug
+from cyrene.attachments import build_public_attachment_payload, register_generated_attachment
 from cyrene.llm import _assistant_text, _truncate
 from cyrene.tools import get_active_tool_defs, TOOL_HANDLERS, _execute_tool
 from cyrene.subagent import (
@@ -609,6 +611,27 @@ async def append_system_message(
     return assistant_entry
 
 
+def _report_export_filename(round_id: str, fallback: str = "report") -> str:
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", str(round_id or fallback)).strip("-._") or fallback
+    return f"{base}.pdf"
+
+
+def _deep_research_pdf_attachment(round_id: str, user_message: str, final_text: str) -> dict[str, Any] | None:
+    title = str(user_message or "").strip() or "Deep Research Report"
+    export_name = _report_export_filename(round_id or "deep-research-report", fallback="deep-research-report")
+    target = Path(DATA_DIR) / "generated_reports" / export_name
+    try:
+        from cyrene.report_export import write_report_pdf
+
+        pdf_path = write_report_pdf(target, title=title, body=final_text)
+        return build_public_attachment_payload(
+            register_generated_attachment(str(pdf_path), display_name="deep-research-report.pdf")
+        )
+    except Exception:
+        logger.exception("Failed to generate deep research PDF")
+        return None
+
+
 def _flush_intermediate_user_replies(messages: list[dict[str, Any]]) -> None:
     pending = _pending_intermediate_user_replies.get()
     if not pending:
@@ -632,6 +655,7 @@ async def _insert_intermediate_user_reply(
     content: str,
     round_id: str,
     client_request_id: str = "",
+    attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     assistant_entry: dict[str, Any] = {
         "role": "assistant",
@@ -639,6 +663,8 @@ async def _insert_intermediate_user_reply(
         "round_id": round_id,
         "intermediate_reply": True,
     }
+    if attachments:
+        assistant_entry["attachments"] = [dict(item) for item in attachments if isinstance(item, dict)]
     if client_request_id:
         assistant_entry["client_request_id"] = client_request_id
 
@@ -2685,6 +2711,8 @@ async def _run_main_agent(
         for message in current_messages[1:]:
             if message["role"] == "system":
                 continue
+            if bool(message.get("hidden_from_ui")):
+                continue
             if not persist_user_message and message.get("message_id") == user_message_id:
                 continue
             if message.get("role") == "user" and message.get("message_id") == user_message_id:
@@ -2934,13 +2962,17 @@ async def _run_main_agent(
                 # Deep research: 只提取子代理的研究结果（不含内部对话），交给主 agent 写最终报告
                 if _deep_research_mode.get():
                     source_material = await _build_deep_research_source(round_id)
-                    messages.append({"role": "user", "content": (
-                        "## Research Materials\n\n"
-                        "Below are the research findings gathered on this question. "
-                        "Write the final research report based on these materials. "
-                        "Write as if YOU did all the research — never mention how the materials were collected.\n\n"
-                        + source_material
-                    )})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "## Research Materials\n\n"
+                            "Below are the research findings gathered on this question. "
+                            "Write the final research report based on these materials. "
+                            "Write as if YOU did all the research — never mention how the materials were collected.\n\n"
+                            + source_material
+                        ),
+                        "hidden_from_ui": True,
+                    })
                     response = None
                     try:
                         response = await _call_llm(messages, tools=None, max_tokens=None)
@@ -2952,6 +2984,9 @@ async def _run_main_agent(
                         logger.warning("Deep research Phase 3 returned empty, falling back to research materials")
                         final_text = source_material
                     synthesis_entry = {"role": "assistant", "content": final_text}
+                    pdf_attachment = _deep_research_pdf_attachment(round_id, user_message, final_text)
+                    if pdf_attachment:
+                        synthesis_entry["attachments"] = [pdf_attachment]
                     if response and response.get("reasoning_content"):
                         synthesis_entry["reasoning_content"] = response["reasoning_content"]
                     if response and response.get("usage"):
