@@ -42,6 +42,7 @@ jobs:
         with:
           name: macos-dmg
           path: dist/Cyrene-*.dmg
+          if-no-files-found: error
 
   # ==========================================================================
   # Windows Build
@@ -69,11 +70,18 @@ jobs:
       - name: Smoke test packaged app
         run: .\dist\Cyrene\Cyrene.exe --smoke-test
 
+      - name: Verify ZIP output
+        shell: powershell
+        run: |
+          $files = Get-ChildItem dist\Cyrene-*-win64.zip
+          if (-not $files) { throw "Windows ZIP output missing" }
+
       - name: Upload ZIP
         uses: actions/upload-artifact@v4
         with:
           name: windows-zip
           path: dist/Cyrene-*-win64.zip
+          if-no-files-found: error
 
   # ==========================================================================
   # Linux Build
@@ -111,23 +119,27 @@ jobs:
           pip install pywebview>=5.0 || echo "pywebview skipped"
 
       - name: Build
-        run: PYTHONPATH=/usr/lib/python3/dist-packages:$PYTHONPATH python build/build.py
+        run: CYRENE_REQUIRE_APPIMAGE=1 PYTHONPATH=/usr/lib/python3/dist-packages:$PYTHONPATH python build/build.py
 
       - name: Smoke test packaged app
         run: ./dist/Cyrene/Cyrene --smoke-test
 
+      - name: Verify AppImage output
+        run: ls -la dist/Cyrene-*-x86_64.AppImage
+
       - name: Upload AppImage
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
           path: dist/Cyrene-*-x86_64.AppImage
+          if-no-files-found: error
 
       - name: Upload tar.gz
         uses: actions/upload-artifact@v4
         with:
           name: linux-tarball
           path: dist/Cyrene-*-x86_64.tar.gz
+          if-no-files-found: error
 
   # ==========================================================================
   # Create GitHub Release

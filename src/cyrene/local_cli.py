@@ -401,20 +401,6 @@ def _run_web_gui() -> None:
     from cyrene.scheduler import setup_scheduler
     from webui.server import create_app, WebBot
 
-    # Single-instance: if another Cyrene is already on WEB_PORT, reuse it
-    import urllib.request
-    import json as _json
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{WEB_PORT}/api/instance-id", timeout=0.5) as _resp:
-            _existing = _json.loads(_resp.read().decode("utf-8"))
-        if _existing.get("instance_id"):
-            logger.info("Reusing existing Cyrene instance on port %d", WEB_PORT)
-            import webbrowser
-            webbrowser.open(f"http://localhost:{WEB_PORT}")
-            return
-    except Exception:
-        pass
-
     selected_port = _pick_web_port(WEB_PORT)
     instance_id = uuid.uuid4().hex
     server_failed = threading.Event()

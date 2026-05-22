@@ -288,15 +288,25 @@ exec "$HERE/Cyrene" "$@"
 
     output_path = DIST_DIR / f"Cyrene-{version}-x86_64.AppImage"
     print(f"\n[AppImage] Creating {output_path.name}...")
-    subprocess.run([
+    result = subprocess.run([
         appimagetool, str(appdir), str(output_path),
     ], check=False)
 
     shutil.rmtree(appdir, ignore_errors=True)
 
+    require_appimage = os.environ.get("CYRENE_REQUIRE_APPIMAGE") == "1"
+    if result.returncode != 0:
+        print(f"  [error] appimagetool failed with exit code {result.returncode}")
+        if require_appimage:
+            sys.exit(result.returncode)
+
     if output_path.exists():
         print(f"  [ok] {output_path}")
         return output_path
+
+    if require_appimage:
+        print("  [error] AppImage output missing after appimagetool completed")
+        sys.exit(1)
     return None
 
 
