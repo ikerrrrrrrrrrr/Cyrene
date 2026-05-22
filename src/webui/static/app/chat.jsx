@@ -867,7 +867,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       return;
     }
     if (uploadingAttachments) {
-      setNotice("Files are still uploading.");
+      setNotice(t("chat.filesStillUploading"));
       return;
     }
     setNotice("");
@@ -1304,7 +1304,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         return prev.concat(Array.isArray(payload.files) ? payload.files : []);
       });
     } catch (error) {
-      setNotice("Failed to upload files: " + error.message);
+      setNotice(t("chat.uploadFailed", { error: error.message }));
     } finally {
       setUploadingAttachments(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -1615,7 +1615,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               />
               <button
                 className="iconbtn"
-                title={uploadingAttachments ? "Uploading..." : t("chat.attach")}
+                title={uploadingAttachments ? t("chat.uploading") : t("chat.attach")}
                 disabled={Boolean(pendingQuestion) || uploadingAttachments}
                 onClick={function () {
                   if (fileInputRef.current) fileInputRef.current.click();

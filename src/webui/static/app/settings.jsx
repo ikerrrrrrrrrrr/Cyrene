@@ -12,6 +12,7 @@ function readStoredSettingsSection() {
 }
 
 function UpdateSection() {
+  const { t } = useI18n();
   const [checking, setChecking] = useStateSet(false);
   const [info, setInfo] = useStateSet(null);
   const [downloading, setDownloading] = useStateSet(false);
@@ -27,7 +28,7 @@ function UpdateSection() {
       const data = await res.json();
       setInfo(data);
     } catch (e) {
-      setError("Failed to check for updates");
+      setError(t("settings.updateCheckFailed"));
     } finally {
       setChecking(false);
     }
@@ -42,10 +43,10 @@ function UpdateSection() {
       if (data.ok) {
         setDownloaded(true);
       } else {
-        setError(data.error || "Download failed");
+        setError(data.error || t("settings.updateDownloadFailed"));
       }
     } catch (e) {
-      setError("Download failed");
+      setError(t("settings.updateDownloadFailed"));
     } finally {
       setDownloading(false);
     }
@@ -88,30 +89,37 @@ function UpdateSection() {
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
 
+  const currentVersionLabel = info && info.current_version
+    ? `v${info.current_version}`
+    : (DATA.appVersion || "—");
+  const latestVersionLabel = info && info.latest_version
+    ? `v${info.latest_version}`
+    : "";
+
   const primaryAction = (() => {
     if (downloaded) {
       return {
-        label: "Restart Now",
+        label: t("settings.updateRestartNow"),
         onClick: restart,
         disabled: false,
       };
     }
     if (downloading) {
       return {
-        label: `Downloading... ${fmtSize(progress.downloaded)} / ${fmtSize(progress.total)}`,
+        label: `${t("settings.updateDownloading")} ${fmtSize(progress.downloaded)} / ${fmtSize(progress.total)}`,
         onClick: null,
         disabled: true,
       };
     }
     if (info && info.update_available) {
       return {
-        label: `Update to v${info.latest_version}`,
+        label: t("settings.updateToVersion", { version: latestVersionLabel }),
         onClick: startDownload,
         disabled: false,
       };
     }
     return {
-      label: checking ? "Checking..." : "Check for Updates",
+      label: checking ? t("settings.updateChecking") : t("settings.checkForUpdates"),
       onClick: checkUpdate,
       disabled: checking,
     };
@@ -120,11 +128,11 @@ function UpdateSection() {
   return (
     <div className="field" style={{ flexDirection: "column", alignItems: "flex-start", gap: "8px" }}>
       <div className="label">
-        Updates
+        {t("settings.updates")}
         <small>
           {info
-            ? `v${info.current_version}` + (info.update_available ? ` → v${info.latest_version} available` : " (up to date)")
-            : "Checking..."}
+            ? currentVersionLabel + (info.update_available ? ` → ${latestVersionLabel} ${t("settings.updateAvailable")}` : ` (${t("settings.upToDate")})`)
+            : t("settings.updateChecking")}
         </small>
       </div>
 
@@ -147,17 +155,17 @@ function UpdateSection() {
       )}
 
       {downloaded && (
-        <span className="hint" style={{ color: "var(--green)" }}>Download complete. Restart to apply update.</span>
+        <span className="hint" style={{ color: "var(--green)" }}>{t("settings.updateDownloaded")}</span>
       )}
 
       {info && info.update_available && !downloading && !downloaded && (
         <span className="hint">
-          {`Asset: ${info.asset_name} (${fmtSize(info.asset_size)})`}
+          {t("settings.updateAsset", { name: info.asset_name, size: fmtSize(info.asset_size) })}
         </span>
       )}
 
       {info && !info.update_available && (
-        <span className="hint">You are running the latest version.</span>
+        <span className="hint">{t("settings.updateLatest")}</span>
       )}
     </div>
   );
