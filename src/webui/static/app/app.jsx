@@ -130,7 +130,10 @@ function SetupWizard({ theme, onToggleTheme }) {
           <div className="brand-mark"></div>
           <div>
             <div className="brand-name">{(DATA.assistantName || "Cyrene").toUpperCase()}</div>
-            <div className="setup-kicker">{t("setup.kicker")}</div>
+            <div className="setup-brand-meta">
+              <div className="setup-kicker">{t("setup.kicker")}</div>
+              <div className="setup-version">{DATA.appVersion || "—"}</div>
+            </div>
           </div>
         </div>
         <button className="theme-toggle-btn" title={theme === "dark" ? t("topbar.switchToLight") : t("topbar.switchToDark")} onClick={onToggleTheme}>

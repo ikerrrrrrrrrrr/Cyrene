@@ -342,12 +342,22 @@ button { font-family: inherit; }
   align-items: center;
   gap: 12px;
 }
+.setup-brand-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
 .setup-kicker {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-3);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.setup-version {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
 }
 .setup-hero {
   display: grid;
