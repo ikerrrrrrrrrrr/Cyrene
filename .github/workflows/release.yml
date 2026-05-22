@@ -57,6 +57,7 @@ jobs:
         run: |
           pip install pyinstaller>=6.0 pillow packaging
           pip install .
+          pip install pywebview>=5.0 || echo "pywebview skipped"
           pip install winloop
 
       - name: Build
@@ -84,7 +85,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2
+          sudo apt-get install -y libfuse2 libgtk-3-dev libwebkit2gtk-4.1-dev
 
       - name: Install appimagetool
         run: |
@@ -96,6 +97,7 @@ jobs:
         run: |
           pip install pyinstaller>=6.0 pillow packaging
           pip install .
+          pip install pywebview>=5.0 || echo "pywebview skipped"
 
       - name: Build
         run: python build/build.py
