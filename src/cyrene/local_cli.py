@@ -443,17 +443,27 @@ def _run_web_gui() -> None:
         print("Server failed to start", file=_sys.stderr)
         _sys.exit(1)
 
-    time.sleep(0.5)  # let uvicorn bind the port
+    time.sleep(0.5)
 
-    import webview
-    window = webview.create_window(
-        "Cyrene",
-        f"http://localhost:{WEB_PORT}",
-        width=1200,
-        height=800,
-        min_size=(800, 600),
-    )
-    webview.start()
+    try:
+        import webview
+        window = webview.create_window(
+            "Cyrene",
+            f"http://localhost:{WEB_PORT}",
+            width=1200,
+            height=800,
+            min_size=(800, 600),
+        )
+        webview.start()
+    except ImportError:
+        import webbrowser
+        webbrowser.open(f"http://localhost:{WEB_PORT}")
+        print(f"Cyrene running at http://localhost:{WEB_PORT}")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
 
 
 async def _run_one_shot_mcp(args: list[str]) -> None:
