@@ -47,12 +47,13 @@ _hidden = [
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "websockets", "aiosqlite", "apscheduler", "croniter",
     "httpx", "python_multipart", "sniffio", "simplexng",
+    "webview", "webview.platforms.cocoa", "webview.platforms.winforms", "webview.platforms.gtk",
 ]
 
 # ---- 排除 ----
 _excludes = [
     "tkinter", "matplotlib", "numpy", "pandas", "scipy",
-    "PIL._tkinter_finder", "curses", "http.server", "socketserver",
+    "PIL._tkinter_finder", "curses",
 ]
 
 # ---- 图标 ----

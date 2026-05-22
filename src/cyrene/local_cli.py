@@ -367,6 +367,95 @@ def _run_web_mode() -> None:
         _stop_mcp()
 
 
+def _run_web_gui() -> None:
+    """Start web UI with native desktop window (PyInstaller GUI mode).
+
+    Server init runs in a background thread; pywebview window on the main thread.
+    """
+    import sys as _sys
+    if "--verbose" in _sys.argv:
+        import cyrene.debug as _debug
+        _debug.VERBOSE = True
+        _debug.init_debug_log()
+
+    import asyncio
+    import threading
+    import time
+    from cyrene.debug import enable_event_bus
+    from cyrene.scheduler import setup_scheduler
+    from webui.server import create_app, WebBot, WEB_PORT
+
+    server_ready = threading.Event()
+
+    async def _start_all():
+        for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
+            d.mkdir(parents=True, exist_ok=True)
+        await init_db(str(DB_PATH))
+        ensure_soul()
+        ensure_inbox("cyrene")
+        init_short_term(DATA_DIR)
+        enable_event_bus()
+
+        if SEARXNG_AUTO_START:
+            from cyrene.searxng_manager import start_searxng
+            try:
+                url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+                logger.info("SearXNG auto-started at %s", url)
+            except Exception as exc:
+                logger.warning("SearXNG auto-start failed: %s", exc)
+
+        from cyrene.mcp_manager import start_mcp as _start_mcp
+        try:
+            await _start_mcp()
+            logger.info("MCP manager started")
+        except Exception as exc:
+            logger.warning("MCP manager start failed: %s", exc)
+
+        bot = WebBot()
+        scheduler = setup_scheduler(bot, str(DB_PATH))
+        scheduler.start()
+
+        try:
+            from cyrene.updater import background_check
+            _ = asyncio.create_task(background_check())
+        except Exception:
+            pass
+
+        app = create_app(bot, str(DB_PATH))
+        import uvicorn
+        config = uvicorn.Config(app, host="0.0.0.0", port=WEB_PORT, log_level="info")
+        server = uvicorn.Server(config)
+        server_ready.set()
+        await server.serve()
+
+    def _run_server():
+        try:
+            asyncio.run(_start_all())
+        finally:
+            from cyrene.searxng_manager import stop_searxng
+            stop_searxng()
+            from cyrene.mcp_manager import stop_mcp as _stop_mcp
+            _stop_mcp()
+
+    threading.Thread(target=_run_server, daemon=True).start()
+
+    if not server_ready.wait(timeout=15):
+        print("Server failed to start", file=_sys.stderr)
+        _sys.exit(1)
+
+    time.sleep(0.5)  # let uvicorn bind the port
+
+    import webview
+    window = webview.create_window(
+        "Cyrene",
+        f"http://localhost:{WEB_PORT}",
+        width=1200,
+        height=800,
+        min_size=(800, 600),
+    )
+    webview.start()
+
+
 async def _run_one_shot_mcp(args: list[str]) -> None:
     """Run a single MCP command and exit."""
     await _prepare_cli()
@@ -378,6 +467,9 @@ async def _run_one_shot_mcp(args: list[str]) -> None:
 
 def main() -> None:
     import sys
+    if "--gui" in sys.argv:
+        _run_web_gui()
+        return
     if "--web" in sys.argv:
         _run_web_mode()
         return
