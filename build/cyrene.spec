@@ -59,12 +59,15 @@ _hidden = [
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "anyio", "websockets", "aiosqlite", "apscheduler", "croniter",
     "httpx", "python_multipart", "sniffio", "simplexng",
+    "fastapi", "dotenv", "telegram", "mcp", "requests",
+    "packaging", "pypdf", "reportlab", "PIL",
 ]
 
 if not _IS_MAC:
     _hidden.append("webview")
     if _IS_WIN:
         _hidden.append("webview.platforms.winforms")
+        _hidden.append("webview.platforms.edgechromium")
     else:
         _hidden.append("webview.platforms.gtk")
 
@@ -103,6 +106,15 @@ for _package in (
     "apscheduler",
     "croniter",
     "simplexng",
+    "fastapi",
+    "dotenv",
+    "telegram",
+    "mcp",
+    "requests",
+    "packaging",
+    "pypdf",
+    "reportlab",
+    "PIL",
 ):
     _collect_package(_package)
 
@@ -116,6 +128,13 @@ if not _IS_MAC and not _IS_WIN:
         _collect_package("gi")
     except Exception as exc:
         print(f"[warn] gi collection failed (GTK native window will be unavailable): {exc}")
+
+# Windows: bundle pythonnet (clr) for pywebview WinForms backend
+if _IS_WIN:
+    try:
+        _collect_package("clr")
+    except Exception as exc:
+        print(f"[warn] clr collection failed (WinForms unavailable, will try Edge Chromium): {exc}")
 
 # ---- 排除 ----
 _excludes = [
