@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import socket
 import uuid
 
@@ -15,42 +14,6 @@ from cyrene.short_term import init_short_term
 from cyrene.soul import ensure_soul
 
 logger = logging.getLogger(__name__)
-
-
-def _open_browser_fallback(url: str) -> bool:
-    """Best-effort browser fallback for packaged GUI builds."""
-    import subprocess
-    import webbrowser
-
-    try:
-        if webbrowser.open(url, new=1):
-            return True
-    except Exception:
-        pass
-
-    if os.name == "nt":
-        try:
-            os.startfile(url)  # type: ignore[attr-defined]
-            return True
-        except Exception:
-            pass
-        try:
-            subprocess.Popen(["explorer.exe", url])
-            return True
-        except Exception:
-            pass
-    return False
-
-
-def _show_startup_message(message: str, title: str = "Cyrene") -> None:
-    """Display a Windows message box when the GUI fallback cannot open a browser."""
-    if os.name != "nt":
-        return
-    try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, message, title, 0x30)
-    except Exception:
-        pass
 
 
 def _pick_web_port(preferred_port: int = WEB_PORT) -> int:
@@ -544,23 +507,10 @@ def _run_web_gui() -> None:
         print("Install it with: pip install pywebview>=5.0", file=_sys.stderr)
         _sys.exit(1)
     except Exception as exc:
-<<<<<<< HEAD
-        logger.warning("pywebview failed (%s), falling back to browser", exc)
-
-    if not _native_window:
-        if not _open_browser_fallback(url):
-            _show_startup_message(
-                f"Cyrene started, but the desktop window could not be created.\n\n"
-                f"Open this address manually:\n{url}",
-                title="Cyrene Browser Fallback",
-            )
-        print(f"Cyrene running at {url}", flush=True)
-=======
         logger.warning("pywebview failed (%s)", exc)
         print(f"Error: Failed to create native window: {exc}", file=_sys.stderr)
         print(f"Cyrene server is running at {url}", flush=True)
         print("Press Ctrl+C to stop.", flush=True)
->>>>>>> bae304f (fix: update dependencies and improve PyInstaller compatibility for frozen builds)
         try:
             while True:
                 time.sleep(1)
