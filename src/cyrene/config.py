@@ -1,11 +1,48 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# 从项目根目录加载 .env，不依赖 CWD
-_base_dir = Path(__file__).resolve().parent.parent.parent
-load_dotenv(_base_dir / ".env")
+
+def _is_bundled() -> bool:
+    """检测是否为 PyInstaller 打包后的运行环境。"""
+    return getattr(sys, "frozen", False)
+
+
+def _get_user_data_dir() -> Path:
+    """返回平台特定的用户数据目录。"""
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+        base = Path(xdg)
+    return base / "Cyrene"
+
+
+def _get_source_root() -> Path:
+    """返回源码树根目录（config.py 向上三级）。"""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+# 确定 BASE_DIR：打包模式用用户数据目录，源码模式用项目根目录
+if _is_bundled():
+    BASE_DIR = _get_user_data_dir()
+else:
+    BASE_DIR = _get_source_root()
+
+# 首次启动：如果用户数据目录没有 .env，从模板复制
+_ENV_PATH = BASE_DIR / ".env"
+if _is_bundled() and not _ENV_PATH.exists():
+    _template = _get_source_root() / ".env.example"
+    if _template.exists():
+        BASE_DIR.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copy(_template, _ENV_PATH)
+
+load_dotenv(_ENV_PATH)
 
 # === Bot 配置 ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -69,8 +106,7 @@ PATTERN_DETECTION_INTERVAL = int(os.getenv("PATTERN_DETECTION_INTERVAL", "600"))
 WEB_PORT = int(os.getenv("WEB_PORT", "4242"))
 
 
-# .env 文件路径
-_ENV_PATH = _base_dir / ".env"
+# .env 文件路径（已在模块顶部定义）
 
 # 可在 Web UI 中编辑的 key 白名单
 _EDITABLE_KEYS = {

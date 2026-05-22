@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "httpx>=0.28.1",
     "jinja2>=3.1.0",
+    "packaging>=24.0",
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.6",
     "requests>=2.34.0",
@@ -27,12 +28,15 @@ dependencies = [
 [project.scripts]
 cyrene = "cyrene.cli:main"
 
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0", "pillow>=11.0"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cyrene"]
+packages = ["src/cyrene", "src/webui"]
 
 [tool.ruff]
 line-length = 180

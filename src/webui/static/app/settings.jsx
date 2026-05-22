@@ -1,5 +1,5 @@
 // Settings page
-const { useState: useStateSet } = React;
+const { useState: useStateSet, useEffect } = React;
 const VALID_SETTINGS_SECTIONS = new Set(["general", "models", "agents", "tools", "search", "mcp", "keys", "appearance", "danger"]);
 
 function readStoredSettingsSection() {
@@ -9,6 +9,138 @@ function readStoredSettingsSection() {
   } catch (e) {
     return "general";
   }
+}
+
+function UpdateSection() {
+  const [checking, setChecking] = useStateSet(false);
+  const [info, setInfo] = useStateSet(null);
+  const [downloading, setDownloading] = useStateSet(false);
+  const [progress, setProgress] = useStateSet({ downloaded: 0, total: 0, done: false });
+  const [downloaded, setDownloaded] = useStateSet(false);
+  const [error, setError] = useStateSet("");
+
+  const checkUpdate = async () => {
+    setChecking(true);
+    setError("");
+    try {
+      const res = await fetch("/api/update/check");
+      const data = await res.json();
+      setInfo(data);
+    } catch (e) {
+      setError("Failed to check for updates");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const startDownload = async () => {
+    setDownloading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/update/download", { method: "POST" });
+      const data = await res.json();
+      if (data.ok) {
+        setDownloaded(true);
+      } else {
+        setError(data.error || "Download failed");
+      }
+    } catch (e) {
+      setError("Download failed");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const pollProgress = async () => {
+    try {
+      const res = await fetch("/api/update/progress");
+      const data = await res.json();
+      setProgress(data);
+      return data.done;
+    } catch (e) { return true; }
+  };
+
+  useEffect(() => {
+    let timer;
+    if (downloading) {
+      timer = setInterval(async () => {
+        const done = await pollProgress();
+        if (done) clearInterval(timer);
+      }, 500);
+    }
+    return () => { if (timer) clearInterval(timer); };
+  }, [downloading]);
+
+  const restart = async () => {
+    try {
+      await fetch("/api/update/restart", { method: "POST" });
+    } catch (e) {
+      // 进程退出，请求会失败
+    }
+  };
+
+  // 首次加载时检查
+  useEffect(() => { checkUpdate(); }, []);
+
+  const fmtSize = (bytes) => {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  };
+
+  return (
+    <div className="field" style={{ flexDirection: "column", alignItems: "flex-start", gap: "8px" }}>
+      <div className="label">
+        Updates
+        <small>
+          {info
+            ? `v${info.current_version}` + (info.update_available ? ` → v${info.latest_version} available` : " (up to date)")
+            : "Checking..."}
+        </small>
+      </div>
+
+      {error && <div className="hint" style={{ color: "var(--red)" }}>{error}</div>}
+
+      {!info && (
+        <button className="btn" disabled={checking} onClick={checkUpdate}>
+          {checking ? "Checking..." : "Check for Updates"}
+        </button>
+      )}
+
+      {info && info.update_available && !downloaded && (
+        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+          <button className="btn" onClick={startDownload} disabled={downloading}>
+            {downloading
+              ? `Downloading... ${fmtSize(progress.downloaded)} / ${fmtSize(progress.total)}`
+              : `Download v${info.latest_version} (${fmtSize(info.asset_size)})`}
+          </button>
+        </div>
+      )}
+
+      {downloading && progress.total > 0 && (
+        <div className="progress-bar" style={{ width: "100%", height: "4px", background: "var(--border)", borderRadius: "2px" }}>
+          <div style={{
+            width: Math.round((progress.downloaded / progress.total) * 100) + "%",
+            height: "100%",
+            background: "var(--accent)",
+            borderRadius: "2px",
+            transition: "width 0.3s",
+          }} />
+        </div>
+      )}
+
+      {downloaded && (
+        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <span className="hint" style={{ color: "var(--green)" }}>Download complete. Restart to apply update.</span>
+          <button className="btn" onClick={restart}>Restart Now</button>
+        </div>
+      )}
+
+      {info && !info.update_available && (
+        <span className="hint">You are running the latest version.</span>
+      )}
+    </div>
+  );
 }
 
 function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
@@ -711,6 +843,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
           <div className="settings-pane danger-pane">
             <h2>{t("settings.dangerZone")}</h2>
             <p className="subtitle">{t("settings.dangerSubtitle")}</p>
+            <UpdateSection />
             <div className="field">
               <div className="label">{t("settings.clearSession")}<small>{t("settings.clearSessionHint")}</small></div>
               <button className="btn danger" onClick={clearSession}>{t("settings.clearSessionBtn")}</button>

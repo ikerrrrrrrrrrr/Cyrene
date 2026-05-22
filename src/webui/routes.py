@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -1172,6 +1173,101 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.post("/api/shutdown")
     async def api_shutdown():
         """Shutdown the daemon."""
+        import os as _os
+        _os._exit(0)
+
+    # ---- Update checker ----
+
+    @router.get("/api/update/check")
+    async def api_update_check():
+        """Check for updates via GitHub Releases."""
+        from cyrene.updater import check_for_update, get_cached_update_info
+
+        # 返回缓存结果（启动时后台检查过），没有则实时检查
+        info = get_cached_update_info()
+        if info is None:
+            info = await check_for_update()
+
+        return {
+            "update_available": info.available,
+            "current_version": info.current_version,
+            "latest_version": info.latest_version,
+            "download_url": info.download_url,
+            "release_notes": info.release_notes,
+            "asset_name": info.asset_name,
+            "asset_size": info.asset_size,
+        }
+
+    @router.post("/api/update/download")
+    async def api_update_download():
+        """下载更新包。返回下载状态。"""
+        from cyrene.updater import (
+            get_cached_update_info,
+            download_update,
+            _download_progress,
+        )
+
+        info = get_cached_update_info()
+        if not info or not info.download_url:
+            return {"ok": False, "error": "No update available"}
+
+        def _progress(downloaded: int, total: int) -> None:
+            _download_progress["downloaded"] = downloaded
+            _download_progress["total"] = total
+
+        _download_progress["downloaded"] = 0
+        _download_progress["total"] = info.asset_size
+        _download_progress["done"] = False
+
+        dest = await download_update(info.download_url, _progress)
+        _download_progress["done"] = True
+        _download_progress["path"] = str(dest) if dest else ""
+
+        if dest:
+            return {
+                "ok": True,
+                "path": str(dest),
+                "size": _download_progress["downloaded"],
+            }
+        return {"ok": False, "error": "Download failed"}
+
+    @router.get("/api/update/progress")
+    async def api_update_progress():
+        """查询下载进度。"""
+        from cyrene.updater import get_download_progress
+        return get_download_progress()
+
+    @router.post("/api/update/restart")
+    async def api_update_restart():
+        """写入重启脚本并退出进程（安装更新后调用）。"""
+        from cyrene.updater import get_restart_script, _download_progress
+        import subprocess as _sp
+
+        dest_str = _download_progress.get("path", "")
+        if not dest_str:
+            return {"ok": False, "error": "No downloaded update"}
+
+        dest = Path(dest_str)
+        if not dest.exists():
+            return {"ok": False, "error": f"Update file not found: {dest}"}
+
+        script = get_restart_script(dest)
+        if sys.platform == "win32":
+            script_ext = ".bat"
+            script_path = dest.parent / "update.bat"
+            script_path.write_text(script)
+            _sp.Popen(
+                ["cmd", "/c", str(script_path)],
+                creationflags=0x00000008,  # CREATE_NEW_CONSOLE
+            )
+        else:
+            script_ext = ".sh"
+            script_path = dest.parent / "update.sh"
+            script_path.write_text(script)
+            script_path.chmod(0o755)
+            _sp.Popen(["bash", str(script_path)], start_new_session=True)
+
+        # 退出当前进程
         import os as _os
         _os._exit(0)
 

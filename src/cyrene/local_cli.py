@@ -344,6 +344,13 @@ def _run_web_mode() -> None:
         scheduler.start()
         print(f"{ASSISTANT_NAME} Web UI starting...")
 
+        # 后台检查更新（不阻塞启动）
+        try:
+            from cyrene.updater import background_check
+            _ = asyncio.create_task(background_check())
+        except Exception:
+            pass
+
         try:
             await run_web(bot, str(DB_PATH))
         except KeyboardInterrupt:

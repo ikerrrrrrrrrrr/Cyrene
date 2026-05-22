@@ -1,0 +1,140 @@
+name: Build & Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # ==========================================================================
+  # macOS Build
+  # ==========================================================================
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller>=6.0 pillow
+          pip install -e .
+
+      - name: Build
+        working-directory: build
+        run: python build.py
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/Cyrene-*.dmg
+
+  # ==========================================================================
+  # Windows Build
+  # ==========================================================================
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller>=6.0 pillow
+          pip install -e .
+          pip install winloop
+
+      - name: Build
+        working-directory: build
+        run: python build.py
+
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist/Cyrene-*-win64.zip
+
+  # ==========================================================================
+  # Linux Build
+  # ==========================================================================
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2
+
+      - name: Install appimagetool
+        run: |
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller>=6.0 pillow
+          pip install -e .
+
+      - name: Build
+        working-directory: build
+        run: python build.py
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: dist/Cyrene-*-x86_64.AppImage
+
+      - name: Upload tar.gz
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: dist/Cyrene-*-x86_64.tar.gz
+
+  # ==========================================================================
+  # Create GitHub Release
+  # ==========================================================================
+  release:
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

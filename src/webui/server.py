@@ -43,7 +43,6 @@ def create_app(bot: Any, db_path: str) -> FastAPI:
     from webui.routes import register_routes
 
     app = FastAPI(title="Cyrene")
-    _STATIC_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     register_routes(app, bot, db_path)
     return app
