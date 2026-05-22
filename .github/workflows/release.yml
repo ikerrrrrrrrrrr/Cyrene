@@ -32,6 +32,9 @@ jobs:
           pip install --upgrade typing_extensions pydantic pydantic_core
           pip install pywebview>=5.0 || echo "pywebview skipped (macOS uses native Swift window)"
 
+      - name: Verify critical imports
+        run: python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; print('imports-ok')"
+
       - name: Build
         run: python build/build.py
 
@@ -71,7 +74,7 @@ jobs:
 
       - name: Verify build environment imports
         run: |
-          python -c "import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, croniter, jinja2, websockets, simplexng, mcp, webview; print('imports-ok')"
+          python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, croniter, jinja2, websockets, simplexng, mcp, webview; print('imports-ok')"
 
       - name: Build
         run: python build/build.py
@@ -158,8 +161,18 @@ jobs:
           pip install --upgrade typing_extensions pydantic pydantic_core
           pip install pywebview>=5.0 || echo "pywebview skipped"
 
+      - name: Verify build environment imports
+        run: |
+          python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, websockets, simplexng, jinja2, mcp, webview; print('imports-ok')"
+
       - name: Build
-        run: APPIMAGE_EXTRACT_AND_RUN=1 CYRENE_REQUIRE_APPIMAGE=1 PYTHONPATH=/usr/lib/python3/dist-packages:$PYTHONPATH python build/build.py
+        run: |
+          # Put pip site-packages before system path so PyInstaller collects
+          # the pip-installed typing_extensions (with Sentinel), not the
+          # potentially older system copy from /usr/lib/python3/dist-packages.
+          PIP_SITE="$(python -c "import site; print(site.getsitepackages()[0])")"
+          export PYTHONPATH="$PIP_SITE:/usr/lib/python3/dist-packages"
+          APPIMAGE_EXTRACT_AND_RUN=1 CYRENE_REQUIRE_APPIMAGE=1 python build/build.py
 
       - name: Smoke test packaged app
         run: ./dist/Cyrene/Cyrene --smoke-test
