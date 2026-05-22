@@ -66,6 +66,7 @@ from cyrene.settings_store import get_all as get_web_settings
 from cyrene.shells import list_shells as list_live_shells
 from cyrene.short_term import load_entries
 from cyrene.soul import read_soul, get_soul_path
+from cyrene.version import get_version_label
 
 logger = logging.getLogger(__name__)
 _CC_PROJECT_DIR = WORKSPACE_DIR.parent
@@ -1287,6 +1288,7 @@ async def _build_ui_data() -> dict:
     return {
         "user": _build_user(),
         "assistantName": ASSISTANT_NAME,
+        "appVersion": get_version_label(),
         "dashboard": await _build_dashboard(),
         "sessions": sessions,
         "status": await _build_status(),

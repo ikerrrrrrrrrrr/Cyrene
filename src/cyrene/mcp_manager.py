@@ -17,6 +17,7 @@ import os
 from typing import Any
 
 from cyrene.config import DATA_DIR
+from cyrene.version import get_version
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,7 @@ class MCPServerConnection:
             init_result = await self._json_rpc_request("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "cyrene", "version": "0.2.2"},
+                "clientInfo": {"name": "cyrene", "version": get_version()},
             })
             # Send initialized notification
             notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"

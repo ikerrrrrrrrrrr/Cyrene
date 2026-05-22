@@ -11,12 +11,14 @@ import shutil
 import subprocess
 import sys
 import struct
+import tempfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUILD_DIR = PROJECT_ROOT / "build"
 DIST_DIR = PROJECT_ROOT / "dist"
 SPEC_FILE = BUILD_DIR / "cyrene.spec"
+WEB_LOGO_PATH = PROJECT_ROOT / "src" / "webui" / "static" / "app" / "logo-mark.png"
 
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
@@ -45,6 +47,8 @@ def clean() -> None:
 def _generate_icns(img: "Image.Image", out_path: Path) -> None:
     """纯 Python 生成 .icns 文件（无需 iconutil）。"""
     import io
+    from PIL import Image
+
     types = {
         16: b"icp4", 32: b"icp5", 64: b"icp6",
         128: b"ic07", 256: b"ic08", 512: b"ic09", 1024: b"ic10",
@@ -58,37 +62,68 @@ def _generate_icns(img: "Image.Image", out_path: Path) -> None:
     out_path.write_bytes(b"icns" + struct.pack(">I", sum(len(e) for e in entries) + 8) + b"".join(entries))
 
 
-def generate_icons() -> None:
-    """生成占位图标（纯色 PNG）。"""
-    icon_png = BUILD_DIR / "icon.png"
-    if icon_png.exists():
-        return
-
+def _load_logo_image() -> "Image.Image | None":
     try:
         from PIL import Image, ImageDraw
     except ImportError:
         print("  [warn] Pillow not installed, skipping icon generation")
-        return
+        return None
+
+    logo_src = BUILD_DIR / "logo-source.png"
+    if logo_src.exists():
+        raw = Image.open(logo_src).convert("RGBA")
+        # Source artwork includes a wordmark below the emblem; crop it out and
+        # turn the near-white background transparent so platform icons stay clean.
+        crop = raw.crop((260, 140, 1015, 800))
+        pixels = crop.load()
+        for y in range(crop.height):
+            for x in range(crop.width):
+                r, g, b, a = pixels[x, y]
+                if r > 245 and g > 245 and b > 245:
+                    pixels[x, y] = (255, 255, 255, 0)
+        bbox = crop.getbbox()
+        if not bbox:
+            return crop
+        trimmed = crop.crop(bbox)
+        size = 1024
+        padding = 110
+        scale = min((size - 2 * padding) / trimmed.width, (size - 2 * padding) / trimmed.height)
+        resized = trimmed.resize((int(trimmed.width * scale), int(trimmed.height * scale)), Image.LANCZOS)
+        canvas = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+        left = (size - resized.width) // 2
+        top = (size - resized.height) // 2
+        canvas.alpha_composite(resized, (left, top))
+        return canvas
 
     size = 512
     img = Image.new("RGBA", (size, size), (30, 30, 50, 255))
     draw = ImageDraw.Draw(img)
-    # 简单几何图案
     margin = size // 6
-    draw.ellipse([margin, margin, size - margin, size - margin],
-                 fill=(80, 160, 220, 255))
-    draw.ellipse([margin * 2, margin * 2, size - margin * 2, size - margin * 2],
-                 fill=(30, 30, 50, 200))
+    draw.ellipse([margin, margin, size - margin, size - margin], fill=(80, 160, 220, 255))
+    draw.ellipse([margin * 2, margin * 2, size - margin * 2, size - margin * 2], fill=(30, 30, 50, 200))
+    return img
+
+
+def generate_icons() -> None:
+    """Generate icons from the checked-in logo source when available."""
+    from PIL import Image
+
+    icon_png = BUILD_DIR / "icon.png"
+    img = _load_logo_image()
+    if img is None:
+        return
     img.save(icon_png)
     print(f"  generated: {icon_png}")
 
-    # macOS .icns (纯 Python 生成，无需 iconutil)
     _generate_icns(img, BUILD_DIR / "icon.icns")
     print(f"  generated: {BUILD_DIR / 'icon.icns'}")
 
-    # Windows .ico
     img.resize((256, 256), Image.LANCZOS).save(BUILD_DIR / "icon.ico", format="ICO")
     print(f"  generated: {BUILD_DIR / 'icon.ico'}")
+
+    WEB_LOGO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    img.resize((256, 256), Image.LANCZOS).save(WEB_LOGO_PATH)
+    print(f"  generated: {WEB_LOGO_PATH}")
 
 
 def run_pyinstaller() -> None:
@@ -139,13 +174,25 @@ def package_mac() -> Path:
 
     dmg_path = DIST_DIR / f"Cyrene-{version}.dmg"
     print(f"\n[DMG] Creating {dmg_path.name}...")
-    subprocess.run([
-        "hdiutil", "create",
-        "-volname", "Cyrene",
-        "-srcfolder", str(app_path),
-        "-ov", "-format", "UDZO",
-        str(dmg_path),
-    ], check=True)
+    with tempfile.TemporaryDirectory(prefix="cyrene-dmg-") as tmp_dir:
+        staging_dir = Path(tmp_dir) / "Cyrene"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        staged_app = staging_dir / "Cyrene.app"
+        shutil.copytree(app_path, staged_app, symlinks=True)
+
+        apps_link = staging_dir / "Applications"
+        if apps_link.exists() or apps_link.is_symlink():
+            apps_link.unlink()
+        apps_link.symlink_to("/Applications")
+
+        subprocess.run([
+            "hdiutil", "create",
+            "-volname", "Cyrene",
+            "-srcfolder", str(staging_dir),
+            "-ov", "-format", "UDZO",
+            str(dmg_path),
+        ], check=True)
     print(f"  [ok] {dmg_path}")
     return dmg_path
 

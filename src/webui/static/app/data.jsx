@@ -2,7 +2,7 @@
 // Loads real data from the FastAPI backend before the React tree mounts.
 // Static fallback values keep the UI usable if the backend is unreachable.
 
-const APP_VERSION = "v0.2.2";
+const APP_VERSION = "—";
 
 const DATA = {
   user: { name: "loading…", handle: "loading", initials: "…" },
@@ -135,6 +135,7 @@ async function bootstrapData() {
     const fresh = await r.json();
     if (fresh.user) DATA.user = fresh.user;
     if (fresh.assistantName) DATA.assistantName = fresh.assistantName;
+    if (fresh.appVersion) DATA.appVersion = fresh.appVersion;
     if (fresh.dashboard) DATA.dashboard = fresh.dashboard;
     if (Array.isArray(fresh.sessions) && fresh.sessions.length) DATA.sessions = fresh.sessions;
     if (fresh.status) DATA.status = fresh.status;

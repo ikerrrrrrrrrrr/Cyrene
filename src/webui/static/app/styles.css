@@ -132,18 +132,8 @@ button { font-family: inherit; }
 }
 .brand-mark {
   width: 22px; height: 22px;
-  border-radius: 6px;
-  background: var(--bg-3);
-  border: 1px solid var(--line-2);
-  position: relative;
-}
-.brand-mark::after {
-  content: "";
-  position: absolute;
-  left: 5px; top: 5px;
-  width: 10px; height: 10px;
-  background: var(--accent);
-  border-radius: 2px;
+  background: center / contain no-repeat url("/app/logo-mark.png");
+  flex: 0 0 auto;
 }
 .brand-name {
   font-family: var(--mono);
