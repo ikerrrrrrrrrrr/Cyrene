@@ -67,10 +67,81 @@ jobs:
           pip install aiosqlite anyio apscheduler croniter fastapi httpx jinja2 python-dotenv python-telegram-bot requests sniffio websockets python-multipart certifi h11 idna
           pip install mcp httpx-sse pydantic pydantic-settings jsonschema referencing rpds-py attrs sse-starlette pyjwt
           pip install pywebview>=5.0 pythonnet clr-loader proxy-tools
+          pip install winloop
+          # simplexng and its transitive deps (it uses --no-deps so we list them explicitly)
           pip install simplexng --no-deps
+          pip install babel brotli clideps flask flask-babel httpx-socks isodate lxml markdown-it-py msgspec platformdirs pyyaml rich setproctitle typer-slim valkey whitenoise
           pip install .
           pip install --upgrade typing_extensions pydantic pydantic_core
-          pip install winloop
+
+      - name: Apply Windows compatibility patches
+        shell: python
+        run: |
+          import os, sys, site
+
+          import simplexng
+          sx = simplexng.__path__[0]
+          print(f"simplexng at: {sx}")
+
+          # 1. Replace uvloop with winloop
+          client_py = os.path.join(sx, "_vendor", "searx", "network", "client.py")
+          if os.path.exists(client_py):
+              with open(client_py, "r") as f:
+                  content = f.read()
+              content = content.replace(
+                  'import uvloop\nuvloop.install()',
+                  'import sys\nif sys.platform == "win32":\n    import winloop as uvloop\nelse:\n    import uvloop\nuvloop.install()'
+              )
+              with open(client_py, "w") as f:
+                  f.write(content)
+              print("Patched uvloop -> winloop")
+          else:
+              print(f"WARNING: {client_py} not found")
+
+          # 2. Replace fork with spawn
+          calc_py = os.path.join(sx, "_vendor", "searx", "plugins", "calculator.py")
+          if os.path.exists(calc_py):
+              with open(calc_py, "r") as f:
+                  content = f.read()
+              content = content.replace(
+                  'mp_fork = multiprocessing.get_context("fork")',
+                  'mp_fork = multiprocessing.get_context("fork" if sys.platform != "win32" else "spawn")'
+              )
+              with open(calc_py, "w") as f:
+                  f.write(content)
+              print("Patched fork -> spawn")
+          else:
+              print(f"WARNING: {calc_py} not found")
+
+          # 3. Create pwd stub
+          site_pkg = site.getsitepackages()[0]
+          pwd_py = os.path.join(site_pkg, "pwd.py")
+          with open(pwd_py, "w") as f:
+              f.write('''"""pwd stub for Windows - SearXNG compatibility."""
+          import os
+          def getpwuid(uid):
+              name = os.environ.get("USERNAME", "unknown")
+              return type("pw", (), {"pw_name": name, "pw_uid": uid})()
+          ''')
+          print(f"Created pwd stub at {pwd_py}")
+
+          # 4. Enable JSON API in SearXNG settings
+          settings_yml = os.path.join(sx, "settings", "settings_template.yml")
+          if os.path.exists(settings_yml):
+              with open(settings_yml, "r") as f:
+                  content = f.read()
+              if "formats:" in content and "json" not in content.split("formats:", 1)[1].split("\n\n", 1)[0]:
+                  content = content.replace(
+                      "formats:\n    - html",
+                      "formats:\n    - html\n    - json"
+                  )
+                  with open(settings_yml, "w") as f:
+                      f.write(content)
+                  print("Enabled JSON API in SearXNG settings")
+          else:
+              print(f"WARNING: {settings_yml} not found")
+
+          print("Windows compatibility patches applied.")
 
       - name: Verify build environment imports
         run: |
