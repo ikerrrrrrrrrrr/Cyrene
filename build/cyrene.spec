@@ -3,6 +3,7 @@
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 _PROJECT_ROOT = Path(SPECPATH).resolve().parent
 _SRC = _PROJECT_ROOT / "src"
@@ -17,6 +18,7 @@ with open(_PROJECT_ROOT / "pyproject.toml", "rb") as _f:
 
 # ---- 静态数据文件 ----
 _datas = []
+_binaries = []
 
 # webui static
 _static_dir = _SRC / "webui" / "static"
@@ -57,8 +59,56 @@ _hidden = [
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "websockets", "aiosqlite", "apscheduler", "croniter",
     "httpx", "python_multipart", "sniffio", "simplexng",
-    "webview", "webview.platforms.cocoa", "webview.platforms.winforms", "webview.platforms.gtk",
 ]
+
+if not _IS_MAC:
+    _hidden.append("webview")
+    if _IS_WIN:
+        _hidden.append("webview.platforms.winforms")
+    else:
+        _hidden.append("webview.platforms.gtk")
+
+
+def _collect_package(name: str) -> None:
+    """Collect package modules, data files, and metadata for frozen builds."""
+    global _datas, _binaries, _hidden
+    try:
+        datas, binaries, hiddenimports = collect_all(name)
+    except Exception as exc:
+        print(f"[warn] collect_all({name!r}) failed: {exc}")
+        return
+
+    _datas.extend(datas)
+    _binaries.extend(binaries)
+    _hidden.extend(hiddenimports)
+    try:
+        _datas.extend(copy_metadata(name))
+    except Exception:
+        pass
+
+
+for _package in (
+    "httpx",
+    "httpcore",
+    "anyio",
+    "certifi",
+    "sniffio",
+    "h11",
+    "idna",
+    "jinja2",
+    "uvicorn",
+    "websockets",
+    "python_multipart",
+    "aiosqlite",
+    "apscheduler",
+    "croniter",
+    "simplexng",
+):
+    _collect_package(_package)
+
+_datas = list(dict.fromkeys(_datas))
+_binaries = list(dict.fromkeys(_binaries))
+_hidden = list(dict.fromkeys(_hidden))
 
 # ---- 排除 ----
 _excludes = [
@@ -78,7 +128,7 @@ elif _IS_WIN and (_icon_dir / "icon.ico").exists():
 a = Analysis(
     [_ENTRY],
     pathex=[str(_SRC)],
-    binaries=[],
+    binaries=_binaries,
     datas=_datas,
     hiddenimports=_hidden,
     hookspath=[],

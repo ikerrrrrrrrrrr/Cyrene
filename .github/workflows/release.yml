@@ -34,6 +34,9 @@ jobs:
       - name: Build
         run: python build/build.py
 
+      - name: Smoke test packaged app
+        run: dist/Cyrene.app/Contents/MacOS/Cyrene --smoke-test
+
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
@@ -62,6 +65,9 @@ jobs:
 
       - name: Build
         run: python build/build.py
+
+      - name: Smoke test packaged app
+        run: .\dist\Cyrene\Cyrene.exe --smoke-test
 
       - name: Upload ZIP
         uses: actions/upload-artifact@v4
@@ -101,6 +107,9 @@ jobs:
 
       - name: Build
         run: python build/build.py
+
+      - name: Smoke test packaged app
+        run: ./dist/Cyrene/Cyrene --smoke-test
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
