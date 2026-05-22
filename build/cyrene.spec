@@ -57,7 +57,7 @@ _hidden = [
     "cyrene.subagent", "cyrene.tools",
     "jinja2", "jinja2.ext",
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
-    "websockets", "aiosqlite", "apscheduler", "croniter",
+    "anyio", "websockets", "aiosqlite", "apscheduler", "croniter",
     "httpx", "python_multipart", "sniffio", "simplexng",
 ]
 
