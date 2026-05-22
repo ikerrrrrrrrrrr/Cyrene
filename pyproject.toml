@@ -1,10 +1,11 @@
 [project]
 name = "cyrene"
-version = "0.3.7"
+version = "0.3.8"
 description = "Cyrene AI Agent — self-evolving AI companion with SOUL.md memory"
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
+    "anyio>=4.0",
     "apscheduler>=3.10,<4.0",
     "croniter>=6.0.0",
     "fastapi>=0.115.0",

@@ -91,13 +91,16 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2 libgtk-3-dev libwebkit2gtk-4.1-dev python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1
+          sudo apt-get install -y libfuse2 || sudo apt-get install -y libfuse2t64 || echo "libfuse2 not available (AppImage extracted, OK)"
 
       - name: Install appimagetool
         run: |
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
-          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+          /tmp/appimagetool --appimage-extract
+          sudo mv squashfs-root /opt/appimagetool
+          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
 
       - name: Install dependencies
         run: |
@@ -112,6 +115,7 @@ jobs:
         run: ./dist/Cyrene/Cyrene --smoke-test
 
       - name: Upload AppImage
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
