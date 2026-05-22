@@ -106,11 +106,8 @@ jobs:
         run: |
           wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
           chmod +x /tmp/appimagetool
-          /tmp/appimagetool --appimage-extract
-          sudo mv squashfs-root /opt/appimagetool
-          printf '#!/bin/bash\nexec /opt/appimagetool/AppRun "$@"\n' | sudo tee /usr/local/bin/appimagetool > /dev/null
-          sudo chmod +x /usr/local/bin/appimagetool
-          appimagetool --version || echo "[warn] appimagetool version check failed"
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 appimagetool --version || echo "[warn] appimagetool version check failed"
 
       - name: Install dependencies
         run: |
@@ -119,7 +116,7 @@ jobs:
           pip install pywebview>=5.0 || echo "pywebview skipped"
 
       - name: Build
-        run: CYRENE_REQUIRE_APPIMAGE=1 PYTHONPATH=/usr/lib/python3/dist-packages:$PYTHONPATH python build/build.py
+        run: APPIMAGE_EXTRACT_AND_RUN=1 CYRENE_REQUIRE_APPIMAGE=1 PYTHONPATH=/usr/lib/python3/dist-packages:$PYTHONPATH python build/build.py
 
       - name: Smoke test packaged app
         run: ./dist/Cyrene/Cyrene --smoke-test
