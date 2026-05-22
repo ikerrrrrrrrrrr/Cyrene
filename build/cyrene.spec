@@ -110,6 +110,13 @@ _datas = list(dict.fromkeys(_datas))
 _binaries = list(dict.fromkeys(_binaries))
 _hidden = list(dict.fromkeys(_hidden))
 
+# Linux: bundle PyGObject + GTK typelibs for pywebview native window
+if not _IS_MAC and not _IS_WIN:
+    try:
+        _collect_package("gi")
+    except Exception as exc:
+        print(f"[warn] gi collection failed (GTK native window will be unavailable): {exc}")
+
 # ---- 排除 ----
 _excludes = [
     "tkinter", "matplotlib", "numpy", "pandas", "scipy",

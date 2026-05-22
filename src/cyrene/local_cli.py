@@ -492,14 +492,21 @@ def _run_web_gui() -> None:
             return
 
     # Windows/Linux: try pywebview
+    _native_window = False
     try:
         import webview
         webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
         webview.start()
+        _native_window = True
     except ImportError:
+        pass
+    except Exception as exc:
+        logger.warning("pywebview failed (%s), falling back to browser", exc)
+
+    if not _native_window:
         import webbrowser
         webbrowser.open(url)
-        print(f"Cyrene running at {url}")
+        print(f"Cyrene running at {url}", flush=True)
         try:
             while True:
                 time.sleep(1)
