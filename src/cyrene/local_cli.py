@@ -535,15 +535,16 @@ def _run_web_gui() -> None:
             return
 
     # Windows/Linux: try pywebview
-    _native_window = False
     try:
         import webview
         webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
         webview.start()
-        _native_window = True
     except ImportError:
-        pass
+        print("Error: pywebview is not installed. Native desktop window unavailable.", file=_sys.stderr)
+        print("Install it with: pip install pywebview>=5.0", file=_sys.stderr)
+        _sys.exit(1)
     except Exception as exc:
+<<<<<<< HEAD
         logger.warning("pywebview failed (%s), falling back to browser", exc)
 
     if not _native_window:
@@ -554,6 +555,12 @@ def _run_web_gui() -> None:
                 title="Cyrene Browser Fallback",
             )
         print(f"Cyrene running at {url}", flush=True)
+=======
+        logger.warning("pywebview failed (%s)", exc)
+        print(f"Error: Failed to create native window: {exc}", file=_sys.stderr)
+        print(f"Cyrene server is running at {url}", flush=True)
+        print("Press Ctrl+C to stop.", flush=True)
+>>>>>>> bae304f (fix: update dependencies and improve PyInstaller compatibility for frozen builds)
         try:
             while True:
                 time.sleep(1)

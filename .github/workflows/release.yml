@@ -29,6 +29,7 @@ jobs:
         run: |
           pip install pyinstaller>=6.0 pillow packaging
           pip install .
+          pip install --upgrade typing_extensions pydantic pydantic_core
           pip install pywebview>=5.0 || echo "pywebview skipped (macOS uses native Swift window)"
 
       - name: Build
@@ -65,6 +66,8 @@ jobs:
           pip install pywebview>=5.0 pythonnet clr-loader proxy-tools
           pip install simplexng --no-deps
           pip install .
+          pip install --upgrade typing_extensions pydantic pydantic_core
+          pip install pywebview>=5.0 || echo "pywebview skipped"
           pip install winloop
 
       - name: Verify build environment imports
@@ -153,6 +156,7 @@ jobs:
         run: |
           pip install pyinstaller>=6.0 pillow packaging
           pip install .
+          pip install --upgrade typing_extensions pydantic pydantic_core
           pip install pywebview>=5.0 || echo "pywebview skipped"
 
       - name: Build

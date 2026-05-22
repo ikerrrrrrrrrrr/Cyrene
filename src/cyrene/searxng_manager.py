@@ -152,6 +152,12 @@ def _build_simplexng_launch_cmd(port: int, host: str) -> list[str]:
     """Build a launch command compatible with different SimpleXNG package layouts."""
     args = ["-p", str(port), "-H", host]
 
+    # In a PyInstaller frozen build, sys.executable is the app binary itself.
+    # Running it with "-m" would launch another full instance — recursive spawn.
+    # Instead we use a trampoline flag that run_cyrene.py understands.
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--launch-simplexng", *args]
+
     if importlib.util.find_spec("simplexng.__main__") is not None:
         return [sys.executable, "-m", "simplexng", *args]
 

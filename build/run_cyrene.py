@@ -45,6 +45,23 @@ if __name__ == "__main__":
         _run_smoke_test()
         raise SystemExit(0)
 
+    # In a PyInstaller frozen build, sys.executable is the app binary itself.
+    # External code (searxng_manager, cli) used to call "sys.executable -m ..."
+    # which would launch another full instance of the app — recursive spawning.
+    # These flags let the frozen binary act as a trampoline for bundled modules.
+    if "--launch-simplexng" in sys.argv:
+        sys.argv.remove("--launch-simplexng")
+        import runpy
+        runpy.run_module("simplexng", run_name="__main__")
+        raise SystemExit(0)
+
+    if "--launch-web" in sys.argv:
+        sys.argv.remove("--launch-web")
+        sys.argv.append("--web")
+        from cyrene.local_cli import main
+        main()
+        raise SystemExit(0)
+
     if "--gui" not in sys.argv:
         sys.argv.append("--gui")
 

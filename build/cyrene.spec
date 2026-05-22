@@ -59,7 +59,9 @@ _hidden = [
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
     "anyio", "websockets", "aiosqlite", "apscheduler", "croniter",
     "httpx", "python_multipart", "sniffio", "simplexng",
-    "fastapi", "dotenv", "telegram", "mcp", "requests",
+    "fastapi", "pydantic", "pydantic_core", "pydantic_core._pydantic_core",
+    "starlette", "typing_extensions", "annotated_types",
+    "dotenv", "telegram", "mcp", "requests",
     "packaging", "pypdf", "reportlab", "PIL",
 ]
 
@@ -107,6 +109,11 @@ for _package in (
     "croniter",
     "simplexng",
     "fastapi",
+    "pydantic",
+    "pydantic_core",
+    "starlette",
+    "typing_extensions",
+    "annotated_types",
     "dotenv",
     "telegram",
     "mcp",
