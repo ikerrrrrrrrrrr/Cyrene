@@ -23,20 +23,24 @@ def _get_user_data_dir() -> Path:
 
 
 def _get_source_root() -> Path:
-    """返回源码树根目录（config.py 向上三级）。"""
+    """返回源码根目录或打包资源根目录。"""
+    if _is_bundled() and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent.parent.parent
 
+
+SOURCE_ROOT = _get_source_root()
 
 # 确定 BASE_DIR：打包模式用用户数据目录，源码模式用项目根目录
 if _is_bundled():
     BASE_DIR = _get_user_data_dir()
 else:
-    BASE_DIR = _get_source_root()
+    BASE_DIR = SOURCE_ROOT
 
 # 首次启动：如果用户数据目录没有 .env，从模板复制
 _ENV_PATH = BASE_DIR / ".env"
 if _is_bundled() and not _ENV_PATH.exists():
-    _template = _get_source_root() / ".env.example"
+    _template = SOURCE_ROOT / ".env.example"
     if _template.exists():
         BASE_DIR.mkdir(parents=True, exist_ok=True)
         import shutil
@@ -88,7 +92,6 @@ SEARXNG_HOST = os.getenv("SEARXNG_HOST", "127.0.0.1")  # SearXNG 绑定地址
 STEWARD_INTERVAL = int(os.getenv("STEWARD_INTERVAL", "1800"))  # 30 分钟
 
 # === 路径 ===
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
 WORKSPACE_DIR = BASE_DIR / "workspace"      # 工作区，存放 SOUL.md、CLAUDE.md 等运行时文件
 STORE_DIR = BASE_DIR / "store"              # 持久化存储，数据库文件
 DATA_DIR = BASE_DIR / "data"                # 运行时数据，状态文件、收件箱等

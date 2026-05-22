@@ -36,6 +36,11 @@ _env_tpl = _PROJECT_ROOT / ".env.example"
 if _env_tpl.exists():
     _datas.append((str(_env_tpl), "."))
 
+# pyproject（供打包后读取当前版本号）
+_pyproject = _PROJECT_ROOT / "pyproject.toml"
+if _pyproject.exists():
+    _datas.append((str(_pyproject), "."))
+
 # ---- 隐藏导入 ----
 _hidden = [
     "webui", "webui.server", "webui.routes",

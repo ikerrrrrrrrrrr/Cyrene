@@ -11,7 +11,8 @@ let args = CommandLine.arguments
 guard args.count > 1, let url = URL(string: args[1]) else { exit(1) }
 
 let app = NSApplication.shared
-app.delegate = AppDelegate()
+let delegate = AppDelegate()
+app.delegate = delegate
 app.setActivationPolicy(.regular)
 
 let window = NSWindow(

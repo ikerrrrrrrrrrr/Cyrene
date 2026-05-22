@@ -1,6 +1,7 @@
 """应用内更新检查器 — 通过 GitHub Releases API 检查、下载、安装更新。"""
 
 import asyncio
+import importlib.metadata
 import logging
 import os
 import sys
@@ -25,15 +26,24 @@ _GITHUB_API = f"https://api.github.com/repos/{_UPDATE_REPO}/releases"
 def _current_version() -> str:
     """从 pyproject.toml 读取当前版本。"""
     try:
+        return importlib.metadata.version("cyrene")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+
+    try:
         import tomllib
     except ImportError:
         import tomli as tomllib  # type: ignore[no-relevant-import]
 
-    # 优先从打包路径查找，源码模式下从项目根查找
-    pyproject = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
-    if pyproject.exists():
-        with open(pyproject, "rb") as f:
-            return tomllib.load(f)["project"]["version"]
+    candidates = []
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        candidates.append(Path(sys._MEIPASS) / "pyproject.toml")
+    candidates.append(Path(__file__).resolve().parent.parent.parent / "pyproject.toml")
+
+    for pyproject in candidates:
+        if pyproject.exists():
+            with open(pyproject, "rb") as f:
+                return tomllib.load(f)["project"]["version"]
     return "0.0.0"
 
 
