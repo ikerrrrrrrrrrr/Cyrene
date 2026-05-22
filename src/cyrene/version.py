@@ -8,10 +8,23 @@ from functools import lru_cache
 from pathlib import Path
 
 
+def _bundle_contents_dir() -> Path | None:
+    exe = Path(sys.executable).resolve()
+    parts = exe.parts
+    for idx, part in enumerate(parts):
+        if part.endswith(".app") and idx + 2 < len(parts) and parts[idx + 1] == "Contents":
+            return Path(*parts[: idx + 2])
+    return None
+
+
 def _pyproject_candidates() -> list[Path]:
     candidates: list[Path] = []
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         candidates.append(Path(sys._MEIPASS) / "pyproject.toml")
+    bundle_contents = _bundle_contents_dir()
+    if bundle_contents is not None:
+        candidates.append(bundle_contents / "Resources" / "pyproject.toml")
+        candidates.append(bundle_contents / "Frameworks" / "pyproject.toml")
     candidates.append(Path(__file__).resolve().parent.parent.parent / "pyproject.toml")
     return candidates
 

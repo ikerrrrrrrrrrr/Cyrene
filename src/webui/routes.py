@@ -49,6 +49,7 @@ from cyrene.agent import (
 )
 from cyrene.config import (
     ASSISTANT_NAME,
+    BASE_DIR,
     DATA_DIR,
     DB_PATH,
     OPENAI_BASE_URL,
@@ -3229,6 +3230,8 @@ def _build_config() -> dict:
         "model": live_model,
         "base_url": live_base_url,
         "assistant_name": ASSISTANT_NAME,
+        "base_dir": str(BASE_DIR),
+        "data_dir": str(DATA_DIR),
         "soul_path": str(SOUL_PATH),
         "workspace_dir": str(WORKSPACE_DIR),
         "soul_content": _read_soul(),

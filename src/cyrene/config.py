@@ -5,9 +5,19 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _bundle_contents_dir() -> Path | None:
+    """Return ``.../MyApp.app/Contents`` when running from a macOS app bundle."""
+    exe = Path(sys.executable).resolve()
+    parts = exe.parts
+    for idx, part in enumerate(parts):
+        if part.endswith(".app") and idx + 2 < len(parts) and parts[idx + 1] == "Contents":
+            return Path(*parts[: idx + 2])
+    return None
+
+
 def _is_bundled() -> bool:
     """检测是否为 PyInstaller 打包后的运行环境。"""
-    return getattr(sys, "frozen", False)
+    return getattr(sys, "frozen", False) or _bundle_contents_dir() is not None
 
 
 def _get_user_data_dir() -> Path:
@@ -26,6 +36,11 @@ def _get_source_root() -> Path:
     """返回源码根目录或打包资源根目录。"""
     if _is_bundled() and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
+    bundle_contents = _bundle_contents_dir()
+    if bundle_contents is not None:
+        for candidate in (bundle_contents / "Resources", bundle_contents / "Frameworks"):
+            if (candidate / "pyproject.toml").exists() or (candidate / ".env.example").exists():
+                return candidate
     return Path(__file__).resolve().parent.parent.parent
 
 

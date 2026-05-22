@@ -132,7 +132,7 @@ button { font-family: inherit; }
 }
 .brand-mark {
   width: 22px; height: 22px;
-  background: center / contain no-repeat url("/app/logo-mark.png");
+  background: center / contain no-repeat url("logo-mark.png");
   flex: 0 0 auto;
 }
 .brand-name {

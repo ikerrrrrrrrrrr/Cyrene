@@ -88,6 +88,35 @@ function UpdateSection() {
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
 
+  const primaryAction = (() => {
+    if (downloaded) {
+      return {
+        label: "Restart Now",
+        onClick: restart,
+        disabled: false,
+      };
+    }
+    if (downloading) {
+      return {
+        label: `Downloading... ${fmtSize(progress.downloaded)} / ${fmtSize(progress.total)}`,
+        onClick: null,
+        disabled: true,
+      };
+    }
+    if (info && info.update_available) {
+      return {
+        label: `Update to v${info.latest_version}`,
+        onClick: startDownload,
+        disabled: false,
+      };
+    }
+    return {
+      label: checking ? "Checking..." : "Check for Updates",
+      onClick: checkUpdate,
+      disabled: checking,
+    };
+  })();
+
   return (
     <div className="field" style={{ flexDirection: "column", alignItems: "flex-start", gap: "8px" }}>
       <div className="label">
@@ -101,21 +130,9 @@ function UpdateSection() {
 
       {error && <div className="hint" style={{ color: "var(--red)" }}>{error}</div>}
 
-      {!info && (
-        <button className="btn" disabled={checking} onClick={checkUpdate}>
-          {checking ? "Checking..." : "Check for Updates"}
-        </button>
-      )}
-
-      {info && info.update_available && !downloaded && (
-        <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
-          <button className="btn" onClick={startDownload} disabled={downloading}>
-            {downloading
-              ? `Downloading... ${fmtSize(progress.downloaded)} / ${fmtSize(progress.total)}`
-              : `Download v${info.latest_version} (${fmtSize(info.asset_size)})`}
-          </button>
-        </div>
-      )}
+      <button className="btn" disabled={primaryAction.disabled} onClick={primaryAction.onClick || undefined}>
+        {primaryAction.label}
+      </button>
 
       {downloading && progress.total > 0 && (
         <div className="progress-bar" style={{ width: "100%", height: "4px", background: "var(--border)", borderRadius: "2px" }}>
@@ -130,10 +147,13 @@ function UpdateSection() {
       )}
 
       {downloaded && (
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <span className="hint" style={{ color: "var(--green)" }}>Download complete. Restart to apply update.</span>
-          <button className="btn" onClick={restart}>Restart Now</button>
-        </div>
+        <span className="hint" style={{ color: "var(--green)" }}>Download complete. Restart to apply update.</span>
+      )}
+
+      {info && info.update_available && !downloading && !downloaded && (
+        <span className="hint">
+          {`Asset: ${info.asset_name} (${fmtSize(info.asset_size)})`}
+        </span>
       )}
 
       {info && !info.update_available && (
