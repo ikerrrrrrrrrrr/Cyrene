@@ -26,6 +26,26 @@ function renderMarkdown(text) {
   return escapeHtml(source).replace(/\n/g, "<br>");
 }
 
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function injectAttachmentLinks(text, attachments) {
+  var source = String(text || "");
+  var files = Array.isArray(attachments) ? attachments : [];
+  if (!source || files.length === 0) return source;
+  files.forEach(function(file) {
+    var url = String(file && file.url || "").trim();
+    var label = String(file && file.name || "").trim();
+    if (!url || !label) return;
+    var safeLabel = escapeRegExp(label);
+    source = source.replace(new RegExp("(^|[\\s(])(" + safeLabel + ")(?=$|[\\s).,!?])", "g"), function(_match, prefix, matched) {
+      return prefix + "[" + matched + "](" + url + ")";
+    });
+  });
+  return source;
+}
+
 function traceSummary(msg) {
   const parts = [];
   if (msg.thinking) parts.push("reasoning");
@@ -1714,10 +1734,10 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
 function Message({ msg, assistantName }) {
   const { t } = useI18n();
   const renderMarkdownBody = !msg.streamingReply;
-  const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
-    ? renderMarkdown(msg.body)
-    : "";
   const attachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
+  const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
+    ? renderMarkdown(injectAttachmentLinks(msg.body, attachments))
+    : "";
   const isRuntimeTrace = Boolean(msg.runtimeTrace);
   const attachedRuntime = msg.attachedRuntime || null;
   const hasOwnTrace = Boolean(msg.thinking || (msg.tools && msg.tools.length));

@@ -205,6 +205,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [mcpSaved, setMcpSaved] = useStateSet("");
   const [newMcpServer, setNewMcpServer] = useStateSet({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
   const [agentsSaved, setAgentsSaved] = useStateSet("");
+  const [resetDataStatus, setResetDataStatus] = useStateSet("");
+  const [resettingData, setResettingData] = useStateSet(false);
 
   function toggleKey(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
 
@@ -423,10 +425,32 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   }
 
   async function clearSession() {
-    if (!confirm("Clear the current conversation session?")) return;
+    if (!confirm(t("settings.confirmClearSession"))) return;
     await fetch("/api/chat/clear", { method: "POST" });
     if (window.refreshSessions) window.refreshSessions();
-    alert("Session cleared.");
+    alert(t("settings.sessionCleared"));
+  }
+
+  async function resetAppData() {
+    if (!confirm(t("settings.confirmResetAppData"))) return;
+    setResettingData(true);
+    setResetDataStatus(t("settings.resettingData"));
+    try {
+      const response = await fetch("/api/settings/reset-data", { method: "POST" });
+      const payload = await response.json().catch(function() { return {}; });
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.error || ("HTTP " + response.status));
+      }
+      try {
+        Object.keys(localStorage).forEach(function(key) {
+          if (key.indexOf("cyrene-") === 0) localStorage.removeItem(key);
+        });
+      } catch (e) {}
+      window.location.reload();
+    } catch (e) {
+      setResetDataStatus(t("settings.resetAppDataFailed") + ": " + e.message);
+      setResettingData(false);
+    }
   }
 
   return (
@@ -875,6 +899,19 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             <div className="field">
               <div className="label">{t("settings.clearSession")}<small>{t("settings.clearSessionHint")}</small></div>
               <button className="btn danger" onClick={clearSession}>{t("settings.clearSessionBtn")}</button>
+            </div>
+            <div className="field">
+              <div className="label">{t("settings.resetAppData")}<small>{t("settings.resetAppDataHint")}</small></div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <button className="btn danger" onClick={resetAppData} disabled={resettingData}>
+                  {resettingData ? t("settings.resettingData") : t("settings.resetAppDataBtn")}
+                </button>
+                {resetDataStatus ? (
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
+                    {resetDataStatus}
+                  </span>
+                ) : null}
+              </div>
             </div>
             <div className="field">
               <div className="label">{t("settings.soulPath")}<small>{t("settings.soulPathHint")}</small></div>

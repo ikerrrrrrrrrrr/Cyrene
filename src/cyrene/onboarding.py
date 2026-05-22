@@ -71,6 +71,16 @@ def save_onboarding_state(state: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def reset_onboarding_state() -> None:
+    """Remove persisted onboarding markers so setup appears as fresh again."""
+    for path in (_onboarding_state_path(), _setup_flag_path()):
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception:
+            logger.exception("Failed to remove onboarding state file: %s", path)
+
+
 def _api_key_present() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY", "").strip())
 

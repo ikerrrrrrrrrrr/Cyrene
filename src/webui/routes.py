@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import sys
 import time
 from collections import Counter
@@ -51,9 +52,12 @@ from cyrene.config import (
     ASSISTANT_NAME,
     BASE_DIR,
     DATA_DIR,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
     DB_PATH,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
+    PATTERNS_DIR,
     SEARXNG_HOST,
     SEARXNG_PORT,
     SOUL_PATH,
@@ -61,12 +65,17 @@ from cyrene.config import (
     WORKSPACE_DIR,
 )
 from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange
-from cyrene.onboarding import get_onboarding_status, save_and_test_llm_setup, save_personality_setup
+from cyrene.onboarding import (
+    get_onboarding_status,
+    reset_onboarding_state,
+    save_and_test_llm_setup,
+    save_personality_setup,
+)
 from cyrene.scheduler import reset_lottery
 from cyrene.settings_store import get_all as get_web_settings
 from cyrene.shells import list_shells as list_live_shells
 from cyrene.short_term import load_entries
-from cyrene.soul import read_soul, get_soul_path
+from cyrene.soul import get_default_soul_content, read_soul, get_soul_path
 from cyrene.version import get_version_label
 
 logger = logging.getLogger(__name__)
@@ -91,6 +100,81 @@ def _live_llm_config() -> tuple[str, str]:
     from cyrene import config as cy_config
 
     return cy_config.OPENAI_MODEL, cy_config.OPENAI_BASE_URL
+
+
+def _remove_path(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+async def _reset_app_data() -> dict[str, Any]:
+    """Wipe user-modifiable runtime data and restore first-run defaults."""
+    from cyrene import agent as cy_agent
+    from cyrene.config import write_env_keys
+    from cyrene.db import init_db
+    from cyrene.inbox import clear_all_inboxes
+    from cyrene.settings_store import reset_all as reset_web_settings
+
+    await clear_session_id()
+
+    for task in list(cy_agent._pending_compressors):
+        task.cancel()
+    cy_agent._pending_compressors.clear()
+    await asyncio.sleep(0)
+
+    reset_lottery()
+    await clear_all_inboxes()
+    reset_web_settings()
+    reset_onboarding_state()
+
+    for path in (
+        STATE_FILE,
+        DATA_DIR / "short_term.json",
+        DATA_DIR / "lottery_state.json",
+        DATA_DIR / "web_settings.json",
+        DATA_DIR / "onboarding_state.json",
+        DATA_DIR / ".setup_done",
+    ):
+        _remove_path(path)
+
+    for path in (
+        CONVERSATIONS_DIR,
+        _UPLOADS_DIR,
+        _EXPORTS_DIR,
+        PATTERNS_DIR,
+    ):
+        _remove_path(path)
+
+    db_path = Path(_db_path or str(DB_PATH))
+    _remove_path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    await init_db(str(db_path))
+
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    soul_path = get_soul_path()
+    soul_path.parent.mkdir(parents=True, exist_ok=True)
+    soul_path.write_text(get_default_soul_content(), encoding="utf-8")
+
+    write_env_keys({
+        "OPENAI_API_KEY": "",
+        "OPENAI_BASE_URL": DEFAULT_OPENAI_BASE_URL,
+        "OPENAI_MODEL": DEFAULT_OPENAI_MODEL,
+        "TELEGRAM_BOT_TOKEN": "",
+    })
+
+    return {
+        "ok": True,
+        "onboarding": get_onboarding_status(),
+        "sessions": _build_sessions(),
+    }
 
 
 def _reply_stream_chunks(text: str, target_chars: int = 36) -> list[str]:
@@ -1134,6 +1218,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             changed.append("spawn_policy")
         return {"ok": True, "changed": changed}
 
+    @router.post("/api/settings/reset-data")
+    async def api_reset_data():
+        return await _reset_app_data()
+
     @router.get("/api/settings/search")
     async def api_get_search():
         return {"search": _build_search_config()}
@@ -1465,7 +1553,7 @@ def _build_current_session() -> dict | None:
     elif live_rounds and any(int(item.get("pendingGuidance", 0) or 0) > 0 for item in live_rounds):
         live_status = "queued"
     elif is_empty:
-        live_status = "queued"  # nothing happening yet — fresh session
+        live_status = "idle"  # nothing happening yet — fresh session
     else:
         live_status = "done"
 

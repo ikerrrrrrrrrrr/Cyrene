@@ -823,7 +823,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "send_file",
-            "description": "Main agent only. Send an existing local file to the WebUI as a downloadable attachment. Optionally include a short user-visible note.",
+            "description": "Main agent only. Send an existing local file to the WebUI as a downloadable attachment. Use this whenever you want the user to open, download, or click a file. Do NOT merely print a filename or path in chat. Optionally include a short user-visible note.",
             "parameters": {
                 "type": "object",
                 "properties": {

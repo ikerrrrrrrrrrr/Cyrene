@@ -101,6 +101,15 @@ def get_all() -> dict:
     return _load()
 
 
+def reset_all() -> None:
+    """Delete the persisted settings file so defaults apply again."""
+    try:
+        if _SETTINGS_PATH.exists():
+            _SETTINGS_PATH.unlink()
+    except Exception:
+        logger.exception("Failed to reset web settings")
+
+
 def get_spawn_policy() -> str:
     """Return subagent spawn policy normalized to a supported value."""
     value = str(_load().get("spawn_policy", "conservative") or "conservative").strip().lower()
