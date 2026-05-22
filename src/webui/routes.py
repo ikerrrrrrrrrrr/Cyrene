@@ -1183,12 +1183,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/update/check")
     async def api_update_check():
         """Check for updates via GitHub Releases."""
-        from cyrene.updater import check_for_update, get_cached_update_info
+        from cyrene.updater import check_for_update, set_cached_update_info
 
-        # 返回缓存结果（启动时后台检查过），没有则实时检查
-        info = get_cached_update_info()
-        if info is None:
-            info = await check_for_update()
+        info = await check_for_update()
+        set_cached_update_info(info)
 
         return {
             "update_available": info.available,

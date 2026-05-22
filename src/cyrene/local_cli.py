@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import socket
+import uuid
 
 from cyrene.agent import clear_session_id, run_agent
 from cyrene.config import (
     ASSISTANT_NAME, DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR,
-    SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,
+    SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT, WEB_PORT,
 )
 from cyrene.db import init_db
 from cyrene.inbox import ensure_inbox
@@ -12,6 +14,19 @@ from cyrene.short_term import init_short_term
 from cyrene.soul import ensure_soul
 
 logger = logging.getLogger(__name__)
+
+
+def _pick_web_port(preferred_port: int = WEB_PORT) -> int:
+    """Return the preferred port when free, otherwise choose an ephemeral port."""
+    for candidate in (preferred_port, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return int(sock.getsockname()[1])
+    raise RuntimeError("Failed to allocate a local web port")
 
 
 async def _prepare_cli() -> None:
@@ -384,9 +399,12 @@ def _run_web_gui() -> None:
     from pathlib import Path
     from cyrene.debug import enable_event_bus
     from cyrene.scheduler import setup_scheduler
-    from webui.server import create_app, WebBot, WEB_PORT
+    from webui.server import create_app, WebBot
 
-    server_ready = threading.Event()
+    selected_port = _pick_web_port(WEB_PORT)
+    instance_id = uuid.uuid4().hex
+    server_failed = threading.Event()
+    server_error: list[str] = []
 
     async def _start_all():
         for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
@@ -422,16 +440,18 @@ def _run_web_gui() -> None:
         except Exception:
             pass
 
-        app = create_app(bot, str(DB_PATH))
+        app = create_app(bot, str(DB_PATH), instance_id=instance_id)
         import uvicorn
-        config = uvicorn.Config(app, host="0.0.0.0", port=WEB_PORT, log_level="info")
+        config = uvicorn.Config(app, host="0.0.0.0", port=selected_port, log_level="info")
         server = uvicorn.Server(config)
-        server_ready.set()
         await server.serve()
 
     def _run_server():
         try:
             asyncio.run(_start_all())
+        except Exception as exc:
+            server_error.append(str(exc))
+            server_failed.set()
         finally:
             from cyrene.searxng_manager import stop_searxng
             stop_searxng()
@@ -440,22 +460,27 @@ def _run_web_gui() -> None:
 
     threading.Thread(target=_run_server, daemon=True).start()
 
-    if not server_ready.wait(timeout=15):
-        print("Server failed to start", file=_sys.stderr)
-        _sys.exit(1)
+    url = f"http://localhost:{selected_port}"
 
-    url = f"http://localhost:{WEB_PORT}"
-
-    # Wait for uvicorn to actually bind the port
+    # Wait until the freshly started instance responds with its own token.
     import urllib.request
+    import json as _json
     for _ in range(40):
-        try:
-            urllib.request.urlopen(url + "/openapi.json", timeout=0.5)
+        if server_failed.is_set():
             break
+        try:
+            with urllib.request.urlopen(url + "/api/instance-id", timeout=0.5) as response:
+                payload = _json.loads(response.read().decode("utf-8"))
+            if payload.get("instance_id") == instance_id:
+                break
         except Exception:
             time.sleep(0.25)
     else:
         print("Server not responding", file=_sys.stderr)
+        _sys.exit(1)
+
+    if server_failed.is_set():
+        print(server_error[0] if server_error else "Server failed to start", file=_sys.stderr)
         _sys.exit(1)
 
     # macOS: use compiled Swift WKWebView helper (native, zero deps)

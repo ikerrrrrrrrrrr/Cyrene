@@ -80,7 +80,7 @@ function UpdateSection() {
     }
   };
 
-  // 首次加载时检查
+  // 首次加载时自动检查
   useEffect(() => { checkUpdate(); }, []);
 
   const fmtSize = (bytes) => {

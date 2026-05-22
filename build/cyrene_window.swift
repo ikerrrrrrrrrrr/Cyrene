@@ -41,6 +41,27 @@ let webViewDelegate = WebViewDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.regular)
 
+let mainMenu = NSMenu()
+let appMenuItem = NSMenuItem()
+mainMenu.addItem(appMenuItem)
+
+let appMenu = NSMenu()
+let quitTitle = "Quit Cyrene"
+let quitItem = NSMenuItem(title: quitTitle, action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+quitItem.keyEquivalentModifierMask = [.command]
+appMenu.addItem(quitItem)
+appMenuItem.submenu = appMenu
+
+let fileMenuItem = NSMenuItem()
+mainMenu.addItem(fileMenuItem)
+let fileMenu = NSMenu(title: "File")
+let closeItem = NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+closeItem.keyEquivalentModifierMask = [.command]
+fileMenu.addItem(closeItem)
+fileMenuItem.submenu = fileMenu
+
+app.mainMenu = mainMenu
+
 let window = NSWindow(
     contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
     styleMask: [.titled, .closable, .miniaturizable, .resizable],
