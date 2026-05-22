@@ -59,16 +59,46 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller>=6.0 pillow packaging
+          pip install pyinstaller>=6.0 pillow packaging pypdf reportlab
+          pip install aiosqlite anyio apscheduler croniter fastapi httpx jinja2 python-dotenv python-telegram-bot requests sniffio websockets python-multipart certifi h11 idna
+          pip install mcp httpx-sse pydantic pydantic-settings jsonschema referencing rpds-py attrs sse-starlette pyjwt
+          pip install pywebview>=5.0 pythonnet clr-loader proxy-tools
+          pip install simplexng --no-deps
           pip install .
-          pip install pywebview>=5.0 || echo "pywebview skipped"
           pip install winloop
+
+      - name: Verify build environment imports
+        run: |
+          python -c "import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, croniter, jinja2, websockets, simplexng, mcp, webview; print('imports-ok')"
 
       - name: Build
         run: python build/build.py
 
       - name: Smoke test packaged app
         run: .\dist\Cyrene\Cyrene.exe --smoke-test
+
+      - name: Verify packaged modules
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = Get-ChildItem dist\Cyrene-*-win64.zip | Select-Object -First 1
+          if (-not $zip) { throw "Windows ZIP output missing" }
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
+          try {
+            $entries = $archive.Entries | Select-Object -ExpandProperty FullName
+            foreach ($pattern in @(
+              'Cyrene/_internal/anyio/',
+              'Cyrene/_internal/httpx/',
+              'Cyrene/_internal/httpcore/',
+              'Cyrene/_internal/sniffio/'
+            )) {
+              if (-not ($entries -contains $pattern)) {
+                throw "Missing packaged module path: $pattern"
+              }
+            }
+          } finally {
+            $archive.Dispose()
+          }
 
       - name: Verify ZIP output
         shell: powershell
