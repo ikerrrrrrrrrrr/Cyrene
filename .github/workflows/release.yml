@@ -27,12 +27,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller>=6.0 pillow
-          pip install -e .
+          pip install pyinstaller>=6.0 pillow packaging
+          pip install . --no-build-isolation
 
       - name: Build
-        working-directory: build
-        run: python build.py
+        run: python build/build.py
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -55,13 +54,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller>=6.0 pillow
-          pip install -e .
+          pip install pyinstaller>=6.0 pillow packaging
+          pip install .
           pip install winloop
 
       - name: Build
-        working-directory: build
-        run: python build.py
+        run: python build/build.py
 
       - name: Upload ZIP
         uses: actions/upload-artifact@v4
@@ -95,12 +93,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller>=6.0 pillow
-          pip install -e .
+          pip install pyinstaller>=6.0 pillow packaging
+          pip install .
 
       - name: Build
-        working-directory: build
-        run: python build.py
+        run: python build/build.py
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4

@@ -234,7 +234,7 @@ Categories=Utility;ArtificialIntelligence;
     # 创建 AppRun
     apprun = appdir / "AppRun"
     apprun.write_text("""#!/bin/bash
-HERE="$(dirname "$(readlink -f "$0)")"
+HERE="$(dirname "$(readlink -f "$0")")"
 exec "$HERE/Cyrene" "$@"
 """)
     apprun.chmod(0o755)
