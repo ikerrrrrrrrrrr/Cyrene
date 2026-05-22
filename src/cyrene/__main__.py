@@ -41,6 +41,11 @@ async def _prepare_runtime() -> None:
     init_short_term(DATA_DIR)
     logger.info("Short-term memory initialized at %s", DATA_DIR / "short_term.json")
 
+    # 初始化 Pattern 模块（动作追踪 + 脚本学习）
+    from cyrene.pattern import init as _pattern_init
+    await _pattern_init(DATA_DIR, WORKSPACE_DIR)
+    logger.info("Pattern module initialized")
+
     # 自动启动 SearXNG
     if SEARXNG_AUTO_START:
         from cyrene.searxng_manager import start_searxng

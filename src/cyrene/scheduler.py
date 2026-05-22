@@ -768,6 +768,10 @@ async def _heartbeat(bot, db_path: str) -> None:
             _steward_tick = 0
             await _run_steward_if_needed(bot, db_path)
 
+        # -- Pattern detection --
+        from cyrene.pattern import tick as _pattern_tick
+        await _pattern_tick(bot, db_path)
+
         # -- Short-term memory cleanup (daily) --
         _cleanup_tick += 1
         if _cleanup_tick >= _CLEANUP_TICK_INTERVAL:
