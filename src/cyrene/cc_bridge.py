@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from shutil import which
@@ -252,14 +253,17 @@ def _register_cc_shell(name: str, cwd: Path) -> None:
         from cyrene.shells import register_external_shell, _external_shells
 
         shell_id = f"cc-{name}"
-        # 避免重复注册
-        if shell_id in _external_shells:
+        existing = _external_shells.get(shell_id)
+        if existing is not None:
+            existing["title"] = "Claude Code"
+            existing["cwd"] = str(cwd)
+            existing["kind"] = "cc"
+            existing["tmuxSession"] = name
             return
 
-        title = f"Claude Code · {name}"
         register_external_shell(
             shell_id=shell_id,
-            title=title,
+            title="Claude Code",
             cwd=str(cwd),
             extra={
                 "kind": "cc",
@@ -406,3 +410,180 @@ def _score_project_dir(project_dir: Path, cwd: Path) -> int:
         if keyword and keyword in lowered_name:
             score += 12
     return score
+
+
+def get_cc_preview(cwd: Path | None = None, limit: int = 8, min_updated_at: str = "") -> dict[str, Any]:
+    """Return a fixed-rule transcript preview for the side shell card."""
+    cwd = (cwd or Path.cwd()).resolve()
+    project_dir = find_claude_project_dir(cwd)
+    latest_jsonl = find_latest_jsonl(project_dir)
+    if latest_jsonl is None:
+        return {"lines": [], "updated_at": ""}
+
+    updated_at = datetime.fromtimestamp(latest_jsonl.stat().st_mtime, tz=timezone.utc).isoformat()
+    if min_updated_at:
+        try:
+            latest_dt = datetime.fromisoformat(updated_at)
+            min_dt = datetime.fromisoformat(str(min_updated_at).strip())
+            if latest_dt < min_dt:
+                return {
+                    "lines": [],
+                    "updated_at": updated_at,
+                    "latest_jsonl": str(latest_jsonl),
+                }
+        except ValueError:
+            pass
+
+    preview_lines = _build_preview_lines(latest_jsonl, limit=max(2, limit))
+    return {
+        "lines": preview_lines,
+        "updated_at": updated_at,
+        "latest_jsonl": str(latest_jsonl),
+    }
+
+
+def send_prompt_to_cc(prompt: str, cwd: Path | None = None) -> dict[str, Any]:
+    """Send a prompt to the active Claude Code tmux session and press Enter."""
+    text = str(prompt or "").rstrip()
+    if not text:
+        return {"ok": False, "reason": "Prompt is empty."}
+    if not tmux_available():
+        return {"ok": False, "reason": "tmux is not installed or not on PATH."}
+
+    cwd = (cwd or Path.cwd()).resolve()
+    session_name = find_cc_tmux_session(cwd)
+    if not session_name:
+        return {"ok": False, "reason": "Claude Code is not running for this project."}
+
+    pane_target = session_name
+    proc = _run_command(["tmux", "list-panes", "-t", session_name, "-F", "#{pane_id}"])
+    if proc.returncode == 0 and proc.stdout.strip():
+        pane_target = proc.stdout.splitlines()[0].strip() or session_name
+
+    lines = text.splitlines() or [text]
+    for line in lines:
+        literal = line.rstrip("\r")
+        if literal:
+            result = _run_command(["tmux", "send-keys", "-t", pane_target, "-l", literal])
+            if result.returncode != 0:
+                return {"ok": False, "reason": result.stderr.strip() or "tmux send-keys failed"}
+        result = _run_command(["tmux", "send-keys", "-t", pane_target, "Enter"])
+        if result.returncode != 0:
+            return {"ok": False, "reason": result.stderr.strip() or "tmux send-keys failed"}
+
+    return {
+        "ok": True,
+        "session": session_name,
+        "pane_target": pane_target,
+        "line_count": len(lines),
+    }
+
+
+def _build_preview_lines(jsonl_path: Path, limit: int) -> list[dict[str, str]]:
+    lines: list[dict[str, str]] = []
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                raw_line = raw_line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+
+                msg_type = str(entry.get("type") or "")
+                if msg_type == "user":
+                    text = _preview_user_text(entry)
+                    if text:
+                        lines.extend(_format_preview_block("shell-prompt", "> ", text))
+                elif msg_type == "assistant":
+                    text = _preview_assistant_text(entry)
+                    if text:
+                        lines.extend(_format_preview_block("shell-out", "Claude: ", text))
+    except Exception:
+        logger.exception("Failed building Claude Code preview from %s", jsonl_path)
+        return []
+
+    return lines[-limit:]
+
+
+def _preview_user_text(entry: dict[str, Any]) -> str:
+    message = entry.get("message", {})
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return ""
+    text = _extract_text_blocks(message.get("content"))
+    if text == "[Request interrupted by user]":
+        return ""
+    return text
+
+
+def _preview_assistant_text(entry: dict[str, Any]) -> str:
+    message = entry.get("message", {})
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        return ""
+    return _extract_assistant_text(message.get("content"))
+
+
+def _extract_text_blocks(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        text = str(block.get("text") or "").strip()
+        if text:
+            texts.append(text)
+    return "\n".join(texts).strip()
+
+
+def _extract_assistant_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    texts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        text = str(block.get("text") or "").strip()
+        if text:
+            texts.append(text)
+    return "\n\n".join(texts).strip()
+
+
+def _format_preview_block(kind: str, prefix: str, text: str) -> list[dict[str, str]]:
+    normalized = re.sub(r"\s+\n", "\n", str(text or "").strip())
+    if not normalized:
+        return []
+
+    raw_lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    if not raw_lines:
+        return []
+
+    clipped: list[str] = []
+    for line in raw_lines[:3]:
+        compact = re.sub(r"\s+", " ", line).strip()
+        if compact:
+            clipped.append(compact[:220] + ("…" if len(compact) > 220 else ""))
+    if len(raw_lines) > 3:
+        clipped.append("…")
+
+    formatted: list[dict[str, str]] = []
+    for index, line in enumerate(clipped):
+        formatted.append({
+            "kind": kind,
+            "text": (prefix if index == 0 else "  ") + line,
+        })
+    return formatted

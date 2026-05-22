@@ -1823,9 +1823,12 @@ function Message({ msg, assistantName }) {
 
 function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, onSubmit, onKeyDown, answering, sending, optionCount }) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
   if (!pendingQuestion) return null;
   const options = Array.isArray(pendingQuestion.options) ? pendingQuestion.options : [];
   const customDisabled = answering || sending;
+  const questionText = String(pendingQuestion.text || "");
+  const canCollapse = questionText.length > 280;
   return (
     <div className="question-panel">
       <div className="question-panel-head">
@@ -1835,7 +1838,18 @@ function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, 
         </span>
       </div>
       <div className="question-panel-body">
-        <div className="question-panel-title">{pendingQuestion.text}</div>
+        <div className={"question-panel-copy" + (expanded ? " expanded" : "")}>
+          <div className="question-panel-title">{questionText}</div>
+        </div>
+        {canCollapse && (
+          <button
+            className="question-panel-toggle"
+            type="button"
+            onClick={function () { setExpanded(function (value) { return !value; }); }}
+          >
+            {expanded ? t("chat.showLess") : t("chat.showMore")}
+          </button>
+        )}
         {options.length > 0 && (
           <div className="question-options">
             {options.map(function (option) {
@@ -1935,7 +1949,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
 
 function ShellCard({ shell, ccStatus }) {
   const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
   const isCC = shell.kind === "cc" && shell.tmuxSession;
 
   if (!isCC) {
@@ -1960,33 +1974,38 @@ function ShellCard({ shell, ccStatus }) {
 
   return (
     <div className="shell-card shell-card--cc">
-      <div className="shell-card-head" onClick={function () { setExpanded(!expanded); }} style={{ cursor: "pointer" }}>
+      <div className="shell-card-head shell-card-head--clickable" onClick={function () { setModalOpen(true); }}>
         <span>▸</span>
-        <span>{shell.title || "Claude Code"}</span>
-        <span className="cwd">{shell.cwd}</span>
+        <span>{"Claude Code"}</span>
         <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
-        <span className="pid">{shell.tmuxSession}</span>
-        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-4)" }}>{expanded ? t("chat.ccShrink") : t("chat.ccExpand")}</span>
+        <span className="pid">{t("chat.ccExpand")}</span>
       </div>
-      {!expanded && shell.lines.length > 0 && (
+      {shell.lines.length > 0 && (
         <div className="shell-card-body">
           {shell.lines.map((l, i) => (
             <div key={i} className={"shell-" + l.kind}>{l.text}</div>
           ))}
         </div>
       )}
-      {expanded && window.CCTerminalPanel && (
-        <div className="shell-card__cc-terminal">
+      {modalOpen && window.CCTerminalPanel && ReactDOM.createPortal(
+        <div className="shell-card__cc-modal">
           <window.CCTerminalPanel
             statusInfo={{
               available: true,
               tmux_session: shell.tmuxSession,
               reason: "",
               can_launch: false,
+              latest_jsonl: shell.latestJsonl || "",
             }}
-            onRefresh={function () {}}
+            modal={true}
+            onClose={function () { setModalOpen(false); }}
+            onRefresh={function () {
+              if (typeof window.refreshSessions === "function") window.refreshSessions();
+              if (typeof window.refreshStatus === "function") window.refreshStatus();
+            }}
           />
-        </div>
+        </div>,
+        document.body
       )}
       <div className="shell-card-foot">{shell.elapsed || "—"} · {shell.updatedAt || "—"}</div>
     </div>

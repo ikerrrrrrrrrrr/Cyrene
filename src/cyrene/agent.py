@@ -83,6 +83,7 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 - The ONLY exception is pure conversation (opinions, greetings, explanations, or questions about concepts that don't need real-world data).
 - When in doubt, use tools. A tool-backed answer is always better than a guess.
 - For **Claude Code** operations: use `CheckClaudeCode` to see if it's running, and `StartClaudeCode` to launch it. Never use Bash to start or manage Claude Code — these dedicated tools handle tmux session creation, naming, and WebUI integration automatically.
+- If the user wants Claude Code to perform a task, prefer `PromptClaudeCode` to optimize the prompt and ask for confirmation before sending it into Claude Code.
 - If it helps the user stay oriented during a long task, you may call `send_message` to post a brief in-progress update before the final answer. Use it sparingly and only when there is real new information.
 - Call `ask_user` proactively. Ask when: the request is ambiguous, a key detail is missing, multiple valid approaches exist and the choice matters, or you need confirmation before a high-stakes action. Guessing wrong costs more than asking. Use freeform text or add a short options list when structured choices help.
 - When a task is complete, call the `quit` tool.
@@ -380,16 +381,109 @@ You are comparing ALL items on a SINGLE dimension. Your PRIMARY tool is web sear
 
 _CLAUDE_CODE_PROMPT = """## Claude Code Mode
 
-You are in **Claude Code** mode. The user wants to use Claude Code — launch it and direct tasks to it.
+You are in **Claude Code** mode. The user wants Cyrene to help route work through Claude Code.
 
 ### What to Do
 1. First, call `CheckClaudeCode` to see if Claude Code is already running.
 2. If not running, call `StartClaudeCode` to launch it in a tmux session.
-3. After launching, inform the user that Claude Code is ready in the side panel.
-4. If the user gave a specific task, tell them to execute it in the Claude Code terminal (or offer to guide them through it).
-5. If the user didn't give a task, let them know Claude Code is launched and ready for their commands.
-6. Do NOT try to do the user's task yourself — your job is to launch Claude Code and hand off.
+3. If the user gave a concrete task for Claude Code, use `PromptClaudeCode` to prepare a stronger prompt and ask the user to confirm it.
+4. After the user confirms, the system will send that prompt into Claude Code automatically.
+5. If the user did not give a task, just let them know Claude Code is ready in the side panel.
+6. Do NOT execute the task yourself when the user explicitly wants Claude Code to do it.
 """
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+async def optimize_claude_code_prompt(task: str) -> str:
+    raw_task = str(task or "").strip()
+    if not raw_task:
+        return ""
+
+    optimizer_system = (
+        "You rewrite user requests into high-signal prompts for Claude Code.\n"
+        "Return only the final prompt text. No preface, no markdown fences.\n"
+        "Make the prompt concrete, execution-oriented, and easy for Claude Code to act on.\n"
+        "When useful, include: goal, constraints, files/areas to inspect, expected output, and verification.\n"
+        "Preserve the user's language."
+    )
+    optimizer_user = (
+        "Rewrite this request into a better Claude Code prompt.\n\n"
+        f"Original request:\n{raw_task}"
+    )
+    try:
+        response = await _call_llm(
+            [
+                {"role": "system", "content": optimizer_system},
+                {"role": "user", "content": optimizer_user},
+            ],
+            tools=None,
+            max_tokens=1200,
+        )
+        optimized = _assistant_text(response).strip()
+        if optimized:
+            return optimized
+    except Exception:
+        logger.exception("Failed to optimize Claude Code prompt")
+
+    return _fallback_claude_code_prompt(raw_task)
+
+
+def _fallback_claude_code_prompt(task: str) -> str:
+    text = str(task or "").strip()
+    if not text:
+        return ""
+    if _contains_cjk(text):
+        return (
+            "请帮我完成下面这项任务。\n\n"
+            f"任务目标：\n{text}\n\n"
+            "要求：\n"
+            "1. 先阅读并定位相关代码或文件\n"
+            "2. 说明你的修改计划\n"
+            "3. 实施修改\n"
+            "4. 运行必要的验证或测试\n"
+            "5. 最后总结改动内容、影响范围和验证结果"
+        )
+    return (
+        "Please complete the following task.\n\n"
+        f"Goal:\n{text}\n\n"
+        "Requirements:\n"
+        "1. Inspect the relevant code or files first\n"
+        "2. State the implementation plan briefly\n"
+        "3. Make the changes\n"
+        "4. Run relevant verification or tests\n"
+        "5. Summarize what changed, impact, and validation results"
+    )
+
+
+def build_claude_code_question_payload(task: str, optimized_prompt: str, tmux_session: str = "") -> dict[str, Any]:
+    source_task = str(task or "").strip()
+    prompt = str(optimized_prompt or "").strip()
+    chinese = _contains_cjk(source_task or prompt)
+    text = (
+        "我已经把要交给 Claude Code 的提示词优化好了。确认后我会直接发送到 Claude Code 终端并开始运行。\n\n"
+        "优化后的提示词：\n"
+        f"{prompt}"
+        if chinese else
+        "I optimized the prompt for Claude Code. After you confirm, I will send it to the Claude Code terminal and run it.\n\n"
+        "Optimized prompt:\n"
+        f"{prompt}"
+    )
+    options = ["同意并发送", "取消"] if chinese else ["Send it", "Cancel"]
+    meta = {
+        "kind": "claude_code_prompt_confirmation",
+        "task": source_task,
+        "optimized_prompt": prompt,
+        "tmux_session": str(tmux_session or "").strip(),
+    }
+    return {
+        "text": text,
+        "options": options,
+        "allow_custom": True,
+        "meta": meta,
+    }
 
 
 def _spawn_policy_prompt_block(policy: str) -> str:
@@ -728,6 +822,9 @@ def _normalize_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
     round_title = str(payload.get("round_title", "") or "").strip()
     if round_title:
         question["round_title"] = round_title
+    meta = payload.get("meta")
+    if isinstance(meta, dict) and meta:
+        question["meta"] = dict(meta)
     return question
 
 
@@ -1957,6 +2054,19 @@ async def answer_pending_question(
     if not cleared:
         raise ValueError("Pending question not found.")
 
+    pending_meta = cleared.get("meta")
+    if isinstance(pending_meta, dict) and str(pending_meta.get("kind", "")).strip() == "claude_code_prompt_confirmation":
+        try:
+            return await _handle_claude_code_prompt_answer(
+                round_id=round_id,
+                pending=cleared,
+                answer_text=content,
+                client_request_id=client_request_id,
+            )
+        except Exception:
+            await _restore_pending_question(pending)
+            raise
+
     answer_system = (
         "This user message answers your earlier clarification question for the same round.\n"
         f"Target round id: {round_id}\n"
@@ -1980,6 +2090,79 @@ async def answer_pending_question(
     except Exception:
         await _restore_pending_question(pending)
         raise
+
+
+def _is_affirmative_answer(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return normalized in {
+        "同意并发送", "同意", "发送", "确认", "确认发送", "好", "好的", "可以", "行", "yes", "y", "ok", "okay", "send", "confirm",
+    }
+
+
+def _is_negative_answer(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    return normalized in {
+        "取消", "不用", "不发", "停止", "算了", "cancel", "no", "n", "stop",
+    }
+
+
+async def _handle_claude_code_prompt_answer(
+    round_id: str,
+    pending: dict[str, Any],
+    answer_text: str,
+    client_request_id: str = "",
+) -> str:
+    from cyrene.cc_bridge import send_prompt_to_cc
+
+    meta = pending.get("meta", {})
+    optimized_prompt = str(meta.get("optimized_prompt") or "").strip()
+    task = str(meta.get("task") or "").strip()
+    user_answer = str(answer_text or "").strip()
+    chinese = _contains_cjk(task or optimized_prompt or user_answer)
+
+    user_entry: dict[str, Any] = {
+        "role": "user",
+        "content": user_answer,
+        "round_id": round_id,
+    }
+    if client_request_id:
+        user_entry["client_request_id"] = client_request_id
+    await _append_session_message(user_entry)
+
+    if _is_negative_answer(user_answer):
+        reply = "已取消，Claude Code 没有收到这条提示词。" if chinese else "Cancelled. The prompt was not sent to Claude Code."
+        await _insert_intermediate_user_reply(reply, round_id=round_id, client_request_id=client_request_id)
+        return reply
+
+    prompt_to_send = optimized_prompt if _is_affirmative_answer(user_answer) else user_answer
+    if not prompt_to_send:
+        reply = "没有可发送的提示词。" if chinese else "There is no prompt to send."
+        await _insert_intermediate_user_reply(reply, round_id=round_id, client_request_id=client_request_id)
+        return reply
+
+    result = send_prompt_to_cc(prompt_to_send)
+    if not result.get("ok"):
+        reason = str(result.get("reason") or "unknown error").strip()
+        reply = (
+            f"没有成功发送到 Claude Code：{reason}"
+            if chinese else
+            f"Failed to send the prompt to Claude Code: {reason}"
+        )
+        await _insert_intermediate_user_reply(reply, round_id=round_id, client_request_id=client_request_id)
+        return reply
+
+    reply = (
+        "已把提示词输入到 Claude Code，任务已经开始运行。"
+        if chinese else
+        "I sent the prompt to Claude Code and it is now running."
+    )
+    await _insert_intermediate_user_reply(reply, round_id=round_id, client_request_id=client_request_id)
+    await _publish_runtime_event({
+        "type": "chat_message",
+        "client_request_id": client_request_id,
+        "round_id": round_id,
+    })
+    return reply
 
 
 def _ensure_main_inbox_worker(bot: Any, chat_id: int, db_path: str) -> None:

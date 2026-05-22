@@ -138,7 +138,7 @@ class MCPServerConnection:
             init_result = await self._json_rpc_request("initialize", {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "cyrene", "version": "0.2.1"},
+                "clientInfo": {"name": "cyrene", "version": "0.2.2"},
             })
             # Send initialized notification
             notif = json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"

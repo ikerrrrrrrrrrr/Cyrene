@@ -17,7 +17,10 @@ function ccStatusLabel(status) {
   return "unavailable";
 }
 
-function ccLearningText(learningSnapshot, liveLearning) {
+function ccLearningText(learningSnapshot, liveLearning, compactOnly) {
+  if (compactOnly) {
+    return ccText("chat.ccLearningActive", "Cyrene learning");
+  }
   if (liveLearning && liveLearning.phase === "started" && liveLearning.user_input) {
     return "Learning from: " + liveLearning.user_input;
   }
@@ -30,7 +33,7 @@ function ccLearningText(learningSnapshot, liveLearning) {
   return ccText("chat.ccLearningIdle", "Watching your Claude Code habits.");
 }
 
-function CCTerminalPanel({ statusInfo, onRefresh }) {
+function CCTerminalPanel({ statusInfo, onRefresh, modal, onClose }) {
   const tmuxSession = statusInfo && statusInfo.tmux_session ? statusInfo.tmux_session : "";
   const available = Boolean(statusInfo && statusInfo.available && tmuxSession);
   const containerRef = useRef(null);
@@ -38,10 +41,14 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
   const fitAddonRef = useRef(null);
   const wsRef = useRef(null);
   const syncSizeRef = useRef(function () {});
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(Boolean(modal));
   const [connectionState, setConnectionState] = useState(available ? "connecting" : "unavailable");
   const [learningSnapshot, setLearningSnapshot] = useState(null);
   const [liveLearning, setLiveLearning] = useState(null);
+
+  useEffect(function () {
+    setExpanded(Boolean(modal));
+  }, [modal]);
 
   useEffect(function () {
     setConnectionState(available ? "connecting" : "unavailable");
@@ -104,20 +111,39 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
     }
 
     var term = new TerminalCtor({
-      allowTransparency: true,
+      allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
+      cursorStyle: "block",
+      drawBoldTextInBrightColors: true,
       fontFamily: "\"IBM Plex Mono\", ui-monospace, Menlo, monospace",
       fontSize: expanded ? 14 : 11,
       lineHeight: 1.2,
-      rows: expanded ? 28 : 10,
-      cols: expanded ? 120 : 48,
+      rows: expanded ? 32 : 10,
+      cols: expanded ? 132 : 48,
       scrollback: 3000,
       theme: {
-        background: "transparent",
-        foreground: "#ebeff3",
-        cursor: "#63b38f",
+        background: "#0b0f14",
+        foreground: "#e6edf3",
+        cursor: "#7ee787",
+        cursorAccent: "#0b0f14",
         selectionBackground: "rgba(99, 179, 143, 0.22)",
+        black: "#0b0f14",
+        red: "#ff7b72",
+        green: "#7ee787",
+        yellow: "#d29922",
+        blue: "#79c0ff",
+        magenta: "#bc8cff",
+        cyan: "#39c5cf",
+        white: "#c9d1d9",
+        brightBlack: "#6e7681",
+        brightRed: "#ffa198",
+        brightGreen: "#56d364",
+        brightYellow: "#e3b341",
+        brightBlue: "#a5d6ff",
+        brightMagenta: "#d2a8ff",
+        brightCyan: "#56d4dd",
+        brightWhite: "#f0f6fc",
       },
     });
 
@@ -162,7 +188,7 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
         socket.send(JSON.stringify({
           type: "resize",
           cols: terminalRef.current.cols || (expanded ? 120 : 48),
-          rows: terminalRef.current.rows || (expanded ? 28 : 10),
+          rows: terminalRef.current.rows || (expanded ? 32 : 10),
         }));
       }
     }
@@ -275,13 +301,19 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
   }
 
   return (
-    <div className={"cc-terminal" + (expanded ? " cc-terminal--expanded" : "")}>
-      {expanded && <div className="cc-terminal__backdrop" onClick={function () { setExpanded(false); }}></div>}
+    <div className={"cc-terminal" + (expanded ? " cc-terminal--expanded" : "") + (modal ? " cc-terminal--modal" : "")}>
+      {expanded && <div className="cc-terminal__backdrop" onClick={function () {
+        if (modal && typeof onClose === "function") {
+          onClose();
+        } else {
+          setExpanded(false);
+        }
+      }}></div>}
       <div className="cc-terminal__panel">
         <div className="cc-terminal__header">
           <div className="cc-terminal__titleRow">
             <span className="cc-terminal__eyebrow">Claude Code</span>
-            <span className="cc-terminal__title">{tmuxSession}</span>
+            <span className="cc-terminal__title">Claude Code</span>
             <span className={"cc-terminal__status cc-terminal__status--" + connectionState}>
               {ccStatusLabel(connectionState)}
             </span>
@@ -290,8 +322,17 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
             <button className="cc-terminal__button" onClick={onRefresh}>
               {ccText("chat.ccRefresh", "Refresh")}
             </button>
-            <button className="cc-terminal__button cc-terminal__button--accent" onClick={function () { setExpanded(!expanded); }}>
-              {expanded ? ccText("chat.ccShrink", "Shrink") : ccText("chat.ccExpand", "Expand")}
+            <button
+              className="cc-terminal__button cc-terminal__button--accent"
+              onClick={function () {
+                if (modal) {
+                  if (typeof onClose === "function") onClose();
+                } else {
+                  setExpanded(!expanded);
+                }
+              }}
+            >
+              {modal ? ccText("chat.close", "Close") : (expanded ? ccText("chat.ccShrink", "Shrink") : ccText("chat.ccExpand", "Expand"))}
             </button>
           </div>
         </div>
@@ -308,7 +349,7 @@ function CCTerminalPanel({ statusInfo, onRefresh }) {
 
         <div className="cc-terminal__footer">
           <div className="cc-terminal__learningLabel">{ccText("chat.ccLearning", "Cyrene learning")}</div>
-          <div className="cc-terminal__learningText">{ccLearningText(learningSnapshot, liveLearning)}</div>
+          <div className="cc-terminal__learningText">{ccLearningText(learningSnapshot, liveLearning, Boolean(expanded || modal))}</div>
           {learningSnapshot && learningSnapshot.summary && Array.isArray(learningSnapshot.summary.top_tools) && learningSnapshot.summary.top_tools.length > 0 && (
             <div className="cc-terminal__meta">
               {ccText("chat.ccTopTools", "Top tools")}: {learningSnapshot.summary.top_tools.join(", ")}

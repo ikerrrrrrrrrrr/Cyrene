@@ -2,7 +2,7 @@
 // Loads real data from the FastAPI backend before the React tree mounts.
 // Static fallback values keep the UI usable if the backend is unreachable.
 
-const APP_VERSION = "v0.2.1";
+const APP_VERSION = "v0.2.2";
 
 const DATA = {
   user: { name: "loading…", handle: "loading", initials: "…" },
@@ -235,6 +235,7 @@ function connectEvents() {
           "subagent_update",
           "session_update",
           "shell_update",
+          "cc_learning",
           "round_guidance_update",
           "agent_comm",
         ].includes(data.type)) {

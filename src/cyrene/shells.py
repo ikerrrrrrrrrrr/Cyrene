@@ -274,6 +274,26 @@ def set_external_shell_status(shell_id: str, status: str) -> None:
 
 
 def _external_shell_snapshot(shell_id: str, shell: dict[str, Any]) -> dict[str, Any] | None:
+    shell_kind = str(shell.get("kind") or "")
+    latest_jsonl = ""
+    if shell_kind == "cc":
+        try:
+            from cyrene.cc_bridge import get_cc_preview
+            from pathlib import Path
+
+            preview = get_cc_preview(
+                Path(str(shell.get("cwd") or ".")).resolve(),
+                min_updated_at=str(shell.get("created_at") or "").strip(),
+            )
+            shell["lines"] = deque(preview.get("lines") or [], maxlen=240)
+            latest_jsonl = str(preview.get("latest_jsonl") or "")
+            updated_at = str(preview.get("updated_at") or "").strip()
+            if updated_at:
+                shell["updated_at"] = updated_at
+            shell["title"] = "Claude Code"
+        except Exception:
+            pass
+
     created_at = shell.get("created_at")
     elapsed = "—"
     if created_at:
@@ -298,4 +318,6 @@ def _external_shell_snapshot(shell_id: str, shell: dict[str, Any]) -> dict[str, 
     for key in ("kind", "tmuxSession"):
         if key in shell:
             snapshot[key] = shell[key]
+    if latest_jsonl:
+        snapshot["latestJsonl"] = latest_jsonl
     return snapshot

@@ -45,6 +45,7 @@ _DEFAULT_ENABLED_TOOLS = {
     "send_message": True,
     "send_file": True,
     "ask_user": True,
+    "PromptClaudeCode": True,
     "send_telegram": False,
     "query_round": True,
     "CheckClaudeCode": True,

@@ -362,7 +362,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/", response_class=HTMLResponse)
     async def spa_root():
-        return FileResponse(_APP_DIR / "index.html")
+        return FileResponse(
+            _APP_DIR / "index.html",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     # ---- UI bootstrap data ----
 
@@ -1376,6 +1383,8 @@ def _build_current_session() -> dict | None:
         live_summary["tokens"] = _format_tokens(combined_live_usage)
         live_summary["spend"] = _calc_spend(combined_live_usage)
 
+    visible_shells = [] if is_empty else list_live_shells(include_exited=False)
+
     return {
         "id": "run_live",
         "title": str(state.get("session_title", "")).strip() or ("new session" if is_empty else "current session"),
@@ -1395,7 +1404,7 @@ def _build_current_session() -> dict | None:
             "messages": messages,
         },
         "liveRounds": live_rounds,
-        "shells": list_live_shells(include_exited=False),
+        "shells": visible_shells,
         "subagents": subagents,
         "flow": _build_live_flow(raw_msgs, messages, subagents, subagent_registry),
     }

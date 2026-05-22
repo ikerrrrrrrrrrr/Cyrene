@@ -253,6 +253,62 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
     })
 
 
+async def _tool_prompt_claude_code(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    task = str(args.get("task", "") or "").strip()
+    if not task:
+        return "Error: 'task' is required."
+
+    from cyrene.agent import (
+        _current_agent_id,
+        _current_client_request_id,
+        _current_round_id,
+        _upsert_pending_question,
+        build_claude_code_question_payload,
+        get_session_labels,
+        optimize_claude_code_prompt,
+    )
+    from cyrene.cc_bridge import get_cc_status
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can prepare a Claude Code prompt for user confirmation."
+
+    round_id = str(_current_round_id.get() or "").strip()
+    if not round_id:
+        return "Cannot prepare a Claude Code prompt outside an active chat round."
+
+    status = get_cc_status(_CC_PROJECT_DIR)
+    if not bool(status.get("available")):
+        reason = str(status.get("reason") or "Claude Code is not running.").strip()
+        return _json_result({
+            "status": "error",
+            "reason": reason,
+            "can_launch": bool(status.get("can_launch")),
+        })
+
+    optimized_prompt = await optimize_claude_code_prompt(task)
+    payload = build_claude_code_question_payload(
+        task,
+        optimized_prompt,
+        tmux_session=str(status.get("tmux_session") or "").strip(),
+    )
+    labels = get_session_labels(round_id)
+    question = await _upsert_pending_question({
+        "text": payload["text"],
+        "round_id": round_id,
+        "round_title": labels.get("round_title", ""),
+        "client_request_id": str(_current_client_request_id.get() or "").strip(),
+        "options": payload["options"],
+        "allow_custom": bool(payload.get("allow_custom", True)),
+        "meta": payload.get("meta", {}),
+    })
+    return _json_result({
+        "status": "awaiting_user",
+        "question_id": question.get("id", ""),
+        "prompt": optimized_prompt,
+        "tmux_session": str(status.get("tmux_session") or "").strip(),
+    })
+
+
 async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
     stype = str(args["schedule_type"])
     svalue = str(args["schedule_value"])
@@ -801,6 +857,20 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "PromptClaudeCode",
+            "description": "Prepare a stronger Claude Code prompt from the user's task, then show it to the user for confirmation. Use this when the user wants Claude Code to execute a task and you want Cyrene to optimize the prompt first. Requires Claude Code to already be running; check with CheckClaudeCode and launch with StartClaudeCode if needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "The task that should be turned into a better Claude Code prompt."},
+                },
+                "required": ["task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "schedule_task",
             "description": "Schedule a task. schedule_type must be cron, interval, or once.",
             "parameters": {
@@ -1120,6 +1190,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "send_message": _tool_send_user_message,
     "send_file": _tool_send_file,
     "ask_user": _tool_ask_user,
+    "PromptClaudeCode": _tool_prompt_claude_code,
     "send_agent_message": _tool_send_agent_message,
     "broadcast_agent_message": _tool_broadcast_agent_message,
     "spawn_subagent": _tool_spawn_subagent,
