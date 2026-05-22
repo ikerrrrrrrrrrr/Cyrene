@@ -415,20 +415,21 @@ def _run_web_gui() -> None:
         init_short_term(DATA_DIR)
         enable_event_bus()
 
-        if SEARXNG_AUTO_START:
-            from cyrene.searxng_manager import start_searxng
-            try:
-                url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
-                logger.info("SearXNG auto-started at %s", url)
-            except Exception as exc:
-                logger.warning("SearXNG auto-start failed: %s", exc)
+        async def _start_background_services() -> None:
+            if SEARXNG_AUTO_START:
+                from cyrene.searxng_manager import start_searxng
+                try:
+                    url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+                    logger.info("SearXNG auto-started at %s", url)
+                except Exception as exc:
+                    logger.warning("SearXNG auto-start failed: %s", exc)
 
-        from cyrene.mcp_manager import start_mcp as _start_mcp
-        try:
-            await _start_mcp()
-            logger.info("MCP manager started")
-        except Exception as exc:
-            logger.warning("MCP manager start failed: %s", exc)
+            from cyrene.mcp_manager import start_mcp as _start_mcp
+            try:
+                await _start_mcp()
+                logger.info("MCP manager started")
+            except Exception as exc:
+                logger.warning("MCP manager start failed: %s", exc)
 
         bot = WebBot()
         scheduler = setup_scheduler(bot, str(DB_PATH))
@@ -439,6 +440,11 @@ def _run_web_gui() -> None:
             _ = asyncio.create_task(background_check())
         except Exception:
             pass
+
+        # Fire-and-forget: SearXNG + MCP start in the background so the
+        # web server is available immediately (SearXNG health-check can
+        # take up to 30 s, which would otherwise cause "Server not responding").
+        _ = asyncio.create_task(_start_background_services())
 
         app = create_app(bot, str(DB_PATH), instance_id=instance_id)
         import uvicorn
