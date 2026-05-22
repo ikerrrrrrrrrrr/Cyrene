@@ -246,7 +246,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   }, []);
 
   async function saveSoul() {
-    setSoulStatus("saving…");
+    setSoulStatus(t("settings.saving"));
     try {
       const r = await fetch("/api/settings/soul", {
         method: "PUT",
@@ -254,15 +254,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         body: JSON.stringify({ content: soulDraft }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      setSoulStatus("saved ✓");
+      setSoulStatus(t("settings.saved"));
       setTimeout(() => setSoulStatus(""), 1500);
     } catch (e) {
-      setSoulStatus("error: " + e.message);
+      setSoulStatus(t("settings.error") + ": " + e.message);
     }
   }
 
   async function saveSearch() {
-    setSearchSaved("saving…");
+    setSearchSaved(t("settings.saving"));
     try {
       const r = await fetch("/api/settings/search", {
         method: "PUT",
@@ -270,15 +270,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         body: JSON.stringify({ search_mode: searchMode, search_external_url: searchExternalUrl }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      setSearchSaved("saved ✓");
+      setSearchSaved(t("settings.saved"));
       setTimeout(() => setSearchSaved(""), 1500);
     } catch (e) {
-      setSearchSaved("error: " + e.message);
+      setSearchSaved(t("settings.error") + ": " + e.message);
     }
   }
 
   async function saveKeys() {
-    setKeysSaved("saving…");
+    setKeysSaved(t("settings.saving"));
     try {
       const r = await fetch("/api/settings/keys", {
         method: "PUT",
@@ -287,15 +287,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
-      setKeysSaved("saved " + (data.updated || []).join(", ") + " ✓");
+      setKeysSaved(t("settings.saved") + " " + (data.updated || []).join(", "));
       setTimeout(() => setKeysSaved(""), 2500);
     } catch (e) {
-      setKeysSaved("error: " + e.message);
+      setKeysSaved(t("settings.error") + ": " + e.message);
     }
   }
 
   async function saveModels() {
-    setModelsSaved("saving…");
+    setModelsSaved(t("settings.saving"));
     try {
       const r = await fetch("/api/settings/models", {
         method: "PUT",
@@ -309,10 +309,10 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         setKeys(function(prev) { return { ...prev, OPENAI_MODEL: data.active_model_name }; });
         setConfig(function(prev) { return { ...prev, model: data.active_model_name, base_url: data.base_url || prev.base_url }; });
       }
-      setModelsSaved("saved ✓");
+      setModelsSaved(t("settings.saved"));
       setTimeout(() => setModelsSaved(""), 1500);
     } catch (e) {
-      setModelsSaved("error: " + e.message);
+      setModelsSaved(t("settings.error") + ": " + e.message);
     }
   }
 
@@ -364,7 +364,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   }
 
   async function saveMcpServers() {
-    setMcpSaved("saving…");
+    setMcpSaved(t("settings.saving"));
     try {
       const r = await fetch("/api/settings/mcp", {
         method: "PUT",
@@ -372,7 +372,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         body: JSON.stringify({ servers: mcpConfigs }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      setMcpSaved("saved ✓");
+      setMcpSaved(t("settings.saved"));
       // Refresh status
       fetch("/api/settings/mcp").then(function(resp) { return resp.json(); }).then(function(data) {
         setMcpServers(data.servers || []);
@@ -380,12 +380,12 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       }).catch(function() {});
       setTimeout(function() { setMcpSaved(""); }, 1500);
     } catch (e) {
-      setMcpSaved("error: " + e.message);
+      setMcpSaved(t("settings.error") + ": " + e.message);
     }
   }
 
   async function saveTools() {
-    setToolsSaved("saving…");
+    setToolsSaved(t("settings.saving"));
     try {
       var map = {};
       toolList.forEach(function(tl) { map[tl.name] = tl.enabled; });
@@ -395,15 +395,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         body: JSON.stringify({ tools: map }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      setToolsSaved("saved ✓");
+      setToolsSaved(t("settings.saved"));
       setTimeout(() => setToolsSaved(""), 1500);
     } catch (e) {
-      setToolsSaved("error: " + e.message);
+      setToolsSaved(t("settings.error") + ": " + e.message);
     }
   }
 
   async function saveAgents() {
-    setAgentsSaved("saving…");
+    setAgentsSaved(t("settings.saving"));
     try {
       const r = await fetch("/api/settings/config", {
         method: "PUT",
@@ -411,10 +411,10 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         body: JSON.stringify({ spawn_policy: config.spawn_policy || "conservative" }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
-      setAgentsSaved("saved ✓");
+      setAgentsSaved(t("settings.saved"));
       setTimeout(() => setAgentsSaved(""), 1500);
     } catch (e) {
-      setAgentsSaved("error: " + e.message);
+      setAgentsSaved(t("settings.error") + ": " + e.message);
     }
   }
 
@@ -530,7 +530,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                       <div style={{ color: "var(--text-3)" }}>{m.price} <span style={{ color: "var(--text-4)" }}>/ M tok</span></div>
                     </div>
                     <button className="iconbtn"
-                            title={"Delete " + m.name}
+                            title={t("settings.deleteModel", { name: m.name })}
                             onClick={function(e) { e.stopPropagation(); deleteModel(m.id); }}
                             style={{ marginLeft: 8, color: "var(--text-4)", opacity: models.length <= 1 ? 0.3 : 1 }}
                             disabled={models.length <= 1}>
@@ -554,16 +554,16 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             </div>
             <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>{t("settings.addModel")}</h3>
             <div className="inline-form-grid">
-              <input className="input mono" placeholder="name" value={newModel.name}
+              <input className="input mono" placeholder={t("settings.placeholderName")} value={newModel.name}
                      onChange={function(e) { setNewModel({ ...newModel, name: e.target.value }); }}
                      style={{ maxWidth: 180 }} />
-              <input className="input mono" placeholder="desc" value={newModel.desc}
+              <input className="input mono" placeholder={t("settings.placeholderDesc")} value={newModel.desc}
                      onChange={function(e) { setNewModel({ ...newModel, desc: e.target.value }); }}
                      style={{ maxWidth: 200 }} />
-              <input className="input mono" placeholder="ctx" value={newModel.ctx}
+              <input className="input mono" placeholder={t("settings.placeholderCtx")} value={newModel.ctx}
                      onChange={function(e) { setNewModel({ ...newModel, ctx: e.target.value }); }}
                      style={{ maxWidth: 80 }} />
-              <input className="input mono" placeholder="price" value={newModel.price}
+              <input className="input mono" placeholder={t("settings.placeholderPrice")} value={newModel.price}
                      onChange={function(e) { setNewModel({ ...newModel, price: e.target.value }); }}
                      style={{ maxWidth: 100 }} />
               <button className="btn" onClick={addModel}>{t("settings.add")}</button>
@@ -703,7 +703,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                       </span>
                       <div className={"toggle " + (s.enabled !== false ? "on" : "")}
                            onClick={function() { toggleMcpServer(s.name); }}></div>
-                      <button className="iconbtn" title={"Remove " + s.name}
+                      <button className="iconbtn" title={t("settings.removeMcpServer", { name: s.name })}
                               onClick={function() { removeMcpServer(s.name); }}
                               style={{ color: "var(--text-4)" }}>
                         <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -721,7 +721,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             </div>
             <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>{t("settings.addMcpServer")}</h3>
             <div className="inline-form-grid">
-              <input className="input mono" placeholder="name" value={newMcpServer.name}
+              <input className="input mono" placeholder={t("settings.placeholderName")} value={newMcpServer.name}
                      onChange={function(e) { setNewMcpServer({ ...newMcpServer, name: e.target.value }); }}
                      style={{ maxWidth: 140 }} />
               <select className="select" style={{ maxWidth: 100 }} value={newMcpServer.transport}
@@ -731,15 +731,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
               </select>
               {newMcpServer.transport === "stdio" ? (
                 <>
-                  <input className="input mono" placeholder="command (e.g. npx)" value={newMcpServer.command}
+                  <input className="input mono" placeholder={t("settings.placeholderCommand")} value={newMcpServer.command}
                          onChange={function(e) { setNewMcpServer({ ...newMcpServer, command: e.target.value }); }}
                          style={{ maxWidth: 140 }} />
-                  <input className="input mono" placeholder="args (space-separated)" value={newMcpServer.args}
+                  <input className="input mono" placeholder={t("settings.placeholderArgs")} value={newMcpServer.args}
                          onChange={function(e) { setNewMcpServer({ ...newMcpServer, args: e.target.value }); }}
                          style={{ maxWidth: 240 }} />
                 </>
               ) : (
-                <input className="input mono" placeholder="URL (e.g. http://localhost:3000/mcp)" value={newMcpServer.url}
+                <input className="input mono" placeholder={t("settings.placeholderMcpUrl")} value={newMcpServer.url}
                        onChange={function(e) { setNewMcpServer({ ...newMcpServer, url: e.target.value }); }}
                        style={{ maxWidth: 360 }} />
               )}
@@ -762,7 +762,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
               <div className="label">{t("settings.modelName")}<small>{t("settings.modelNameHint")}</small></div>
               <input className="input mono" value={keys.OPENAI_MODEL || config.model || ""}
                      onChange={(e) => setKeys({ ...keys, OPENAI_MODEL: e.target.value })}
-                     placeholder="deepseek-chat" style={{ maxWidth: 320 }} />
+                     placeholder={t("settings.placeholderModel")} style={{ maxWidth: 320 }} />
             </div>
             <div className="field">
               <div className="label">{t("settings.apiKey")}<small>{t("settings.apiKeyHint")}</small></div>
@@ -776,7 +776,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
               <input className="input mono" type="password"
                      value={keys.TELEGRAM_BOT_TOKEN || ""}
                      onChange={(e) => setKeys({ ...keys, TELEGRAM_BOT_TOKEN: e.target.value })}
-                     placeholder="(optional)" style={{ maxWidth: 480 }} />
+                     placeholder={t("settings.placeholderOptional")} style={{ maxWidth: 480 }} />
             </div>
             <div className="settings-actions">
               <button className="btn primary" onClick={saveKeys}>{t("settings.saveApiKeys")}</button>
