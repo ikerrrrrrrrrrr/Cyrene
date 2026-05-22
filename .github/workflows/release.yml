@@ -100,7 +100,9 @@ jobs:
           chmod +x /tmp/appimagetool
           /tmp/appimagetool --appimage-extract
           sudo mv squashfs-root /opt/appimagetool
-          sudo ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool
+          printf '#!/bin/bash\nexec /opt/appimagetool/AppRun "$@"\n' | sudo tee /usr/local/bin/appimagetool > /dev/null
+          sudo chmod +x /usr/local/bin/appimagetool
+          appimagetool --version || echo "[warn] appimagetool version check failed"
 
       - name: Install dependencies
         run: |
