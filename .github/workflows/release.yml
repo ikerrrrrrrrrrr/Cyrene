@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install pyinstaller>=6.0 pillow packaging
-          pip install . --no-build-isolation
+          pip install .
 
       - name: Build
         run: python build/build.py
