@@ -52,7 +52,7 @@ _hidden = [
 # ---- 排除 ----
 _excludes = [
     "tkinter", "matplotlib", "numpy", "pandas", "scipy",
-    "PIL._tkinter_finder", "curses", "email", "http.server", "socketserver",
+    "PIL._tkinter_finder", "curses", "http.server", "socketserver",
 ]
 
 # ---- 图标 ----
