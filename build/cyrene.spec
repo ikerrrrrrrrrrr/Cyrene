@@ -4,9 +4,9 @@
 import sys
 from pathlib import Path
 
-_PROJECT_ROOT = Path(SPECPATH).resolve().parent.parent
+_PROJECT_ROOT = Path(SPECPATH).resolve().parent
 _SRC = _PROJECT_ROOT / "src"
-_ENTRY = str(Path(SPECPATH).resolve().parent / "run_cyrene.py")
+_ENTRY = str(Path(SPECPATH).resolve() / "run_cyrene.py")
 _IS_MAC = sys.platform == "darwin"
 _IS_WIN = sys.platform == "win32"
 
@@ -52,7 +52,7 @@ _excludes = [
 
 # ---- 图标 ----
 _icon = None
-_icon_dir = Path(SPECPATH).resolve().parent
+_icon_dir = Path(SPECPATH).resolve()
 if _IS_MAC and (_icon_dir / "icon.icns").exists():
     _icon = str(_icon_dir / "icon.icns")
 elif _IS_WIN and (_icon_dir / "icon.ico").exists():
