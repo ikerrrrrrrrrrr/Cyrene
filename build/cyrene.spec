@@ -26,6 +26,11 @@ if _static_dir.is_dir():
             dest = str(f.relative_to(_SRC).parent)
             _datas.append((str(f), dest))
 
+# macOS 原生窗口助手 (Swift 编译产物)
+_win_bin = Path(SPECPATH).resolve() / "cyrene_window"
+if _IS_MAC and _win_bin.exists():
+    _datas.append((str(_win_bin), "."))
+
 # .env 模板（打包模式首次启动时复制到用户数据目录）
 _env_tpl = _PROJECT_ROOT / ".env.example"
 if _env_tpl.exists():

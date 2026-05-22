@@ -253,6 +253,24 @@ exec "$HERE/Cyrene" "$@"
     return None
 
 
+def _compile_swift_window() -> None:
+    """Compile native WKWebView window helper for macOS."""
+    swift_src = BUILD_DIR / "cyrene_window.swift"
+    out_bin = BUILD_DIR / "cyrene_window"
+    if out_bin.exists() and out_bin.stat().st_mtime >= swift_src.stat().st_mtime:
+        print("  [ok] cyrene_window up-to-date")
+        return
+    print(f"\n[Swift] Compiling cyrene_window...")
+    result = subprocess.run(
+        ["swiftc", "-O", "-o", str(out_bin), str(swift_src)],
+        check=False,
+    )
+    if result.returncode != 0:
+        print("  [error] swiftc failed, window helper will be missing")
+    else:
+        print(f"  [ok] {out_bin}")
+
+
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Build Cyrene")
@@ -271,6 +289,9 @@ def main() -> None:
 
     if not args.skip_icons:
         generate_icons()
+
+    if IS_MAC:
+        _compile_swift_window()
 
     run_pyinstaller()
 

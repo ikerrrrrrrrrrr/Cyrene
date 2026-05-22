@@ -381,6 +381,7 @@ def _run_web_gui() -> None:
     import asyncio
     import threading
     import time
+    from pathlib import Path
     from cyrene.debug import enable_event_bus
     from cyrene.scheduler import setup_scheduler
     from webui.server import create_app, WebBot, WEB_PORT
@@ -444,21 +445,25 @@ def _run_web_gui() -> None:
         _sys.exit(1)
 
     time.sleep(0.5)
+    url = f"http://localhost:{WEB_PORT}"
 
+    # macOS: use compiled Swift WKWebView helper (native, zero deps)
+    if _sys.platform == "darwin":
+        _bin = Path(_sys._MEIPASS) / "cyrene_window" if getattr(_sys, "frozen", False) else Path(__file__).resolve().parent.parent.parent / "build" / "cyrene_window"
+        if _bin.exists():
+            import subprocess
+            subprocess.run([str(_bin), url])
+            return
+
+    # Windows/Linux: try pywebview
     try:
         import webview
-        window = webview.create_window(
-            "Cyrene",
-            f"http://localhost:{WEB_PORT}",
-            width=1200,
-            height=800,
-            min_size=(800, 600),
-        )
+        webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
         webview.start()
     except ImportError:
         import webbrowser
-        webbrowser.open(f"http://localhost:{WEB_PORT}")
-        print(f"Cyrene running at http://localhost:{WEB_PORT}")
+        webbrowser.open(url)
+        print(f"Cyrene running at {url}")
         try:
             while True:
                 time.sleep(1)
