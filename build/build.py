@@ -145,61 +145,24 @@ def run_pyinstaller() -> None:
 
 
 def _codesign_mac(app_path: Path) -> None:
-    """macOS 代码签名 — 只签名 python-bundle + 顶层 .app。
+    """macOS 代码签名 — 与 v0.3.6 相同方式，追加 entitlements 保护。
 
-    Rules:
-    - Do NOT use ``--deep`` — it would re-sign ``Electron Framework.framework``
-      and break Electron's own internal signature chain.
-    - Gatekeeper requires every Mach-O binary in the bundle to be signed.
-      We sign only what we added (``extraResources/python-bundle/``), then
-      re-sign the top-level ``.app`` (without ``--deep``) to register the new
-      inner signatures.
+    ``codesign --deep --force --sign "-"`` 递归签名 bundle 内所有 Mach-O 文件
+    （包括 .app、framework、.so、.dylib 等）。  ``--preserve-metadata`` 保留
+    Electron Framework 的 entitlements，避免被 ad-hoc 签名覆盖。
     """
     dev_id = os.environ.get("APPLE_DEVELOPER_ID", "")
     identity = dev_id if dev_id else "-"
-    sign_opts = ["--options", "runtime"] if dev_id else []
+    cmd = ["codesign", "--deep", "--force", "--sign", identity]
+    if dev_id:
+        cmd += ["--options", "runtime"]
+    else:
+        cmd += ["--preserve-metadata=entitlements,identifier,flags"]
+    cmd.append(str(app_path))
 
-    # Only sign files inside the PyInstaller bundle (our own Mach-O files).
-    # Do NOT re-sign the top-level .app or any Electron frameworks — they were
-    # already signed by electron-builder and re-signing would break the chain.
-    python_bundle = app_path / "Contents" / "Resources" / "python-bundle"
-    if not python_bundle.is_dir():
-        print("  [warn] python-bundle not found, skipping signing")
-        return
-
-    print("  signing python-bundle Mach-O files...")
-    _signed_count = 0
-    for root, _dirs, files in os.walk(str(python_bundle)):
-        for name in files:
-            fpath = os.path.join(root, name)
-            try:
-                _out = subprocess.run(
-                    ["file", "-b", fpath],
-                    capture_output=True, text=True, timeout=3,
-                ).stdout
-                if "Mach-O" not in _out:
-                    continue
-            except Exception:
-                continue
-            # Always re-sign — PyInstaller may have left old bundle-specific
-            # signatures that are invalid inside the Electron .app.
-            subprocess.run(
-                ["codesign", "--force", "--sign", identity, fpath] + sign_opts,
-                capture_output=True, timeout=10,
-            )
-            _signed_count += 1
-
-    # Re-sign the top-level .app WITHOUT --deep.
-    # This updates CodeResources to include the freshly-signed python-bundle
-    # files.  Without this, Gatekeeper detects files inside the bundle that
-    # aren't covered by the .app's signature and rejects the app as "damaged".
-    # --deep is intentionally omitted so we don't touch Electron Framework.
-    print(f"  signing top-level .app (no --deep)...")
-    subprocess.run(
-        ["codesign", "--force", "--sign", identity, str(app_path)] + sign_opts,
-        check=True, capture_output=True, timeout=30,
-    )
-    print(f"  [ok] signed {_signed_count} files in python-bundle, updated .app CodeResources")
+    print("  signing (ad-hoc, --deep, preserve-entitlements)...")
+    subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+    print("  [ok] signed")
 
     # Quick verification
     _v = subprocess.run(
