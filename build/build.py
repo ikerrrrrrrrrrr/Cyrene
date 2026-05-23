@@ -145,34 +145,20 @@ def run_pyinstaller() -> None:
 
 
 def _codesign_mac(app_path: Path) -> None:
-    """macOS 代码签名 — 与 v0.3.6 相同方式，追加 entitlements 保护。
-
-    ``codesign --deep --force --sign "-"`` 递归签名 bundle 内所有 Mach-O 文件
-    （包括 .app、framework、.so、.dylib 等）。  ``--preserve-metadata`` 保留
-    Electron Framework 的 entitlements，避免被 ad-hoc 签名覆盖。
-    """
+    """macOS 代码签名 — 与 v0.3.6 完全相同的方式。"""
     dev_id = os.environ.get("APPLE_DEVELOPER_ID", "")
-    identity = dev_id if dev_id else "-"
-    cmd = ["codesign", "--deep", "--force", "--sign", identity]
     if dev_id:
-        cmd += ["--options", "runtime"]
+        print(f"  signing with: {dev_id}")
+        subprocess.run([
+            "codesign", "--deep", "--force", "--options", "runtime",
+            "--sign", dev_id, str(app_path),
+        ], check=True)
     else:
-        cmd += ["--preserve-metadata=entitlements,identifier,flags"]
-    cmd.append(str(app_path))
-
-    print("  signing (ad-hoc, --deep, preserve-entitlements)...")
-    subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+        print("  ad-hoc signing...")
+        subprocess.run([
+            "codesign", "--deep", "--force", "--sign", "-", str(app_path),
+        ], check=True)
     print("  [ok] signed")
-
-    # Quick verification
-    _v = subprocess.run(
-        ["codesign", "-v", str(app_path)],
-        capture_output=True, text=True, timeout=10,
-    )
-    if _v.returncode == 0:
-        print("  [ok] Gatekeeper verification passed")
-    else:
-        print(f"  [warn] Gatekeeper verification:\n{_v.stderr[:500]}")
 
 
 def package_mac() -> Path:
@@ -386,6 +372,17 @@ def run_electron_builder() -> None:
         if mac_app.exists():
             print(f"\n[macOS] Re-signing {mac_app}...")
             _codesign_mac(mac_app)
+            # Strict verification: codesign -v --deep --strict checks that
+            # EVERY Mach-O in the bundle is properly signed.
+            _v = subprocess.run(
+                ["codesign", "-v", "--deep", "--strict", str(mac_app)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if _v.returncode == 0:
+                print("  [ok] strict verification passed")
+            else:
+                print(f"  [error] strict verification FAILED:\n{_v.stderr}")
+                sys.exit(1)
             # Re-create the DMG — electron-builder's own DMG was built from
             # the unsigned .app (before we signed python-bundle).
             # hdiutil create with staging preserves resource forks and
