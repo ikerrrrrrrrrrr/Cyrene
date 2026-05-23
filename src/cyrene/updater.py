@@ -44,9 +44,9 @@ def _platform_filter() -> str:
     if sys.platform == "darwin":
         return ".dmg"
     elif sys.platform == "win32":
-        return "win64.zip"
+        return "win64.exe"
     elif sys.platform.startswith("linux"):
-        return "x86_64.AppImage"
+        return "x64.AppImage"
     return sys.platform
 
 
@@ -178,19 +178,19 @@ rm -f "{dmg_path}"
 """
 
 
-def _restart_script_windows(zip_path: Path) -> str:
-    """Windows: 解压 zip 覆盖安装目录，重启。"""
+def _restart_script_windows(exe_path: Path) -> str:
+    """Windows: 运行 NSIS 安装程序（静默模式）覆盖安装，重启。"""
     return f"""@echo off
 :: Cyrene updater — Windows
 timeout /t 2 /nobreak >nul
 echo Installing update...
-powershell -Command "Expand-Archive -Path '{zip_path}' -DestinationPath '$env:LOCALAPPDATA\\Cyrene' -Force"
+start /wait "" "{exe_path}" /S
 if %errorlevel% equ 0 (
     echo Update complete, restarting...
     start "" "$env:LOCALAPPDATA\\Cyrene\\Cyrene.exe"
-    del "{zip_path}"
+    del "{exe_path}"
 ) else (
-    echo Update failed
+    echo Update failed (error %errorlevel%)
     pause
 )
 """

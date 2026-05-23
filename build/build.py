@@ -324,22 +324,28 @@ def _appimage_arch() -> str:
     return arch_map.get(machine, machine or "x86_64")
 
 
-def _compile_swift_window() -> None:
-    """Compile native WKWebView window helper for macOS."""
-    swift_src = BUILD_DIR / "cyrene_window.swift"
-    out_bin = BUILD_DIR / "cyrene_window"
-    if out_bin.exists() and out_bin.stat().st_mtime >= swift_src.stat().st_mtime:
-        print("  [ok] cyrene_window up-to-date")
+def run_electron_builder() -> None:
+    """Run electron-builder to package the Electron app around the PyInstaller bundle."""
+    electron_dir = PROJECT_ROOT / "electron"
+    if not (electron_dir / "node_modules" / ".bin" / "electron-builder").exists():
+        print("  [warn] electron-builder not found, skipping Electron packaging")
+        print("  [hint] Run: cd electron && npm install")
         return
-    print(f"\n[Swift] Compiling cyrene_window...")
-    result = subprocess.run(
-        ["swiftc", "-O", "-o", str(out_bin), str(swift_src)],
-        check=False,
-    )
+
+    print(f"\n[electron-builder] Packaging...")
+    cmd = ["npx", "electron-builder"]
+    if IS_MAC:
+        cmd.append("--mac")
+    elif IS_WIN:
+        cmd.append("--win")
+    elif IS_LINUX:
+        cmd.append("--linux")
+
+    result = subprocess.run(cmd, cwd=str(electron_dir))
     if result.returncode != 0:
-        print("  [error] swiftc failed, window helper will be missing")
-    else:
-        print(f"  [ok] {out_bin}")
+        print("  [error] electron-builder failed")
+        sys.exit(1)
+    print("  [ok] electron-builder done")
 
 
 def main() -> None:
@@ -347,6 +353,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build Cyrene")
     parser.add_argument("--clean", action="store_true", help="仅清理构建产物")
     parser.add_argument("--skip-icons", action="store_true", help="跳过图标生成")
+    parser.add_argument("--pyinstaller-only", action="store_true", help="只跑 PyInstaller，跳过 Electron 打包")
     args = parser.parse_args()
 
     print(f"Cyrene Builder — {sys.platform}")
@@ -361,26 +368,21 @@ def main() -> None:
     if not args.skip_icons:
         generate_icons()
 
-    if IS_MAC:
-        _compile_swift_window()
-
     run_pyinstaller()
 
-    # 平台特定打包
-    print(f"\n[Package] {sys.platform}")
-    if IS_MAC:
-        result = package_mac()
-        print(f"\nDone: {result}")
-    elif IS_WIN:
-        result = package_win()
-        print(f"\nDone: {result}")
-    elif IS_LINUX:
-        results = package_linux()
-        print(f"\nDone:")
-        for r in results:
-            print(f"  {r}")
-    else:
-        print("  [warn] unknown platform, no packaging step")
+    if args.pyinstaller_only:
+        print(f"\nDone: {DIST_DIR / 'Cyrene'}")
+        return
+
+    # Electron 打包
+    run_electron_builder()
+
+    # 列出产物
+    electron_dist = PROJECT_ROOT / "dist-electron"
+    if electron_dist.exists():
+        print(f"\nDone: {electron_dist}")
+        for f in sorted(electron_dist.iterdir()):
+            print(f"  {f.name}")
 
 
 if __name__ == "__main__":

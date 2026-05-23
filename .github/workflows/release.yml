@@ -25,17 +25,24 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
         run: |
           pip install pyinstaller>=6.0 pillow packaging
           pip install .
           pip install --upgrade typing_extensions pydantic pydantic_core
-          pip install pywebview>=5.0 || echo "pywebview skipped (macOS uses native Swift window)"
+
+      - name: Install Electron deps
+        run: cd electron && npm ci
 
       - name: Verify critical imports
         run: python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; print('imports-ok')"
 
-      - name: Build
+      - name: Full build (PyInstaller + Electron)
         run: python build/build.py
 
       - name: Smoke test packaged app
@@ -45,7 +52,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: dist/Cyrene-*.dmg
+          path: dist-electron/Cyrene-*-mac.dmg
           if-no-files-found: error
 
   # ==========================================================================
@@ -61,12 +68,16 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python deps
         run: |
           pip install pyinstaller>=6.0 pillow packaging pypdf reportlab
           pip install aiosqlite anyio apscheduler croniter fastapi httpx jinja2 python-dotenv python-telegram-bot requests sniffio websockets python-multipart certifi h11 idna
           pip install mcp httpx-sse pydantic pydantic-settings jsonschema referencing rpds-py attrs sse-starlette pyjwt
-          pip install pywebview>=5.0 pythonnet clr-loader proxy-tools
           pip install winloop
           # simplexng and its transitive deps (it uses --no-deps so we list them explicitly)
           pip install simplexng --no-deps
@@ -74,6 +85,9 @@ jobs:
           pip install waitress fasttext-predict pygments python-dateutil
           pip install .
           pip install --upgrade typing_extensions pydantic pydantic_core
+
+      - name: Install Electron deps
+        run: cd electron && npm ci
 
       - name: Apply Windows compatibility patches
         shell: python
@@ -146,9 +160,9 @@ jobs:
 
       - name: Verify build environment imports
         run: |
-          python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, croniter, jinja2, websockets, simplexng, mcp, webview; print('imports-ok')"
+          python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, croniter, jinja2, websockets, simplexng, mcp; print('imports-ok')"
 
-      - name: Build
+      - name: Full build (PyInstaller + Electron)
         run: python build/build.py
 
       - name: Smoke test packaged app
@@ -157,37 +171,15 @@ jobs:
       - name: Verify packaged modules
         shell: powershell
         run: |
-          Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $zip = Get-ChildItem dist\Cyrene-*-win64.zip | Select-Object -First 1
-          if (-not $zip) { throw "Windows ZIP output missing" }
-          $archive = [System.IO.Compression.ZipFile]::OpenRead($zip.FullName)
-          try {
-            $entries = $archive.Entries | Select-Object -ExpandProperty FullName
-            foreach ($pattern in @(
-              'Cyrene/_internal/anyio/',
-              'Cyrene/_internal/httpx/',
-              'Cyrene/_internal/httpcore/',
-              'Cyrene/_internal/sniffio/'
-            )) {
-              if (-not ($entries -contains $pattern)) {
-                throw "Missing packaged module path: $pattern"
-              }
-            }
-          } finally {
-            $archive.Dispose()
-          }
+          if (-not (Test-Path dist\Cyrene\Cyrene.exe)) { throw "Cyrene.exe missing" }
+          if (-not (Test-Path dist\Cyrene\_internal\anyio)) { throw "anyio missing" }
+          if (-not (Test-Path dist\Cyrene\_internal\httpx)) { throw "httpx missing" }
 
-      - name: Verify ZIP output
-        shell: powershell
-        run: |
-          $files = Get-ChildItem dist\Cyrene-*-win64.zip
-          if (-not $files) { throw "Windows ZIP output missing" }
-
-      - name: Upload ZIP
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: windows-zip
-          path: dist/Cyrene-*-win64.zip
+          name: windows-installer
+          path: dist-electron/Cyrene-*-win64.exe
           if-no-files-found: error
 
   # ==========================================================================
@@ -203,67 +195,38 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install system deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev python3-gi python3-gi-cairo gir1.2-gtk-3.0 gir1.2-webkit2-4.1
-          # libfuse2 is required at link time even for --appimage-extract (the ELF
-          # binary is dynamically linked against libfuse.so.2 regardless of runtime
-          # code paths).  On ubuntu-24.04 the package is named libfuse2t64.
-          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-      - name: Install appimagetool
-        run: |
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool
-          chmod +x /tmp/appimagetool
-          /tmp/appimagetool --appimage-extract
-          sudo mv squashfs-root /opt/appimagetool
-          cat <<'WRAPPER' | sudo tee /usr/local/bin/appimagetool > /dev/null
-          #!/bin/bash
-          export APPDIR=/opt/appimagetool
-          exec /opt/appimagetool/AppRun "$@"
-          WRAPPER
-          sudo chmod +x /usr/local/bin/appimagetool
-          appimagetool --version
+      # No system deps needed — Electron handles the window on all platforms.
+      # No appimagetool needed — electron-builder produces AppImage.
 
-      - name: Install dependencies
+      - name: Install Python deps
         run: |
           pip install pyinstaller>=6.0 pillow packaging
           pip install .
           pip install --upgrade typing_extensions pydantic pydantic_core
-          pip install pywebview>=5.0 || echo "pywebview skipped"
+
+      - name: Install Electron deps
+        run: cd electron && npm ci
 
       - name: Verify build environment imports
         run: |
-          python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, websockets, simplexng, jinja2, mcp, webview; print('imports-ok')"
+          python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, websockets, simplexng, jinja2, mcp; print('imports-ok')"
 
-      - name: Build
-        run: |
-          # Put pip site-packages before system path so PyInstaller collects
-          # the pip-installed typing_extensions (with Sentinel), not the
-          # potentially older system copy from /usr/lib/python3/dist-packages.
-          PIP_SITE="$(python -c "import site; print(site.getsitepackages()[0])")"
-          export PYTHONPATH="$PIP_SITE:/usr/lib/python3/dist-packages"
-          APPIMAGE_EXTRACT_AND_RUN=1 CYRENE_REQUIRE_APPIMAGE=1 python build/build.py
+      - name: Full build (PyInstaller + Electron)
+        run: python build/build.py
 
       - name: Smoke test packaged app
         run: ./dist/Cyrene/Cyrene --smoke-test
-
-      - name: Verify AppImage output
-        run: ls -la dist/Cyrene-*-x86_64.AppImage
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
           name: linux-appimage
-          path: dist/Cyrene-*-x86_64.AppImage
-          if-no-files-found: error
-
-      - name: Upload tar.gz
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-tarball
-          path: dist/Cyrene-*-x86_64.tar.gz
+          path: dist-electron/Cyrene-*-x64.AppImage
           if-no-files-found: error
 
   # ==========================================================================

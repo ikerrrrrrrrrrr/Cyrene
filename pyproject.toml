@@ -1,6 +1,6 @@
 [project]
 name = "cyrene"
-version = "0.3.18"
+version = "0.4.0"
 description = "Cyrene AI Agent — self-evolving AI companion with SOUL.md memory"
 requires-python = ">=3.12"
 dependencies = [
@@ -31,7 +31,6 @@ cyrene = "cyrene.cli:main"
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0", "pillow>=11.0"]
-gui = ["pywebview>=5.0"]
 
 [build-system]
 requires = ["hatchling"]

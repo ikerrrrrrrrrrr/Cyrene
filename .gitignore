@@ -18,6 +18,11 @@ data/
 # Environment
 .env
 
+# Electron
+electron/node_modules/
+electron/out/
+dist-electron/
+
 # IDE
 .idea/
 .vscode/

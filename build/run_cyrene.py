@@ -78,7 +78,11 @@ if __name__ == "__main__":
 
     if "--launch-web" in sys.argv:
         sys.argv.remove("--launch-web")
-        sys.argv.append("--web")
+        if "--electron" in sys.argv:
+            sys.argv.remove("--electron")
+            sys.argv.append("--electron-mode")
+        else:
+            sys.argv.append("--web")
         from cyrene.local_cli import main
         main()
         raise SystemExit(0)

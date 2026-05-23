@@ -28,11 +28,6 @@ if _static_dir.is_dir():
             dest = str(f.relative_to(_SRC).parent)
             _datas.append((str(f), dest))
 
-# macOS 原生窗口助手 (Swift 编译产物)
-_win_bin = Path(SPECPATH).resolve() / "cyrene_window"
-if _IS_MAC and _win_bin.exists():
-    _datas.append((str(_win_bin), "."))
-
 # .env 模板（打包模式首次启动时复制到用户数据目录）
 _env_tpl = _PROJECT_ROOT / ".env.example"
 if _env_tpl.exists():
@@ -71,31 +66,14 @@ _hidden = [
     "PIL._imaging",
 ]
 
-if not _IS_MAC:
-    _hidden.append("webview")
-    # collect_all is needed for DLLs (WebView2Loader.dll on Windows) and
-    # other platform data files that hiddenimports alone won't gather.
+# pwd stub (exists only in CI; safe to skip on local builds)
+if _IS_WIN:
+    _hidden.append("winloop")
     try:
-        datas, binaries, hiddenimports = collect_all("webview")
-        _datas.extend(datas)
-        _binaries.extend(binaries)
-        _hidden.extend(hiddenimports)
-    except Exception as exc:
-        print(f"[warn] collect_all('webview') failed: {exc}")
-    if _IS_WIN:
-        _hidden.append("webview.platforms.winforms")
-        _hidden.append("webview.platforms.edgechromium")
-        # Windows-only simplexng compat
-        _hidden.append("winloop")
-        _hidden.append("clr")
-        # pwd stub (exists only in CI; safe to skip on local builds)
-        try:
-            import pwd  # noqa: F401
-            _hidden.append("pwd")
-        except ImportError:
-            pass
-    else:
-        _hidden.append("webview.platforms.gtk")
+        import pwd  # noqa: F401
+        _hidden.append("pwd")
+    except ImportError:
+        pass
 
 
 def _collect_package(name: str) -> None:
@@ -168,34 +146,6 @@ _excludes = [
     "PIL._tkinter_finder", "curses",
 ]
 
-# Linux: bundle the gi Python package (including _gi C extension, overrides,
-# and repository wrappers).  The actual GTK / WebKit typelibs (.typelib files
-# in /usr/lib/girepository-1.0/) are NOT bundled — they are loaded at runtime
-# by libgirepository and must match the host's system libraries.
-#
-# A runtime hook (hook-gi-runtime.py) adds system Python paths so that any
-# gi overrides installed by the distro but not present in the bundled version
-# are still found.
-# Users need: sudo apt install python3-gi python3-gi-cairo
-#             gir1.2-gtk-3.0 gir1.2-webkit2-4.1
-if not _IS_MAC and not _IS_WIN:
-    _hidden.append("gi")
-    try:
-        _collect_package("gi")
-    except Exception as exc:
-        print(f"[warn] gi collection failed: {exc}")
-
-# Windows: bundle pythonnet + clr_loader for pywebview WinForms backend,
-# and winloop (uvloop replacement) for simplexng.
-# Note: collect_all("clr") would fail because clr is a namespace inside
-# pythonnet, not a standalone package.  Collect pythonnet instead.
-if _IS_WIN:
-    for _win_pkg in ("pythonnet", "clr_loader", "winloop"):
-        try:
-            _collect_package(_win_pkg)
-        except Exception as exc:
-            print(f"[warn] {_win_pkg} collection failed: {exc}")
-
 # ---- 图标 ----
 _icon = None
 _icon_dir = Path(SPECPATH).resolve()
@@ -213,7 +163,7 @@ a = Analysis(
     hiddenimports=_hidden,
     hookspath=[str(Path(SPECPATH).resolve())],
     hooksconfig={},
-    runtime_hooks=[str(Path(SPECPATH).resolve() / "hook-gi-runtime.py")] if not _IS_MAC and not _IS_WIN else [],
+    runtime_hooks=[],
     excludes=_excludes,
     noarchive=False,
 )
