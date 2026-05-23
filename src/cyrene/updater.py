@@ -171,7 +171,13 @@ def _restart_script_macos(dmg_path: Path) -> str:
         f'echo "DMG: {dmg_path}"\n'
         'sleep 2\n'
         'echo "Mounting update..."\n'
-        f'hdiutil attach "{dmg_path}" -nobrowse -quiet\n'
+        # Detach ALL existing Cyrene mounts first, then force mount at
+        # /Volumes/Cyrene regardless of DMG's internal volume name
+        'for vol in /Volumes/Cyrene*; do\n'
+        '  [ -d "$vol" ] && hdiutil detach "$vol" -quiet 2>/dev/null\n'
+        'done\n'
+        f'hdiutil attach "{dmg_path}" -nobrowse -quiet -mountpoint /Volumes/Cyrene\n'
+        'echo "attach exit code: $?"\n'
         'VOL="/Volumes/Cyrene"\n'
         'if [ -d "$VOL" ]; then\n'
         '    echo "Found volume, installing..."\n'
@@ -195,19 +201,27 @@ def _restart_script_macos(dmg_path: Path) -> str:
 
 
 def _restart_script_windows(exe_path: Path) -> str:
-    """Windows: 运行 NSIS 安装程序（静默模式）覆盖安装，重启。"""
+    """Windows: 运行 NSIS 安装程序（静默模式）覆盖安装，重启。
+
+    注意：electron-builder NSIS 安装器需要管理员权限。
+    如果用户不是管理员，/S 静默安装会失败。
+    """
     return f"""@echo off
 :: Cyrene updater — Windows
+>>"%TEMP%\\cyrene_update.log" echo === Cyrene update %date% %time% ===
+>>"%TEMP%\\cyrene_update.log" echo EXE: {exe_path}
 timeout /t 2 /nobreak >nul
 echo Installing update...
 start /wait "" "{exe_path}" /S
-if %errorlevel% equ 0 (
-    echo Update complete, restarting...
+set RC=%errorlevel%
+>>"%TEMP%\\cyrene_update.log" echo NSIS exit code: %RC%
+if %RC% equ 0 (
+    >>"%TEMP%\\cyrene_update.log" echo Update complete, restarting...
     start "" "$env:LOCALAPPDATA\\Cyrene\\Cyrene.exe"
     del "{exe_path}"
 ) else (
-    echo Update failed (error %errorlevel%)
-    pause
+    >>"%TEMP%\\cyrene_update.log" echo Update failed (error %RC%)
+    timeout /t 5 /nobreak >nul
 )
 """
 
@@ -216,14 +230,24 @@ def _restart_script_linux(appimage_path: Path) -> str:
     """Linux: 替换 AppImage，重启。"""
     return f"""#!/bin/bash
 # Cyrene updater — Linux
+exec >>/tmp/cyrene_update.log 2>&1
+echo "=== Cyrene update $(date) ==="
+echo "AppImage: {appimage_path}"
 sleep 2
 echo "Installing update..."
 chmod +x "{appimage_path}"
 INSTALL_DIR="$HOME/.local/bin"
 mkdir -p "$INSTALL_DIR"
-mv "{appimage_path}" "$INSTALL_DIR/Cyrene.AppImage"
-echo "Update complete, restarting..."
-"$INSTALL_DIR/Cyrene.AppImage" &
+cp "{appimage_path}" "$INSTALL_DIR/Cyrene.AppImage"
+echo "cp exit code: $?"
+if [ -f "$INSTALL_DIR/Cyrene.AppImage" ]; then
+    rm -f "{appimage_path}"
+    echo "Update complete, restarting..."
+    "$INSTALL_DIR/Cyrene.AppImage" &
+else
+    echo "Update failed: copy failed"
+    exit 1
+fi
 """
 
 
