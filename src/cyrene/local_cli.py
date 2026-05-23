@@ -520,35 +520,18 @@ def _run_web_gui() -> None:
                      "Install it with: pip install pywebview>=5.0")
         _sys.exit(1)
 
-    # On Windows, Edge Chromium requires WebView2 runtime.
-    # Without it the window may fail silently — detect early.
-    if _sys.platform == "win32":
-        try:
-            from webview.platforms.edgechromium import _version as _edge_version
-        except Exception:
-            _show_error(
-                "Cyrene - WebView2 Required",
-                "Microsoft Edge WebView2 Runtime is not installed.\n\n"
-                "Download it from:\n"
-                "https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n"
-                "After installing, restart Cyrene."
-            )
-            print(f"WebView2 not found. Server running at {url}", flush=True)
-            print("Press Ctrl+C to stop.", flush=True)
-            try:
-                while True:
-                    time.sleep(1)
-            except KeyboardInterrupt:
-                pass
-            return
-
     try:
         webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
         webview.start()
     except Exception as exc:
         logger.warning("pywebview failed (%s)", exc)
+        _hint = ""
+        if _sys.platform == "win32":
+            _hint = ("\n\nOn Windows this usually means the Edge WebView2 Runtime\n"
+                     "is missing. Download from:\n"
+                     "https://go.microsoft.com/fwlink/p/?LinkId=2124703")
         _show_error("Cyrene - Window Error",
-                     f"Failed to create native window:\n{exc}\n\n"
+                     f"Failed to create native window:\n{exc}{_hint}\n\n"
                      f"Server running at {url}\n"
                      "Open this address in your browser.")
         print(f"Cyrene server is running at {url}", flush=True)

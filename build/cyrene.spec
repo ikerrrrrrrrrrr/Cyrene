@@ -66,6 +66,9 @@ _hidden = [
     # simplexng runtime deps (vendored searx pulls these in transitively;
     # listed explicitly so PyInstaller collects compiled extensions correctly)
     "waitress", "flask", "brotli", "lxml", "msgspec", "fasttext_predict",
+    # PIL C extensions — listed explicitly in case collect_all("PIL")
+    # fails silently on some platforms
+    "PIL._imaging",
 ]
 
 if not _IS_MAC:
@@ -84,8 +87,13 @@ if not _IS_MAC:
         _hidden.append("webview.platforms.edgechromium")
         # Windows-only simplexng compat
         _hidden.append("winloop")
-        _hidden.append("pwd")
         _hidden.append("clr")
+        # pwd stub (exists only in CI; safe to skip on local builds)
+        try:
+            import pwd  # noqa: F401
+            _hidden.append("pwd")
+        except ImportError:
+            pass
     else:
         _hidden.append("webview.platforms.gtk")
 
@@ -173,11 +181,13 @@ if not _IS_MAC and not _IS_WIN:
         _excludes.append("gi")
 
 # Windows: bundle pythonnet (clr) for pywebview WinForms backend
+# and winloop (uvloop replacement) for simplexng
 if _IS_WIN:
-    try:
-        _collect_package("clr")
-    except Exception as exc:
-        print(f"[warn] clr collection failed (WinForms unavailable, will try Edge Chromium): {exc}")
+    for _win_pkg in ("clr", "winloop"):
+        try:
+            _collect_package(_win_pkg)
+        except Exception as exc:
+            print(f"[warn] {_win_pkg} collection failed: {exc}")
 
 # ---- 图标 ----
 _icon = None

@@ -9,6 +9,7 @@ import croniter
 import h11
 import httpcore
 import httpx
+import importlib
 import jinja2
 import multipart
 import simplexng
@@ -35,9 +36,25 @@ def _run_smoke_test() -> None:
         "simplexng": getattr(simplexng, "__version__", "unknown"),
         "multipart": getattr(multipart, "__version__", "unknown"),
     }
+    # Smoke-test imports for modules with C extensions that are
+    # historically fragile in PyInstaller frozen builds.
+    _smoke_imports = {
+        "PIL": None,
+        "pypdf": None,
+        "reportlab": None,
+        "mcp": None,
+    }
+    for _name in _smoke_imports:
+        try:
+            mod = importlib.import_module(_name)
+            _smoke_imports[_name] = getattr(mod, "__version__", "ok")
+        except Exception as exc:
+            _smoke_imports[_name] = f"FAILED: {exc}"
     print(f"Cyrene smoke test OK: v{get_version()}")
     for name, version in modules.items():
         print(f"{name}={version}")
+    for _name, _ver in _smoke_imports.items():
+        print(f"{_name}={_ver}")
 
 
 if __name__ == "__main__":
