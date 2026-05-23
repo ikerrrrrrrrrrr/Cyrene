@@ -472,7 +472,7 @@ def _run_web_gui() -> None:
 
         app = create_app(bot, str(DB_PATH), instance_id=instance_id)
         import uvicorn
-        config = uvicorn.Config(app, host="0.0.0.0", port=selected_port, log_level="info")
+        config = uvicorn.Config(app, host="127.0.0.1", port=selected_port, log_level="info")
         server = uvicorn.Server(config)
         await server.serve()
 
@@ -490,12 +490,12 @@ def _run_web_gui() -> None:
 
     threading.Thread(target=_run_server, daemon=True).start()
 
-    url = f"http://localhost:{selected_port}"
+    url = f"http://127.0.0.1:{selected_port}"
 
     # Wait until the freshly started instance responds with its own token.
     import urllib.request
     import json as _json
-    for _ in range(40):
+    for _ in range(120):
         if server_failed.is_set():
             break
         try:
@@ -507,7 +507,6 @@ def _run_web_gui() -> None:
             time.sleep(0.25)
     else:
         _show_error("Cyrene - Server Error", "Server did not respond within timeout.")
-        _sys.exit(1)
 
     if server_failed.is_set():
         _show_error("Cyrene - Server Error", server_error[0] if server_error else "Server failed to start.")
