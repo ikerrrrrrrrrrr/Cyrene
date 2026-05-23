@@ -499,26 +499,32 @@ def _run_web_gui() -> None:
             from cyrene.mcp_manager import stop_mcp as _stop_mcp
             _stop_mcp()
 
-    threading.Thread(target=_run_server, daemon=True).start()
+    _server_thread = threading.Thread(target=_run_server, daemon=True)
+    _server_thread.start()
 
     url = f"http://127.0.0.1:{selected_port}"
 
     # Wait until the freshly started instance responds with its own token.
-    import urllib.request
+    # Use http.client directly — it creates a raw TCP connection and never
+    # consults proxy configuration (unlike urllib which respects http_proxy
+    # env vars and can hang for localhost on Windows with a proxy set).
+    import http.client
     import json as _json
     for _ in range(120):
         if server_failed.is_set():
             break
         try:
-            with urllib.request.urlopen(url + "/api/instance-id", timeout=0.5) as response:
-                payload = _json.loads(response.read().decode("utf-8"))
+            _conn = http.client.HTTPConnection("127.0.0.1", selected_port, timeout=0.5)
+            _conn.request("GET", "/api/instance-id")
+            _resp = _conn.getresponse()
+            payload = _json.loads(_resp.read().decode("utf-8"))
+            _conn.close()
             if payload.get("instance_id") == instance_id:
                 break
         except Exception:
             time.sleep(0.25)
     else:
         _show_error("Cyrene - Server Error", "Server did not respond within timeout.")
-        _sys.exit(1)
 
     if server_failed.is_set():
         _show_error("Cyrene - Server Error", server_error[0] if server_error else "Server failed to start.")
@@ -563,7 +569,7 @@ def _run_web_gui() -> None:
                          "Download it from:\n"
                          "https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n"
                          "After installing, restart Cyrene.")
-            _fallback_to_browser(url)
+            _fallback_to_browser(url, _server_thread)
 
     try:
         webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
@@ -579,10 +585,10 @@ def _run_web_gui() -> None:
                      f"Failed to create native window:\n{exc}{_hint}\n\n"
                      f"Server running at {url}\n"
                      "Open this address in your browser.")
-        _fallback_to_browser(url)
+        _fallback_to_browser(url, _server_thread)
 
 
-def _fallback_to_browser(url: str) -> None:
+def _fallback_to_browser(url: str, _server_thread=None) -> None:
     """Open the web UI in the default browser and keep the process alive."""
     import sys as _sys
     print(f"Cyrene server is running at {url}", flush=True)
@@ -592,10 +598,30 @@ def _fallback_to_browser(url: str) -> None:
     except Exception:
         pass
     print("Press Ctrl+C to stop.", flush=True)
+    import http.client
+    import json as _json
+    _health_host = "127.0.0.1"
+    _health_port = int(url.rsplit(":", 1)[1])
+    _health_skip = 0
     try:
         while True:
             import time
-            time.sleep(1)
+            time.sleep(5)
+            # Periodically check if the server thread is still alive.
+            # It could exit silently if the asyncio loop inside crashes.
+            if _server_thread is not None and not _server_thread.is_alive():
+                _health_skip += 1
+                if _health_skip > 3:  # 3 × 5s = 15s grace period
+                    print("Server stopped responding — keeping process alive for browser connections.", flush=True)
+            # Also try a lightweight health check to detect frozen server.
+            if _health_skip <= 0:
+                try:
+                    _conn = http.client.HTTPConnection(_health_host, _health_port, timeout=2.0)
+                    _conn.request("GET", "/api/instance-id")
+                    _conn.getresponse().read()
+                    _conn.close()
+                except Exception:
+                    pass
     except KeyboardInterrupt:
         pass
 
