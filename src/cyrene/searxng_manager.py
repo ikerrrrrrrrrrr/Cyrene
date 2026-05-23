@@ -60,6 +60,7 @@ class SearXNGManager:
                 launch_cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=open(log_path, "w"),
+                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
             )
         except FileNotFoundError:
             raise RuntimeError(

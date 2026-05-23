@@ -382,6 +382,18 @@ def _run_web_mode() -> None:
         _stop_mcp()
 
 
+def _dump_error(message: str) -> None:
+    """Write an error message to a temp file so the user can inspect it."""
+    import os as _os
+    _log = _os.environ.get("TMPDIR") or _os.environ.get("TEMP") or _os.environ.get("TMP") or "/tmp"
+    _log_path = _os.path.join(_log, "cyrene_error.log")
+    try:
+        with open(_log_path, "a", encoding="utf-8") as _f:
+            _f.write(message + "\n")
+    except Exception:
+        pass
+
+
 def _show_error(title: str, message: str) -> None:
     """Show an error to the user, preferring a native dialog on Windows
     (where console=False hides stderr)."""
@@ -393,17 +405,6 @@ def _show_error(title: str, message: str) -> None:
             return
         except Exception:
             pass  # MessageBoxW failed — try fallback below
-    # Fallback: write error to a temp log file (stderr goes to devnull on
-    # Windows GUI mode).
-    try:
-        import os as _os
-        _log = _os.environ.get("TMPDIR") or _os.environ.get("TEMP") or _os.environ.get("TMP") or "/tmp"
-        _log_path = _os.path.join(_log, "cyrene_error.log")
-        with open(_log_path, "w", encoding="utf-8") as _f:
-            _f.write(f"{title}\n{'-' * len(title)}\n{message}\n")
-        print(f"Error written to {_log_path}", file=_sys.stderr)
-    except Exception:
-        pass
     print(f"{title}: {message}", file=_sys.stderr)
 
 
@@ -576,6 +577,7 @@ def _run_web_gui() -> None:
         webview.start()
     except Exception as exc:
         logger.warning("pywebview failed (%s)", exc)
+        _dump_error(f"pywebview failed: {exc}")
         _hint = ""
         if _sys.platform == "win32":
             _hint = ("\n\nOn Windows this usually means the Edge WebView2 Runtime\n"
