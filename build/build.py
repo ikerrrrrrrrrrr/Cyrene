@@ -189,7 +189,27 @@ def _codesign_mac(app_path: Path) -> None:
             )
             _signed_count += 1
 
-    print(f"  [ok] signed {_signed_count} files in python-bundle")
+    # Re-sign the top-level .app WITHOUT --deep.
+    # This updates CodeResources to include the freshly-signed python-bundle
+    # files.  Without this, Gatekeeper detects files inside the bundle that
+    # aren't covered by the .app's signature and rejects the app as "damaged".
+    # --deep is intentionally omitted so we don't touch Electron Framework.
+    print(f"  signing top-level .app (no --deep)...")
+    subprocess.run(
+        ["codesign", "--force", "--sign", identity, str(app_path)] + sign_opts,
+        check=True, capture_output=True, timeout=30,
+    )
+    print(f"  [ok] signed {_signed_count} files in python-bundle, updated .app CodeResources")
+
+    # Quick verification
+    _v = subprocess.run(
+        ["codesign", "-v", str(app_path)],
+        capture_output=True, text=True, timeout=10,
+    )
+    if _v.returncode == 0:
+        print("  [ok] Gatekeeper verification passed")
+    else:
+        print(f"  [warn] Gatekeeper verification:\n{_v.stderr[:500]}")
 
 
 def package_mac() -> Path:
