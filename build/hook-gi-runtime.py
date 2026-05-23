@@ -21,4 +21,4 @@ for _candidate in (
     "/usr/lib64/python3.12/site-packages",
 ):
     if os.path.isdir(_candidate) and _candidate not in sys.path:
-        sys.path.insert(0, _candidate)
+        sys.path.append(_candidate)

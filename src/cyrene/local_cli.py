@@ -382,6 +382,20 @@ def _run_web_mode() -> None:
         _stop_mcp()
 
 
+def _show_error(title: str, message: str) -> None:
+    """Show an error to the user, preferring a native dialog on Windows
+    (where console=False hides stderr)."""
+    import sys as _sys
+    if _sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
+            return
+        except Exception:
+            pass
+    print(f"{title}: {message}", file=_sys.stderr)
+
+
 def _run_web_gui() -> None:
     """Start web UI with native desktop window (PyInstaller GUI mode).
 
@@ -503,12 +517,16 @@ def _run_web_gui() -> None:
         webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
         webview.start()
     except ImportError:
-        print("Error: pywebview is not installed. Native desktop window unavailable.", file=_sys.stderr)
-        print("Install it with: pip install pywebview>=5.0", file=_sys.stderr)
+        _show_error("Cyrene - Missing Dependency",
+                     "pywebview is not installed.\n\n"
+                     "Install it with: pip install pywebview>=5.0")
         _sys.exit(1)
     except Exception as exc:
         logger.warning("pywebview failed (%s)", exc)
-        print(f"Error: Failed to create native window: {exc}", file=_sys.stderr)
+        _show_error("Cyrene - Window Error",
+                     f"Failed to create native window:\n{exc}\n\n"
+                     f"Server running at {url}\n"
+                     "Open this address in your browser.")
         print(f"Cyrene server is running at {url}", flush=True)
         print("Press Ctrl+C to stop.", flush=True)
         try:
