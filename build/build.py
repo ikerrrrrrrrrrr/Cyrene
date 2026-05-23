@@ -159,7 +159,9 @@ def _codesign_mac(app_path: Path) -> None:
     identity = dev_id if dev_id else "-"
     sign_opts = ["--options", "runtime"] if dev_id else []
 
-    # Only sign files inside the PyInstaller bundle (our own Mach-O files)
+    # Only sign files inside the PyInstaller bundle (our own Mach-O files).
+    # Do NOT re-sign the top-level .app or any Electron frameworks — they were
+    # already signed by electron-builder and re-signing would break the chain.
     python_bundle = app_path / "Contents" / "Resources" / "python-bundle"
     if not python_bundle.is_dir():
         print("  [warn] python-bundle not found, skipping signing")
@@ -179,39 +181,15 @@ def _codesign_mac(app_path: Path) -> None:
                     continue
             except Exception:
                 continue
-            # Skip already-signed files
-            try:
-                _ret = subprocess.run(
-                    ["codesign", "-v", fpath],
-                    capture_output=True, timeout=3,
-                )
-                if _ret.returncode == 0:
-                    continue
-            except Exception:
-                pass
+            # Always re-sign — PyInstaller may have left old bundle-specific
+            # signatures that are invalid inside the Electron .app.
             subprocess.run(
                 ["codesign", "--force", "--sign", identity, fpath] + sign_opts,
                 capture_output=True, timeout=10,
             )
             _signed_count += 1
 
-    # Re-sign the top-level .app (without --deep) so it can see the nested
-    # signatures we just added.
-    print(f"  signing top-level .app...  ({_signed_count} files in python-bundle)")
-    subprocess.run(
-        ["codesign", "--force", "--sign", identity, str(app_path)] + sign_opts,
-        check=True,
-    )
-
-    # Quick verification
-    _vr = subprocess.run(
-        ["codesign", "-dvvv", str(app_path)],
-        capture_output=True, text=True, timeout=5,
-    )
-    if _vr.returncode == 0:
-        print(f"  [ok] signed ({_signed_count} files)")
-    else:
-        print(f"  [warn] verification: {_vr.stderr[:120]}")
+    print(f"  [ok] signed {_signed_count} files in python-bundle")
 
 
 def package_mac() -> Path:
