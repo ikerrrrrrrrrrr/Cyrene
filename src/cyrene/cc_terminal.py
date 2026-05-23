@@ -3,13 +3,66 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import logging
 import subprocess
 
 logger = logging.getLogger(__name__)
 
-_FULL_REDRAW = "\x1bc"
 
+def _c1_to_7bit(data: bytes) -> bytes:
+    """Convert 8-bit C1 control chars to 7-bit ANSI sequences.
+
+    Crucially, this ONLY converts C1 chars that appear as standalone
+    bytes, NOT bytes that are part of valid UTF-8 multi-byte sequences
+    (where 0x80-0x9f serve as continuation bytes for box-drawing
+    characters, CJK, etc.).
+    """
+    if not data:
+        return data
+    out = bytearray()
+    i = 0
+    while i < len(data):
+        b = data[i]
+        if b >= 0xc0 and b <= 0xfd:
+            # UTF-8 multi-byte start — copy the whole sequence verbatim
+            # (start byte + N continuation bytes)
+            if b < 0xe0:
+                seq_len = 2
+            elif b < 0xf0:
+                seq_len = 3
+            else:
+                seq_len = 4
+            out.extend(data[i:i + seq_len])
+            i += seq_len
+        elif 0x80 <= b <= 0x9f:
+            # Standalone (not continuation) C1 control char
+            replacement = {
+                0x90: b"\x1bP",  # DCS
+                0x9b: b"\x1b[",  # CSI
+                0x9c: b"\x1b\\", # ST
+                0x9d: b"\x1b]",  # OSC
+                0x9e: b"\x1b^",  # PM
+                0x9f: b"\x1b_",  # APC
+            }.get(b, b"")
+            out.extend(replacement)
+            i += 1
+        else:
+            out.append(b)
+            i += 1
+    return bytes(out)
+
+
+def _utf8_latin1_fallback(exc: UnicodeDecodeError) -> tuple[str, int]:
+    """For invalid UTF-8 bytes: emit their Latin-1 codepoints and continue.
+
+    This lets the rest of the string (valid UTF-8 multi-byte sequences,
+    ANSI sequences, ASCII) decode correctly.
+    """
+    return ("".join(chr(b) for b in exc.object[exc.start:exc.end]), exc.end)
+
+
+codecs.register_error("utf8+latin1", _utf8_latin1_fallback)
 
 class CCTerminalSession:
     """Mirror a tmux pane to the browser and forward keystrokes with send-keys."""
@@ -19,6 +72,7 @@ class CCTerminalSession:
         self._running = False
         self._pane_target = tmux_session
         self._last_render = ""
+        self._first_frame = True
         self._cols = 120
         self._rows = 32
 
@@ -42,7 +96,11 @@ class CCTerminalSession:
                 break
             if rendered != self._last_render:
                 self._last_render = rendered
-                await websocket.send_text(_FULL_REDRAW + rendered)
+                if self._first_frame:
+                    self._first_frame = False
+                    await websocket.send_text("\x1bc" + rendered)
+                else:
+                    await websocket.send_text(rendered)
             await asyncio.sleep(0.18)
         self._running = False
 
@@ -74,13 +132,22 @@ class CCTerminalSession:
         return pane_id or self.tmux_session
 
     def _capture_pane(self) -> str:
-        proc = self._run_tmux(
+        proc = subprocess.run(
             ["tmux", "capture-pane", "-p", "-e", "-J", "-t", self._pane_target],
-            check=False,
+            capture_output=True, text=False, check=False,
         )
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or f"tmux capture-pane failed for {self._pane_target}")
-        return proc.stdout
+        data = proc.stdout or b""
+        # tmux-256color outputs 8-bit C1 control chars for colours,
+        # attributes etc.  Convert them to standard 7-bit ANSI before
+        # decoding so xterm.js understands them.  The converter is
+        # UTF-8-aware so it won't corrupt multi-byte sequences whose
+        # continuation bytes happen to be in the C1 range.
+        data = _c1_to_7bit(data)
+        # Decode as UTF-8 with latin-1 fallback for any remaining
+        # non-UTF-8 bytes — keeps orphan bytes visible.
+        return data.decode("utf-8", errors="utf8+latin1") if data else ""
 
     def _run_tmux(self, args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

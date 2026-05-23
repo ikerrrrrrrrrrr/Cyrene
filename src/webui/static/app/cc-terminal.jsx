@@ -43,6 +43,7 @@ function CCTerminalPanel({ statusInfo, onRefresh, modal, onClose }) {
   const syncSizeRef = useRef(function () {});
   const [expanded, setExpanded] = useState(Boolean(modal));
   const [connectionState, setConnectionState] = useState(available ? "connecting" : "unavailable");
+  const [escCount, setEscCount] = useState(-1);
   const [learningSnapshot, setLearningSnapshot] = useState(null);
   const [liveLearning, setLiveLearning] = useState(null);
 
@@ -115,7 +116,7 @@ function CCTerminalPanel({ statusInfo, onRefresh, modal, onClose }) {
       convertEol: true,
       cursorBlink: true,
       cursorStyle: "block",
-      drawBoldTextInBrightColors: true,
+      drawBoldTextInBrightColors: false,
       fontFamily: "\"IBM Plex Mono\", ui-monospace, Menlo, monospace",
       fontSize: expanded ? 14 : 11,
       lineHeight: 1.2,
@@ -163,25 +164,26 @@ function CCTerminalPanel({ statusInfo, onRefresh, modal, onClose }) {
 
     function syncSize() {
       if (!terminalRef.current) return;
+      var el = containerRef.current;
+      if (!el) return;
       if (fitAddonRef.current && typeof fitAddonRef.current.fit === "function") {
         try { fitAddonRef.current.fit(); } catch (e) { /* ignore */ }
       } else {
-        // Manual resize: estimate cols/rows from container size
-        var el = containerRef.current;
-        if (el && term._core) {
-          try {
-            var dims = term._core._renderService.dimensions;
-            var cellW = dims.css.cell.width;
-            var cellH = dims.css.cell.height;
-            if (cellW > 0 && cellH > 0) {
-              var newCols = Math.floor((el.clientWidth - 20) / cellW);
-              var newRows = Math.floor((el.clientHeight - 10) / cellH);
-              if (newCols > 10 && newRows > 3) {
-                term.resize(Math.max(20, newCols), Math.max(4, newRows));
-              }
+        try {
+          var dims = term._core && term._core._renderService && term._core._renderService.dimensions;
+          var cellW = dims && dims.css && dims.css.cell && dims.css.cell.width;
+          var cellH = dims && dims.css && dims.css.cell && dims.css.cell.height;
+          if (cellW > 0 && cellH > 0) {
+            var newCols = Math.floor((el.clientWidth - 16) / cellW);
+            var newRows = Math.floor((el.clientHeight - 8) / cellH);
+            if (newCols > 10 && newRows > 3) {
+              term.resize(Math.max(20, newCols), Math.max(4, newRows));
             }
-          } catch (e) { /* ignore */ }
-        }
+          } else {
+            window.requestAnimationFrame(syncSize);
+            return;
+          }
+        } catch (e) { /* ignore */ }
       }
       var socket = wsRef.current;
       if (socket && socket.readyState === WebSocket.OPEN) {
@@ -204,8 +206,24 @@ function CCTerminalPanel({ statusInfo, onRefresh, modal, onClose }) {
       term.focus();
     };
     ws.onmessage = function (event) {
-      term.write(event.data);
+      var data = event.data;
+      var count = 0;
+      if (typeof data === "string") {
+        for (var i = 0; i < data.length; i++) {
+          if (data.charCodeAt(i) === 0x1b) count++;
+        }
+        setEscCount(count);
+      }
+      term.write(data);
+      // Write diagnostic AFTER data so \x1bc doesn't erase it
+      if (window.__ccFirstFrame && typeof data === "string") {
+        window.__ccFirstFrame = false;
+        console.log("CC DEBUG: first frame ESC count =", count);
+        term.write("\r\n\x1b[33m⚠ ESC count: " + count + "\x1b[0m\r\n");
+      }
     };
+
+    window.__ccFirstFrame = true;
     ws.onerror = function () {
       setConnectionState("offline");
     };
@@ -223,10 +241,20 @@ function CCTerminalPanel({ statusInfo, onRefresh, modal, onClose }) {
       window.requestAnimationFrame(syncSize);
     };
     window.addEventListener("resize", resizeHandler);
+
+    var resizeObserver = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(function () {
+        window.requestAnimationFrame(syncSize);
+      });
+      resizeObserver.observe(containerRef.current);
+    }
+
     window.requestAnimationFrame(syncSize);
 
     return function () {
       window.removeEventListener("resize", resizeHandler);
+      if (resizeObserver) resizeObserver.disconnect();
       ws.close();
       wsRef.current = null;
       fitAddonRef.current = null;
@@ -312,10 +340,12 @@ function CCTerminalPanel({ statusInfo, onRefresh, modal, onClose }) {
       <div className="cc-terminal__panel">
         <div className="cc-terminal__header">
           <div className="cc-terminal__titleRow">
-            <span className="cc-terminal__eyebrow">Claude Code</span>
             <span className="cc-terminal__title">Claude Code</span>
             <span className={"cc-terminal__status cc-terminal__status--" + connectionState}>
               {ccStatusLabel(connectionState)}
+            </span>
+            <span className="cc-terminal__esc" title={"ESC sequences in last update: " + escCount}>
+              {"ESC:" + escCount}
             </span>
           </div>
           <div className="cc-terminal__actions">

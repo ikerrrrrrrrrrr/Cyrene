@@ -716,6 +716,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     return null;
   }
   const [ccStatus, setCcStatus] = useState(null);
+  const [ccModal, setCcModal] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const taRef = useRef(null);
@@ -1406,6 +1407,24 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   return (
     <div className="chat-layout">
       <div className="chat-main">
+        {ccModal ? (
+          <window.CCTerminalPanel
+            statusInfo={{
+              available: true,
+              tmux_session: ccModal.tmuxSession,
+              reason: "",
+              can_launch: false,
+              latest_jsonl: ccModal.latestJsonl || "",
+            }}
+            modal={true}
+            onClose={function () { setCcModal(null); }}
+            onRefresh={function () {
+              if (typeof window.refreshSessions === "function") window.refreshSessions();
+              if (typeof window.refreshStatus === "function") window.refreshStatus();
+            }}
+          />
+        ) : (
+        <>
         <div className="chat-scroll" ref={scrollRef}>
           <div className="thread-header">
             <span className={"sa-dot " + session.status} style={{ marginTop: 0, width: 6, height: 6 }}></span>
@@ -1783,6 +1802,8 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
           </div>
         </div>
         )}
+      </>
+      )}
       </div>
 
       <ChatSide
@@ -1795,6 +1816,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
             .then(function (payload) { setCcStatus(payload); })
             .catch(function () {});
         }}
+        onOpenCCModal={function (info) { setCcModal(info); }}
       />
     </div>
   );
@@ -1994,7 +2016,7 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal }) {
   const { t } = useI18n();
   return (
     <div className="chat-side">
@@ -2007,7 +2029,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
         {session.shells.length === 0 && (
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
         )}
-        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} />)}
+        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} />)}
       </div>
 
       <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
@@ -2036,9 +2058,8 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus }) {
   );
 }
 
-function ShellCard({ shell, ccStatus }) {
+function ShellCard({ shell, ccStatus, onOpenCCModal }) {
   const { t } = useI18n();
-  const [modalOpen, setModalOpen] = useState(false);
   const isCC = shell.kind === "cc" && shell.tmuxSession;
 
   if (!isCC) {
@@ -2063,7 +2084,12 @@ function ShellCard({ shell, ccStatus }) {
 
   return (
     <div className="shell-card shell-card--cc">
-      <div className="shell-card-head shell-card-head--clickable" onClick={function () { setModalOpen(true); }}>
+      <div className="shell-card-head shell-card-head--clickable" onClick={function () {
+        onOpenCCModal && onOpenCCModal({
+          tmuxSession: shell.tmuxSession,
+          latestJsonl: shell.latestJsonl || "",
+        });
+      }}>
         <span>▸</span>
         <span>{"Claude Code"}</span>
         <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
@@ -2075,26 +2101,6 @@ function ShellCard({ shell, ccStatus }) {
             <div key={i} className={"shell-" + l.kind}>{l.text}</div>
           ))}
         </div>
-      )}
-      {modalOpen && window.CCTerminalPanel && ReactDOM.createPortal(
-        <div className="shell-card__cc-modal">
-          <window.CCTerminalPanel
-            statusInfo={{
-              available: true,
-              tmux_session: shell.tmuxSession,
-              reason: "",
-              can_launch: false,
-              latest_jsonl: shell.latestJsonl || "",
-            }}
-            modal={true}
-            onClose={function () { setModalOpen(false); }}
-            onRefresh={function () {
-              if (typeof window.refreshSessions === "function") window.refreshSessions();
-              if (typeof window.refreshStatus === "function") window.refreshStatus();
-            }}
-          />
-        </div>,
-        document.body
       )}
       <div className="shell-card-foot">{shell.elapsed || "—"} · {shell.updatedAt || "—"}</div>
     </div>

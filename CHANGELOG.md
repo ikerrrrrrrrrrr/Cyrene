@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2] - 2026-05-24
+
+### Fixed
+
+- **Claude Code terminal colors** — Complete rewrite of the CC terminal color pipeline:
+  - Switched tmux default-terminal from `xterm-256color` to `tmux-256color` for truecolor (24-bit) support
+  - Added UTF-8-aware C1→7bit control character conversion (`_c1_to_7bit()`) to handle tmux-256color's 8-bit CSI/OSC/DCS sequences
+  - Fixed shell card preview lines leaking across conversations by adding per-session CC preview caching
+  - Fixed expanded terminal layout: terminal now overlays the chat area correctly, with ResizeObserver-based auto-resizing and raf-retry for xterm.js renderer readiness
+  - Restored visible footer with "Cyrene learning" metadata
+  - Removed duplicate title in expanded terminal
+
 ## [0.4.1] - 2026-05-23
 
 ### Added

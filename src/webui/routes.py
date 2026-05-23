@@ -21,7 +21,7 @@ from PIL import Image
 from fastapi import APIRouter, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
-from cyrene.cc_bridge import get_cc_status
+from cyrene.cc_bridge import get_cc_preview, get_cc_status
 from cyrene.cc_learner import analyze_session, learn_from_session
 from cyrene.cc_terminal import CCTerminalSession
 from cyrene import debug
@@ -74,6 +74,7 @@ from cyrene.onboarding import (
 from cyrene.scheduler import reset_lottery
 from cyrene.settings_store import get_all as get_web_settings
 from cyrene.shells import list_shells as list_live_shells
+from cyrene.shells import set_cc_since
 from cyrene.short_term import load_entries
 from cyrene.soul import get_default_soul_content, read_soul, get_soul_path
 from cyrene.version import get_version_label
@@ -1478,6 +1479,9 @@ def _resolve_local_username() -> str:
 # ---------------------------------------------------------------------------
 
 
+# Per-session CC preview cache — archived sessions keep their initial snapshot
+_cc_preview_cache: dict[str, list] = {}
+
 def _build_sessions() -> list[dict]:
     """Build session list — current state.json + parsed conversation archives."""
     sessions: list[dict] = []
@@ -1496,6 +1500,18 @@ def _build_sessions() -> list[dict]:
 
     archive_sessions = _build_archive_sessions(skip_archive_ids=skip_archive_ids)
     sessions.extend(archive_sessions)
+
+    # Per-session CC preview: live session always fresh, archives use cached snapshot
+    for session in sessions:
+        sid = session["id"]
+        for shell in session.get("shells", []):
+            if shell.get("kind") == "cc":
+                if sid == "run_live":
+                    _cc_preview_cache[sid] = list(shell.get("lines", []))
+                elif sid in _cc_preview_cache:
+                    shell["lines"] = list(_cc_preview_cache[sid])
+                else:
+                    _cc_preview_cache[sid] = list(shell.get("lines", []))
 
     return sessions
 
@@ -1627,6 +1643,9 @@ def _build_current_session() -> dict | None:
         live_summary["requests"] = combined_live_usage.get("requests")
         live_summary["tokens"] = _format_tokens(combined_live_usage)
         live_summary["spend"] = _calc_spend(combined_live_usage)
+
+    # Set timestamp filter so CC preview only shows entries from this session
+    set_cc_since(started_at)
 
     visible_shells = [] if is_empty else list_live_shells(include_exited=False)
 

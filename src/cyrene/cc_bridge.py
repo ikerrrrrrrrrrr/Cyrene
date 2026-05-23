@@ -14,6 +14,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO timestamp string (also handles Z suffix)."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
 _CLAUDE_HOME = Path.home() / ".claude"
 _CLAUDE_PROJECTS_DIR = _CLAUDE_HOME / "projects"
 _TMUX_SESSION_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
@@ -197,7 +211,7 @@ def launch_cc_tmux(cwd: Path | None = None, session_name: str = "") -> dict[str,
         return {"ok": False, "reason": "tmux is not installed or not on PATH."}
 
     cwd = (cwd or Path.cwd()).resolve()
-    _run_command(["tmux", "set-option", "-g", "default-terminal", "xterm-256color"])
+    _run_command(["tmux", "set-option", "-g", "default-terminal", "tmux-256color"])
 
     # 优先使用调用方指定的名字，否则根据项目目录自动生成
     if session_name and _TMUX_SESSION_RE.fullmatch(session_name):
@@ -217,7 +231,7 @@ def launch_cc_tmux(cwd: Path | None = None, session_name: str = "") -> dict[str,
     # tmux new-session -d: 后台创建, 不 attach
     result = _run_command([
         "tmux", "new-session", "-d", "-s", name,
-        "-e", "TERM=xterm-256color",
+        "-e", "TERM=tmux-256color",
         "-e", "COLORTERM=truecolor",
         "-c", str(cwd),
         cc_bin,
@@ -412,8 +426,12 @@ def _score_project_dir(project_dir: Path, cwd: Path) -> int:
     return score
 
 
-def get_cc_preview(cwd: Path | None = None, limit: int = 8, min_updated_at: str = "") -> dict[str, Any]:
-    """Return a fixed-rule transcript preview for the side shell card."""
+def get_cc_preview(cwd: Path | None = None, limit: int = 8, min_updated_at: str = "", since: str = "") -> dict[str, Any]:
+    """Return a fixed-rule transcript preview for the side shell card.
+
+    Args:
+        since: ISO timestamp — only include entries after this time.
+    """
     cwd = (cwd or Path.cwd()).resolve()
     project_dir = find_claude_project_dir(cwd)
     latest_jsonl = find_latest_jsonl(project_dir)
@@ -434,7 +452,7 @@ def get_cc_preview(cwd: Path | None = None, limit: int = 8, min_updated_at: str 
         except ValueError:
             pass
 
-    preview_lines = _build_preview_lines(latest_jsonl, limit=max(2, limit))
+    preview_lines = _build_preview_lines(latest_jsonl, limit=max(2, limit), since=since)
     return {
         "lines": preview_lines,
         "updated_at": updated_at,
@@ -479,8 +497,15 @@ def send_prompt_to_cc(prompt: str, cwd: Path | None = None) -> dict[str, Any]:
     }
 
 
-def _build_preview_lines(jsonl_path: Path, limit: int) -> list[dict[str, str]]:
+def _build_preview_lines(jsonl_path: Path, limit: int, since: str = "") -> list[dict[str, str]]:
     lines: list[dict[str, str]] = []
+    since_dt: datetime | None = None
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(str(since).strip().replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
     try:
         with open(jsonl_path, "r", encoding="utf-8", errors="replace") as handle:
             for raw_line in handle:
@@ -493,6 +518,12 @@ def _build_preview_lines(jsonl_path: Path, limit: int) -> list[dict[str, str]]:
                     continue
                 if not isinstance(entry, dict):
                     continue
+
+                # Skip entries before the since timestamp
+                if since_dt is not None:
+                    entry_ts = _parse_timestamp(entry.get("timestamp"))
+                    if entry_ts is not None and entry_ts < since_dt:
+                        continue
 
                 msg_type = str(entry.get("type") or "")
                 if msg_type == "user":

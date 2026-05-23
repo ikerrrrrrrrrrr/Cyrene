@@ -273,9 +273,21 @@ def set_external_shell_status(shell_id: str, status: str) -> None:
     entry["updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
+def set_cc_since(since: str) -> None:
+    """Set a timestamp filter for CC preview lines.
+
+    Only CC transcript entries after this timestamp will appear in
+    the shell card preview.
+    """
+    for shell in _external_shells.values():
+        if shell.get("kind") == "cc":
+            shell["cc_since"] = since
+
+
 def _external_shell_snapshot(shell_id: str, shell: dict[str, Any]) -> dict[str, Any] | None:
     shell_kind = str(shell.get("kind") or "")
     latest_jsonl = ""
+    cc_lines: list = []
     if shell_kind == "cc":
         try:
             from cyrene.cc_bridge import get_cc_preview
@@ -284,8 +296,9 @@ def _external_shell_snapshot(shell_id: str, shell: dict[str, Any]) -> dict[str, 
             preview = get_cc_preview(
                 Path(str(shell.get("cwd") or ".")).resolve(),
                 min_updated_at=str(shell.get("created_at") or "").strip(),
+                since=str(shell.get("cc_since") or "").strip(),
             )
-            shell["lines"] = deque(preview.get("lines") or [], maxlen=240)
+            cc_lines = list(preview.get("lines") or [])
             latest_jsonl = str(preview.get("latest_jsonl") or "")
             updated_at = str(preview.get("updated_at") or "").strip()
             if updated_at:
@@ -312,7 +325,7 @@ def _external_shell_snapshot(shell_id: str, shell: dict[str, Any]) -> dict[str, 
         "createdAt": _short_time(shell.get("created_at")),
         "updatedAt": _short_time(shell.get("updated_at")),
         "elapsed": elapsed,
-        "lines": list(shell.get("lines", [])),
+        "lines": cc_lines if shell_kind == "cc" else list(shell.get("lines", [])),
     }
     # Pass through extra metadata (e.g. tmuxSession, kind for CC shells)
     for key in ("kind", "tmuxSession"):
