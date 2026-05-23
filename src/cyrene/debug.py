@@ -13,7 +13,7 @@ from cyrene.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-VERBOSE = False
+VERBOSE = True
 _log_file: Path | None = None
 
 

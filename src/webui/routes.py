@@ -3240,7 +3240,7 @@ def _read_recent_logs() -> list[dict]:
 
 def _placeholder_logs() -> list[dict]:
     now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    return [{"t": now, "lvl": "info", "msg": "no logs yet — start the agent with --verbose"}]
+    return [{"t": now, "lvl": "info", "msg": "no debug logs yet — verbose mode is enabled, logs appear after agent runs"}]
 
 
 # ---------------------------------------------------------------------------

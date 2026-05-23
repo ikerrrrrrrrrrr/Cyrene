@@ -456,6 +456,7 @@ function visibleRoundSubagents(session) {
   const currentRoundId = String(session && session.currentRoundId || "").trim();
   if (!currentRoundId) return all.filter(function (sa) { return isUnfinishedSubagent(sa && sa.status); });
   return all.filter(function (sa) {
+    if (sa && String(sa.id || "").startsWith("agent_summary_")) return false;
     const roundId = String(sa && sa.roundId || "").trim();
     if (roundId && roundId === currentRoundId) return true;
     return isUnfinishedSubagent(sa && sa.status);
@@ -2106,7 +2107,7 @@ function SubagentMini({ sa }) {
       <div className={"sa-dot " + sa.status}></div>
       <div className="sa-body">
         <div className="sa-name">
-          {sa.name} <span className="id">· {sa.id}</span>
+          {sa.name}{sa.id && sa.id !== sa.name ? <span className="id"> · {sa.id}</span> : null}
         </div>
         <div className="sa-task">{sa.task}</div>
         <div className="sa-meta">

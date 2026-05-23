@@ -33,6 +33,26 @@ function compactNumber(value) {
   return String(Math.round(n));
 }
 
+function Sparkline({ data, color }) {
+  if (!data || data.length < 2) return null;
+  const w = 220, h = 50, pad = 4;
+  const min = Math.min.apply(null, data), max = Math.max.apply(null, data);
+  const range = max - min || 1;
+  const pts = data.map(function(v, i) {
+    var x = pad + (i / (data.length - 1)) * (w - pad * 2);
+    var y = h - pad - ((v - min) / range) * (h - pad * 2);
+    return [x, y];
+  });
+  const d = "M " + pts.map(function(p) { return p.join(" "); }).join(" L ");
+  const area = "M " + pts[0][0] + " " + (h - pad) + " L " + pts.map(function(p) { return p.join(" "); }).join(" L ") + " L " + pts[pts.length - 1][0] + " " + (h - pad) + " Z";
+  return (
+    <svg className="spark" viewBox={"0 0 " + w + " " + h} preserveAspectRatio="none">
+      <path d={area} fill={color || "var(--accent)"} opacity="0.12" />
+      <path d={d} fill="none" stroke={color || "var(--accent)"} strokeWidth="1.5" />
+    </svg>
+  );
+}
+
 function DashboardTokenChart({ timeline }) {
   const data = Array.isArray(timeline) ? timeline : [];
   const w = 760;
@@ -63,8 +83,8 @@ function DashboardTokenChart({ timeline }) {
   return (
     <div className="dashboard-token-chart">
       <div className="dashboard-legend">
-        <span><i className="swatch prompt"></i>Input</span>
-        <span><i className="swatch completion"></i>Output</span>
+        <span><i className="swatch prompt"></i>{t("dashboard.input")}</span>
+        <span><i className="swatch completion"></i>{t("dashboard.output")}</span>
       </div>
       <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
         {[0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -79,12 +99,11 @@ function DashboardTokenChart({ timeline }) {
           <g key={point.item.date}>
             <circle cx={point.x} cy={point.yStacked} r="3.5" className="dashboard-point completion" />
             <circle cx={point.x} cy={point.yPrompt} r="3.5" className="dashboard-point prompt" />
-            <text x={point.x} y={h - 8} textAnchor="middle" className="dashboard-axis-label">
-              {formatRelativeDateLabel(point.item.date)}
-            </text>
+
           </g>
         ))}
       </svg>
+      <div style={{display:"flex",justifyContent:"space-between",padding:"0 34px",marginTop:"-6px",fontFamily:"var(--mono)",fontSize:"10px",color:"var(--text-4)"}}>{promptCoords.map(function(p,i){return <span key={i}>{formatRelativeDateLabel(p.item.date)}</span>})}</div>
     </div>
   );
 }
@@ -144,7 +163,7 @@ function DashboardRadialBreakdown({ hit, miss }) {
           {Math.round((hitValue / total) * 100)}%
         </text>
         <text x="70" y="82" textAnchor="middle" className="dashboard-radial-label">
-          cache hit
+          {t("dashboard.cacheHit")}
         </text>
       </svg>
       <div className="dashboard-radial-meta">
@@ -224,6 +243,7 @@ function DashboardPage() {
   const memories = Array.isArray(dash.recent_memories) ? dash.recent_memories : [];
   const archive = Array.isArray(dash.recent_archive) ? dash.recent_archive : [];
   const heatmap = dash.activity_heatmap || { days: [], rows: [] };
+  const s = DATA.status || {};
 
   return (
     <div className="dashboard-shell">
@@ -249,6 +269,32 @@ function DashboardPage() {
               <strong>{today.archive_days || 0}</strong>
             </div>
           </div>
+          {(s.metrics || []).length ? <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+            {s.metrics.map(function(m, i) {
+              var labelKey = "status.metric." + m.label.replace(/[^a-zA-Z0-9]/g, "");
+              var label = t(labelKey);
+              if (label === labelKey) label = m.label;
+              var subText = m.sub;
+              var match = m.sub.match(/^(\d+)\s+(.+)/);
+              if (match) {
+                var subKey = "status.metricSub." + match[2].replace(/[^a-zA-Z0-9]/g, "");
+                var subTrans = t(subKey);
+                subText = match[1] + " " + (subTrans !== subKey ? subTrans : match[2]);
+              } else {
+                var subKey = "status.metricSub." + m.sub.replace(/[^a-zA-Z0-9]/g, "");
+                var subTrans = t(subKey);
+                if (subTrans !== subKey) subText = subTrans;
+              }
+              return (
+                <div className="card" key={i} style={{ gridColumn: "span 3", flex: 1 }}>
+                  <div className="card-head"><span className="card-title">{label}</span><span className="dot"></span></div>
+                  <div className="metric-big">{m.value}<span className="metric-unit">{m.unit}</span></div>
+                  <div className="metric-sub"><span className={m.delta === "up" ? "delta-up" : m.delta === "dn" ? "delta-dn" : ""}>{subText}</span></div>
+                  <Sparkline data={(s.sparkData || []).map(function(v) { return v + Math.sin(i + v) * 2; })} color={m.delta === "dn" ? "var(--err)" : "var(--accent)"} />
+                </div>
+              );
+            })}
+          </div> : null}
         </div>
 
         <aside className="dashboard-side-panel">
@@ -271,14 +317,14 @@ function DashboardPage() {
         <div className="dashboard-panel token" style={{ gridArea: "token" }}>
           <div className="dashboard-card-head">
             <span>{t("dashboard.usage")}</span>
-            <small>{usage.tokens || "—"}</small>
+            <small>{compactNumber(usage.prompt_tokens || 0)} {t("dashboard.input")} / {compactNumber(usage.completion_tokens || 0)} {t("dashboard.output")} / {compactNumber(usage.total_tokens || 0)} {t("dashboard.total")}</small>
           </div>
           <DashboardTokenChart timeline={timeline} />
           <div className="dashboard-token-footer">
             <div className="dashboard-stat-pair"><span>{t("dashboard.requests")}</span><strong>{usage.requests ?? "—"}</strong></div>
             <div className="dashboard-stat-pair"><span>{t("dashboard.spend")}</span><strong>{usage.spend || "—"}</strong></div>
-            <div className="dashboard-stat-pair"><span>Input</span><strong>{compactNumber(usage.prompt_tokens || 0)}</strong></div>
-            <div className="dashboard-stat-pair"><span>Output</span><strong>{compactNumber(usage.completion_tokens || 0)}</strong></div>
+            <div className="dashboard-stat-pair"><span>{t("dashboard.input")}</span><strong>{compactNumber(usage.prompt_tokens || 0)}</strong></div>
+            <div className="dashboard-stat-pair"><span>{t("dashboard.output")}</span><strong>{compactNumber(usage.completion_tokens || 0)}</strong></div>
           </div>
         </div>
 
@@ -373,6 +419,101 @@ function DashboardPage() {
                 <p>{item.user || item.assistant}</p>
               </div>
             )) : <div className="dashboard-empty">{t("dashboard.emptyArchive")}</div>}
+          </div>
+        </div>
+        {/* Status: services */}
+        <div className="dashboard-panel" style={{ gridArea: "status" }}>
+          <div className="dashboard-card-head">
+            <span>{t("status.services")}</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {(s.services || []).length ? s.services.map(function(svc, i) {
+              return (
+                <div key={i} style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "6px 8px", border: "1px solid var(--line)",
+                  borderRadius: "var(--r-m)", background: "var(--bg-2)"
+                }}>
+                  <span className={"sa-dot " + (svc.status === "warn" ? "running" : "done")}
+                        style={{ marginTop: 0 }}></span>
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text)" }}>{svc.name}</span>
+                  <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 11, color: svc.status === "warn" ? "var(--warn)" : "var(--text-3)" }}>
+                    {svc.latency}
+                  </span>
+                </div>
+              );
+            }) : <div className="dashboard-empty">—</div>}
+          </div>
+          {(s.workers || []).length ? <div style={{ marginTop: 10 }}>
+            <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)", marginBottom: 6 }}>{t("status.workers")}</div>
+            <table className="table">
+              <thead><tr>
+                <th>{t("status.id")}</th><th>{t("status.role")}</th><th>{t("status.status")}</th>
+                <th>{t("status.host")}</th><th>{t("status.uptime")}</th><th style={{ textAlign: "right" }}>{t("status.tokens")}</th>
+                <th style={{ textAlign: "right" }}>{t("status.spend")}</th>
+              </tr></thead>
+              <tbody>
+                {s.workers.map(function(w) {
+                  return (
+                    <tr key={w.id}>
+                      <td style={{ color: "var(--text)" }}>{w.id}</td>
+                      <td>{w.role}</td>
+                      <td><span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                        <span className={"sa-dot " + w.status} style={{ marginTop: 0, width: 6, height: 6 }}></span>{w.status}
+                      </span></td>
+                      <td>{w.host}</td>
+                      <td>{w.uptime}</td>
+                      <td style={{ textAlign: "right" }}>{w.tokens}</td>
+                      <td style={{ textAlign: "right", color: "var(--text)" }}>{w.spend}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div> : null}
+        </div>
+
+        {/* Status: config */}
+        <div className="dashboard-panel" style={{ gridArea: "config" }}>
+          <div className="dashboard-card-head">
+            <span>{t("status.configuration")}</span>
+          </div>
+          <div style={{ marginTop: 6, fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text-3)", display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex" }}>
+              <span>{t("status.model")}</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.model || "—"}</span>
+            </div>
+            <div style={{ display: "flex" }}>
+              <span>{t("status.baseUrl")}</span>
+              <span style={{ marginLeft: "auto", color: "var(--text)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.base_url || "—"}</span>
+            </div>
+            <div style={{ display: "flex" }}>
+              <span>{t("status.soulMd")}</span>
+              <span style={{ marginLeft: "auto", color: s.soul_exists ? "var(--accent)" : "var(--warn)" }}>{s.soul_exists ? t("status.loaded") : t("status.missing")}</span>
+            </div>
+            <div style={{ display: "flex" }}>
+              <span>{t("status.scheduledTasks")}</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.scheduled_tasks ?? 0}</span>
+            </div>
+            <div style={{ display: "flex" }}>
+              <span>{t("status.shortTermEntries")}</span><span style={{ marginLeft: "auto", color: "var(--text)" }}>{s.short_term_entries ?? 0}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Status: logs */}
+        <div className="dashboard-panel" style={{ gridArea: "logs", maxHeight: 380, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <div className="dashboard-card-head">
+            <span>{t("status.activityLog")}</span>
+          </div>
+          <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+            {(s.logs || []).length ? s.logs.slice(-40).map(function(l, i) {
+              return (
+                <div className="log-row" key={i}>
+                  <span className="t">{l.t}</span>
+                  <span className={"lvl " + l.lvl}>{l.lvl}</span>
+                  <span className="msg">{l.msg}</span>
+                </div>
+              );
+            }) : <div className="dashboard-empty">—</div>}
           </div>
         </div>
       </section>

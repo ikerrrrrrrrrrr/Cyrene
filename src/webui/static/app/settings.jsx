@@ -605,7 +605,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                   <div className="field" key={tl.name}>
                     <div className="label">
                       <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent)" }}>{tl.name}</span>
-                      <small>{tl.desc}</small>
+                      <small>{function(k){var v=t(k);return v===k?tl.desc:v;}("tool.desc."+tl.name)}</small>
                     </div>
                     <div className={"toggle " + (tl.enabled ? "on" : "")}
                          onClick={function() { toggleTool(tl.name); }}></div>
