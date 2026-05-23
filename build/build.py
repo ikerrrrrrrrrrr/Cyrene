@@ -403,20 +403,33 @@ def run_electron_builder() -> None:
         if mac_app.exists():
             print(f"\n[macOS] Re-signing {mac_app}...")
             _codesign_mac(mac_app)
-            # Re-create the archive (zip) — electron-builder's own zip was
-            # built from the unsigned .app.  ditto preserves extended
-            # attributes (code signatures) on macOS.
+            # Re-create the DMG — electron-builder's own DMG was built from
+            # the unsigned .app (before we signed python-bundle).
+            # hdiutil create with staging preserves resource forks and
+            # extended attributes (code signatures) on macOS.
+            import tempfile, shutil, glob
             version = get_version()
-            zip_path = PROJECT_ROOT / "dist-electron" / f"Cyrene-{version}-mac.zip"
-            _old_zips = sorted((PROJECT_ROOT / "dist-electron").glob(f"Cyrene-{version}-mac*.zip"))
-            subprocess.run([
-                "ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
-                str(mac_app), str(zip_path),
-            ], check=True)
-            for old in _old_zips:
-                if old != zip_path:
-                    old.unlink(missing_ok=True)
-            print(f"  created: {zip_path.name}")
+            dmg_path = PROJECT_ROOT / "dist-electron" / f"Cyrene-{version}-mac.dmg"
+            _old_dmgs = sorted(glob.glob(str(PROJECT_ROOT / "dist-electron" / f"Cyrene-{version}-mac*.dmg")))
+            with tempfile.TemporaryDirectory(prefix="cyrene-dmg-") as tmp_dir:
+                staging_dir = Path(tmp_dir) / "Cyrene"
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                staged_app = staging_dir / "Cyrene.app"
+                # cp -R preserves extended attributes
+                subprocess.run(["cp", "-R", str(mac_app), str(staged_app)], check=True)
+                apps_link = staging_dir / "Applications"
+                apps_link.symlink_to("/Applications")
+                subprocess.run([
+                    "hdiutil", "create",
+                    "-volname", "Cyrene",
+                    "-srcfolder", str(staging_dir),
+                    "-ov", "-format", "UDZO",
+                    str(dmg_path),
+                ], check=True)
+            for old in _old_dmgs:
+                if old != str(dmg_path):
+                    Path(old).unlink(missing_ok=True)
+            print(f"  created: {dmg_path.name}")
 
 
 def main() -> None:

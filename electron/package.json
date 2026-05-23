@@ -31,7 +31,7 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "../build/icon.icns",
-      "target": ["zip"],
+      "target": ["dmg"],
       "minimumSystemVersion": "12.0",
       "artifactName": "Cyrene-${version}-mac.${ext}"
     },
