@@ -338,6 +338,19 @@ def _run_electron_mode() -> None:
         import os as _os
         _sys.stderr = open(_os.devnull, "w")
 
+    # Prevent ALL subprocesses from creating console windows on Windows.
+    # Our backend has no console, so any subprocess spawned by dependencies
+    # (e.g. git calls from vendored searx) would create a new console window
+    # unless CREATE_NO_WINDOW is specified.  Setting the global default
+    # startupinfo hides all child process windows by default.
+    if _sys.platform == "win32":
+        import subprocess as _sp
+        _si = _sp.STARTUPINFO()
+        _si.dwFlags = _sp.STARTF_USESHOWWINDOW
+        _si.wShowWindow = 0  # SW_HIDE
+        if hasattr(_sp, '_PLATFORM_DEFAULT_STARTUPINFO'):
+            _sp._PLATFORM_DEFAULT_STARTUPINFO = _si
+
     import asyncio
     from cyrene.debug import enable_event_bus
     from cyrene.scheduler import setup_scheduler
