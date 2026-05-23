@@ -367,6 +367,15 @@ def run_electron_builder() -> None:
         sys.exit(1)
     print("  [ok] electron-builder done")
 
+    # macOS: re-sign the .app bundle with ad-hoc signing after electron-builder
+    # finishes.  electron-builder's own signing may not penetrate deeply enough
+    # into the extraResources (python-bundle), causing Gatekeeper rejections.
+    if IS_MAC:
+        mac_app = PROJECT_ROOT / "dist-electron" / "mac" / "Cyrene.app"
+        if mac_app.exists():
+            print(f"\n[macOS] Ad-hoc signing {mac_app}...")
+            _codesign_mac(mac_app)
+
 
 def main() -> None:
     import argparse
