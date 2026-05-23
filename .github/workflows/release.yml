@@ -48,11 +48,11 @@ jobs:
       - name: Smoke test packaged app
         run: dist/Cyrene.app/Contents/MacOS/Cyrene --smoke-test
 
-      - name: Upload DMG
+      - name: Upload macOS app
         uses: actions/upload-artifact@v4
         with:
-          name: macos-dmg
-          path: dist-electron/Cyrene-*-mac.dmg
+          name: macos-app
+          path: dist-electron/Cyrene-*-mac.zip
           if-no-files-found: error
 
   # ==========================================================================
