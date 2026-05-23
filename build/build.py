@@ -145,23 +145,31 @@ def run_pyinstaller() -> None:
 
 
 def _codesign_mac(app_path: Path) -> None:
-    """macOS 代码签名 — 遍历整个 .app，逐个签名所有 Mach-O 二进制文件。
+    """macOS 代码签名 — 只签名 python-bundle + 顶层 .app。
 
-    ``codesign --deep`` only signs nested bundles (``.app`` / ``.framework``),
-    NOT standalone ``.so`` / ``.dylib`` files scattered inside extraResources
-    (python-bundle).  Gatekeeper requires EVERY executable Mach-O binary in the
-    bundle to carry a valid signature — otherwise it shows "已损坏".
+    Rules:
+    - Do NOT use ``--deep`` — it would re-sign ``Electron Framework.framework``
+      and break Electron's own internal signature chain.
+    - Gatekeeper requires every Mach-O binary in the bundle to be signed.
+      We sign only what we added (``extraResources/python-bundle/``), then
+      re-sign the top-level ``.app`` (without ``--deep``) to register the new
+      inner signatures.
     """
     dev_id = os.environ.get("APPLE_DEVELOPER_ID", "")
     identity = dev_id if dev_id else "-"
     sign_opts = ["--options", "runtime"] if dev_id else []
 
-    print("  signing individual Mach-O files...")
+    # Only sign files inside the PyInstaller bundle (our own Mach-O files)
+    python_bundle = app_path / "Contents" / "Resources" / "python-bundle"
+    if not python_bundle.is_dir():
+        print("  [warn] python-bundle not found, skipping signing")
+        return
+
+    print("  signing python-bundle Mach-O files...")
     _signed_count = 0
-    for root, _dirs, files in os.walk(str(app_path)):
+    for root, _dirs, files in os.walk(str(python_bundle)):
         for name in files:
             fpath = os.path.join(root, name)
-            # Only sign Mach-O binaries (skip text / data / plist files)
             try:
                 _out = subprocess.run(
                     ["file", "-b", fpath],
@@ -171,7 +179,7 @@ def _codesign_mac(app_path: Path) -> None:
                     continue
             except Exception:
                 continue
-            # Skip if already signed (ad-hoc or otherwise)
+            # Skip already-signed files
             try:
                 _ret = subprocess.run(
                     ["codesign", "-v", fpath],
@@ -187,13 +195,23 @@ def _codesign_mac(app_path: Path) -> None:
             )
             _signed_count += 1
 
-    # Deep-sign the top-level bundle (this signs any remaining nested bundles)
-    print(f"  signing top-level bundle (deep)...  ({_signed_count} individual files)")
+    # Re-sign the top-level .app (without --deep) so it can see the nested
+    # signatures we just added.
+    print(f"  signing top-level .app...  ({_signed_count} files in python-bundle)")
     subprocess.run(
-        ["codesign", "--deep", "--force", "--sign", identity, str(app_path)] + sign_opts,
+        ["codesign", "--force", "--sign", identity, str(app_path)] + sign_opts,
         check=True,
     )
-    print("  [ok] signed")
+
+    # Quick verification
+    _vr = subprocess.run(
+        ["codesign", "-dvvv", str(app_path)],
+        capture_output=True, text=True, timeout=5,
+    )
+    if _vr.returncode == 0:
+        print(f"  [ok] signed ({_signed_count} files)")
+    else:
+        print(f"  [warn] verification: {_vr.stderr[:120]}")
 
 
 def package_mac() -> Path:
@@ -421,7 +439,9 @@ def run_electron_builder() -> None:
                 staging_dir = Path(tmp_dir) / "Cyrene"
                 staging_dir.mkdir(parents=True, exist_ok=True)
                 staged_app = staging_dir / "Cyrene.app"
-                shutil.copytree(mac_app, staged_app, symlinks=True)
+                # cp -R preserves extended attributes (code signatures) on
+                # macOS — shutil.copytree does NOT, which would drop signatures.
+                subprocess.run(["cp", "-R", str(mac_app), str(staged_app)], check=True)
                 apps_link = staging_dir / "Applications"
                 if apps_link.exists() or apps_link.is_symlink():
                     apps_link.unlink()
