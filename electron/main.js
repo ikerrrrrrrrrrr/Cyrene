@@ -94,15 +94,22 @@ function spawnPython() {
   pythonProcess.on('exit', (code) => {
     console.log(`[electron] Python backend exited (code=${code})`);
     pythonProcess = null;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      // Window still open — Python crashed.  Show error and quit.
-      dialog.showErrorBox(
-        'Cyrene - Backend Error',
-        `The Python backend stopped unexpectedly (exit code ${code}).\n`
-        + 'The application will now close.'
-      );
+    if (code === 42) {
+      // Exit code 42 = intentional restart after update.
+      // Exit immediately to release the single-instance lock so the
+      // detached updater script can launch the new version.
+      app.exit(0);
+    } else {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        // Window still open — Python crashed.  Show error and quit.
+        dialog.showErrorBox(
+          'Cyrene - Backend Error',
+          `The Python backend stopped unexpectedly (exit code ${code}).\n`
+          + 'The application will now close.'
+        );
+      }
+      app.quit();
     }
-    app.quit();
   });
 }
 

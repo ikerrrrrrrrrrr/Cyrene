@@ -1415,9 +1415,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             script_path.chmod(0o755)
             _sp.Popen(["bash", str(script_path)], start_new_session=True)
 
-        # 退出当前进程
+        # 退出当前进程（用特殊退出码 42 标记"故意重启"，区分于意外崩溃）
         import os as _os
-        _os._exit(0)
+        _os._exit(42)
 
     app.include_router(router)
 
