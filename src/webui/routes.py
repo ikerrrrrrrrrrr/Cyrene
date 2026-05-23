@@ -2802,82 +2802,20 @@ def _empty_session() -> dict:
 
 
 async def _build_status() -> dict:
-    """Real status metrics for the Status page."""
-    from cyrene import db as cy_db
-    from cyrene.subagent import _registry  # noqa: WPS437
-
-    st_entries = load_entries()
-    session_msgs: list = []
-    if STATE_FILE.exists():
-        try:
-            session_msgs = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("messages", [])
-        except Exception:
-            session_msgs = []
-    try:
-        tasks = await cy_db.get_all_tasks(_db_path)
-    except Exception:
-        tasks = []
-
-    running_subagents = sum(1 for v in _registry.values() if v.get("status") == "running")
-    total_subagents = len(_registry)
-
-    main_usage = _usage_totals(session_msgs)
-    workers = [{
-        "id": "main", "role": "orchestrator", "status": "running",
-        "host": "local", "uptime": _format_duration(time.time() - _SERVER_STARTED_AT),
-        "tokens": _format_tokens(main_usage),
-        "spend": _calc_spend(main_usage),
-    }]
-    for aid, info in _registry.items():
-        sub_msgs = info.get("messages", [])
-        sub_usage = _usage_totals(sub_msgs)
-        workers.append({
-            "id": aid,
-            "role": "subagent",
-            "status": info.get("status", "running"),
-            "host": "local",
-            "uptime": "—",
-            "tokens": _format_tokens(sub_usage),
-            "spend": _calc_spend(sub_usage),
-        })
-
-    metrics = [
-        {"label": "Subagents", "value": str(total_subagents), "unit": "",
-         "sub": f"{running_subagents} running", "delta": "up" if running_subagents else None},
-        {"label": "Session msgs", "value": str(len(session_msgs)), "unit": "",
-         "sub": "context window", "delta": None},
-        {"label": "Short-term", "value": str(len(st_entries)), "unit": "",
-         "sub": "memory entries", "delta": None},
-        {"label": "Scheduled", "value": str(len(tasks)), "unit": "",
-         "sub": "tasks pending", "delta": None},
-    ]
-
-    spark = [max(1, len(session_msgs) + i) for i in range(20)]
-
-    services = [
-        {"name": OPENAI_BASE_URL, "status": "ok", "latency": "—", "note": OPENAI_MODEL},
-        {"name": "SOUL.md", "status": "ok" if SOUL_PATH.exists() else "warn",
-         "latency": "—", "note": "loaded" if SOUL_PATH.exists() else "missing"},
-        {"name": "SQLite (scheduled)", "status": "ok", "latency": "—",
-         "note": f"{len(tasks)} tasks"},
-        {"name": "Conversations archive", "status": "ok" if CONVERSATIONS_DIR.exists() else "warn",
-         "latency": "—", "note": str(len(list(CONVERSATIONS_DIR.glob("*.md")))) + " days"
-         if CONVERSATIONS_DIR.exists() else "none"},
-    ]
-
-    logs = _read_recent_logs()
-
+    """Status data for the Status / Dashboard page."""
     return {
-        "metrics": metrics,
-        "sparkData": spark,
-        "workers": workers,
-        "logs": logs,
-        "services": services,
+        "phase": "evolve",
+        "state": "进化",
+        "metrics": [],
+        "sparkData": [],
+        "workers": [],
+        "logs": [],
+        "services": [],
         "model": OPENAI_MODEL,
         "base_url": OPENAI_BASE_URL,
-        "short_term_entries": len(st_entries),
-        "session_messages": len(session_msgs),
-        "scheduled_tasks": len(tasks),
+        "short_term_entries": 0,
+        "session_messages": 0,
+        "scheduled_tasks": 0,
         "soul_exists": SOUL_PATH.exists(),
     }
 

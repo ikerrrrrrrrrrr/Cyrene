@@ -25,6 +25,27 @@ function StatusPage() {
   useDataVersion();
   const { t } = useI18n();
   const s = DATA.status;
+
+  // 进化模式：显示状态标语，内容留白
+  if (s.phase === "evolve") {
+    return (
+      <div style={{
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        height: "60vh", gap: 16, color: "var(--text-3)"
+      }}>
+        <div style={{ fontSize: 32, fontWeight: 700, color: "var(--accent)" }}>
+          {s.state || "evolve"}
+        </div>
+        <div style={{ fontSize: 14, fontFamily: "var(--mono)" }}>
+          /ˈiːvɒlv/
+        </div>
+        <div style={{ fontSize: 12, maxWidth: 360, textAlign: "center", lineHeight: 1.6 }}>
+          {t("status.evolveHint")}
+        </div>
+      </div>
+    );
+  }
+
   if (!s.sparkData || !s.sparkData.length) s.sparkData = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
   return (
     <div className="status-grid">

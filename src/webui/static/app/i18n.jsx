@@ -441,6 +441,7 @@ const TRANSLATIONS = {
     "status.uptime": "uptime",
     "status.tokens": "tokens",
     "status.spend": "spend",
+    "status.evolveHint": "The system is currently in evolution mode. Existing data has been transitioned to the new phase.",
 
     // ── Skills Page ──────────────────────────────────────────────────────
     "skills.loading": "Loading skills…",
@@ -1077,6 +1078,7 @@ const TRANSLATIONS = {
     "status.uptime": "运行时间",
     "status.tokens": "token",
     "status.spend": "花费",
+    "status.evolveHint": "系统正在进化模式中运行。原有数据已过渡至新阶段。",
 
     // ── 技能页 ──────────────────────────────────────────────────────────
     "skills.loading": "加载技能中…",
