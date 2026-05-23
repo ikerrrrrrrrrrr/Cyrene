@@ -1,9 +1,11 @@
 """PyInstaller runtime hook for gi (PyGObject) on Linux.
 
-We exclude 'gi' from the frozen bundle because its typelibs reference
-system shared libraries (GTK, WebKit2GTK) that differ across distros.
-This hook adds the system gi installation path to sys.path so the
-frozen Python interpreter can find the host's PyGObject at runtime.
+The gi Python package (including _gi C extension and overrides) is now
+bundled.  This hook adds the system Python paths so that any distro-specific
+gi overrides or other system-installed packages are still importable.
+
+Typelibs (.typelib files in /usr/lib/girepository-1.0/) are loaded at
+runtime by libgirepository and are never bundled.
 
 Required system packages (Ubuntu/Debian):
     sudo apt install python3-gi python3-gi-cairo \\
@@ -17,8 +19,8 @@ import os
 
 for _candidate in (
     "/usr/lib/python3/dist-packages",
-    "/usr/lib/python3.12/site-packages",
-    "/usr/lib64/python3.12/site-packages",
+    f"/usr/lib/python3.{sys.version_info.minor}/site-packages",
+    f"/usr/lib64/python3.{sys.version_info.minor}/site-packages",
 ):
     if os.path.isdir(_candidate) and _candidate not in sys.path:
         sys.path.append(_candidate)

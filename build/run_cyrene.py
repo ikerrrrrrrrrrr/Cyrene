@@ -43,6 +43,10 @@ def _run_smoke_test() -> None:
         "pypdf": None,
         "reportlab": None,
         "mcp": None,
+        "uvicorn": None,
+        "fastapi": None,
+        "pydantic_core": None,
+        "starlette": None,
     }
     for _name in _smoke_imports:
         try:

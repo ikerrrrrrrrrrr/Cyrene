@@ -56,12 +56,12 @@ _hidden = [
     "cyrene.setup", "cyrene.shells", "cyrene.short_term", "cyrene.soul",
     "cyrene.subagent", "cyrene.tools",
     "jinja2", "jinja2.ext",
-    "uvicorn.loops.auto", "uvicorn.protocols.http.auto",
+    "uvicorn.loops.auto", "uvicorn.protocols.http.auto", "uvicorn.logging",
     "anyio", "websockets", "aiosqlite", "apscheduler", "croniter",
     "httpx", "python_multipart", "sniffio", "simplexng",
     "fastapi", "pydantic", "pydantic_core", "pydantic_core._pydantic_core",
     "starlette", "typing_extensions", "annotated_types",
-    "dotenv", "telegram", "mcp", "requests",
+    "dotenv", "telegram", "mcp", "httpx_sse", "sse_starlette", "requests",
     "packaging", "pypdf", "reportlab", "PIL",
     # simplexng runtime deps (vendored searx pulls these in transitively;
     # listed explicitly so PyInstaller collects compiled extensions correctly)
@@ -141,6 +141,8 @@ for _package in (
     "dotenv",
     "telegram",
     "mcp",
+    "httpx_sse",
+    "sse_starlette",
     "requests",
     "packaging",
     "pypdf",
@@ -166,19 +168,22 @@ _excludes = [
     "PIL._tkinter_finder", "curses",
 ]
 
-# Linux: do NOT bundle PyGObject / GTK / WebKit typelibs.
-# They reference system shared libraries (libgtk-3.so, libwebkit2gtk-4.1.so,
-# etc.) whose versions differ across distros, causing symbol errors like
-# "undefined symbol: g_variant_builder_init_static" or
-# "Could not locate webkit_get_major_version".
+# Linux: bundle the gi Python package (including _gi C extension, overrides,
+# and repository wrappers).  The actual GTK / WebKit typelibs (.typelib files
+# in /usr/lib/girepository-1.0/) are NOT bundled — they are loaded at runtime
+# by libgirepository and must match the host's system libraries.
 #
-# Instead we ship a runtime hook (hook-gi-runtime.py) that adds the
-# system gi path to sys.path so the frozen app uses the host's libraries.
+# A runtime hook (hook-gi-runtime.py) adds system Python paths so that any
+# gi overrides installed by the distro but not present in the bundled version
+# are still found.
 # Users need: sudo apt install python3-gi python3-gi-cairo
 #             gir1.2-gtk-3.0 gir1.2-webkit2-4.1
 if not _IS_MAC and not _IS_WIN:
-    if "gi" not in _excludes:
-        _excludes.append("gi")
+    _hidden.append("gi")
+    try:
+        _collect_package("gi")
+    except Exception as exc:
+        print(f"[warn] gi collection failed: {exc}")
 
 # Windows: bundle pythonnet (clr) for pywebview WinForms backend
 # and winloop (uvloop replacement) for simplexng
