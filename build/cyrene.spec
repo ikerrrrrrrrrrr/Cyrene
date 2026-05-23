@@ -143,12 +143,19 @@ _datas = list(dict.fromkeys(_datas))
 _binaries = list(dict.fromkeys(_binaries))
 _hidden = list(dict.fromkeys(_hidden))
 
-# Linux: bundle PyGObject + GTK typelibs for pywebview native window
+# Linux: do NOT bundle PyGObject / GTK / WebKit typelibs.
+# They reference system shared libraries (libgtk-3.so, libwebkit2gtk-4.1.so,
+# etc.) whose versions differ across distros, causing symbol errors like
+# "undefined symbol: g_variant_builder_init_static" or
+# "Could not locate webkit_get_major_version".
+#
+# Instead we ship a runtime hook (hook-gi-runtime.py) that adds the
+# system gi path to sys.path so the frozen app uses the host's libraries.
+# Users need: sudo apt install python3-gi python3-gi-cairo
+#             gir1.2-gtk-3.0 gir1.2-webkit2-4.1
 if not _IS_MAC and not _IS_WIN:
-    try:
-        _collect_package("gi")
-    except Exception as exc:
-        print(f"[warn] gi collection failed (GTK native window will be unavailable): {exc}")
+    if "gi" not in _excludes:
+        _excludes.append("gi")
 
 # Windows: bundle pythonnet (clr) for pywebview WinForms backend
 if _IS_WIN:
@@ -180,7 +187,7 @@ a = Analysis(
     hiddenimports=_hidden,
     hookspath=[str(Path(SPECPATH).resolve())],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[str(Path(SPECPATH).resolve() / "hook-gi-runtime.py")] if not _IS_MAC and not _IS_WIN else [],
     excludes=_excludes,
     noarchive=False,
 )
