@@ -9,6 +9,7 @@ const isWindows = process.platform === 'win32';
 let mainWindow = null;
 let pythonProcess = null;
 let pendingPortResolve = null;
+let isShuttingDown = false;
 
 // ---------------------------------------------------------------------------
 // Python child process management
@@ -99,6 +100,10 @@ function spawnPython() {
       // Exit immediately to release the single-instance lock so the
       // detached updater script can launch the new version.
       app.exit(0);
+    } else if (isShuttingDown) {
+      // Normal shutdown — Python handled SIGTERM gracefully and exited with
+      // code 0.  Don't scare the user with a crash dialog.
+      app.quit();
     } else {
       if (mainWindow && !mainWindow.isDestroyed()) {
         // Window still open — Python crashed.  Show error and quit.
@@ -115,6 +120,7 @@ function spawnPython() {
 
 function killPython() {
   if (!pythonProcess) return;
+  isShuttingDown = true;
   const proc = pythonProcess;
   pythonProcess = null;
 

@@ -1388,35 +1388,44 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.post("/api/update/restart")
     async def api_update_restart():
-        """写入重启脚本并退出进程（安装更新后调用）。"""
+        """写入重启脚本并退出进程（安装更新后调用）。
+
+        无论更新文件是否存在，都通过退出码 42 通知 Electron 重启，
+        避免因提前返回导致进程继续运行、关闭时误弹"崩溃"对话框。
+        """
         from cyrene.updater import get_restart_script, _download_progress
         import subprocess as _sp
 
         dest_str = _download_progress.get("path", "")
-        if not dest_str:
-            return {"ok": False, "error": "No downloaded update"}
-
-        dest = Path(dest_str)
-        if not dest.exists():
-            return {"ok": False, "error": f"Update file not found: {dest}"}
-
-        script = get_restart_script(dest)
-        if sys.platform == "win32":
-            script_ext = ".bat"
-            script_path = dest.parent / "update.bat"
-            script_path.write_text(script)
-            _sp.Popen(
-                ["cmd", "/c", str(script_path)],
-                creationflags=0x00000008,  # CREATE_NEW_CONSOLE
-            )
+        if dest_str:
+            dest = Path(dest_str)
+            if dest.exists():
+                try:
+                    script = get_restart_script(dest)
+                    if sys.platform == "win32":
+                        script_path = dest.parent / "update.bat"
+                        script_path.write_text(script)
+                        _sp.Popen(
+                            ["cmd", "/c", str(script_path)],
+                            creationflags=0x00000008,  # CREATE_NEW_CONSOLE
+                        )
+                    else:
+                        script_path = dest.parent / "update.sh"
+                        script_path.write_text(script)
+                        script_path.chmod(0o755)
+                        _sp.Popen(
+                            ["bash", str(script_path)], start_new_session=True
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to spawn updater script", exc_info=True
+                    )
+            else:
+                logger.warning("Update file vanished: %s", dest)
         else:
-            script_ext = ".sh"
-            script_path = dest.parent / "update.sh"
-            script_path.write_text(script)
-            script_path.chmod(0o755)
-            _sp.Popen(["bash", str(script_path)], start_new_session=True)
+            logger.warning("Restart called but no downloaded update found")
 
-        # 退出当前进程（用特殊退出码 42 标记"故意重启"，区分于意外崩溃）
+        # 始终用退出码 42 退出，通知 Electron 释放 single-instance lock
         import os as _os
         _os._exit(42)
 

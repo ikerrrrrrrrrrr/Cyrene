@@ -408,8 +408,18 @@ def _run_electron_mode() -> None:
         config = uvicorn.Config(app, host="127.0.0.1", port=selected_port, log_level="info")
         server = uvicorn.Server(config)
 
-        # Tell Electron which port to connect to
-        print(f"PORT={selected_port}", flush=True)
+        # Monkey-patch startup so we only tell Electron the port AFTER the
+        # uvicorn server is actually listening.  Previously PORT was printed
+        # before server.serve() — Electron got the port, navigated to the URL,
+        # but the server wasn't ready yet → white screen.
+        _orig_startup = server.startup
+
+        async def _startup_and_notify(sockets=None):
+            await _orig_startup(sockets=sockets)
+            if not server.should_exit:
+                print(f"PORT={selected_port}", flush=True)
+
+        server.startup = _startup_and_notify
 
         await server.serve()
 
