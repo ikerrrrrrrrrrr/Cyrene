@@ -512,13 +512,23 @@ def _run_web_gui() -> None:
         _show_error("Cyrene - Server Error", server_error[0] if server_error else "Server failed to start.")
         _sys.exit(1)
 
-    # macOS: use compiled Swift WKWebView helper (native, zero deps)
+    # macOS: use compiled Swift WKWebView helper (native, zero deps).
+    # Give it a short grace period, then verify the window actually appeared
+    # by checking whether the process is still alive.  If not — fall through
+    # and let the user open the URL in their browser.
     if _sys.platform == "darwin":
         _bin = Path(_sys._MEIPASS) / "cyrene_window" if getattr(_sys, "frozen", False) else Path(__file__).resolve().parent.parent.parent / "build" / "cyrene_window"
         if _bin.exists():
             import subprocess
-            subprocess.run([str(_bin), url])
-            return
+            proc = subprocess.Popen([str(_bin), url])
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                # Process is still alive — window was shown successfully
+                proc.wait()
+                return
+            # Process exited within 3 s — window likely failed to appear
+            logger.warning("cyrene_window exited early (rc=%d), falling back to browser", proc.returncode)
 
     # Windows/Linux: try pywebview
     try:
@@ -544,6 +554,12 @@ def _run_web_gui() -> None:
                      f"Server running at {url}\n"
                      "Open this address in your browser.")
         print(f"Cyrene server is running at {url}", flush=True)
+        # Open the user's default browser as a fallback
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
         print("Press Ctrl+C to stop.", flush=True)
         try:
             while True:
