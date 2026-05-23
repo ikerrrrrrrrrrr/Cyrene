@@ -2905,6 +2905,13 @@ async def clear_session_id() -> None:
         STATE_FILE.unlink()
     # 不清短期记忆。它用于在 session 重置后注入上下文。
 
+    # 每次开新 session 时启动后台模式检测（避免阻塞主流程）
+    try:
+        from cyrene import pattern as _pattern_module
+        _ = asyncio.create_task(_pattern_module.tick(None, ""))
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Tool: quit (stays here to avoid circular imports — added to TOOL_HANDLERS below)

@@ -1011,11 +1011,88 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         return JSONResponse({"error": "unknown session id"}, status_code=400)
 
-    # ---- Status API ----
+    # ---- Evolution API ----
 
-    @router.get("/api/status")
-    async def api_status():
-        return await _build_status()
+    @router.get("/api/evolution")
+    async def api_evolution():
+        """Aggregated data for the Evolution page."""
+        from cyrene import pattern as _pattern
+        status = await _build_status()
+        scripts = _pattern.list_scripts("all")
+        cc_status = await _api_cc_status()
+        return {
+            "phase": status.get("phase", ""),
+            "state": status.get("state", ""),
+            "scripts": scripts,
+            "cc_learning": cc_status,
+        }
+
+    @router.get("/api/scripts")
+    async def api_scripts(status: str = "all"):
+        from cyrene import pattern as _pattern
+        return {"scripts": _pattern.list_scripts(status)}
+
+    @router.post("/api/scripts/{script_id}/approve")
+    async def api_approve_script(script_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.approve_script(script_id)
+        return {"ok": ok}
+
+    @router.post("/api/scripts/{script_id}/reject")
+    async def api_reject_script(script_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.reject_script(script_id)
+        return {"ok": ok}
+
+    @router.post("/api/scripts/{script_id}/run")
+    async def api_run_script(script_id: str):
+        from cyrene import pattern as _pattern
+        result = await _pattern.run_script(script_id)
+        return {"ok": True, "result": result}
+
+    # ---- Skills install API ----
+
+    @router.get("/api/skills/installed")
+    async def api_installed_skills():
+        from cyrene.settings_store import get as _get_setting
+        installed = _get_setting("installed_skills", [])
+        return {"skills": installed}
+
+    @router.post("/api/skills/install")
+    async def api_install_skill(request: Request):
+        from cyrene.settings_store import get as _get_setting, set_ as _set_setting
+        body = await request.json()
+        skill_id = str(body.get("id", "")).strip()
+        skill_def = body.get("def", {})
+        if not skill_id:
+            return {"ok": False, "error": "missing skill id"}
+        installed = _get_setting("installed_skills", [])
+        if any(s.get("id") == skill_id for s in installed):
+            return {"ok": False, "error": "already installed"}
+        installed.append({"id": skill_id, "name": skill_def.get("name", skill_id),
+                          "desc": skill_def.get("desc", ""), "enabled": True,
+                          "installed_at": __import__("datetime").datetime.now().isoformat()})
+        _set_setting("installed_skills", installed)
+        return {"ok": True}
+
+    @router.post("/api/skills/{skill_id}/toggle")
+    async def api_toggle_skill(skill_id: str):
+        from cyrene.settings_store import get as _get_setting, set_ as _set_setting
+        installed = _get_setting("installed_skills", [])
+        for s in installed:
+            if s.get("id") == skill_id:
+                s["enabled"] = not s.get("enabled", True)
+                break
+        _set_setting("installed_skills", installed)
+        return {"ok": True}
+
+    @router.post("/api/skills/{skill_id}/uninstall")
+    async def api_uninstall_skill(skill_id: str):
+        from cyrene.settings_store import get as _get_setting, set_ as _set_setting
+        installed = _get_setting("installed_skills", [])
+        installed = [s for s in installed if s.get("id") != skill_id]
+        _set_setting("installed_skills", installed)
+        return {"ok": True}
 
     # ---- Memory API ----
 

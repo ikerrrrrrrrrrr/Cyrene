@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _DATA_DIR: Path | None = None
 _PATTERNS_DIR: Path | None = None
 _ACTION_LOG_PATH: Path | None = None
+_PATTERN_HISTORY_PATH: Path | None = None
 _DETECTION_INTERVAL: int = 600  # seconds between detection runs
 
 # ---------------------------------------------------------------------------
@@ -691,15 +692,47 @@ def register_tools() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Periodic detection tick (called from scheduler heartbeat)
+# Pattern history — records fingerprints we've seen before so we only
+# create pending scripts on the SECOND (or later) occurrence of a pattern,
+# avoiding false positives from one-off behaviors.
 # ---------------------------------------------------------------------------
 
 _detection_ticks: int = 0
 _detection_last_run: float = 0.0
 
 
+def _load_pattern_history() -> dict:
+    if _PATTERN_HISTORY_PATH and _PATTERN_HISTORY_PATH.exists():
+        try:
+            return json.loads(_PATTERN_HISTORY_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_pattern_history(history: dict) -> None:
+    if _PATTERN_HISTORY_PATH:
+        tmp = _PATTERN_HISTORY_PATH.with_suffix(".json.tmp")
+        try:
+            tmp.write_text(
+                json.dumps(history, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(_PATTERN_HISTORY_PATH)
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+
+
 async def tick(bot: Any, db_path: str) -> None:
-    """Call from scheduler heartbeat.  Runs detection on a throttled interval."""
+    """Call from scheduler heartbeat.  Runs detection on a throttled interval.
+
+    Only creates pending scripts on the SECOND+ occurrence of a pattern
+    (first occurrence is recorded in pattern history for reference).
+    """
     global _detection_ticks, _detection_last_run
 
     _detection_ticks += 1
@@ -710,12 +743,24 @@ async def tick(bot: Any, db_path: str) -> None:
 
     try:
         candidates = detect_patterns()
+        history = _load_pattern_history()
         new_scripts = 0
         for c in candidates:
             if c.confidence >= 0.7:
-                script = await create_pending_script(c)
-                if script:
-                    new_scripts += 1
+                fp = c.fingerprint
+                if fp in history:
+                    # Second+ occurrence → create pending script
+                    script = await create_pending_script(c)
+                    if script:
+                        new_scripts += 1
+                else:
+                    # First occurrence → record in history, no script yet
+                    history[fp] = {
+                        "first_seen": datetime.now(timezone.utc).isoformat(),
+                        "occurrences": c.occurrences,
+                        "tools": [s.get("tool", "") for s in c.sequence],
+                    }
+                    _save_pattern_history(history)
 
         if new_scripts:
             logger.info("Pattern detection: %d new pending script(s)", new_scripts)
@@ -745,6 +790,7 @@ async def init(data_dir: Path, workspace_dir: Path) -> None:
     _PATTERNS_DIR = workspace_dir / "patterns"
     _PATTERNS_DIR.mkdir(parents=True, exist_ok=True)
     _ACTION_LOG_PATH = _DATA_DIR / "action_log.jsonl"
+    _PATTERN_HISTORY_PATH = _DATA_DIR / "pattern_history.json"
 
     # Load interval from config if available
     try:

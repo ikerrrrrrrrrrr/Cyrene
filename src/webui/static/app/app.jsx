@@ -15,11 +15,12 @@ const ACCENT_PRESETS = {
   dark:  ["#4fd1a0", "#6dbde0", "#b8a2e0", "#e8ae5c", "#e87070"],
   light: ["#2da873", "#3b90c8", "#7858b0", "#c88520", "#d04848"],
 };
-const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "skills", "memory", "status", "settings"]);
+const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "skills", "memory", "evolution", "settings"]);
 
 function readStoredUiPage() {
   try {
     var page = localStorage.getItem("cyrene-ui-page");
+    if (page === "status") page = "evolution"; // migrate old key
     return VALID_UI_PAGES.has(page) ? page : "chat";
   } catch (e) {
     return "dashboard";
@@ -392,7 +393,7 @@ function App() {
                                   }} />}
         {page === "skills"   && <SkillsPage />}
         {page === "memory"   && <MemoryPage />}
-        {page === "status"   && <StatusPage />}
+        {page === "evolution" && <EvolutionPage />}
         {page === "settings" && (
           <SettingsPage
             tweaks={t}
@@ -420,7 +421,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
     { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "4", badge: sessionCount > 0 ? String(sessionCount) : null },
     { id: "skills",   label: t("nav.skills"),   icon: "✸", key: "5" },
     { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "6" },
-    { id: "status",   label: t("nav.status"),   icon: "◉", key: "7" },
+    { id: "evolution", label: t("nav.evolution"), icon: "⚡", key: "7" },
     { id: "settings", label: t("nav.settings"), icon: "✱", key: "8" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
@@ -558,7 +559,7 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
     page === "sessions" ? <>{t("topbar.sessions")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "skills" ? <>{t("topbar.skills")}<span className="crumb-sep">/</span><b>{t("topbar.library")}</b></> :
     page === "memory" ? <>{t("topbar.memory")}<span className="crumb-sep">/</span><b>{t("topbar.pipeline")}</b></> :
-    page === "status" ? <>{t("topbar.status")}<span className="crumb-sep">/</span><b>{t("topbar.overview")}</b></> :
+    page === "evolution" ? <>{t("topbar.evolution")}<span className="crumb-sep">/</span><b>evolve</b></> :
     <>{t("topbar.settings")}<span className="crumb-sep">/</span><b>{t("topbar.workspace")}</b></>;
 
   return (
