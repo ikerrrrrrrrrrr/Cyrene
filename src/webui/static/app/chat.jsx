@@ -1084,7 +1084,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   }
 
   async function submitQuestionAnswer(options) {
-    if (!pendingQuestion || answeringQuestion || sending) return;
+    if (!pendingQuestion || answeringQuestion) return;
     const selectedOption = String(options && options.selectedOption || "");
     const text = String(options && options.text || questionDraft || "").trim() || selectedOption;
     if (!text) return;
@@ -1914,7 +1914,7 @@ function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, 
   const [expanded, setExpanded] = useState(false);
   if (!pendingQuestion) return null;
   const options = Array.isArray(pendingQuestion.options) ? pendingQuestion.options : [];
-  const customDisabled = answering || sending;
+  const customDisabled = answering;
   const questionText = String(pendingQuestion.text || "");
   const canCollapse = questionText.length > 280;
   return (

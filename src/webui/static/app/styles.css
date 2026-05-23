@@ -1582,7 +1582,7 @@ html[data-theme="light"] .msg.user .msg-body {
   background: var(--bg-1);
   padding: 9px 10px;
   transition: border-color 120ms;
-  box-shadow: var(--surface-gloss), var(--shadow-sm);
+  box-shadow: var(--shadow-sm);
 }
 .composer-box:focus-within { border-color: var(--accent-dim); box-shadow: var(--shadow-md); }
 .composer-chips {

@@ -118,6 +118,14 @@ _DEEP_RESEARCH_PROMPT = """## Deep Research Mode
 
 You are in **Deep Research** mode. The user has asked a question that requires thorough, multi-angle investigation. Follow this process rigorously:
 
+### Pre-Research: Determine Report Length
+**Before spawning any subagents or starting research**, you MUST ask the user about the desired report length. Call the `ask_user` tool with the question text and structured options like this:
+
+- text: "请选择报告篇幅"
+- options: ["长（30+页）：全面深度研究，覆盖所有维度", "中（20+页）：中等深度，覆盖主要维度", "短（10+页）：聚焦核心问题，精简报告"]
+
+Do NOT list the options inside the text argument — use the dedicated options parameter. The user can also type a custom answer directly. Wait for their response, then save the chosen length for use when writing the report.
+
 ### Phase 1: Decomposition
 1. Analyze the user's question and identify all sub-questions, angles, and dimensions that need investigation.
 2. Break the question down into 3–8 independent research tracks. Each track should be a self-contained research question.
@@ -182,6 +190,96 @@ You are a research specialist. Your job is to gather and deliver raw, detailed f
 - End your report with a "## Sources" section listing every numbered source with its full details.
 - Note gaps: what you couldn't find, what remains uncertain.
 """
+
+# ---------------------------------------------------------------------------
+# Deep Research Phase 3 — multi-turn report generation prompts
+# ---------------------------------------------------------------------------
+
+_OUTLINE_GENERATION_PROMPT = """You are planning a deep research report. Based on the template and research materials below, create a detailed outline in STRICT JSON format.
+
+## Report Template
+{template}
+
+## Research Materials
+{source_material}
+
+## Rules
+- You MUST include ALL top-level sections from the template. Do not skip any.
+- For section "核心发现" (Core Findings), break it down into granular subsections.
+  Each subsection should cover ONE focused sub-topic.
+- **Length preference**: {length_pref}
+  Units range: {unit_range}
+  Adjust the number of subsections accordingly — more subsections = more thorough report.
+- Write a detailed "prompt" for each unit describing what to cover and which aspects of the research materials to draw from.
+- The "title" should be derived from the research question. Replace {{title}} and {{question}} in the template.
+- **CRITICAL: Do NOT include "参考文献" / References as a writing unit.** The references section is assembled automatically by the system. Every writing unit will output its own citations, and they will be merged globally.
+- Output ONLY valid JSON. No explanation, no markdown fences.
+
+## Output JSON format
+{{"title": "Report Title", "units": [
+  {{"id": 1, "heading": "## 1. 执行摘要", "brief": "...", "prompt": "..."}},
+  {{"id": 2, "heading": "## 2. 背景与上下文", "brief": "...", "prompt": "..."}},
+  {{"id": "3.1", "heading": "### 3.1 ...", "brief": "...", "prompt": "..."}},
+  ...
+]}}"""
+
+_SECTION_WRITE_PROMPT = """You are writing unit {unit_no}/{total_units} of a deep research report.
+
+## Report Outline
+{outline_json}
+
+## Research Materials
+{source_material}
+
+## Report Written So Far
+{report_so_far}
+
+## References Already Used
+{references_so_far}
+
+## Current Unit
+{unit_heading}
+{brief}
+
+## Writing Instructions
+1. Write this unit in {lang}. Write in the style of a professional research report — formal, precise, and data-driven.
+2. BE THOROUGH. This unit must be a substantive deep-dive, not a summary. Cover every relevant data point, quote, and finding from the research materials for this topic. If the materials contain rich information, cover ALL of it.
+3. Minimum {min_words} words for this unit. If the material justifies more, write more. There is no upper limit.
+4. Use [N] for citations (e.g. "market grew 27% in 2024 [1]"). BEFORE assigning a new number, check "References Already Used" above — if the source already exists there, REUSE its number. If citing a NEW source not yet in that list, assign the next available number.
+5. **REFERENCE OUTPUT — STRICT FORMAT. Follow this exactly.**
+
+After the unit body, IF you introduced any new sources, add this exact line:
+
+## New References
+
+Then list each new source on its own line in this format:
+[N] Author/Org, "Title", publication date, URL
+
+Example:
+## New References
+[3] Market Research Inc, "Global AI Report 2024", 2024, https://example.com
+[4] Tech Analysis Corp, "AI Trends", 2025, https://example.com
+
+### STRICT RULES (violations will produce a broken report):
+- The marker MUST be exactly "## New References". NOT "###", NOT "References", NOT "## 参考文献", NOT "## Sources". ONLY "## New References".
+- The marker MUST be at the very end of your output. Nothing after it.
+- Every [N] you use in the body MUST have a matching entry in either "References Already Used" or "## New References". No orphan citations.
+- One source per line. No blank lines between sources.
+- If you cited ZERO new sources, do NOT include "## New References" at all. Just end after the section body."""
+
+_EXPANSION_PROMPT = """You are reviewing a draft research report to identify sections that need expansion.
+
+## Completed Report
+{final_report}
+
+## Research Materials
+{source_material}
+
+## Instructions
+1. Read the draft carefully. Identify any section that feels too thin, underdeveloped, or lacking in detail.
+2. For each such section, write an expanded version that is at least 500 words and incorporates more data points, quotes, and analysis from the research materials.
+3. Output the expanded sections with headers matching the originals that should be REPLACED.
+4. If all sections are already substantive, output nothing."""
 
 
 _QUICK_ANSWER_PROMPT = """## Quick Answer Mode
@@ -728,6 +826,325 @@ def _deep_research_pdf_attachment(round_id: str, user_message: str, final_text: 
     except Exception:
         logger.exception("Failed to generate deep research PDF")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Deep Research Phase 3 — multi-turn helper functions
+# ---------------------------------------------------------------------------
+
+_DEFAULT_TEMPLATE = """# {{title}}
+
+> 研究问题：{{question}}
+
+## 1. 执行摘要
+## 2. 背景与上下文
+## 3. 核心发现
+## 4. 分析与启示
+## 5. 局限性
+## 6. 结论
+## 7. 参考文献"""
+
+
+def _load_research_template(template_path: str | None = None) -> str:
+    """Load the research report template. Falls back to embedded default."""
+    if template_path:
+        p = Path(template_path)
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    try:
+        from importlib.resources import read_text as _read_text
+
+        return _read_text("cyrene", "report_template.md")
+    except Exception:
+        return _DEFAULT_TEMPLATE
+
+
+def _extract_new_references(text: str) -> tuple[str, list[str]]:
+    """Split LLM section output into body text and new reference entries.
+
+    Handles multiple heading variations:
+    - ## New References
+    - ### New References
+    - ## References
+    - 参考资料 / 参考文献 / Sources
+    """
+    # Try multiple patterns in order, case-insensitive
+    patterns = [
+        r"#{1,3}\s+New\s+References",
+        r"#{1,3}\s+References",
+        r"#{1,3}\s+参考资料",
+        r"#{1,3}\s+参考文献",
+        r"#{1,3}\s+Sources",
+    ]
+    best_pos = -1
+    best_pat = ""
+    for pat in patterns:
+        matches = list(re.finditer(pat, text, re.MULTILINE | re.IGNORECASE))
+        if matches:
+            pos = matches[-1].start()  # use the LAST match
+            if pos > best_pos:
+                best_pos = pos
+                best_pat = pat
+
+    if best_pos < 0 or not best_pat:
+        return text.rstrip(), []
+
+    body = text[:best_pos].rstrip()
+    ref_section = text[best_pos:]
+    new_refs: list[str] = []
+    for line in ref_section.splitlines():
+        line = line.strip()
+        if re.match(r"^\[\d+\]", line):
+            new_refs.append(line)
+    return body, new_refs
+
+
+def _strip_stray_references(text: str) -> str:
+    """Remove any stray reference headings and source blocks from body text.
+
+    This ensures no leftover ``## New References`` or ``## Sources`` blocks
+    appear in section bodies — all references go through the consolidated
+    ``## 参考文献`` section at the end.
+
+    Handles headings that may have a number prefix (e.g. ``## 7. 参考文献``).
+    Uses ``re.search`` because the heading can appear mid-line.
+    """
+    heading_patterns = [
+        r"#{1,3}\s+(?:\d+\.?\s*)?New\s+References",
+        r"#{1,3}\s+(?:\d+\.?\s*)?References",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考资料",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考文献",
+        r"#{1,3}\s+(?:\d+\.?\s*)?Sources",
+    ]
+    lines = text.splitlines()
+    cleaned: list[str] = []
+    in_ref_block = False
+    for line in lines:
+        stripped = line.strip()
+        # Check if this line is a reference heading
+        matched_heading = any(re.search(p, stripped, re.IGNORECASE) for p in heading_patterns)
+        if matched_heading:
+            in_ref_block = True
+            continue
+        if in_ref_block:
+            # Skip [N] lines and blank lines inside the ref block
+            if re.match(r"^\[\d+\]", stripped):
+                continue
+            if not stripped:
+                continue
+            # Non-[N] content ends the ref block
+            in_ref_block = False
+        cleaned.append(line)
+    return "\n".join(cleaned).strip()
+
+
+def _deduplicate_references(entries: list[str]) -> list[str]:
+    """Deduplicate reference entries by URL and renumber sequentially.
+
+    When two entries share the same URL the *last* one wins (more likely
+    to have a complete description).  Entries without a detectable URL
+    are deduplicated by their first 120 characters.
+    """
+    seen: dict[str, str] = {}
+    for entry in entries:
+        m = re.search(r"(https?://\S+)", entry)
+        key = m.group(1).rstrip(".)") if m else entry[:120]
+        seen[key] = entry
+    result: list[str] = []
+    for i, entry in enumerate(seen.values(), 1):
+        result.append(re.sub(r"^\[\d+\]", f"[{i}]", entry))
+    return result
+
+
+def _assemble_report(sections: list[str], references: list[str], outline: dict) -> str:
+    """Join section bodies, outline title, and deduplicated references.
+
+    All references are consolidated into a single ``## 参考文献`` section
+    at the end. Section bodies are pre-stripped of stray reference blocks.
+    """
+    title = str(outline.get("title") or "Deep Research Report").strip()
+    parts: list[str] = []
+    # Strip any stray ref blocks from each section
+    for sec in sections:
+        clean = _strip_stray_references(sec)
+        if clean:
+            parts.append(clean)
+    if references:
+        parts.append("## 参考文献\n" + "\n".join(references))
+    report = "\n\n".join(parts)
+    return f"# {title}\n\n{report}"
+
+
+def _parse_length_preference(messages: list[dict]) -> str:
+    """Scan conversation messages for the user's length preference.
+
+    Returns one of: "short", "medium", "long", or "medium" as default.
+    """
+    for msg in reversed(messages):
+        content = str(msg.get("content", "") or "")
+        content_lower = content.lower() if isinstance(content, str) else ""
+        # Check for explicit indicators
+        # Long: 30+, 长
+        if "30" in content or "30+" in content:
+            if any(kw in content_lower for kw in ["页", "篇", "长"]):
+                return "long"
+        if len(content) > 5 and ("长" in content and ("30" in content or "30+" in content)):
+            return "long"
+        # Short: 10, 短, 精简
+        if "10" in content and any(kw in content_lower for kw in ["页", "篇", "短"]):
+            return "short"
+        if len(content) > 3 and "短" in content:
+            return "short"
+        # Medium: 20, 中
+        if "20" in content and any(kw in content_lower for kw in ["页", "篇", "中"]):
+            return "medium"
+        if len(content) > 3 and "中" in content:
+            return "medium"
+    return "medium"
+
+
+async def _generate_deep_research_outline(
+    source_material: str,
+    template: str,
+    question: str,
+    lang: str,
+    length_pref: str = "medium",
+) -> dict:
+    """Step 2: LLM generates a report outline as JSON."""
+    sys_msg = (
+        _OUTLINE_GENERATION_PROMPT.replace("{template}", template)
+        .replace("{source_material}", source_material)
+        .replace("{length_pref}", length_pref)
+    )
+    # Set outline guidance based on length preference
+    if length_pref == "short":
+        unit_range = "3~5 units, concise"
+    elif length_pref == "medium":
+        unit_range = "5~8 units, moderate detail"
+    else:
+        unit_range = "8~15+ units, thorough deep-dive"
+    sys_msg = sys_msg.replace("{unit_range}", unit_range)
+
+    user_msg = f"Research question: {question}\n\nPreferred language: {lang}\n\nLength preference: {length_pref}"
+    messages = [
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": user_msg},
+    ]
+    try:
+        resp = await _call_llm(messages, tools=None, max_tokens=None)
+        raw = _assistant_text(resp) or ""
+        # Strip markdown fences if present
+        raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+        outline = json.loads(raw)
+        if not isinstance(outline, dict) or "units" not in outline:
+            outline = {"title": question, "units": []}
+    except Exception:
+        logger.exception("Failed to generate deep research outline")
+        outline = {"title": question, "units": []}
+    return outline
+
+
+async def _write_section(
+    source_material: str,
+    outline: dict,
+    report_so_far: str,
+    references_so_far: str,
+    unit_def: dict,
+    unit_no: int,
+    total_units: int,
+    lang: str,
+    length_pref: str = "medium",
+) -> str:
+    """Step 3: Write one section unit and return the full LLM output.
+
+    The caller is responsible for splitting the output into body and
+    new references via ``_extract_new_references``.
+    """
+    if length_pref == "short":
+        min_words = 200
+    elif length_pref == "long":
+        min_words = 800
+    else:
+        min_words = 500
+
+    prompt = (
+        _SECTION_WRITE_PROMPT.replace("{unit_no}", str(unit_no))
+        .replace("{total_units}", str(total_units))
+        .replace("{outline_json}", json.dumps(outline, ensure_ascii=False))
+        .replace("{source_material}", source_material)
+        .replace("{report_so_far}", report_so_far)
+        .replace("{references_so_far}", references_so_far)
+        .replace("{unit_heading}", unit_def.get("heading", ""))
+        .replace("{brief}", unit_def.get("brief", "") or unit_def.get("prompt", ""))
+        .replace("{lang}", lang)
+        .replace("{min_words}", str(min_words))
+    )
+
+    user_msg = (
+        f"Write unit {unit_no}/{total_units}: {unit_def.get('heading', '')}\n\n"
+        f"{unit_def.get('brief', '') or unit_def.get('prompt', '')}"
+    )
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": user_msg},
+    ]
+    try:
+        resp = await _call_llm(messages, tools=None, max_tokens=None)
+        return _assistant_text(resp) or ""
+    except Exception:
+        logger.exception("Failed to write section %s", unit_def.get("heading", ""))
+        return f"[该章节未生成: {unit_def.get('heading', '')}]"
+
+
+async def _expansion_pass(
+    source_material: str,
+    outline: dict,
+    sections_written: list[str],
+    references: list[str],
+    lang: str,
+) -> list[str]:
+    """Step 4 (optional): Expand thin sections when the report is too short.
+
+    Only triggered when total report length is below threshold.
+    """
+    combined = "\n\n".join(sections_written)
+    prompt = (
+        _EXPANSION_PROMPT.replace("{final_report}", combined)
+        .replace("{source_material}", source_material)
+        .replace("{lang}", lang)
+    )
+    messages = [
+        {"role": "system", "content": prompt},
+        {"role": "user", "content": "Please expand thin sections as described above."},
+    ]
+    try:
+        resp = await _call_llm(messages, tools=None, max_tokens=None)
+        expansion_text = _assistant_text(resp) or ""
+        if not expansion_text.strip():
+            return sections_written  # no expansions needed
+        # Expansion output should contain section headers matching originals.
+        # Replace matching sections in place.
+        result = list(sections_written)
+        for i, section in enumerate(result):
+            # Extract first heading line
+            heading_match = re.match(r"(#{1,3}\s+[\d.]*\s*\S[^\n]*)", section)
+            if not heading_match:
+                continue
+            heading = heading_match.group(1)
+            # Find corresponding expansion
+            exp_pattern = re.escape(heading)
+            exp_match = re.search(exp_pattern, expansion_text)
+            if exp_match:
+                # Extract the expanded block (from heading to next heading or end)
+                rest = expansion_text[exp_match.start():]
+                next_heading = re.search(r"\n(#{1,3}\s+[\d.]*\s*\S)", rest[1:])
+                expanded = rest[:next_heading.start() + 1] if next_heading else rest
+                result[i] = expanded.strip()
+        return result
+    except Exception:
+        logger.exception("Expansion pass failed")
+        return sections_written
 
 
 def _flush_intermediate_user_replies(messages: list[dict[str, Any]]) -> None:
@@ -1551,6 +1968,7 @@ def _pending_question_resume_context(question_id: str) -> dict[str, Any]:
         "round_id": target_round_id,
         "round_title": str(pending.get("round_title", "")).strip(),
         "client_request_id": str(pending.get("client_request_id", "")).strip(),
+        "command": str((pending.get("meta") or {}).get("command", "") or "").strip(),
     }
 
 
@@ -2090,6 +2508,7 @@ async def answer_pending_question(
             persist_insert_at=context.get("persist_insert_at"),
             client_request_id=client_request_id,
             persist_user_message=True,
+            command=str(context.get("command", "") or "").strip(),
         )
     except Exception:
         await _restore_pending_question(pending)
@@ -3146,38 +3565,59 @@ async def _run_main_agent(
                     round_history=messages,
                 )
 
-                # Deep research: 只提取子代理的研究结果（不含内部对话），交给主 agent 写最终报告
+                # Deep research Phase 3: 多轮报告生成（大纲 → 逐章节填写 → 引用累积）
                 if _deep_research_mode.get():
                     source_material = await _build_deep_research_source(round_id)
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "## Research Materials\n\n"
-                            "Below are the research findings gathered on this question. "
-                            "Write the final research report based on these materials. "
-                            "Write as if YOU did all the research — never mention how the materials were collected.\n\n"
-                            + source_material
-                        ),
-                        "hidden_from_ui": True,
-                    })
-                    response = None
-                    try:
-                        response = await _call_llm(messages, tools=None, max_tokens=None)
-                        final_text = _assistant_text(response) or ""
-                    except Exception:
-                        logger.exception("Deep research Phase 3 synthesis failed")
-                        final_text = ""
-                    if not final_text or not final_text.strip():
-                        logger.warning("Deep research Phase 3 returned empty, falling back to research materials")
+                    template = _load_research_template()
+
+                    # ① 生成大纲（含篇幅偏好）
+                    length_pref = _parse_length_preference(messages)
+                    outline = await _generate_deep_research_outline(
+                        source_material, template, user_message, lang, length_pref
+                    )
+                    units: list[dict] = outline.get("units", [])
+                    if not units:
+                        logger.warning("Deep research outline has no units, falling back to research materials")
                         final_text = source_material
+                        synthesis_entry = {"role": "assistant", "content": final_text}
+                    else:
+                        # ② 逐写作单元填写
+                        sections_written: list[str] = []
+                        references_accumulated: list[str] = []
+
+                        for unit_no, unit_def in enumerate(units, 1):
+                            section_text = await _write_section(
+                                source_material=source_material,
+                                outline=outline,
+                                report_so_far="\n\n".join(sections_written),
+                                references_so_far="\n".join(references_accumulated),
+                                unit_def=unit_def,
+                                unit_no=unit_no,
+                                total_units=len(units),
+                                lang=lang,
+                                length_pref=length_pref,
+                            )
+                            body, new_refs = _extract_new_references(section_text)
+                            sections_written.append(body)
+                            references_accumulated.extend(new_refs)
+
+                        # ③ 可选扩展扫描（根据篇幅调整阈值）
+                        total_len = sum(len(s) for s in sections_written)
+                        expand_threshold = {"short": 4000, "medium": 8000, "long": 15000}.get(length_pref, 8000)
+                        if total_len < expand_threshold:
+                            sections_written = await _expansion_pass(
+                                source_material, outline,
+                                sections_written, references_accumulated, lang,
+                            )
+
+                        # ④ 去重引用 + 组装
+                        references_accumulated = _deduplicate_references(references_accumulated)
+                        final_text = _assemble_report(sections_written, references_accumulated, outline)
+
                     synthesis_entry = {"role": "assistant", "content": final_text}
                     pdf_attachment = _deep_research_pdf_attachment(round_id, user_message, final_text)
                     if pdf_attachment:
                         synthesis_entry["attachments"] = [pdf_attachment]
-                    if response and response.get("reasoning_content"):
-                        synthesis_entry["reasoning_content"] = response["reasoning_content"]
-                    if response and response.get("usage"):
-                        synthesis_entry["usage"] = response["usage"]
                 else:
                     final_text = summary_result
                     synthesis_entry = {"role": "assistant", "content": final_text}

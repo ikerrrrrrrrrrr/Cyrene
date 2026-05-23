@@ -56,7 +56,7 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
 
 async def run_web(bot: Any, db_path: str, port: int = WEB_PORT, instance_id: str = "") -> None:
     app = create_app(bot, db_path, instance_id=instance_id)
-    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info", loop="asyncio")
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info", loop="asyncio")
     server = uvicorn.Server(config)
     logger.info("Web UI at http://0.0.0.0:%d", port)
     await server.serve()

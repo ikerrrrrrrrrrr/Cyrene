@@ -237,6 +237,7 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
     from cyrene.agent import (
         _current_agent_id,
         _current_client_request_id,
+        _current_command,
         _current_round_id,
         _upsert_pending_question,
     )
@@ -266,6 +267,7 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
         "client_request_id": str(_current_client_request_id.get() or "").strip(),
         "options": options[:6],
         "allow_custom": True,
+        "meta": {"command": _current_command.get() or ""},
     })
     return _json_result({
         "status": "awaiting_user",
