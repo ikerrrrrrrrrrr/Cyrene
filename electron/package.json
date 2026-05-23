@@ -2,6 +2,11 @@
   "name": "cyrene",
   "version": "0.4.0",
   "description": "Cyrene AI Agent — self-evolving AI companion",
+  "author": {
+    "name": "Cyrene",
+    "email": "ikerrrrrrrrrrr@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/ikerrrrrrrrrrr/Cyrene",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

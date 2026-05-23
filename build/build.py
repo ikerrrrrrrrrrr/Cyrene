@@ -327,13 +327,31 @@ def _appimage_arch() -> str:
 def run_electron_builder() -> None:
     """Run electron-builder to package the Electron app around the PyInstaller bundle."""
     electron_dir = PROJECT_ROOT / "electron"
-    if not (electron_dir / "node_modules" / ".bin" / "electron-builder").exists():
+
+    def find_electron_builder() -> str | None:
+        """Locate the electron-builder binary, checking common locations."""
+        import shutil
+        # 1) check PATH (npx may not be available on Windows CI)
+        exe = shutil.which("electron-builder")
+        if exe:
+            return exe
+        # 2) check node_modules/.bin directly
+        bin_dir = electron_dir / "node_modules" / ".bin"
+        candidates = ["electron-builder", "electron-builder.cmd"]
+        for name in candidates:
+            p = bin_dir / name
+            if p.exists():
+                return str(p)
+        return None
+
+    eb = find_electron_builder()
+    if not eb:
         print("  [warn] electron-builder not found, skipping Electron packaging")
         print("  [hint] Run: cd electron && npm install")
         return
 
     print(f"\n[electron-builder] Packaging...")
-    cmd = ["npx", "electron-builder"]
+    cmd = [eb]
     if IS_MAC:
         cmd.append("--mac")
     elif IS_WIN:
