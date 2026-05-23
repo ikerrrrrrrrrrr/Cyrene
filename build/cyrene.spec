@@ -143,6 +143,12 @@ _datas = list(dict.fromkeys(_datas))
 _binaries = list(dict.fromkeys(_binaries))
 _hidden = list(dict.fromkeys(_hidden))
 
+# ---- 排除 ----
+_excludes = [
+    "tkinter", "matplotlib", "numpy", "pandas", "scipy",
+    "PIL._tkinter_finder", "curses",
+]
+
 # Linux: do NOT bundle PyGObject / GTK / WebKit typelibs.
 # They reference system shared libraries (libgtk-3.so, libwebkit2gtk-4.1.so,
 # etc.) whose versions differ across distros, causing symbol errors like
@@ -163,12 +169,6 @@ if _IS_WIN:
         _collect_package("clr")
     except Exception as exc:
         print(f"[warn] clr collection failed (WinForms unavailable, will try Edge Chromium): {exc}")
-
-# ---- 排除 ----
-_excludes = [
-    "tkinter", "matplotlib", "numpy", "pandas", "scipy",
-    "PIL._tkinter_finder", "curses",
-]
 
 # ---- 图标 ----
 _icon = None
