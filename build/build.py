@@ -145,20 +145,54 @@ def run_pyinstaller() -> None:
 
 
 def _codesign_mac(app_path: Path) -> None:
-    """macOS 代码签名。"""
+    """macOS 代码签名 — 遍历整个 .app，逐个签名所有 Mach-O 二进制文件。
+
+    ``codesign --deep`` only signs nested bundles (``.app`` / ``.framework``),
+    NOT standalone ``.so`` / ``.dylib`` files scattered inside extraResources
+    (python-bundle).  Gatekeeper requires EVERY executable Mach-O binary in the
+    bundle to carry a valid signature — otherwise it shows "已损坏".
+    """
     dev_id = os.environ.get("APPLE_DEVELOPER_ID", "")
-    if dev_id:
-        print(f"  signing with: {dev_id}")
-        subprocess.run([
-            "codesign", "--deep", "--force", "--options", "runtime",
-            "--sign", dev_id, str(app_path),
-        ], check=True)
-    else:
-        # ad-hoc 签名
-        print("  ad-hoc signing...")
-        subprocess.run([
-            "codesign", "--deep", "--force", "--sign", "-", str(app_path),
-        ], check=True)
+    identity = dev_id if dev_id else "-"
+    sign_opts = ["--options", "runtime"] if dev_id else []
+
+    print("  signing individual Mach-O files...")
+    _signed_count = 0
+    for root, _dirs, files in os.walk(str(app_path)):
+        for name in files:
+            fpath = os.path.join(root, name)
+            # Only sign Mach-O binaries (skip text / data / plist files)
+            try:
+                _out = subprocess.run(
+                    ["file", "-b", fpath],
+                    capture_output=True, text=True, timeout=3,
+                ).stdout
+                if "Mach-O" not in _out:
+                    continue
+            except Exception:
+                continue
+            # Skip if already signed (ad-hoc or otherwise)
+            try:
+                _ret = subprocess.run(
+                    ["codesign", "-v", fpath],
+                    capture_output=True, timeout=3,
+                )
+                if _ret.returncode == 0:
+                    continue
+            except Exception:
+                pass
+            subprocess.run(
+                ["codesign", "--force", "--sign", identity, fpath] + sign_opts,
+                capture_output=True, timeout=10,
+            )
+            _signed_count += 1
+
+    # Deep-sign the top-level bundle (this signs any remaining nested bundles)
+    print(f"  signing top-level bundle (deep)...  ({_signed_count} individual files)")
+    subprocess.run(
+        ["codesign", "--deep", "--force", "--sign", identity, str(app_path)] + sign_opts,
+        check=True,
+    )
     print("  [ok] signed")
 
 
