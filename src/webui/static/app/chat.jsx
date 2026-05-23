@@ -1895,7 +1895,7 @@ function Message({ msg, assistantName }) {
                     />
                   </a>
                 ) : (
-                  <a className="msg-attachment-file" href={file.url || "#"} target="_blank" rel="noreferrer" aria-label={label}>
+                  <a className="msg-attachment-file" href={file.url || "#"} download={label} target="_blank" rel="noreferrer" aria-label={label}>
                     <span className="msg-attachment-kind">{kind}</span>
                     <span className="msg-attachment-name">{label}</span>
                   </a>

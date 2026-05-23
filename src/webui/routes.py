@@ -517,7 +517,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "invalid export path"}, status_code=400)
         if not target.exists() or not target.is_file():
             return JSONResponse({"error": "export not found"}, status_code=404)
-        return FileResponse(target)
+        return FileResponse(target, filename=safe_export_id)
 
     @router.post("/api/chat")
     async def api_chat(request: Request):

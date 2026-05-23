@@ -63,6 +63,9 @@ _hidden = [
     "starlette", "typing_extensions", "annotated_types",
     "dotenv", "telegram", "mcp", "requests",
     "packaging", "pypdf", "reportlab", "PIL",
+    # simplexng runtime deps (vendored searx pulls these in transitively;
+    # listed explicitly so PyInstaller collects compiled extensions correctly)
+    "waitress", "flask", "brotli", "lxml", "msgspec",
 ]
 
 if not _IS_MAC:
@@ -70,6 +73,10 @@ if not _IS_MAC:
     if _IS_WIN:
         _hidden.append("webview.platforms.winforms")
         _hidden.append("webview.platforms.edgechromium")
+        # Windows-only simplexng compat
+        _hidden.append("winloop")
+        _hidden.append("pwd")
+        _hidden.append("clr")
     else:
         _hidden.append("webview.platforms.gtk")
 
@@ -122,6 +129,12 @@ for _package in (
     "pypdf",
     "reportlab",
     "PIL",
+    # simplexng runtime deps
+    "waitress",
+    "flask",
+    "brotli",
+    "lxml",
+    "msgspec",
 ):
     _collect_package(_package)
 

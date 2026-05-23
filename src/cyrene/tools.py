@@ -852,13 +852,13 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "send_file",
-            "description": "Main agent only. Send an existing local file to the WebUI as a downloadable attachment. Use this whenever you want the user to open, download, or click a file. Do NOT merely print a filename or path in chat. Optionally include a short user-visible note.",
+            "description": "Main agent only. Send a file you have ACTUALLY CREATED to the WebUI as a downloadable attachment. Only call this for files that exist in the workspace — never fabricate or guess paths. The path must point to a real file you wrote via Write/Bash. Do NOT merely print a filename or path in chat.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Workspace-relative or absolute path to an existing file."},
+                    "path": {"type": "string", "description": "Workspace-relative or absolute path to a file you created that actually exists."},
                     "name": {"type": "string", "description": "Optional display filename shown in the WebUI."},
-                    "text": {"type": "string", "description": "Optional short note to accompany the file."},
+                    "text": {"type": "string", "description": "Brief description of the file contents. Keep it factual and short."},
                 },
                 "required": ["path"],
             },
