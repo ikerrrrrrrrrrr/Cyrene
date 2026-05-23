@@ -359,7 +359,9 @@ def run_electron_builder() -> None:
     elif IS_LINUX:
         cmd.append("--linux")
 
-    result = subprocess.run(cmd, cwd=str(electron_dir))
+    # On Windows, electron-builder is a .cmd file that needs shell=True
+    # (otherwise CreateProcess fails with "not a valid Win32 application").
+    result = subprocess.run(cmd, cwd=str(electron_dir), shell=IS_WIN)
     if result.returncode != 0:
         print("  [error] electron-builder failed")
         sys.exit(1)
