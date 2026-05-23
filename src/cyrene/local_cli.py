@@ -407,6 +407,16 @@ def _run_web_gui() -> None:
         _debug.VERBOSE = True
         _debug.init_debug_log()
 
+    # On Windows GUI mode (console=False in PyInstaller), sys.stdout and
+    # sys.stderr are None.  uvicorn and its logging formatters
+    # (DefaultFormatter -> sys.stdout.isatty()) crash on None.
+    if _sys.stdout is None:
+        import os as _os
+        _sys.stdout = open(_os.devnull, "w")
+    if _sys.stderr is None:
+        import os as _os
+        _sys.stderr = open(_os.devnull, "w")
+
     import asyncio
     import threading
     import time
