@@ -70,6 +70,15 @@ _hidden = [
 
 if not _IS_MAC:
     _hidden.append("webview")
+    # collect_all is needed for DLLs (WebView2Loader.dll on Windows) and
+    # other platform data files that hiddenimports alone won't gather.
+    try:
+        datas, binaries, hiddenimports = collect_all("webview")
+        _datas.extend(datas)
+        _binaries.extend(binaries)
+        _hidden.extend(hiddenimports)
+    except Exception as exc:
+        print(f"[warn] collect_all('webview') failed: {exc}")
     if _IS_WIN:
         _hidden.append("webview.platforms.winforms")
         _hidden.append("webview.platforms.edgechromium")
