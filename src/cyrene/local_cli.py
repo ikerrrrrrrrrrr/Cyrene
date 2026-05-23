@@ -383,15 +383,24 @@ def _run_web_mode() -> None:
 
 
 def _dump_error(message: str) -> None:
-    """Write an error message to a temp file so the user can inspect it."""
+    """Write an error message to temp files so the user can inspect it."""
     import os as _os
-    _log = _os.environ.get("TMPDIR") or _os.environ.get("TEMP") or _os.environ.get("TMP") or "/tmp"
-    _log_path = _os.path.join(_log, "cyrene_error.log")
+    _paths = []
+    for _key in ("TMPDIR", "TEMP", "TMP"):
+        if _os.environ.get(_key):
+            _paths.append(_os.environ[_key])
+    # Fallback: write next to the executable or current directory
     try:
-        with open(_log_path, "a", encoding="utf-8") as _f:
-            _f.write(message + "\n")
+        _paths.append(str(_os.path.dirname(_os.path.abspath(_os.path.realpath(__file__)))))
     except Exception:
         pass
+    for _dir in _paths:
+        try:
+            _log_path = _os.path.join(_dir, "cyrene_error.log")
+            with open(_log_path, "a", encoding="utf-8") as _f:
+                _f.write(message + "\n")
+        except Exception:
+            pass
 
 
 def _show_error(title: str, message: str) -> None:
@@ -505,27 +514,28 @@ def _run_web_gui() -> None:
 
     url = f"http://127.0.0.1:{selected_port}"
 
-    # Wait until the freshly started instance responds with its own token.
-    # Use http.client directly — it creates a raw TCP connection and never
-    # consults proxy configuration (unlike urllib which respects http_proxy
-    # env vars and can hang for localhost on Windows with a proxy set).
-    import http.client
-    import json as _json
-    for _ in range(120):
+    # Wait for the server to start listening (raw TCP, no HTTP, no proxy).
+    # Try up to 60 times × 0.5s = 30s.  If it still fails, warn and proceed
+    # anyway — the server might be slow but will come online eventually.
+    import socket as _socket
+    _sock_ok = False
+    for _ in range(60):
         if server_failed.is_set():
             break
         try:
-            _conn = http.client.HTTPConnection("127.0.0.1", selected_port, timeout=0.5)
-            _conn.request("GET", "/api/instance-id")
-            _resp = _conn.getresponse()
-            payload = _json.loads(_resp.read().decode("utf-8"))
-            _conn.close()
-            if payload.get("instance_id") == instance_id:
-                break
+            _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            _s.settimeout(0.5)
+            _s.connect(("127.0.0.1", selected_port))
+            _s.close()
+            _sock_ok = True
+            break
         except Exception:
             time.sleep(0.25)
-    else:
-        _show_error("Cyrene - Server Error", "Server did not respond within timeout.")
+    if not _sock_ok and not server_failed.is_set():
+        _show_error("Cyrene - Server Starting",
+                     f"Web server is taking longer than expected.\n"
+                     f"If it doesn't load automatically, open:\n"
+                     f"{url}")
 
     if server_failed.is_set():
         _show_error("Cyrene - Server Error", server_error[0] if server_error else "Server failed to start.")
