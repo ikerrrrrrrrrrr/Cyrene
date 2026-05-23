@@ -392,7 +392,18 @@ def _show_error(title: str, message: str) -> None:
             ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
             return
         except Exception:
-            pass
+            pass  # MessageBoxW failed — try fallback below
+    # Fallback: write error to a temp log file (stderr goes to devnull on
+    # Windows GUI mode).
+    try:
+        import os as _os
+        _log = _os.environ.get("TMPDIR") or _os.environ.get("TEMP") or _os.environ.get("TMP") or "/tmp"
+        _log_path = _os.path.join(_log, "cyrene_error.log")
+        with open(_log_path, "w", encoding="utf-8") as _f:
+            _f.write(f"{title}\n{'-' * len(title)}\n{message}\n")
+        print(f"Error written to {_log_path}", file=_sys.stderr)
+    except Exception:
+        pass
     print(f"{title}: {message}", file=_sys.stderr)
 
 
@@ -507,6 +518,7 @@ def _run_web_gui() -> None:
             time.sleep(0.25)
     else:
         _show_error("Cyrene - Server Error", "Server did not respond within timeout.")
+        _sys.exit(1)
 
     if server_failed.is_set():
         _show_error("Cyrene - Server Error", server_error[0] if server_error else "Server failed to start.")
@@ -539,6 +551,20 @@ def _run_web_gui() -> None:
                      "Install it with: pip install pywebview>=5.0")
         _sys.exit(1)
 
+    # On Windows, the Edge Chromium backend requires WebView2 Runtime.
+    # Detect this early so we can give a specific error message instead
+    # of a generic pywebview crash.
+    if _sys.platform == "win32":
+        try:
+            from webview.platforms.edgechromium import _version as edge_v  # noqa: F401
+        except Exception:
+            _show_error("Cyrene - WebView2 Required",
+                         "Microsoft Edge WebView2 Runtime is not installed.\n\n"
+                         "Download it from:\n"
+                         "https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n"
+                         "After installing, restart Cyrene.")
+            _fallback_to_browser(url)
+
     try:
         webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
         webview.start()
@@ -553,19 +579,25 @@ def _run_web_gui() -> None:
                      f"Failed to create native window:\n{exc}{_hint}\n\n"
                      f"Server running at {url}\n"
                      "Open this address in your browser.")
-        print(f"Cyrene server is running at {url}", flush=True)
-        # Open the user's default browser as a fallback
-        try:
-            import webbrowser
-            webbrowser.open(url)
-        except Exception:
-            pass
-        print("Press Ctrl+C to stop.", flush=True)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
+        _fallback_to_browser(url)
+
+
+def _fallback_to_browser(url: str) -> None:
+    """Open the web UI in the default browser and keep the process alive."""
+    import sys as _sys
+    print(f"Cyrene server is running at {url}", flush=True)
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+    print("Press Ctrl+C to stop.", flush=True)
+    try:
+        while True:
+            import time
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
 
 
 async def _run_one_shot_mcp(args: list[str]) -> None:

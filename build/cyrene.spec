@@ -185,10 +185,12 @@ if not _IS_MAC and not _IS_WIN:
     except Exception as exc:
         print(f"[warn] gi collection failed: {exc}")
 
-# Windows: bundle pythonnet (clr) for pywebview WinForms backend
-# and winloop (uvloop replacement) for simplexng
+# Windows: bundle pythonnet + clr_loader for pywebview WinForms backend,
+# and winloop (uvloop replacement) for simplexng.
+# Note: collect_all("clr") would fail because clr is a namespace inside
+# pythonnet, not a standalone package.  Collect pythonnet instead.
 if _IS_WIN:
-    for _win_pkg in ("clr", "winloop"):
+    for _win_pkg in ("pythonnet", "clr_loader", "winloop"):
         try:
             _collect_package(_win_pkg)
         except Exception as exc:
