@@ -71,6 +71,7 @@ jobs:
           # simplexng and its transitive deps (it uses --no-deps so we list them explicitly)
           pip install simplexng --no-deps
           pip install babel brotli clideps flask flask-babel httpx-socks isodate lxml markdown-it-py msgspec platformdirs pyyaml rich setproctitle typer-slim valkey whitenoise
+          pip install waitress fasttext-predict pygments python-dateutil
           pip install .
           pip install --upgrade typing_extensions pydantic pydantic_core
 

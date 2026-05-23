@@ -65,7 +65,7 @@ _hidden = [
     "packaging", "pypdf", "reportlab", "PIL",
     # simplexng runtime deps (vendored searx pulls these in transitively;
     # listed explicitly so PyInstaller collects compiled extensions correctly)
-    "waitress", "flask", "brotli", "lxml", "msgspec",
+    "waitress", "flask", "brotli", "lxml", "msgspec", "fasttext_predict",
 ]
 
 if not _IS_MAC:
@@ -135,6 +135,7 @@ for _package in (
     "brotli",
     "lxml",
     "msgspec",
+    "fasttext_predict",
 ):
     _collect_package(_package)
 
