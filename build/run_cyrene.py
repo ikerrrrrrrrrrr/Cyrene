@@ -52,7 +52,7 @@ if __name__ == "__main__":
     if "--launch-simplexng" in sys.argv:
         sys.argv.remove("--launch-simplexng")
         import runpy
-        runpy.run_module("simplexng", run_name="__main__")
+        runpy.run_module("simplexng.simplexng", run_name="__main__")
         raise SystemExit(0)
 
     if "--launch-web" in sys.argv:
