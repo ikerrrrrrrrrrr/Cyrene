@@ -4,6 +4,7 @@ These are NOT env vars (which require restart) — they are live-editable settin
 stored in a JSON file under DATA_DIR.
 """
 
+import copy
 import json
 import logging
 
@@ -66,22 +67,30 @@ _DEFAULTS: dict = {
 
 def _load() -> dict:
     if not _SETTINGS_PATH.exists():
-        return dict(_DEFAULTS)
+        return copy.deepcopy(_DEFAULTS)
     try:
         data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
         logger.warning("Corrupted web_settings.json, using defaults")
-        return dict(_DEFAULTS)
-    merged = dict(_DEFAULTS)
+        return copy.deepcopy(_DEFAULTS)
+    merged = copy.deepcopy(_DEFAULTS)
     merged.update(data)
     return merged
 
 
 def _save(data: dict) -> None:
-    _SETTINGS_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    # Atomic write: write to temp then rename, so a crash mid-write never corrupts the file
+    tmp = _SETTINGS_PATH.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_SETTINGS_PATH)
+    finally:
+        # Clean up orphaned temp file if the rename itself crashed
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
 
 
 def get(key: str, default=None):

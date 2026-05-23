@@ -3356,16 +3356,6 @@ def _build_settings_meta() -> dict:
             {"id": "appearance", "label": "Appearance"},
             {"id": "danger", "label": "Danger zone"},
         ],
-        "models": [
-            {"id": "current", "name": OPENAI_MODEL, "desc": "Currently active",
-             "ctx": "—", "price": "—"},
-            {"id": "haiku45", "name": "claude-haiku-4-5", "desc": "Fast, capable",
-             "ctx": "200k", "price": "$0.25 / $1.25"},
-            {"id": "sonnet45", "name": "claude-sonnet-4-5", "desc": "Heavy reasoning",
-             "ctx": "200k", "price": "$3.00 / $15.00"},
-            {"id": "deepseek-chat", "name": "deepseek-chat", "desc": "DeepSeek default",
-             "ctx": "64k", "price": "low"},
-        ],
     }
 
 
