@@ -157,25 +157,41 @@ def get_restart_script(update_file: Path) -> str:
 
 
 def _restart_script_macos(dmg_path: Path) -> str:
-    """macOS: 挂载 DMG，替换 .app，重启。"""
-    return f"""#!/bin/bash
-# Cyrene updater — macOS
-sleep 2
-echo "Mounting update..."
-hdiutil attach "{dmg_path}" -nobrowse -quiet
-VOL="/Volumes/Cyrene"
-if [ -d "$VOL" ]; then
-    rm -rf /Applications/Cyrene.app
-    cp -R "$VOL/Cyrene.app" /Applications/
-    hdiutil detach "$VOL" -quiet
-    echo "Update complete, restarting..."
-    open /Applications/Cyrene.app
-else
-    echo "Update failed: DMG not mounted"
-    exit 1
-fi
-rm -f "{dmg_path}"
-"""
+    """macOS: 挂载 DMG，替换 .app，重启。
+
+    macOS /Applications/ 对管理员用户可写（group admin），
+    此处用直接 rm/cp，不加 osascript 提权。
+    所有输出重定向到 /tmp/cyrene_update.log 用于诊断。
+    """
+    return (
+        '#!/bin/bash\n'
+        '# Cyrene updater — macOS\n'
+        'exec >>/tmp/cyrene_update.log 2>&1\n'
+        'echo "=== Cyrene update $(date) ==="\n'
+        f'echo "DMG: {dmg_path}"\n'
+        'sleep 2\n'
+        'echo "Mounting update..."\n'
+        f'hdiutil attach "{dmg_path}" -nobrowse -quiet\n'
+        'VOL="/Volumes/Cyrene"\n'
+        'if [ -d "$VOL" ]; then\n'
+        '    echo "Found volume, installing..."\n'
+        '    rm -rf /Applications/Cyrene.app\n'
+        '    echo "rm exit code: $?"\n'
+        '    cp -R "$VOL/Cyrene.app" /Applications/\n'
+        '    echo "cp exit code: $?"\n'
+        '    ls -la /Applications/Cyrene.app\n'
+        '    hdiutil detach "$VOL" -quiet\n'
+        '    echo "Update complete, restarting..."\n'
+        '    open /Applications/Cyrene.app\n'
+        'else\n'
+        '    echo "Update failed: DMG not mounted"\n'
+        '    echo "hdiutil attach result:"\n'
+        '    ls -la /Volumes/ 2>&1\n'
+        '    exit 1\n'
+        'fi\n'
+        f'rm -f "{dmg_path}"\n'
+        'echo "Done."\n'
+    )
 
 
 def _restart_script_windows(exe_path: Path) -> str:
