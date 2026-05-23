@@ -339,17 +339,24 @@ def _run_electron_mode() -> None:
         _sys.stderr = open(_os.devnull, "w")
 
     # Prevent ALL subprocesses from creating console windows on Windows.
-    # Our backend has no console, so any subprocess spawned by dependencies
-    # (e.g. git calls from vendored searx) would create a new console window
-    # unless CREATE_NO_WINDOW is specified.  Setting the global default
-    # startupinfo hides all child process windows by default.
+    # Our backend has no console (console=False), so any subprocess spawned
+    # by dependencies (e.g. git calls from vendored searx) would get a new
+    # console window unless CREATE_NO_WINDOW is specified.
+    # Monkey-patch subprocess.Popen to inject CREATE_NO_WINDOW + SW_HIDE
+    # on every call — there is no clean global default in Python 3.13.
     if _sys.platform == "win32":
         import subprocess as _sp
-        _si = _sp.STARTUPINFO()
-        _si.dwFlags = _sp.STARTF_USESHOWWINDOW
-        _si.wShowWindow = 0  # SW_HIDE
-        if hasattr(_sp, '_PLATFORM_DEFAULT_STARTUPINFO'):
-            _sp._PLATFORM_DEFAULT_STARTUPINFO = _si
+        _orig_popen_init = _sp.Popen.__init__
+        _CREATE_NO_WINDOW = 0x08000000
+        def _patched_popen_init(self, *args, **kwargs):
+            kwargs['creationflags'] = kwargs.get('creationflags', 0) | _CREATE_NO_WINDOW
+            if 'startupinfo' not in kwargs or kwargs['startupinfo'] is None:
+                _si = _sp.STARTUPINFO()
+                _si.dwFlags = _sp.STARTF_USESHOWWINDOW
+                _si.wShowWindow = 0  # SW_HIDE
+                kwargs['startupinfo'] = _si
+            _orig_popen_init(self, *args, **kwargs)
+        _sp.Popen.__init__ = _patched_popen_init
 
     import asyncio
     from cyrene.debug import enable_event_bus
