@@ -370,11 +370,39 @@ def run_electron_builder() -> None:
     # macOS: re-sign the .app bundle with ad-hoc signing after electron-builder
     # finishes.  electron-builder's own signing may not penetrate deeply enough
     # into the extraResources (python-bundle), causing Gatekeeper rejections.
+    # We then re-create the DMG from the freshly signed .app.
     if IS_MAC:
         mac_app = PROJECT_ROOT / "dist-electron" / "mac" / "Cyrene.app"
         if mac_app.exists():
-            print(f"\n[macOS] Ad-hoc signing {mac_app}...")
+            print(f"\n[macOS] Re-signing {mac_app}...")
             _codesign_mac(mac_app)
+            # Re-create the DMG — electron-builder already generated one but
+            # it contains the unsigned .app.  Replace with a freshly signed copy.
+            import glob
+            import tempfile
+            version = get_version()
+            old_dmgs = sorted(glob.glob(str(PROJECT_ROOT / "dist-electron" / f"Cyrene-{version}-mac*.dmg")))
+            dmg_path = PROJECT_ROOT / "dist-electron" / f"Cyrene-{version}-mac.dmg"
+            with tempfile.TemporaryDirectory(prefix="cyrene-dmg-") as tmp_dir:
+                staging_dir = Path(tmp_dir) / "Cyrene"
+                staging_dir.mkdir(parents=True, exist_ok=True)
+                staged_app = staging_dir / "Cyrene.app"
+                shutil.copytree(mac_app, staged_app, symlinks=True)
+                apps_link = staging_dir / "Applications"
+                if apps_link.exists() or apps_link.is_symlink():
+                    apps_link.unlink()
+                apps_link.symlink_to("/Applications")
+                subprocess.run([
+                    "hdiutil", "create",
+                    "-volname", "Cyrene",
+                    "-srcfolder", str(staging_dir),
+                    "-ov", "-format", "UDZO",
+                    str(dmg_path),
+                ], check=True)
+            for old in old_dmgs:
+                if old != str(dmg_path):
+                    Path(old).unlink(missing_ok=True)
+                    print(f"  replaced: {dmg_path.name}")
 
 
 def main() -> None:
