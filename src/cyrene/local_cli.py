@@ -496,11 +496,11 @@ def _run_web_gui() -> None:
         except Exception:
             time.sleep(0.25)
     else:
-        print("Server not responding", file=_sys.stderr)
+        _show_error("Cyrene - Server Error", "Server did not respond within timeout.")
         _sys.exit(1)
 
     if server_failed.is_set():
-        print(server_error[0] if server_error else "Server failed to start", file=_sys.stderr)
+        _show_error("Cyrene - Server Error", server_error[0] if server_error else "Server failed to start.")
         _sys.exit(1)
 
     # macOS: use compiled Swift WKWebView helper (native, zero deps)
