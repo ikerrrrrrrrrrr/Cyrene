@@ -19,6 +19,7 @@ from cyrene.skills_registry import build_skill_prompt_block
 from cyrene.settings_store import get_spawn_policy
 from cyrene import debug
 from cyrene.attachments import build_public_attachment_payload, register_generated_attachment
+from cyrene.conversations import get_archived_round
 from cyrene.llm import _assistant_text, _truncate
 from cyrene.tools import get_active_tool_defs, TOOL_HANDLERS, _execute_tool
 from cyrene.subagent import (
@@ -60,6 +61,8 @@ _ui_round_hide_initial_detail: ContextVar[bool] = ContextVar("_ui_round_hide_ini
 _ui_round_assistant_meta: ContextVar[dict[str, Any] | None] = ContextVar("_ui_round_assistant_meta", default=None)
 _deep_research_mode: ContextVar[bool] = ContextVar("_deep_research_mode", default=False)
 _current_command: ContextVar[str] = ContextVar("_current_command", default="")
+_REPORT_REF_PREFIX = "[Deep research report]"
+_REPORT_REF_MAX_PREVIEW = 280
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -685,6 +688,166 @@ def _trim_session_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
     return trimmed
 
 
+def _report_title_from_text(text: str, fallback: str = "Deep Research Report") -> str:
+    source = str(text or "").strip()
+    if not source:
+        return fallback
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            stripped = stripped.lstrip("#").strip()
+        if stripped:
+            return _fallback_label(stripped, limit=120)
+    return _fallback_label(source, limit=120)
+
+
+def _report_reference_stub(
+    *,
+    round_id: str,
+    round_title: str,
+    archive_session_id: str,
+    full_text: str,
+    attachments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    report_title = _report_title_from_text(full_text, fallback=round_title or "Deep Research Report")
+    preview = ""
+    body_lines = [line.strip() for line in str(full_text or "").splitlines() if line.strip()]
+    for line in body_lines[1:]:
+        if line.startswith("## "):
+            break
+        preview = line
+        if preview:
+            break
+    preview = _fallback_label(preview, limit=_REPORT_REF_MAX_PREVIEW) if preview else ""
+    content = f"{_REPORT_REF_PREFIX} {report_title}"
+    if preview:
+        content += f"\n{preview}"
+    content += "\n完整报告已归档；仅在明确引用这篇报告时才会重新加载全文。"
+    entry: dict[str, Any] = {
+        "role": "assistant",
+        "content": content,
+        "report_ref": True,
+        "report_title": report_title,
+        "report_round_id": round_id,
+        "report_archive_session_id": archive_session_id,
+        "report_preview": preview,
+    }
+    if round_title:
+        entry["round_title"] = round_title
+    if attachments:
+        entry["attachments"] = [dict(item) for item in attachments if isinstance(item, dict)]
+    return entry
+
+
+def _compress_report_messages_for_storage(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    state = _load_session_state()
+    archive_session_id = _ensure_archive_session_id(state)
+    result: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict) or not bool(message.get("deep_research_report")):
+            result.append(message)
+            continue
+        compressed = _report_reference_stub(
+            round_id=str(message.get("round_id", "")).strip(),
+            round_title=str(message.get("round_title", "")).strip(),
+            archive_session_id=archive_session_id,
+            full_text=_assistant_text(message) or str(message.get("content") or ""),
+            attachments=message.get("attachments") if isinstance(message.get("attachments"), list) else None,
+        )
+        for key in ("message_id", "client_request_id", "subagent_flow_snapshot"):
+            if message.get(key):
+                compressed[key] = message[key]
+        result.append(compressed)
+    return result
+
+
+def _iter_report_refs(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict) or not bool(message.get("report_ref")):
+            continue
+        if (
+            str(message.get("report_archive_session_id", "")).strip()
+            and str(message.get("report_round_id", "")).strip()
+            and str(message.get("report_title", "")).strip()
+        ):
+            refs.append(message)
+    return refs
+
+
+def _looks_like_report_followup(user_message: str, report_refs: list[dict[str, Any]]) -> bool:
+    text = str(user_message or "").strip()
+    if not text or not report_refs:
+        return False
+    lowered = text.lower()
+    direct_cues = (
+        "基于", "根据", "引用", "那篇报告", "这篇报告", "之前的报告", "上次的报告",
+        "研究报告", "深度研究", "那份研究", "这份研究", "继续", "延续", "接着", "展开",
+        "summarize that report", "based on that report", "based on the report",
+        "that report", "this report", "deep research report", "previous report",
+        "continue from the report", "use the report", "refer to the report",
+    )
+    if any((cue in text) or (cue in lowered) for cue in direct_cues):
+        return True
+    for ref in reversed(report_refs):
+        title = str(ref.get("report_title", "")).strip()
+        if title and title.lower() in lowered:
+            return True
+    return False
+
+
+def _select_report_ref(user_message: str, report_refs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    lowered = str(user_message or "").strip().lower()
+    for ref in reversed(report_refs):
+        title = str(ref.get("report_title", "")).strip()
+        if title and title.lower() in lowered:
+            return ref
+    return report_refs[-1] if report_refs else None
+
+
+def _expand_report_reference_history(history: list[dict[str, Any]], user_message: str) -> list[dict[str, Any]]:
+    report_refs = _iter_report_refs(history)
+    if not _looks_like_report_followup(user_message, report_refs):
+        return history
+    selected = _select_report_ref(user_message, report_refs)
+    if not selected:
+        return history
+    archived = get_archived_round(
+        str(selected.get("report_archive_session_id", "")).strip(),
+        str(selected.get("report_round_id", "")).strip(),
+    )
+    if not archived:
+        return history
+    full_report = str(archived.get("assistant_body", "")).strip()
+    if not full_report:
+        return history
+    report_title = str(selected.get("report_title", "")).strip() or "Deep Research Report"
+    selected_message_id = str(selected.get("message_id", "")).strip()
+    expanded_history: list[dict[str, Any]] = []
+    replaced = False
+    for message in history:
+        if (
+            isinstance(message, dict)
+            and bool(message.get("report_ref"))
+            and str(message.get("message_id", "")).strip() == selected_message_id
+        ):
+            replacement = dict(message)
+            replacement["content"] = (
+                f"{_REPORT_REF_PREFIX} {report_title}\n"
+                "The user explicitly asked to use this archived report. "
+                "The full report content is restored below for this turn only.\n\n"
+                f"{full_report}"
+            )
+            replacement["report_expanded_for_turn"] = True
+            expanded_history.append(replacement)
+            replaced = True
+            continue
+        expanded_history.append(message)
+    return expanded_history if replaced else history
+
+
 def _schedule_memory_compression(messages: list[dict[str, Any]]) -> None:
     """Compress older conversation state without blocking the active request path."""
     task = asyncio.create_task(_compress_old_messages(list(messages)))
@@ -707,6 +870,7 @@ def _is_replaceable_live_message(entry: dict[str, Any], round_id: str) -> bool:
 
 async def _write_session_messages_locked(state: dict[str, Any], messages: list[dict[str, Any]]) -> None:
     _ensure_archive_session_id(state)
+    messages = _compress_report_messages_for_storage(messages)
     messages = _ensure_message_identity(messages)
     messages = _dedupe_messages_by_id(messages)
     trimmed = _trim_session_messages(messages)
@@ -728,6 +892,7 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
 
 async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     """保存 session 消息。如果超过上限，触发后台压缩。"""
+    messages = _compress_report_messages_for_storage(messages)
     messages = _ensure_message_identity(list(messages))
     async with _session_state_lock:
         state = _load_session_state()
@@ -3622,7 +3787,7 @@ async def _run_main_agent(
                         references_accumulated = _deduplicate_references(references_accumulated)
                         final_text = _assemble_report(sections_written, references_accumulated, outline)
 
-                    synthesis_entry = {"role": "assistant", "content": final_text}
+                    synthesis_entry = {"role": "assistant", "content": final_text, "deep_research_report": True}
                     pdf_attachment = _deep_research_pdf_attachment(round_id, user_message, final_text)
                     if pdf_attachment:
                         synthesis_entry["attachments"] = [pdf_attachment]
@@ -3823,7 +3988,8 @@ async def _run_chat_agent(
     _active_main_round_prompt = user_message
     _active_main_round_public_prompt = user_message if public_prompt is None else str(public_prompt)
     _active_main_round_started_at = _time.time()
-    history = list(history_override) if history_override is not None else _load_session_messages()
+    raw_history = list(history_override) if history_override is not None else _load_session_messages()
+    history = _expand_report_reference_history(raw_history, user_message)
     merge_base = persist_base_messages
     merge_insert_at = persist_insert_at
     merge_live_state = history_override is None

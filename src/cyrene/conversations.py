@@ -299,3 +299,33 @@ def recall_conversations(
                 return matches
 
     return matches
+
+
+def get_archived_round(
+    archive_session_id: str,
+    round_id: str,
+) -> dict[str, str] | None:
+    """Return one archived round by exact archive session + round id match."""
+    ensure_conversations_dir()
+    target_session_id = str(archive_session_id or "").strip()
+    target_round_id = str(round_id or "").strip()
+    if not target_session_id or not target_round_id:
+        return None
+
+    for filepath in sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True):
+        if not filepath.exists():
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to read conversation file %s", filepath)
+            continue
+
+        for section in reversed(_parse_archive_sections(content, filepath.stem)):
+            if str(section.get("archive_session_id", "")).strip() != target_session_id:
+                continue
+            if str(section.get("round_id", "")).strip() != target_round_id:
+                continue
+            return section
+
+    return None
