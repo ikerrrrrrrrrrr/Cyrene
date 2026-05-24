@@ -160,9 +160,13 @@ def _parse_references_section(body: str) -> tuple[list[str], str]:
     # Try to find the final references section
     # Match both Chinese and English reference headings
     patterns = [
-        r"\n##\s+\d*\.?\s*参考文献\s*$",
+        r"\n##\s+\d*\.?\s*New\s+References\s*$",
         r"\n##\s+\d*\.?\s*References\s*$",
-        r"\n##\s+Sources\s*$",
+        r"\n##\s+\d*\.?\s*Sources\s*$",
+        r"\n##\s+\d*\.?\s*参考资料(?:和来源)?\s*$",
+        r"\n##\s+\d*\.?\s*参考文献(?:和来源)?\s*$",
+        r"\n##\s+\d*\.?\s*参考来源\s*$",
+        r"\n##\s+\d*\.?\s*参考链接\s*$",
     ]
     best_pos = -1
     for pat in patterns:
@@ -230,7 +234,7 @@ def write_report_pdf(path: str | Path, title: str, body: str) -> Path:
             continue
 
         # Skip standalone reference headings — they'll be handled at the end
-        if re.match(r"^##\s+\d*\.?\s*(?:参考文献|References|Sources)\s*$", stripped, re.IGNORECASE):
+        if re.match(r"^##\s+\d*\.?\s*(?:New\s+References|References|Sources|参考资料(?:和来源)?|参考文献(?:和来源)?|参考来源|参考链接)\s*$", stripped, re.IGNORECASE):
             i += 1
             continue
 

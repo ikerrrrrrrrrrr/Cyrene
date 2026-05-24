@@ -31,6 +31,8 @@ async def main() -> None:
     ensure_inbox("cyrene")
     init_short_term(DATA_DIR)
     enable_event_bus()
+    from cyrene.pattern import init as _pattern_init
+    await _pattern_init(DATA_DIR, WORKSPACE_DIR)
 
     if SEARXNG_AUTO_START:
         from cyrene.searxng_manager import start_searxng

@@ -43,6 +43,7 @@ _pending_intermediate_user_replies: ContextVar[list[dict[str, Any]] | None] = Co
 _reply_stream_writer: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar("_reply_stream_writer", default=None)
 _agent_lock = asyncio.Lock()
 _session_state_lock = asyncio.Lock()
+_session_epoch: int = 0
 _interrupt_event = asyncio.Event()
 _MAX_HISTORY_MESSAGES = 40
 _MAX_TOOL_ROUNDS = 16
@@ -63,6 +64,26 @@ _deep_research_mode: ContextVar[bool] = ContextVar("_deep_research_mode", defaul
 _current_command: ContextVar[str] = ContextVar("_current_command", default="")
 _REPORT_REF_PREFIX = "[Deep research report]"
 _REPORT_REF_MAX_PREVIEW = 280
+
+
+def _init_session_epoch() -> None:
+    """Initialize _session_epoch from persisted state on module load.
+
+    This ensures the epoch survives server restarts — after restart the
+    in-memory epoch matches the one stored in state.json, so normal writes
+    are not incorrectly treated as stale.
+    """
+    global _session_epoch
+    try:
+        if STATE_FILE.exists():
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                _session_epoch = data.get("_session_epoch", 0)
+    except Exception:
+        pass
+
+
+_init_session_epoch()
 
 # ---------------------------------------------------------------------------
 # System prompts
@@ -896,6 +917,10 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     messages = _ensure_message_identity(list(messages))
     async with _session_state_lock:
         state = _load_session_state()
+        saved_epoch = state.get("_session_epoch")
+        if saved_epoch is not None and saved_epoch != _session_epoch:
+            logger.warning("Stale _save_session_messages skipped (session was reset)")
+            return
         effective_messages = messages
         base_messages = _persist_base_messages.get()
         if base_messages is None and _persist_merge_live_state.get():
@@ -936,6 +961,10 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
 async def _append_session_message(entry: dict[str, Any]) -> None:
     async with _session_state_lock:
         state = _load_session_state()
+        saved_epoch = state.get("_session_epoch")
+        if saved_epoch is not None and saved_epoch != _session_epoch:
+            logger.warning("Stale _append_session_message skipped (session was reset)")
+            return
         messages = state.get("messages", [])
         full_messages = list(messages) if isinstance(messages, list) else []
         full_messages.append(entry)
@@ -979,7 +1008,11 @@ def _report_export_filename(round_id: str, fallback: str = "report") -> str:
 
 
 def _deep_research_pdf_attachment(round_id: str, user_message: str, final_text: str) -> dict[str, Any] | None:
-    title = str(user_message or "").strip() or "Deep Research Report"
+    # Extract the report title from the first # heading in final_text (set by
+    # _assemble_report from the outline), falling back to the user's query.
+    title_match = re.search(r"^#\s+(.+)$", str(final_text or ""), re.MULTILINE)
+    title = (title_match.group(1).strip() if title_match
+             else str(user_message or "").strip() or "Deep Research Report")
     export_name = _report_export_filename(round_id or "deep-research-report", fallback="deep-research-report")
     target = Path(DATA_DIR) / "generated_reports" / export_name
     try:
@@ -1029,39 +1062,61 @@ def _extract_new_references(text: str) -> tuple[str, list[str]]:
     """Split LLM section output into body text and new reference entries.
 
     Handles multiple heading variations:
-    - ## New References
-    - ### New References
-    - ## References
-    - 参考资料 / 参考文献 / Sources
+    - ## New References / ## References / Sources
+    - 参考资料 / 参考文献 / 参考来源 / 参考链接 / 参考资料和来源
+    - Numbered variants (e.g. ## 7. 参考文献)
+
+    If no recognised heading is found, the last 30 lines are scanned for
+    orphan [N] reference lines as a fallback.
     """
-    # Try multiple patterns in order, case-insensitive
     patterns = [
-        r"#{1,3}\s+New\s+References",
-        r"#{1,3}\s+References",
-        r"#{1,3}\s+参考资料",
-        r"#{1,3}\s+参考文献",
-        r"#{1,3}\s+Sources",
+        r"#{1,3}\s+(?:\d+\.?\s*)?New\s+References",
+        r"#{1,3}\s+(?:\d+\.?\s*)?References",
+        r"#{1,3}\s+(?:\d+\.?\s*)?Sources",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考资料(?:和来源)?",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考文献(?:和来源)?",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考来源",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考链接",
     ]
     best_pos = -1
-    best_pat = ""
     for pat in patterns:
         matches = list(re.finditer(pat, text, re.MULTILINE | re.IGNORECASE))
         if matches:
             pos = matches[-1].start()  # use the LAST match
             if pos > best_pos:
                 best_pos = pos
-                best_pat = pat
 
-    if best_pos < 0 or not best_pat:
-        return text.rstrip(), []
-
-    body = text[:best_pos].rstrip()
-    ref_section = text[best_pos:]
     new_refs: list[str] = []
-    for line in ref_section.splitlines():
-        line = line.strip()
-        if re.match(r"^\[\d+\]", line):
-            new_refs.append(line)
+    body = text.rstrip()
+
+    if best_pos >= 0:
+        body = text[:best_pos].rstrip()
+        ref_section = text[best_pos:]
+        for line in ref_section.splitlines():
+            line = line.strip()
+            if re.match(r"^\[\d+\]", line):
+                new_refs.append(line)
+
+    # Fallback: if no references were found via a heading, scan the trailing
+    # lines for orphan [N] entries (the LLM may have omitted the heading).
+    if not new_refs:
+        lines = text.strip().splitlines()
+        orphan: list[str] = []
+        for line in reversed(lines):
+            stripped = line.strip()
+            if re.match(r"^\[\d+\]", stripped):
+                orphan.append(stripped)
+            elif orphan and stripped:
+                break  # non-[N], non-blank line — stop
+        if orphan:
+            orphan.reverse()
+            # Remove orphan ref lines from the body too
+            body_lines = text.strip().splitlines()
+            filter_start = len(body_lines) - len(orphan)
+            if filter_start >= 0:
+                body = "\n".join(body_lines[:filter_start]).rstrip()
+            new_refs = orphan
+
     return body, new_refs
 
 
@@ -1078,9 +1133,11 @@ def _strip_stray_references(text: str) -> str:
     heading_patterns = [
         r"#{1,3}\s+(?:\d+\.?\s*)?New\s+References",
         r"#{1,3}\s+(?:\d+\.?\s*)?References",
-        r"#{1,3}\s+(?:\d+\.?\s*)?参考资料",
-        r"#{1,3}\s+(?:\d+\.?\s*)?参考文献",
         r"#{1,3}\s+(?:\d+\.?\s*)?Sources",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考资料(?:和来源)?",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考文献(?:和来源)?",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考来源",
+        r"#{1,3}\s+(?:\d+\.?\s*)?参考链接",
     ]
     lines = text.splitlines()
     cleaned: list[str] = []
@@ -1104,29 +1161,89 @@ def _strip_stray_references(text: str) -> str:
     return "\n".join(cleaned).strip()
 
 
-def _deduplicate_references(entries: list[str]) -> list[str]:
+def _deduplicate_references(entries: list[str]) -> tuple[list[str], dict[int, int]]:
     """Deduplicate reference entries by URL and renumber sequentially.
 
     When two entries share the same URL the *last* one wins (more likely
     to have a complete description).  Entries without a detectable URL
     are deduplicated by their first 120 characters.
+
+    Returns (deduplicated_entries, {old_number: new_number} mapping).
     """
-    seen: dict[str, str] = {}
+    seen: dict[str, tuple[str, int]] = {}
     for entry in entries:
         m = re.search(r"(https?://\S+)", entry)
         key = m.group(1).rstrip(".)") if m else entry[:120]
-        seen[key] = entry
+        orig_num = 0
+        num_m = re.match(r"\[(\d+)\]", entry)
+        if num_m:
+            orig_num = int(num_m.group(1))
+        seen[key] = (entry, orig_num)
+    old_to_new: dict[int, int] = {}
     result: list[str] = []
-    for i, entry in enumerate(seen.values(), 1):
-        result.append(re.sub(r"^\[\d+\]", f"[{i}]", entry))
+    for i, (entry, orig_num) in enumerate(seen.values(), 1):
+        new_entry = re.sub(r"^\[\d+\]", f"[{i}]", entry)
+        result.append(new_entry)
+        if orig_num:
+            old_to_new[orig_num] = i
+    return result, old_to_new
+
+
+def _fill_missing_references(body: str, references: list[str]) -> list[str]:
+    """Scan body for [N] citations and ensure each N has a definition in references.
+
+    Any citation number referenced in the body but missing from the reference list
+    gets a placeholder entry so the reader can at least see the citation number.
+
+    NOTE: references must already be deduplicated before calling this.
+    """
+    if not references:
+        return references
+    ref_nums: set[int] = set()
+    for ref in references:
+        m = re.match(r"\[(\d+)\]", ref)
+        if m:
+            ref_nums.add(int(m.group(1)))
+    body_nums: set[int] = set()
+    for m in re.finditer(r"\[(\d+)\]", body):
+        body_nums.add(int(m.group(1)))
+    missing = sorted(n for n in body_nums if n not in ref_nums)
+    if not missing:
+        return references
+    result = list(references)
+    for n in missing:
+        result.append(f"[{n}] Source — citation used in report")
     return result
 
 
-def _assemble_report(sections: list[str], references: list[str], outline: dict) -> str:
+def _renumber_citations(text: str, mapping: dict[int, int]) -> str:
+    """Renumber [N] citations in text according to old→new mapping.
+
+    When multiple old numbers map to the same new number (duplicates
+    collapsed by deduplication), they all resolve to the new number.
+    Numbers not in the mapping are left unchanged.
+    """
+
+    def _replace(m: re.Match) -> str:
+        num = int(m.group(1))
+        new_num = mapping.get(num)
+        if new_num is not None and new_num != num:
+            return f"[{new_num}]"
+        return m.group(0)
+
+    return re.sub(r"\[(\d+)\]", _replace, text)
+
+
+def _assemble_report(sections: list[str], references: list[str], outline: dict, dedup_mapping: dict[int, int] | None = None) -> str:
     """Join section bodies, outline title, and deduplicated references.
 
     All references are consolidated into a single ``## 参考文献`` section
     at the end. Section bodies are pre-stripped of stray reference blocks.
+
+    If ``dedup_mapping`` is provided (from a prior call to
+    ``_deduplicate_references``), body citation numbers are re-mapped to
+    match the deduplicated reference list, preventing mismatches when
+    duplicate entries are collapsed.
     """
     title = str(outline.get("title") or "Deep Research Report").strip()
     parts: list[str] = []
@@ -1135,8 +1252,18 @@ def _assemble_report(sections: list[str], references: list[str], outline: dict) 
         clean = _strip_stray_references(sec)
         if clean:
             parts.append(clean)
+    body_text = "\n\n".join(parts)
+
+    # Apply old→new citation number mapping so body [N] matches refs [N]
+    if dedup_mapping:
+        body_text = _renumber_citations(body_text, dedup_mapping)
+
+    # Ensure every [N] citation in the body has a corresponding entry
+    references = _fill_missing_references(body_text, references)
     if references:
-        parts.append("## 参考文献\n" + "\n".join(references))
+        parts = [body_text, "## 参考文献\n" + "\n".join(references)]
+    else:
+        parts = [body_text]
     report = "\n\n".join(parts)
     return f"# {title}\n\n{report}"
 
@@ -1436,6 +1563,12 @@ async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
 
     async with _session_state_lock:
         state = _load_session_state()
+        # Guard: if session was cleared while we were preparing this question,
+        # skip the write to avoid reintroducing stale pending_question.
+        saved_epoch = state.get("_session_epoch")
+        if saved_epoch is not None and saved_epoch != _session_epoch:
+            logger.warning("Stale _upsert_pending_question skipped (session was reset)")
+            return question
         existing = state.get("messages", [])
         full_messages = list(existing) if isinstance(existing, list) else []
         replacement_index = next(
@@ -3051,7 +3184,7 @@ async def clear_session_id() -> None:
     if _main_inbox_worker is not None:
         _main_inbox_worker.cancel()
         _main_inbox_worker = None
-    global _active_main_round_id, _active_main_round_prompt, _active_main_round_public_prompt, _active_main_round_started_at
+    global _active_main_round_id, _active_main_round_prompt, _active_main_round_public_prompt, _active_main_round_started_at, _session_epoch
     _active_main_round_id = ""
     _active_main_round_prompt = ""
     _active_main_round_public_prompt = ""
@@ -3063,12 +3196,20 @@ async def clear_session_id() -> None:
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             msgs = data.get("messages", [])
             if msgs:
-                # Session reset should not block on a provider round-trip just to
-                # preserve memory. Queue compression and clear the live state now.
                 _schedule_memory_compression(msgs)
         except Exception:
             pass
-        STATE_FILE.unlink()
+    # Write empty state under the session lock with an incremented epoch.
+    # This prevents stale agent tasks from the previous session from
+    # overwriting the clean state (the epoch guard in _upsert_pending_question
+    # and _append_session_message will detect the mismatch and skip the write).
+    async with _session_state_lock:
+        _session_epoch += 1
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(
+            json.dumps({"_session_epoch": _session_epoch}, ensure_ascii=False),
+            encoding="utf-8",
+        )
     # 不清短期记忆。它用于在 session 重置后注入上下文。
 
     # 每次开新 session 时扫描历史行为模式；首次观察只记录，后续出现才提升为 pending script。
@@ -3500,6 +3641,34 @@ async def _run_main_agent(
             saved.append(message)
         return saved
 
+    try:
+        from cyrene import behavior_learning as _behavior_learning
+
+        routed = await _behavior_learning.try_route_and_execute_skill(
+            user_message=user_message,
+            visible_user_entry=dict(user_entry),
+            llm_user_entry=dict(llm_user_entry),
+            history=history,
+            bot=bot,
+            chat_id=chat_id,
+            db_path=db_path,
+            effective_system=effective_system,
+            client_request_id=client_request_id,
+            round_id=round_id,
+        )
+    except Exception:
+        logger.warning("Learned skill routing failed; falling back to main agent loop", exc_info=True)
+        routed = None
+    if routed is not None:
+        await _publish_runtime_event({
+            "type": "phase_transition",
+            "from": "skill_router",
+            "to": "learned_skill",
+            "detail": f"Matched learned skill {routed['skill']['name']} ({routed['skill']['skill_type']})",
+        })
+        await _save_session_messages(_session_messages_to_save(routed["messages"]))
+        return str(routed["final_text"] or "Done.")
+
     # Phase 1: 轻量调用，无完整工具列表，只有 use_tools + quit
     response = await _call_llm(phase1_messages, tools=_LIGHT_TOOL_DEFS)
     tool_calls = response.get("tool_calls") or []
@@ -3783,9 +3952,9 @@ async def _run_main_agent(
                                 sections_written, references_accumulated, lang,
                             )
 
-                        # ④ 去重引用 + 组装
-                        references_accumulated = _deduplicate_references(references_accumulated)
-                        final_text = _assemble_report(sections_written, references_accumulated, outline)
+                        # ④ 去重引用（含编号映射）+ 组装
+                        references_accumulated, dedup_mapping = _deduplicate_references(references_accumulated)
+                        final_text = _assemble_report(sections_written, references_accumulated, outline, dedup_mapping=dedup_mapping)
 
                     synthesis_entry = {"role": "assistant", "content": final_text, "deep_research_report": True}
                     pdf_attachment = _deep_research_pdf_attachment(round_id, user_message, final_text)
@@ -4007,6 +4176,8 @@ async def _run_chat_agent(
     intermediate_reply_token = _pending_intermediate_user_replies.set([])
     hide_initial_detail_token = _ui_round_hide_initial_detail.set(bool(hide_initial_detail))
     assistant_meta_token = _ui_round_assistant_meta.set(dict(assistant_message_meta) if assistant_message_meta else None)
+    behavior_turn_context: dict[str, Any] | None = None
+    final_output = ""
     try:
         # 如果 history 为空（session 被重置），注入短期记忆
         restored_short_term = False
@@ -4017,6 +4188,21 @@ async def _run_chat_agent(
                 restored_short_term = True
         if ephemeral_system:
             history = [*history, {"role": "system", "content": ephemeral_system}]
+
+        try:
+            from cyrene import behavior_learning as _behavior_learning
+
+            labels = get_session_labels(round_id)
+            behavior_turn_context = _behavior_learning.begin_turn(
+                session_id=labels.get("archive_session_id", ""),
+                round_id=round_id,
+                user_message=user_message,
+                history=history,
+                session_title=labels.get("session_title", ""),
+            )
+        except Exception:
+            logger.warning("Failed to initialize behavior-learning turn context", exc_info=True)
+            behavior_turn_context = None
 
         # 组装记忆上下文注入主 Agent 的 system prompt
         try:
@@ -4107,12 +4293,34 @@ async def _run_chat_agent(
             await _refresh_session_labels(user_message, round_id)
         if main_text == _AWAITING_USER_SENTINEL:
             return main_text
+        final_output = main_text or "Done."
+        if behavior_turn_context is not None:
+            try:
+                from cyrene import behavior_learning as _behavior_learning
+
+                latest_labels = get_session_labels(round_id)
+                _behavior_learning.complete_turn(
+                    turn_id=behavior_turn_context["turn_id"],
+                    assistant_response=final_output,
+                    session_title=latest_labels.get("session_title", ""),
+                    round_title=latest_labels.get("round_title", ""),
+                )
+                _ = asyncio.create_task(_behavior_learning.process_unprocessed_turns())
+            except Exception:
+                logger.warning("Failed to finalize behavior-learning turn", exc_info=True)
         await _publish_runtime_event({
             "type": "chat_message",
             "client_request_id": client_request_id,
         })
-        return main_text or "Done."
+        return final_output
     finally:
+        if behavior_turn_context is not None:
+            try:
+                from cyrene import behavior_learning as _behavior_learning
+
+                _behavior_learning.clear_turn_context(behavior_turn_context)
+            except Exception:
+                logger.debug("Failed to clear behavior-learning context", exc_info=True)
         _current_command.reset(cmd_token)
         _deep_research_mode.reset(dr_token)
         _ui_round_assistant_meta.reset(assistant_meta_token)

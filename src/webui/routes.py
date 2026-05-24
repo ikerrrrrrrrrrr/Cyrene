@@ -1028,11 +1028,15 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         from cyrene import pattern as _pattern
         status = await _build_status()
         scripts = _pattern.list_scripts("all")
+        patterns = _pattern.list_patterns("all")
+        learned_skills = _pattern.list_learned_skills()
         cc_learning = await _build_cc_learning_snapshot()
         return {
             "phase": status.get("phase", ""),
             "state": status.get("state", ""),
             "scripts": scripts,
+            "patterns": patterns,
+            "learned_skills": learned_skills,
             "cc_learning": cc_learning,
         }
 
@@ -1040,6 +1044,107 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_scripts(status: str = "all"):
         from cyrene import pattern as _pattern
         return {"scripts": _pattern.list_scripts(status)}
+
+    @router.get("/api/patterns")
+    async def api_patterns(status: str = "all"):
+        from cyrene import pattern as _pattern
+        return {"patterns": _pattern.list_patterns(status)}
+
+    @router.get("/api/learned-skills")
+    async def api_learned_skills():
+        from cyrene import pattern as _pattern
+        return {"skills": _pattern.list_learned_skills()}
+
+    @router.get("/api/learned-skills/{skill_id}")
+    async def api_learned_skill_detail(skill_id: str):
+        from cyrene import pattern as _pattern
+        skill = _pattern.get_learned_skill(skill_id)
+        if skill is None:
+            return JSONResponse({"error": "skill not found"}, status_code=404)
+        return {"skill": skill}
+
+    @router.get("/api/learned-skills/{skill_id}/versions")
+    async def api_learned_skill_versions(skill_id: str):
+        from cyrene import pattern as _pattern
+        return {"versions": _pattern.list_learned_skill_versions(skill_id)}
+
+    @router.get("/api/learned-skills/{skill_id}/patches")
+    async def api_learned_skill_patches(skill_id: str, status: str = "all"):
+        from cyrene import pattern as _pattern
+        return {"patches": _pattern.list_learned_skill_patches(skill_id, status)}
+
+    @router.get("/api/learned-skills/{skill_id}/runs")
+    async def api_learned_skill_runs(skill_id: str, limit: int = 50):
+        from cyrene import pattern as _pattern
+        return {"runs": _pattern.list_learned_skill_runs(skill_id, limit)}
+
+    @router.get("/api/learned-skills/{skill_id}/replay-tests")
+    async def api_learned_skill_replay_tests(skill_id: str):
+        from cyrene import pattern as _pattern
+        return {"tests": _pattern.list_skill_replay_tests(skill_id)}
+
+    @router.post("/api/learned-skills/{skill_id}/update")
+    async def api_update_learned_skill(skill_id: str, request: Request):
+        from cyrene import pattern as _pattern
+
+        payload = await request.json()
+        updates = payload.get("updates") if isinstance(payload, dict) else None
+        reason = str((payload or {}).get("reason") or "Manual skill edit.")
+        result = await _pattern.update_learned_skill(skill_id, updates if isinstance(updates, dict) else {}, reason=reason)
+        if result is None:
+            return JSONResponse({"error": "skill not found or invalid payload"}, status_code=404)
+        return {"ok": True, "skill": result}
+
+    @router.post("/api/learned-skills/{skill_id}/rollback")
+    async def api_rollback_learned_skill(skill_id: str, request: Request):
+        from cyrene import pattern as _pattern
+
+        payload = await request.json()
+        version = int((payload or {}).get("version") or 0)
+        result = await _pattern.rollback_learned_skill(skill_id, version)
+        if not result.get("ok"):
+            return JSONResponse(result, status_code=404)
+        return result
+
+    @router.post("/api/learned-skills/{skill_id}/replay-tests/run")
+    async def api_run_learned_skill_replay_tests(skill_id: str):
+        from cyrene import pattern as _pattern
+        result = await _pattern.run_skill_replay_tests(skill_id)
+        return {"ok": True, "result": result}
+
+    @router.post("/api/learned-skills/{skill_id}/patches/{patch_id}/apply")
+    async def api_apply_learned_skill_patch(skill_id: str, patch_id: str):
+        from cyrene import pattern as _pattern
+        result = await _pattern.apply_skill_patch(skill_id, patch_id)
+        if not result.get("ok"):
+            return JSONResponse(result, status_code=400)
+        return result
+
+    @router.post("/api/learned-skills/{skill_id}/patches/{patch_id}/reject")
+    async def api_reject_learned_skill_patch(skill_id: str, patch_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.reject_skill_patch(skill_id, patch_id)
+        if not ok:
+            return JSONResponse({"error": "patch not found"}, status_code=404)
+        return {"ok": True}
+
+    @router.post("/api/learned-skills/{skill_id}/activate")
+    async def api_activate_learned_skill(skill_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.approve_script(skill_id)
+        return {"ok": ok}
+
+    @router.post("/api/learned-skills/{skill_id}/deprecate")
+    async def api_deprecate_learned_skill(skill_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.reject_script(skill_id)
+        return {"ok": ok}
+
+    @router.post("/api/learned-skills/{skill_id}/run")
+    async def api_run_learned_skill(skill_id: str):
+        from cyrene import pattern as _pattern
+        result = await _pattern.run_script(skill_id)
+        return {"ok": True, "result": result}
 
     @router.post("/api/scripts/{script_id}/approve")
     async def api_approve_script(script_id: str):
@@ -1067,8 +1172,71 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         return {
             "ok": True,
             "stats": stats,
+            "patterns": _pattern.list_patterns("all"),
+            "learned_skills": _pattern.list_learned_skills(),
             "scripts": _pattern.list_scripts("all"),
         }
+
+    @router.get("/api/vocabulary")
+    async def api_vocabulary():
+        from cyrene import pattern as _pattern
+        return _pattern.vocabulary_snapshot()
+
+    @router.post("/api/vocabulary/labels")
+    async def api_create_vocabulary_label(request: Request):
+        from cyrene import pattern as _pattern
+
+        payload = await request.json()
+        try:
+            result = _pattern.create_vocabulary_label(
+                label_type=str((payload or {}).get("label_type") or ""),
+                canonical_label=str((payload or {}).get("canonical_label") or ""),
+                domain=str((payload or {}).get("domain") or ""),
+                parent_label=str((payload or {}).get("parent_label") or ""),
+                raw_description=str((payload or {}).get("raw_description") or ""),
+                status=str((payload or {}).get("status") or "active"),
+            )
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return {"ok": True, "label": result}
+
+    @router.post("/api/vocabulary/aliases")
+    async def api_create_vocabulary_alias(request: Request):
+        from cyrene import pattern as _pattern
+
+        payload = await request.json()
+        try:
+            result = _pattern.create_vocabulary_alias(
+                label_type=str((payload or {}).get("label_type") or ""),
+                canonical_label=str((payload or {}).get("canonical_label") or ""),
+                alias_label=str((payload or {}).get("alias_label") or ""),
+            )
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return {"ok": True, "alias": result}
+
+    @router.post("/api/vocabulary/unknown/{unknown_id}/promote")
+    async def api_promote_unknown_label(unknown_id: str, request: Request):
+        from cyrene import pattern as _pattern
+
+        payload = await request.json()
+        try:
+            result = _pattern.promote_unknown_label(
+                unknown_id,
+                canonical_label=str((payload or {}).get("canonical_label") or ""),
+                alias_label=str((payload or {}).get("alias_label") or ""),
+            )
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return {"ok": True, "unknown": result}
+
+    @router.post("/api/vocabulary/unknown/{unknown_id}/dismiss")
+    async def api_dismiss_unknown_label(unknown_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.dismiss_unknown_label(unknown_id)
+        if not ok:
+            return JSONResponse({"error": "unknown label not found"}, status_code=404)
+        return {"ok": True}
 
     # ---- Skills install API ----
 
@@ -1086,6 +1254,33 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not result.get("ok", False):
             return JSONResponse(result, status_code=400)
         return result
+
+    @router.post("/api/skills/install-upload")
+    async def api_install_skill_upload(request: Request):
+        """Install a skill from an uploaded file (browser file picker path)."""
+        import tempfile
+
+        try:
+            form = await request.form()
+            file = form.get("file")
+            if not file:
+                return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
+            content = await file.read()
+            if len(content) > 262144:  # 256 KB
+                return JSONResponse({"ok": False, "error": "File too large (max 256 KB)"}, status_code=400)
+            suffix = Path(file.filename or "skill.tmp").suffix or ".tmp"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            try:
+                result = install_skill_from_path(tmp_path)
+                if not result.get("ok", False):
+                    return JSONResponse(result, status_code=400)
+                return result
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
     @router.post("/api/skills/install-picker")
     async def api_install_skill_picker():

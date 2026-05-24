@@ -43,3 +43,5 @@ uv.lock
 
 # Tests
 tests*
+!tests/
+!tests/*.py

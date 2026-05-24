@@ -1,0 +1,142 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+
+async def _fake_llm_json(_prompt: str, *, caller: str = "behavior_learning"):
+    return {}
+
+
+async def _init_behavior(tmp_path, monkeypatch):
+    from cyrene import behavior_learning as bl
+
+    await bl.init(tmp_path, tmp_path)
+    monkeypatch.setattr(bl, "_DB_FILE", tmp_path / "behavior-learning.db")
+    bl._ensure_tables()
+    bl._seed_core_vocabulary()
+    monkeypatch.setattr(bl, "_call_llm_json", _fake_llm_json)
+    return bl
+
+
+def _record_code_fix_turn(bl, *, session_id: str, round_id: str, user_message: str):
+    context = bl.begin_turn(
+        session_id=session_id,
+        round_id=round_id,
+        user_message=user_message,
+        history=[],
+        session_title="Behavior test session",
+    )
+    bl.record_action("read_file", {"path": "src/app.py"}, "main_agent", round_id, 12, result="file content", success=True)
+    bl.record_action(
+        "edit_file",
+        {"path": "src/app.py", "old_string": "return raw", "new_string": "return exported"},
+        "main_agent",
+        round_id,
+        20,
+        result="patched",
+        success=True,
+    )
+    bl.record_action(
+        "run_shell",
+        {"command": "pytest -q tests/test_export.py"},
+        "main_agent",
+        round_id,
+        80,
+        result="1 passed",
+        success=True,
+    )
+    bl.complete_turn(
+        turn_id=context["turn_id"],
+        assistant_response="已修复并验证。",
+        session_title="Behavior test session",
+        round_title=round_id,
+    )
+    bl.clear_turn_context(context)
+
+
+async def test_behavior_learning_promotes_to_active_skill(tmp_path, monkeypatch):
+    bl = await _init_behavior(tmp_path, monkeypatch)
+
+    for index in range(1, 6):
+        _record_code_fix_turn(
+            bl,
+            session_id="session-alpha",
+            round_id=f"round-{index}",
+            user_message="请检查 src/app.py 并修复导出逻辑，然后给我总结",
+        )
+
+    stats = await bl.process_unprocessed_turns(force=True)
+    patterns = bl.list_patterns()
+    skills = bl.list_learned_skills()
+
+    assert stats["processed_turns"] == 5
+    assert stats["merged_patterns"] == 4
+    assert len(patterns) == 1
+    assert patterns[0]["description"] == "edit_resource / code_change / source_code_file / workspace_file"
+    assert patterns[0]["prototype_fingerprint"]["action_sequence"][0]["subtype"] == "read_file"
+    assert len(skills) == 1
+    assert skills[0]["status"] == "active"
+    assert skills[0]["skill_type"] == "parameterized"
+    assert skills[0]["run_statistics"]["shadow_success"] == 3
+
+
+async def test_behavior_learning_manual_edit_and_rollback(tmp_path, monkeypatch):
+    bl = await _init_behavior(tmp_path, monkeypatch)
+
+    for index in range(1, 3):
+        _record_code_fix_turn(
+            bl,
+            session_id="session-beta",
+            round_id=f"round-{index}",
+            user_message="请检查 src/app.py 并修复导出逻辑，然后给我总结",
+        )
+
+    await bl.process_unprocessed_turns(force=True)
+    skill = bl.list_learned_skills()[0]
+    updated = await bl.update_learned_skill(
+        skill["id"],
+        {"description": "manual edit description"},
+        reason="manual test edit",
+    )
+
+    assert updated is not None
+    assert updated["description"] == "manual edit description"
+    assert updated["version"] == 2
+
+    rollback = await bl.rollback_learned_skill(skill["id"], 1)
+    restored = bl.get_learned_skill(skill["id"])
+
+    assert rollback["ok"] is True
+    assert restored is not None
+    assert restored["version"] == 3
+    assert restored["description"] != "manual edit description"
+
+
+async def test_behavior_learning_patch_application_and_vocabulary_snapshot(tmp_path, monkeypatch):
+    bl = await _init_behavior(tmp_path, monkeypatch)
+
+    for index in range(1, 3):
+        _record_code_fix_turn(
+            bl,
+            session_id="session-gamma",
+            round_id=f"round-{index}",
+            user_message="请检查 src/app.py 并修复导出逻辑，然后给我总结",
+        )
+
+    await bl.process_unprocessed_turns(force=True)
+    skill = bl.list_learned_skills()[0]
+
+    bl._maybe_propose_patch(skill["id"], int(skill["version"]), "missing parameters: path")
+    patches = bl.list_learned_skill_patches(skill["id"])
+    patch = patches[0]
+    applied = await bl.apply_skill_patch(skill["id"], patch["patch_id"])
+    refreshed = bl.get_learned_skill(skill["id"])
+    vocabulary = bl.vocabulary_snapshot()
+
+    assert applied["ok"] is True
+    assert refreshed is not None
+    assert refreshed["fallback_policy"]["on_missing_args"] == "ask_user"
+    assert bl.list_learned_skill_patches(skill["id"])[0]["status"] == "applied"
+    assert vocabulary["vocabulary_version"] == 1
+    assert any(item["label_type"] == "intent_type" for item in vocabulary["unknown_labels"])
