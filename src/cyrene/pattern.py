@@ -111,6 +111,26 @@ def _make_fingerprint(tool: str, args: dict[str, Any]) -> str:
     return tool
 
 
+def _compact_value(value: Any, *, depth: int = 0) -> Any:
+    """Keep a small, JSON-safe view of tool args for pattern replay."""
+    if depth >= 3:
+        return "..."
+    if isinstance(value, str):
+        return value[:280]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_compact_value(item, depth=depth + 1) for item in value[:10]]
+    if isinstance(value, dict):
+        compact: dict[str, Any] = {}
+        for idx, (key, item) in enumerate(value.items()):
+            if idx >= 20:
+                break
+            compact[str(key)] = _compact_value(item, depth=depth + 1)
+        return compact
+    return str(value)[:160]
+
+
 # ---------------------------------------------------------------------------
 # Action tracking
 # ---------------------------------------------------------------------------
@@ -132,7 +152,7 @@ def record_action(
         round_id=round_id or "",
         caller=caller or "unknown",
         tool=tool,
-        args=dict(args) if args else {},
+        args=_compact_value(dict(args) if args else {}),
         arg_fingerprint=_make_fingerprint(tool, args),
         duration_ms=duration_ms,
     )
@@ -147,6 +167,7 @@ def record_action(
                 "rid": entry.round_id,
                 "c": entry.caller,
                 "t": entry.tool,
+                "args": entry.args,
                 "fp": entry.arg_fingerprint,
                 "d": round(entry.duration_ms, 1),
             }, ensure_ascii=False)
@@ -331,12 +352,24 @@ def detect_patterns(
         ))
 
     # Deduplicate: if candidate A is a subsequence of candidate B, keep B
-    candidates.sort(key=lambda c: (c.confidence, len(c.sequence)), reverse=True)
+    def _tools_only(candidate: PatternCandidate) -> list[str]:
+        return [str(step.get("tool") or "") for step in candidate.sequence]
+
+    def _is_contained(shorter: list[str], longer: list[str]) -> bool:
+        if len(shorter) >= len(longer):
+            return False
+        for start in range(len(longer) - len(shorter) + 1):
+            if longer[start : start + len(shorter)] == shorter:
+                return True
+        return False
+
+    candidates.sort(key=lambda c: (c.confidence, len(c.sequence), c.occurrences), reverse=True)
     filtered: list[PatternCandidate] = []
     for c in candidates:
+        c_tools = _tools_only(c)
         if any(
             c.fingerprint != other.fingerprint
-            and c.fingerprint in other.fingerprint
+            and _is_contained(c_tools, _tools_only(other))
             and c.confidence <= other.confidence
             for other in candidates
         ):
@@ -377,6 +410,7 @@ def list_scripts(status: str = "all") -> list[dict]:
                 scripts.append(s)
         except Exception:
             pass
+    scripts.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return scripts
 
 
@@ -493,7 +527,11 @@ Return:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "approved_at": None,
         "last_used": None,
+        "first_seen": candidate.first_seen,
+        "last_seen": candidate.last_seen,
+        "confidence": candidate.confidence,
         "occurrences": candidate.occurrences,
+        "round_ids": candidate.round_ids,
     }
     _save_script(script)
     return script
@@ -515,7 +553,7 @@ def _observe_candidate(history: dict[str, Any], candidate: PatternCandidate) -> 
     }
 
 
-async def _scan_for_session_start_unlocked() -> dict[str, int]:
+async def _scan_for_session_start_unlocked(force_promote: bool = False) -> dict[str, int]:
     """Scan action history when a new session starts.
 
     First detection only records a fingerprint. A later scan must observe new
@@ -536,7 +574,9 @@ async def _scan_for_session_start_unlocked() -> dict[str, int]:
             if record is None:
                 _observe_candidate(history, candidate)
                 observed += 1
-                continue
+                record = history.get(candidate.fingerprint)
+                if not force_promote:
+                    continue
 
             if existing_script is not None:
                 if _candidate_has_new_evidence(candidate, record):
@@ -544,11 +584,14 @@ async def _scan_for_session_start_unlocked() -> dict[str, int]:
                     record["occurrences"] = candidate.occurrences
                 continue
 
-            if not _candidate_has_new_evidence(candidate, record):
+            if not force_promote and not _candidate_has_new_evidence(candidate, record):
                 continue
 
             script = await create_pending_script(candidate)
             if script:
+                if record is None:
+                    _observe_candidate(history, candidate)
+                    record = history.get(candidate.fingerprint)
                 record["status"] = "promoted"
                 record["promoted_at"] = datetime.now(timezone.utc).isoformat()
                 record["script_id"] = script["id"]
@@ -557,15 +600,26 @@ async def _scan_for_session_start_unlocked() -> dict[str, int]:
                 promoted += 1
 
         _save_pattern_history(history)
-        return {"observed": observed, "promoted": promoted, "candidates": len(candidates)}
+        return {
+            "observed": observed,
+            "promoted": promoted,
+            "candidates": len(candidates),
+            "forced": int(force_promote),
+        }
     except Exception:
         logger.debug("Pattern scan on session start failed", exc_info=True)
-        return {"observed": 0, "promoted": 0, "candidates": 0}
+        return {"observed": 0, "promoted": 0, "candidates": 0, "forced": int(force_promote)}
 
 
 async def scan_for_session_start() -> dict[str, int]:
     async with _SCAN_LOCK:
         return await _scan_for_session_start_unlocked()
+
+
+async def scan_for_manual_learn() -> dict[str, int]:
+    """Explicit learn-now path: promote confident historical patterns immediately."""
+    async with _SCAN_LOCK:
+        return await _scan_for_session_start_unlocked(force_promote=True)
 
 
 async def run_script(script_id: str, param_overrides: dict[str, str] | None = None) -> str:
@@ -681,7 +735,7 @@ async def _tool_learn_patterns(
     args: dict[str, Any],
     bot: Any, chat_id: int, db_path: str, notify_state: dict | None,
 ) -> str:
-    stats = await scan_for_session_start()
+    stats = await scan_for_manual_learn()
     return (
         "Pattern learning completed. "
         f"Observed {int(stats.get('observed') or 0)} new pattern(s), "
@@ -900,7 +954,7 @@ async def init(data_dir: Path, workspace_dir: Path) -> None:
                         round_id=d.get("rid", ""),
                         caller=d.get("c", "unknown"),
                         tool=d.get("t", ""),
-                        args={},
+                        args=d.get("args", {}) if isinstance(d.get("args", {}), dict) else {},
                         arg_fingerprint=d.get("fp", ""),
                         duration_ms=d.get("d", 0),
                     )

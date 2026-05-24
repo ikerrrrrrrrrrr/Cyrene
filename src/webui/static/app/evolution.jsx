@@ -129,25 +129,22 @@ function EvolutionPage() {
   ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 16, padding: "0 4px" }}>
+    <div className="evolution-page">
       {/* phase banner */}
-      <div style={{
-        padding: "16px 20px", borderRadius: "var(--r-m)", background: "var(--bg-2)",
-        border: "1px solid var(--line)", display: "flex", alignItems: "center", gap: 12
-      }}>
-        <span style={{ fontSize: 20 }}>⚡</span>
+      <div className="evolution-banner">
+        <span className="evolution-banner-icon">⚡</span>
         <div>
-          <div style={{ fontWeight: 600, fontSize: 15, color: "var(--accent)" }}>
+          <div className="evolution-banner-title">
             evolve / 进化
           </div>
-          <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 2 }}>
+          <div className="evolution-banner-desc">
             {t("status.evolveHint")}
           </div>
         </div>
       </div>
 
       {/* tab bar */}
-      <div className="seg" style={{ alignSelf: "flex-start" }}>
+      <div className="seg evolution-tabbar">
         {tabs.map(t => (
           <button key={t.id}
             className={"seg-btn " + (tab === t.id ? "active" : "")}
@@ -157,290 +154,301 @@ function EvolutionPage() {
         ))}
       </div>
 
-      {/* skills tab */}
-      {tab === "skills" && (
-        (() => {
-          const filteredSkills = installedSkills.filter((skill) => {
-            if (!query) return true;
-            const haystack = [skill.name, skill.desc, skill.file_name, skill.source_path].join(" ").toLowerCase();
-            return haystack.includes(query.toLowerCase());
-          });
-          const selectedSkill = filteredSkills.find((skill) => skill.id === selectedSkillId)
-            || installedSkills.find((skill) => skill.id === selectedSkillId)
-            || filteredSkills[0]
-            || null;
+      <div className="evolution-scroll">
+        {/* skills tab */}
+        {tab === "skills" && (
+          (() => {
+            const filteredSkills = installedSkills.filter((skill) => {
+              if (!query) return true;
+              const haystack = [skill.name, skill.desc, skill.file_name, skill.source_path].join(" ").toLowerCase();
+              return haystack.includes(query.toLowerCase());
+            });
+            const selectedSkill = filteredSkills.find((skill) => skill.id === selectedSkillId)
+              || installedSkills.find((skill) => skill.id === selectedSkillId)
+              || filteredSkills[0]
+              || null;
 
-          return (
-            <div className="skills-layout">
-              <div className="skills-side">
-                <div className="skills-tabs">
-                  <div className="skills-tab active">
-                    {t("skills.installed")}
-                    <span className="skills-tab-count">{installedSkills.length}</span>
+            return (
+              <div className="skills-layout">
+                <div className="skills-side">
+                  <div className="skills-tabs">
+                    <div className="skills-tab active">
+                      {t("skills.installed")}
+                      <span className="skills-tab-count">{installedSkills.length}</span>
+                    </div>
                   </div>
-                </div>
-                <div className="skills-search">
-                  <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-                    <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
-                  </svg>
-                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("skills.filterPlaceholder")} />
-                </div>
-                {skillError && (
-                  <div style={{ margin: "12px 10px 0", color: "var(--err)", fontSize: 12 }}>
-                    {skillError}
+                  <div className="skills-search">
+                    <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+                      <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
+                    </svg>
+                    <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("skills.filterPlaceholder")} />
                   </div>
-                )}
-                <div className="skills-list-page">
-                  {loading && (
-                    <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
-                      {t("skills.loading")}
+                  {skillError && (
+                    <div style={{ margin: "12px 10px 0", color: "var(--err)", fontSize: 12 }}>
+                      {skillError}
                     </div>
                   )}
-                  {!loading && filteredSkills.map((skill) => (
-                    <div key={skill.id}
-                         className={"skill-row " + (skill.id === selectedSkillId ? "active" : " installed")}
-                         onClick={() => setSelectedSkillId(skill.id)}>
-                      <div className="skill-row-icon">{skill.name?.slice(0, 1) || "S"}</div>
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div className="skill-row-name">{skill.name}</div>
-                        <div className="skill-row-desc">{skill.desc}</div>
-                        <div className="skill-row-meta">
-                          <span>{skill.file_name}</span>
-                          <span>· {fmtBytes(skill.size_bytes || 0)}</span>
+                  <div className="skills-list-page">
+                    {loading && (
+                      <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
+                        {t("skills.loading")}
+                      </div>
+                    )}
+                    {!loading && filteredSkills.map((skill) => (
+                      <div key={skill.id}
+                           className={"skill-row " + (skill.id === selectedSkillId ? "active" : " installed")}
+                           onClick={() => setSelectedSkillId(skill.id)}>
+                        <div className="skill-row-icon">{skill.name?.slice(0, 1) || "S"}</div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="skill-row-name">{skill.name}</div>
+                          <div className="skill-row-desc">{skill.desc}</div>
+                          <div className="skill-row-meta">
+                            <span>{skill.file_name}</span>
+                            <span>· {fmtBytes(skill.size_bytes || 0)}</span>
+                          </div>
+                        </div>
+                        <div className="skill-row-state" style={{ paddingTop: 0 }}>
+                          <div className={"toggle " + (skill.enabled !== false ? "on" : "")}
+                               onClick={(e) => { e.stopPropagation(); handleToggle(skill.id); }} />
                         </div>
                       </div>
-                      <div className="skill-row-state" style={{ paddingTop: 0 }}>
-                        <div className={"toggle " + (skill.enabled !== false ? "on" : "")}
-                             onClick={(e) => { e.stopPropagation(); handleToggle(skill.id); }} />
+                    ))}
+                    {!loading && filteredSkills.length === 0 && (
+                      <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
+                        {installedSkills.length === 0 ? t("skills.empty") : t("skills.noMatch")}
                       </div>
-                    </div>
-                  ))}
-                  {!loading && filteredSkills.length === 0 && (
-                    <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
-                      {installedSkills.length === 0 ? t("skills.empty") : t("skills.noMatch")}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="skill-detail">
-                {!selectedSkill ? (
-                  <div className="skill-detail-head">
-                    <div style={{ flex: 1 }}>
-                      <h1 className="skill-detail-title">{t("skills.emptyTitle")}</h1>
-                      <p className="skill-detail-desc">{t("skills.emptyDesc")}</p>
-                    </div>
-                    <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>
-                      {t("skills.installSkill")}
-                    </button>
+                    )}
                   </div>
-                ) : (
-                  <>
+                </div>
+
+                <div className="skill-detail">
+                  {!selectedSkill ? (
                     <div className="skill-detail-head">
-                      <div className="skill-detail-icon">{selectedSkill.name?.slice(0, 1) || "S"}</div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="skill-detail-meta">
-                          {(selectedSkill.tags || []).map((tag) => <span key={tag} className="skill-tag">{tag}</span>)}
-                          <span className="skill-detail-version">{selectedSkill.file_name}</span>
+                      <div style={{ flex: 1 }}>
+                        <h1 className="skill-detail-title">{t("skills.emptyTitle")}</h1>
+                        <p className="skill-detail-desc">{t("skills.emptyDesc")}</p>
+                      </div>
+                      <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>
+                        {t("skills.installSkill")}
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="skill-detail-head">
+                        <div className="skill-detail-icon">{selectedSkill.name?.slice(0, 1) || "S"}</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="skill-detail-meta">
+                            {(selectedSkill.tags || []).map((tag) => <span key={tag} className="skill-tag">{tag}</span>)}
+                            <span className="skill-detail-version">{selectedSkill.file_name}</span>
+                          </div>
+                          <h1 className="skill-detail-title">{selectedSkill.name}</h1>
+                          <p className="skill-detail-desc">{selectedSkill.desc}</p>
                         </div>
-                        <h1 className="skill-detail-title">{selectedSkill.name}</h1>
-                        <p className="skill-detail-desc">{selectedSkill.desc}</p>
-                      </div>
-                      <div className="skill-detail-actions">
-                        <div className="enable-toggle">
-                          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
-                            {selectedSkill.enabled ? t("skills.enabled") : t("skills.disabled")}
-                          </span>
-                          <div className={"toggle " + (selectedSkill.enabled ? "on" : "")}
-                               onClick={() => handleToggle(selectedSkill.id)} />
+                        <div className="skill-detail-actions">
+                          <div className="enable-toggle">
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
+                              {selectedSkill.enabled ? t("skills.enabled") : t("skills.disabled")}
+                            </span>
+                            <div className={"toggle " + (selectedSkill.enabled ? "on" : "")}
+                                 onClick={() => handleToggle(selectedSkill.id)} />
+                          </div>
+                          <button className="btn" onClick={() => handleUninstall(selectedSkill.id)} disabled={skillBusy}>
+                            {t("skills.delete")}
+                          </button>
                         </div>
-                        <button className="btn" onClick={() => handleUninstall(selectedSkill.id)} disabled={skillBusy}>
-                          {t("skills.delete")}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="skill-detail-body">
-                      <div className="skill-stats">
-                        <Stat label={t("skills.fileSize")} value={fmtBytes(selectedSkill.size_bytes || 0)} />
-                        <Stat label={t("skills.updatedAt")} value={fmtDateTime(selectedSkill.updated_at)} />
-                        <Stat label={t("skills.installedAt")} value={fmtDateTime(selectedSkill.installed_at)} />
-                        <Stat label={t("skills.agentVisible")} value={selectedSkill.agent_visible ? t("skills.yes") : t("skills.no")} />
                       </div>
 
-                      <SkillSection title={t("skills.source")}>
-                        <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.source_path || "—"}</pre>
-                      </SkillSection>
+                      <div className="skill-detail-body">
+                        <div className="skill-stats">
+                          <Stat label={t("skills.fileSize")} value={fmtBytes(selectedSkill.size_bytes || 0)} />
+                          <Stat label={t("skills.updatedAt")} value={fmtDateTime(selectedSkill.updated_at)} />
+                          <Stat label={t("skills.installedAt")} value={fmtDateTime(selectedSkill.installed_at)} />
+                          <Stat label={t("skills.agentVisible")} value={selectedSkill.agent_visible ? t("skills.yes") : t("skills.no")} />
+                        </div>
 
-                      <SkillSection title={t("skills.path")}>
-                        <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.stored_path || "—"}</pre>
-                      </SkillSection>
+                        <SkillSection title={t("skills.source")}>
+                          <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.source_path || "—"}</pre>
+                        </SkillSection>
 
-                      <SkillSection title={t("skills.preview")}>
-                        <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.preview || "—"}</pre>
-                      </SkillSection>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          );
-        })()
-      )}
+                        <SkillSection title={t("skills.path")}>
+                          <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.stored_path || "—"}</pre>
+                        </SkillSection>
 
-      {/* CC learning tab */}
-      {tab === "cc" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {ccData && ccData.available ? (
-            <>
-              <div className="card" style={{ padding: "12px 16px" }}>
-                <div className="card-head">
-                  <span className="card-title">{t("evolution.communication")}</span>
-                </div>
-                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
-                  {ccData.summary && ccData.summary.highlights && ccData.summary.highlights.map((h, i) => (
-                    <div key={i} style={{ color: "var(--text-3)", lineHeight: 1.5 }}>• {h}</div>
-                  ))}
-                  {ccData.style && (
-                    <div style={{ color: "var(--text-4)", marginTop: 4 }}>
-                      {ccData.style.message_count || 0} exchanges · {ccData.style.chinese_ratio > 0.5 ? "中文" : "English"}
-                      · avg {(ccData.style.avg_length || 0).toFixed(0)} chars
-                    </div>
+                        <SkillSection title={t("skills.preview")}>
+                          <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.preview || "—"}</pre>
+                        </SkillSection>
+                      </div>
+                    </>
                   )}
                 </div>
               </div>
+            );
+          })()
+        )}
 
-              {ccData.tools && ccData.tools.top_tools && ccData.tools.top_tools.length > 0 && (
-                <div className="card" style={{ padding: "12px 16px" }}>
-                  <div className="card-head">
-                    <span className="card-title">{t("evolution.topTools")}</span>
-                  </div>
-                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
-                    {ccData.tools.top_tools.map(([name, count], i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ color: "var(--text)" }}>{name}</span>
-                        <span style={{ color: "var(--text-4)" }}>{count}x</span>
-                      </div>
-                    ))}
-                  </div>
+        {/* CC learning tab */}
+        {tab === "cc" && (
+          <div className="evolution-stack">
+            {ccData && ccData.available ? (
+              <>
+                <div className="evolution-stat-grid">
+                  <Stat label={t("evolution.exchanges")} value={String(ccData.style?.message_count || 0)} />
+                  <Stat label={t("evolution.avgLength")} value={String((ccData.style?.avg_length || 0).toFixed(0))} />
+                  <Stat label={t("evolution.directiveCount")} value={String(ccData.style?.directive_count || 0)} />
+                  <Stat label={t("evolution.correctionRate")} value={`${((ccData.corrections?.correction_ratio || 0) * 100).toFixed(1)}%`} />
                 </div>
-              )}
 
-              {ccData.style && ccData.style.common_tasks && ccData.style.common_tasks.length > 0 && (
-                <div className="card" style={{ padding: "12px 16px" }}>
-                  <div className="card-head">
-                    <span className="card-title">{t("evolution.commonTasks")}</span>
-                  </div>
-                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
-                    {ccData.style.common_tasks.map(([task, count], i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between" }}>
-                        <span style={{ color: "var(--text)" }}>{task}</span>
-                        <span style={{ color: "var(--text-4)" }}>{count}x</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {ccData.corrections && (
-                <div className="card" style={{ padding: "12px 16px" }}>
-                  <div className="card-head">
-                    <span className="card-title">{t("evolution.correctionRate")}</span>
-                  </div>
-                  <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-3)" }}>
-                    {(ccData.corrections.correction_ratio * 100).toFixed(1)}%
-                    <span style={{ color: "var(--text-4)", marginLeft: 8 }}>
-                      ({ccData.corrections.correction_count} corrections)
-                    </span>
-                  </div>
-                </div>
-              )}
-            </>
-          ) : (
-            <div style={{ textAlign: "center", padding: 40, color: "var(--text-4)", fontSize: 12 }}>
-              {t("evolution.noCcData")}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* patterns / scripts tab */}
-      {tab === "patterns" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-            <div style={{ fontSize: 12, color: "var(--text-4)" }}>
-              {learnMessage || " "}
-            </div>
-            <button className="btn primary" style={{ fontSize: 11 }} onClick={handleLearnPatterns} disabled={learnBusy}>
-              {learnBusy ? t("evolution.learning") : t("evolution.learnNow")}
-            </button>
-          </div>
-          {scripts.length === 0 && (
-            <div style={{ textAlign: "center", padding: 40, color: "var(--text-4)", fontSize: 12 }}>
-              {t("evolution.noScripts")}
-            </div>
-          )}
-          {scripts.map((s) => (
-            <div key={s.id} className="card" style={{ padding: "12px 16px" }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                <span style={{
-                  fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 4,
-                  background: s.status === "approved" ? "var(--accent)" :
-                              s.status === "rejected" ? "var(--err)" : "var(--warn)",
-                  color: "#fff", marginTop: 2
-                }}>
-                  {s.status === "approved" ? t("evolution.approved") :
-                   s.status === "rejected" ? t("evolution.rejected") : t("evolution.pending")}
-                </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{s.name || s.id}</div>
-                  {s.description && (
-                    <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 2 }}>{s.description}</div>
-                  )}
-                  <div style={{ display: "flex", gap: 16, marginTop: 6, fontSize: 11, color: "var(--text-4)" }}>
-                    {s.confidence !== undefined && (
-                      <span>{t("evolution.confidence")}: {fmtPct(s.confidence)}</span>
-                    )}
-                    {s.occurrences !== undefined && (
-                      <span>{t("evolution.occurrences")}: {s.occurrences}</span>
-                    )}
-                    {s.last_seen && (
-                      <span>{t("evolution.lastSeen")}: {fmtTime(s.last_seen)}</span>
-                    )}
-                  </div>
-                  {s.steps && s.steps.length > 0 && (
-                    <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
-                      {s.steps.map((step, i) => (
-                        <span key={i}>{i > 0 && " → "}{step.tool}</span>
+                <div className="evolution-cc-grid">
+                  <div className="card evolution-card">
+                    <div className="card-head">
+                      <span className="card-title">{t("evolution.communication")}</span>
+                    </div>
+                    <div className="evolution-bullet-list">
+                      {ccData.summary && ccData.summary.highlights && ccData.summary.highlights.map((h, i) => (
+                        <div key={i} className="evolution-bullet-row">{h}</div>
                       ))}
                     </div>
+                    <div className="evolution-card-foot">
+                      {(ccData.style?.chinese_ratio || 0) > 0.5 ? "中文为主" : "English / mixed"}
+                      {ccData.cadence?.avg_gap_seconds ? ` · ${t("evolution.cadence")} ${ccData.cadence.avg_gap_seconds}s` : ""}
+                    </div>
+                  </div>
+
+                  {ccData.tools && ccData.tools.top_tools && ccData.tools.top_tools.length > 0 && (
+                    <div className="card evolution-card">
+                      <div className="card-head">
+                        <span className="card-title">{t("evolution.topTools")}</span>
+                      </div>
+                      <div className="evolution-pair-list">
+                        {ccData.tools.top_tools.map(([name, count], i) => (
+                          <div key={i} className="evolution-pair-row">
+                            <span>{name}</span>
+                            <span>{count}x</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {ccData.style && ccData.style.common_tasks && ccData.style.common_tasks.length > 0 && (
+                    <div className="card evolution-card">
+                      <div className="card-head">
+                        <span className="card-title">{t("evolution.commonTasks")}</span>
+                      </div>
+                      <div className="evolution-pair-list">
+                        {ccData.style.common_tasks.map(([task, count], i) => (
+                          <div key={i} className="evolution-pair-row">
+                            <span>{task}</span>
+                            <span>{count}x</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {ccData.corrections && (
+                    <div className="card evolution-card">
+                      <div className="card-head">
+                        <span className="card-title">{t("evolution.correctionRate")}</span>
+                      </div>
+                      <div className="evolution-correction-metric">
+                        {((ccData.corrections.correction_ratio || 0) * 100).toFixed(1)}%
+                      </div>
+                      <div className="evolution-card-foot">
+                        {ccData.corrections.correction_count || 0} corrections
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="card evolution-empty-card">
+                {t("evolution.noCcData")}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* patterns / scripts tab */}
+        {tab === "patterns" && (
+          <div className="evolution-patterns">
+            <div className="card evolution-pattern-banner">
+              <div>
+                <div className="card-title">{t("evolution.patterns")}</div>
+                <div className="evolution-pattern-hint">{t("evolution.patternIntro")}</div>
+              </div>
+              <button className="btn primary" style={{ fontSize: 11 }} onClick={handleLearnPatterns} disabled={learnBusy}>
+                {learnBusy ? t("evolution.learning") : t("evolution.learnNow")}
+              </button>
+            </div>
+            <div className={"evolution-inline-note " + (learnMessage ? "show" : "")}>
+              {learnMessage || " "}
+            </div>
+            {scripts.length === 0 && (
+              <div className="card evolution-empty-card">
+                {t("evolution.noScripts")}
+              </div>
+            )}
+            {scripts.map((s) => (
+              <div key={s.id} className="card evolution-pattern-card">
+                <div className="evolution-pattern-head">
+                  <span className={"pattern-status " + s.status}>
+                    {s.status === "approved" ? t("evolution.approved") :
+                     s.status === "rejected" ? t("evolution.rejected") : t("evolution.pending")}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="evolution-pattern-title">{s.name || s.id}</div>
+                    {s.description && (
+                      <div className="evolution-pattern-desc">{s.description}</div>
+                    )}
+                  </div>
+                </div>
+                <div className="evolution-pattern-meta">
+                  {s.confidence !== undefined && (
+                    <span>{t("evolution.confidence")}: {fmtPct(s.confidence)}</span>
+                  )}
+                  {s.occurrences !== undefined && (
+                    <span>{t("evolution.occurrences")}: {s.occurrences}</span>
+                  )}
+                  {Array.isArray(s.round_ids) && s.round_ids.length > 0 && (
+                    <span>{t("evolution.rounds")}: {s.round_ids.length}</span>
+                  )}
+                  {s.last_seen && (
+                    <span>{t("evolution.lastSeen")}: {fmtTime(s.last_seen)}</span>
+                  )}
+                </div>
+                {s.steps && s.steps.length > 0 && (
+                  <div className="evolution-pattern-steps">
+                    {s.steps.map((step, i) => (
+                      <span key={i}>{i > 0 && " → "}{step.tool}</span>
+                    ))}
+                  </div>
+                )}
+                <div className="evolution-pattern-actions">
+                  {s.status === "pending" && (
+                    <>
+                      <button className="btn" style={{ fontSize: 11 }}
+                              onClick={() => handleApprove(s.id)}>
+                        {t("evolution.approve")}
+                      </button>
+                      <button className="btn" style={{ fontSize: 11 }}
+                              onClick={() => handleReject(s.id)}>
+                        {t("evolution.reject")}
+                      </button>
+                    </>
+                  )}
+                  {s.status === "approved" && (
+                    <button className="btn primary" style={{ fontSize: 11 }}
+                            onClick={() => handleRun(s.id)}>
+                      {t("evolution.run")}
+                    </button>
                   )}
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
-                {s.status === "pending" && (
-                  <>
-                    <button className="btn" style={{ fontSize: 11 }}
-                            onClick={() => handleApprove(s.id)}>
-                      {t("evolution.approve")}
-                    </button>
-                    <button className="btn" style={{ fontSize: 11 }}
-                            onClick={() => handleReject(s.id)}>
-                      {t("evolution.reject")}
-                    </button>
-                  </>
-                )}
-                {s.status === "approved" && (
-                  <button className="btn primary" style={{ fontSize: 11 }}
-                          onClick={() => handleRun(s.id)}>
-                    {t("evolution.run")}
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

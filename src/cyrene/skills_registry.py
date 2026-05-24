@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import shutil
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,7 +15,10 @@ from cyrene.settings_store import get as get_setting, set_ as set_setting
 
 _SKILLS_DIR = DATA_DIR / "installed_skills"
 _ALLOWED_SKILL_EXTENSIONS = {".md", ".txt", ".prompt", ".json", ".yaml", ".yml"}
+_ALLOWED_ARCHIVE_EXTENSIONS = {".zip"}
 _MAX_SKILL_FILE_BYTES = 256 * 1024
+_MAX_SKILL_ARCHIVE_BYTES = 8 * 1024 * 1024
+_MAX_SKILL_ARCHIVE_ENTRIES = 200
 _PROMPT_PREVIEW_CHARS = 1200
 
 
@@ -47,6 +52,61 @@ def validate_skill_file(source_path: Path) -> str | None:
         return "unable to read skill file"
     if not _is_probably_text(raw):
         return "skill file must be plain text"
+    return None
+
+
+def _find_skill_entrypoint(root: Path) -> Path | None:
+    direct = root / "SKILL.md"
+    if direct.exists() and direct.is_file():
+        return direct
+    matches = sorted(
+        path for path in root.rglob("*")
+        if path.is_file() and path.name.lower() == "skill.md"
+    )
+    if not matches:
+        return None
+    return min(matches, key=lambda path: (len(path.relative_to(root).parts), str(path).lower()))
+
+
+def validate_skill_directory(source_path: Path) -> str | None:
+    if not source_path.exists() or not source_path.is_dir():
+        return "skill directory does not exist"
+    entrypoint = _find_skill_entrypoint(source_path)
+    if entrypoint is None:
+        return "skill directory must contain SKILL.md"
+    return validate_skill_file(entrypoint)
+
+
+def validate_skill_archive(source_path: Path) -> str | None:
+    if source_path.suffix.lower() not in _ALLOWED_ARCHIVE_EXTENSIONS:
+        allowed = ", ".join(sorted(_ALLOWED_ARCHIVE_EXTENSIONS))
+        return f"unsupported archive type: {source_path.suffix.lower() or '(none)'}; allowed: {allowed}"
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return "unable to read skill archive metadata"
+    if stat.st_size > _MAX_SKILL_ARCHIVE_BYTES:
+        return f"skill archive is too large; max {_MAX_SKILL_ARCHIVE_BYTES // (1024 * 1024)} MB"
+    try:
+        with zipfile.ZipFile(source_path) as zf:
+            infos = zf.infolist()
+            if len(infos) > _MAX_SKILL_ARCHIVE_ENTRIES:
+                return f"skill archive has too many files; max {_MAX_SKILL_ARCHIVE_ENTRIES}"
+            has_skill_md = False
+            for info in infos:
+                parts = Path(info.filename).parts
+                if info.is_dir():
+                    continue
+                if any(part == ".." for part in parts) or Path(info.filename).is_absolute():
+                    return "skill archive contains unsafe paths"
+                if Path(info.filename).name.lower() == "skill.md":
+                    has_skill_md = True
+            if not has_skill_md:
+                return "skill archive must contain SKILL.md"
+    except zipfile.BadZipFile:
+        return "invalid zip archive"
+    except OSError:
+        return "unable to read skill archive"
     return None
 
 
@@ -86,6 +146,14 @@ def read_skill_text(path: Path, limit_chars: int = 20000) -> str:
         return ""
 
 
+def _skill_entrypoint(stored_path: Path) -> Path | None:
+    if stored_path.is_file():
+        return stored_path
+    if stored_path.is_dir():
+        return _find_skill_entrypoint(stored_path)
+    return None
+
+
 def extract_skill_summary(path: Path) -> tuple[str, str, str]:
     text = read_skill_text(path)
     lines = [line.rstrip() for line in text.splitlines()]
@@ -107,10 +175,13 @@ def extract_skill_summary(path: Path) -> tuple[str, str, str]:
 
 def skill_payload_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
     stored_path = Path(str(record.get("stored_path") or "")).expanduser()
-    if not stored_path.exists() or not stored_path.is_file():
+    if not stored_path.exists():
         return None
-    name, desc, preview = extract_skill_summary(stored_path)
-    stat = stored_path.stat()
+    entrypoint = _skill_entrypoint(stored_path)
+    if entrypoint is None:
+        return None
+    name, desc, preview = extract_skill_summary(entrypoint)
+    stat = entrypoint.stat()
     return {
         "id": str(record.get("id") or ""),
         "name": str(record.get("name") or name),
@@ -122,7 +193,10 @@ def skill_payload_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
         "size_bytes": stat.st_size,
         "source_path": str(record.get("source_path") or ""),
         "stored_path": str(stored_path),
+        "entrypoint_path": str(entrypoint),
         "file_name": stored_path.name,
+        "entrypoint_name": entrypoint.name,
+        "source_kind": str(record.get("source_kind") or ("directory" if stored_path.is_dir() else "file")),
         "preview": preview,
         "tags": ["external"],
         "version": "external",
@@ -142,21 +216,68 @@ def build_skills() -> list[dict[str, Any]]:
 
 
 def install_skill_from_path(source_path: Path) -> dict[str, Any]:
-    validation_error = validate_skill_file(source_path)
-    if validation_error:
-        return {"ok": False, "error": validation_error}
-
+    if not source_path.exists():
+        return {"ok": False, "error": "invalid skill source path"}
     records = skill_settings_records()
     source_resolved = str(source_path.resolve())
     for record in records:
         if str(record.get("source_path") or "").strip() == source_resolved:
             return {"ok": True, "skill": skill_payload_from_record(record), "already_installed": True}
 
-    base_id = slugify_skill_id(source_path.stem)
+    source_kind = "file"
+    source_suffix = source_path.suffix
+    if source_path.is_dir():
+        validation_error = validate_skill_directory(source_path)
+        source_kind = "directory"
+        source_suffix = ""
+    elif source_path.is_file() and source_path.suffix.lower() in _ALLOWED_ARCHIVE_EXTENSIONS:
+        validation_error = validate_skill_archive(source_path)
+        source_kind = "archive"
+        source_suffix = ""
+    elif source_path.is_file():
+        validation_error = validate_skill_file(source_path)
+    else:
+        return {"ok": False, "error": "invalid skill source path"}
+    if validation_error:
+        return {"ok": False, "error": validation_error}
+
+    base_name = source_path.name
+    if source_kind == "directory":
+        base_name = source_path.name
+    elif source_kind == "archive":
+        base_name = source_path.stem
+    else:
+        base_name = source_path.stem
+    base_id = slugify_skill_id(base_name)
     skill_id = unique_skill_id(base_id, records)
-    dest = skills_storage_dir() / f"{skill_id}{source_path.suffix}"
-    shutil.copy2(source_path, dest)
-    name, desc, _preview = extract_skill_summary(dest)
+    dest = skills_storage_dir() / (f"{skill_id}{source_suffix}" if source_kind == "file" else skill_id)
+
+    if source_kind == "file":
+        shutil.copy2(source_path, dest)
+    elif source_kind == "directory":
+        shutil.copytree(source_path, dest)
+    else:
+        with tempfile.TemporaryDirectory(prefix="cyrene-skill-") as tmp_dir:
+            tmp_root = Path(tmp_dir)
+            with zipfile.ZipFile(source_path) as zf:
+                zf.extractall(tmp_root)
+            extracted_root = tmp_root
+            children = [child for child in tmp_root.iterdir()]
+            if len(children) == 1 and children[0].is_dir():
+                extracted_root = children[0]
+            validation_error = validate_skill_directory(extracted_root)
+            if validation_error:
+                return {"ok": False, "error": validation_error}
+            shutil.copytree(extracted_root, dest)
+
+    entrypoint = _skill_entrypoint(dest)
+    if entrypoint is None:
+        if dest.is_dir():
+            shutil.rmtree(dest, ignore_errors=True)
+        else:
+            dest.unlink(missing_ok=True)
+        return {"ok": False, "error": "installed skill is missing SKILL.md"}
+    name, desc, _preview = extract_skill_summary(entrypoint)
     record = {
         "id": skill_id,
         "name": name,
@@ -164,6 +285,7 @@ def install_skill_from_path(source_path: Path) -> dict[str, Any]:
         "enabled": True,
         "installed_at": datetime.now(timezone.utc).isoformat(),
         "source_path": source_resolved,
+        "source_kind": source_kind,
         "stored_path": str(dest),
     }
     records.append(record)
@@ -179,7 +301,10 @@ def uninstall_skill(skill_id: str) -> bool:
             stored_path = Path(str(record.get("stored_path") or "")).expanduser()
             try:
                 if stored_path.exists():
-                    stored_path.unlink()
+                    if stored_path.is_dir():
+                        shutil.rmtree(stored_path)
+                    else:
+                        stored_path.unlink()
             except Exception:
                 pass
             removed = True
@@ -214,7 +339,7 @@ def build_skill_prompt_block(max_chars: int = 12000) -> str:
     budget = max_chars
     for skill in active_skills:
         preview = str(skill.get("preview") or "").strip()
-        header = f"### {skill.get('name') or skill.get('id')}\nSource: {skill.get('file_name') or skill.get('stored_path')}\nSummary: {skill.get('desc') or '—'}\n"
+        header = f"### {skill.get('name') or skill.get('id')}\nSource: {skill.get('entrypoint_name') or skill.get('file_name') or skill.get('stored_path')}\nSummary: {skill.get('desc') or '—'}\n"
         chunk = header + (preview[:_PROMPT_PREVIEW_CHARS] if preview else "")
         if len(chunk) > budget:
             chunk = chunk[:budget]

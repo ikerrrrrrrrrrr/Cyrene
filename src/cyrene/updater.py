@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import shlex
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -156,19 +157,37 @@ def get_restart_script(update_file: Path) -> str:
         return _restart_script_linux(update_file)
 
 
+def _current_app_executable() -> Path | None:
+    raw = os.environ.get("CYRENE_APP_EXECUTABLE", "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def _current_macos_app_bundle() -> Path:
+    app_exe = _current_app_executable()
+    if app_exe:
+        for parent in app_exe.parents:
+            if parent.suffix == ".app":
+                return parent
+    return Path("/Applications/Cyrene.app")
+
+
 def _restart_script_macos(dmg_path: Path) -> str:
     """macOS: 挂载 DMG，替换 .app，重启。
 
-    macOS /Applications/ 对管理员用户可写（group admin），
-    此处用直接 rm/cp，不加 osascript 提权。
+    优先覆盖当前实际安装位置，而不是写死 /Applications。
     所有输出重定向到 /tmp/cyrene_update.log 用于诊断。
     """
+    app_bundle = _current_macos_app_bundle()
+    app_bundle_q = shlex.quote(str(app_bundle))
+    dmg_path_q = shlex.quote(str(dmg_path))
     return (
         '#!/bin/bash\n'
         '# Cyrene updater — macOS\n'
+        'set -e\n'
         'exec >>/tmp/cyrene_update.log 2>&1\n'
         'echo "=== Cyrene update $(date) ==="\n'
-        f'echo "DMG: {dmg_path}"\n'
+        f'echo "DMG: {dmg_path_q}"\n'
+        f'echo "Target app: {app_bundle_q}"\n'
         'sleep 2\n'
         'echo "Mounting update..."\n'
         # Detach ALL existing Cyrene mounts first, then force mount at
@@ -176,26 +195,27 @@ def _restart_script_macos(dmg_path: Path) -> str:
         'for vol in /Volumes/Cyrene*; do\n'
         '  [ -d "$vol" ] && hdiutil detach "$vol" -quiet 2>/dev/null\n'
         'done\n'
-        f'hdiutil attach "{dmg_path}" -nobrowse -quiet -mountpoint /Volumes/Cyrene\n'
+        f'hdiutil attach {dmg_path_q} -nobrowse -quiet -mountpoint /Volumes/Cyrene\n'
         'echo "attach exit code: $?"\n'
         'VOL="/Volumes/Cyrene"\n'
         'if [ -d "$VOL" ]; then\n'
         '    echo "Found volume, installing..."\n'
-        '    rm -rf /Applications/Cyrene.app\n'
+        f'    rm -rf {app_bundle_q}\n'
         '    echo "rm exit code: $?"\n'
-        '    cp -R "$VOL/Cyrene.app" /Applications/\n'
+        f'    mkdir -p {shlex.quote(str(app_bundle.parent))}\n'
+        f'    cp -R "$VOL/Cyrene.app" {shlex.quote(str(app_bundle.parent))}/\n'
         '    echo "cp exit code: $?"\n'
-        '    ls -la /Applications/Cyrene.app\n'
+        f'    ls -la {app_bundle_q}\n'
         '    hdiutil detach "$VOL" -quiet\n'
         '    echo "Update complete, restarting..."\n'
-        '    open /Applications/Cyrene.app\n'
+        f'    open {app_bundle_q}\n'
         'else\n'
         '    echo "Update failed: DMG not mounted"\n'
         '    echo "hdiutil attach result:"\n'
         '    ls -la /Volumes/ 2>&1\n'
         '    exit 1\n'
         'fi\n'
-        f'rm -f "{dmg_path}"\n'
+        f'rm -f {dmg_path_q}\n'
         'echo "Done."\n'
     )
 
@@ -203,13 +223,15 @@ def _restart_script_macos(dmg_path: Path) -> str:
 def _restart_script_windows(exe_path: Path) -> str:
     """Windows: 运行 NSIS 安装程序（静默模式）覆盖安装，重启。
 
-    注意：electron-builder NSIS 安装器需要管理员权限。
-    如果用户不是管理员，/S 静默安装会失败。
+    重启目标使用 Electron 传入的真实启动路径。
     """
+    app_exe = _current_app_executable() or Path(r"%LOCALAPPDATA%\Programs\Cyrene\Cyrene.exe")
     return f"""@echo off
+setlocal
 :: Cyrene updater — Windows
 >>"%TEMP%\\cyrene_update.log" echo === Cyrene update %date% %time% ===
 >>"%TEMP%\\cyrene_update.log" echo EXE: {exe_path}
+>>"%TEMP%\\cyrene_update.log" echo TARGET: {app_exe}
 timeout /t 2 /nobreak >nul
 echo Installing update...
 start /wait "" "{exe_path}" /S
@@ -217,35 +239,44 @@ set RC=%errorlevel%
 >>"%TEMP%\\cyrene_update.log" echo NSIS exit code: %RC%
 if %RC% equ 0 (
     >>"%TEMP%\\cyrene_update.log" echo Update complete, restarting...
-    start "" "$env:LOCALAPPDATA\\Cyrene\\Cyrene.exe"
+    start "" "{app_exe}"
     del "{exe_path}"
 ) else (
     >>"%TEMP%\\cyrene_update.log" echo Update failed (error %RC%)
     timeout /t 5 /nobreak >nul
 )
+endlocal
 """
 
 
 def _restart_script_linux(appimage_path: Path) -> str:
-    """Linux: 替换 AppImage，重启。"""
+    """Linux: 覆盖当前 AppImage，重启。"""
+    current_exe = _current_app_executable()
+    target_path = current_exe if current_exe else Path.home() / ".local" / "bin" / "Cyrene.AppImage"
+    appimage_path_q = shlex.quote(str(appimage_path))
+    target_path_q = shlex.quote(str(target_path))
+    target_parent_q = shlex.quote(str(target_path.parent))
     return f"""#!/bin/bash
 # Cyrene updater — Linux
+set -e
 exec >>/tmp/cyrene_update.log 2>&1
 echo "=== Cyrene update $(date) ==="
-echo "AppImage: {appimage_path}"
+echo "AppImage: {appimage_path_q}"
+echo "Target: {target_path_q}"
 sleep 2
 echo "Installing update..."
-chmod +x "{appimage_path}"
-INSTALL_DIR="$HOME/.local/bin"
-mkdir -p "$INSTALL_DIR"
-cp "{appimage_path}" "$INSTALL_DIR/Cyrene.AppImage"
-echo "cp exit code: $?"
-if [ -f "$INSTALL_DIR/Cyrene.AppImage" ]; then
-    rm -f "{appimage_path}"
+chmod +x {appimage_path_q}
+mkdir -p {target_parent_q}
+cp {appimage_path_q} {target_path_q}.new
+chmod +x {target_path_q}.new
+mv {target_path_q}.new {target_path_q}
+echo "install exit code: $?"
+if [ -f {target_path_q} ]; then
+    rm -f {appimage_path_q}
     echo "Update complete, restarting..."
-    "$INSTALL_DIR/Cyrene.AppImage" &
+    {target_path_q} &
 else
-    echo "Update failed: copy failed"
+    echo "Update failed: target missing"
     exit 1
 fi
 """

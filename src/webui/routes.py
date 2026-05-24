@@ -1063,7 +1063,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_patterns_learn():
         from cyrene import pattern as _pattern
 
-        stats = await _pattern.scan_for_session_start()
+        stats = await _pattern.scan_for_manual_learn()
         return {
             "ok": True,
             "stats": stats,
@@ -1080,8 +1080,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_install_skill(request: Request):
         body = await request.json()
         source_path = Path(str(body.get("path") or "")).expanduser()
-        if not source_path.exists() or not source_path.is_file():
-            return JSONResponse({"ok": False, "error": "invalid skill file path"}, status_code=400)
+        if not source_path.exists():
+            return JSONResponse({"ok": False, "error": "invalid skill source path"}, status_code=400)
         result = install_skill_from_path(source_path)
         if not result.get("ok", False):
             return JSONResponse(result, status_code=400)
@@ -1097,7 +1097,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"ok": False, "error": f"Skill picker not supported on {system}"}, status_code=400)
 
         result = subprocess.run(
-            ["osascript", "-e", 'POSIX path of (choose file with prompt "Select skill file")'],
+            ["osascript", "-e", 'POSIX path of (choose file or folder with prompt "Select skill file, folder, or zip")'],
             capture_output=True,
             text=True,
             timeout=30,
@@ -1107,8 +1107,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return {"ok": False, "cancelled": True}
 
         source_path = Path(selected).expanduser()
-        if not source_path.exists() or not source_path.is_file():
-            return JSONResponse({"ok": False, "error": "selected file is invalid"}, status_code=400)
+        if not source_path.exists():
+            return JSONResponse({"ok": False, "error": "selected skill source is invalid"}, status_code=400)
 
         result = install_skill_from_path(source_path)
         if not result.get("ok", False):
@@ -1517,7 +1517,11 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                         script_path.write_text(script)
                         _sp.Popen(
                             ["cmd", "/c", str(script_path)],
-                            creationflags=0x00000008,  # CREATE_NEW_CONSOLE
+                            creationflags=(
+                                0x00000010 |  # CREATE_NEW_CONSOLE
+                                0x00000200 |  # CREATE_NEW_PROCESS_GROUP
+                                0x00000008    # DETACHED_PROCESS
+                            ),
                         )
                     else:
                         script_path = dest.parent / "update.sh"

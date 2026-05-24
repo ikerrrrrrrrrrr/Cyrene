@@ -42,16 +42,22 @@ function spawnPython() {
   const binaryPath = getPythonBinaryPath();
   const args = getPythonArgs();
   const cwd = isDev ? path.join(__dirname, '..') : undefined;
+  const childEnv = {
+    ...process.env,
+    CYRENE_APP_EXECUTABLE: app.getPath('exe'),
+  };
 
   if (binaryPath) {
     pythonProcess = spawn(binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      env: childEnv,
     });
   } else {
     pythonProcess = spawn('python3', args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd: cwd,
+      env: childEnv,
     });
   }
 
