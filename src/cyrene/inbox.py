@@ -132,11 +132,17 @@ async def send_message(
     msg_type: str,
     content: str,
     round_id: str = "",
+    priority: str = "normal",
+    in_reply_to: str = "",
 ) -> str:
     """Send a message to *to_agent*'s inbox.
 
-    *msg_type* should be one of ``"message"``, ``"task_result"``, or
-    ``"question"``.
+    *msg_type* should be one of ``"message"``, ``"task_result"``,
+    ``"question"``, ``"progress"``, ``"finding"``, or ``"ack"``.
+
+    *priority* can be ``"normal"`` or ``"high"``.
+
+    *in_reply_to* is the message_id of the message being replied to (for threading).
 
     Returns the generated ``message_id``.
     """
@@ -144,6 +150,10 @@ async def send_message(
         async with _INBOX_LOCK:
             ensure_inbox(to_agent)
             msg_id = _next_msg_id(to_agent)
+            # Auto-generate a one-line summary for display in flow diagrams
+            summary = content[:120].replace("\n", " ").strip()
+            if len(content) > 120:
+                summary += "..."
             message = {
                 "message_id": msg_id,
                 "from": from_agent,
@@ -151,9 +161,13 @@ async def send_message(
                 "type": msg_type,
                 "content": content,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "summary": summary,
+                "priority": priority,
             }
             if round_id:
                 message["round_id"] = round_id
+            if in_reply_to:
+                message["in_reply_to"] = in_reply_to
             msg_path = _inbox_path(to_agent) / f"{msg_id}.json"
             msg_path.write_text(
                 json.dumps(message, ensure_ascii=False, indent=2),
@@ -162,8 +176,8 @@ async def send_message(
             current = _read_unread(to_agent)
             _write_unread(to_agent, current + 1)
         logger.info(
-            "Message %s sent from %s to %s (type=%s)",
-            msg_id, from_agent, to_agent, msg_type,
+            "Message %s sent from %s to %s (type=%s priority=%s)",
+            msg_id, from_agent, to_agent, msg_type, priority,
         )
     except Exception:
         logger.exception(

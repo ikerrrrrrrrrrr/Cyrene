@@ -15,6 +15,12 @@ _shells: dict[str, dict[str, Any]] = {}
 _shell_lock = asyncio.Lock()
 _shell_counter = 0
 
+# External shells — registered by other modules (e.g. cc_bridge) that
+# manage their own processes.  They appear in list_shells() but are
+# skipped by send_shell / close_shell.
+_external_shells: dict[str, dict[str, Any]] = {}
+_ext_lock = asyncio.Lock()
+
 
 def _resolve_cwd(path_str: str) -> Path:
     candidate = Path(path_str or ".")
@@ -218,5 +224,113 @@ def list_shells(include_exited: bool = False) -> list[dict[str, Any]]:
         snap = get_shell_snapshot(shell_id)
         if snap:
             items.append(snap)
+    for shell_id, shell in _external_shells.items():
+        if not include_exited and shell.get("status") != "running":
+            continue
+        snap = _external_shell_snapshot(shell_id, shell)
+        if snap:
+            items.append(snap)
     items.sort(key=lambda item: item.get("createdAt", ""), reverse=True)
     return items
+
+
+def register_external_shell(shell_id: str, title: str, cwd: str = ".", extra: dict[str, Any] | None = None) -> None:
+    """Register a shell-like entry that is managed externally (e.g. a tmux session).
+
+    These entries appear in :func:`list_shells` but cannot be sent commands
+    through :func:`send_shell` — they must be controlled through their native
+    interface.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    entry: dict[str, Any] = {
+        "id": shell_id,
+        "title": title or "external shell",
+        "cwd": cwd,
+        "pid": "—",
+        "status": "running",
+        "round_id": "",
+        "created_at": now,
+        "updated_at": now,
+        "exit_code": None,
+        "lines": deque(maxlen=240),
+    }
+    if extra:
+        entry.update(extra)
+    _external_shells[shell_id] = entry
+
+
+def unregister_external_shell(shell_id: str) -> bool:
+    """Remove an externally-registered shell entry.  Returns True if it existed."""
+    return _external_shells.pop(shell_id, None) is not None
+
+
+def set_external_shell_status(shell_id: str, status: str) -> None:
+    """Update the status of an externally-registered shell entry."""
+    entry = _external_shells.get(shell_id)
+    if entry is None:
+        return
+    entry["status"] = status
+    entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def set_cc_since(since: str) -> None:
+    """Set a timestamp filter for CC preview lines.
+
+    Only CC transcript entries after this timestamp will appear in
+    the shell card preview.
+    """
+    for shell in _external_shells.values():
+        if shell.get("kind") == "cc":
+            shell["cc_since"] = since
+
+
+def _external_shell_snapshot(shell_id: str, shell: dict[str, Any]) -> dict[str, Any] | None:
+    shell_kind = str(shell.get("kind") or "")
+    latest_jsonl = ""
+    cc_lines: list = []
+    if shell_kind == "cc":
+        try:
+            from cyrene.cc_bridge import get_cc_preview
+            from pathlib import Path
+
+            preview = get_cc_preview(
+                Path(str(shell.get("cwd") or ".")).resolve(),
+                min_updated_at=str(shell.get("created_at") or "").strip(),
+                since=str(shell.get("cc_since") or "").strip(),
+            )
+            cc_lines = list(preview.get("lines") or [])
+            latest_jsonl = str(preview.get("latest_jsonl") or "")
+            updated_at = str(preview.get("updated_at") or "").strip()
+            if updated_at:
+                shell["updated_at"] = updated_at
+            shell["title"] = "Claude Code"
+        except Exception:
+            pass
+
+    created_at = shell.get("created_at")
+    elapsed = "—"
+    if created_at:
+        try:
+            created_dt = datetime.fromisoformat(str(created_at)).astimezone(timezone.utc)
+            elapsed = _format_duration((datetime.now(timezone.utc) - created_dt).total_seconds())
+        except Exception:
+            elapsed = "—"
+    snapshot: dict[str, Any] = {
+        "id": shell_id,
+        "title": shell.get("title", "external shell"),
+        "cwd": shell.get("cwd", "."),
+        "pid": shell.get("pid", "—"),
+        "status": shell.get("status", "running"),
+        "roundId": shell.get("round_id", ""),
+        "createdAt": _short_time(shell.get("created_at")),
+        "updatedAt": _short_time(shell.get("updated_at")),
+        "elapsed": elapsed,
+        "lines": cc_lines if shell_kind == "cc" else list(shell.get("lines", [])),
+    }
+    # Pass through extra metadata (e.g. tmuxSession, kind for CC shells)
+    for key in ("kind", "tmuxSession"):
+        if key in shell:
+            snapshot[key] = shell[key]
+    if latest_jsonl:
+        snapshot["latestJsonl"] = latest_jsonl
+    return snapshot

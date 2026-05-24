@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cyrene.config import WORKSPACE_DIR
+from cyrene.config import DB_PATH, WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def ensure_conversations_dir() -> None:
 
 def _get_today_file() -> Path:
     """Get the conversation file for today."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
     return CONVERSATIONS_DIR / f"{today}.md"
 
 
@@ -63,8 +63,10 @@ async def archive_exchange(
     ensure_conversations_dir()
 
     filepath = _get_today_file()
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now = datetime.now().astimezone()
+    date_str = now.strftime("%Y-%m-%d")
+    timestamp = now.strftime("%H:%M:%S UTC")
+    stats_timestamp = now.isoformat()
     meta_lines = []
     if archive_session_id:
         meta_lines.append(f"<!-- archive_session_id: {archive_session_id} -->")
@@ -98,6 +100,14 @@ async def archive_exchange(
         content = _upsert_session_title(content, date_str, session_title)
         content += entry
         filepath.write_text(content, encoding="utf-8")
+        from cyrene import db as cy_db
+
+        await cy_db.record_archive_exchange(
+            str(DB_PATH),
+            timestamp=stats_timestamp,
+            user_message=user_message,
+            assistant_response=assistant_response,
+        )
         logger.debug(f"Archived exchange to {filepath}")
     except Exception:
         logger.exception(f"Failed to archive exchange to {filepath}")
@@ -111,7 +121,7 @@ async def get_recent_conversations(days: int = 1) -> str:
     Returns an empty string when no conversation files are found.
     """
     ensure_conversations_dir()
-    now = datetime.now(timezone.utc)
+    now = datetime.now().astimezone()
     result_parts: list[str] = []
 
     for i in range(days):
@@ -184,13 +194,25 @@ def _parse_archive_meta(section: str, key: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _split_archive_entry_blocks(content: str) -> list[str]:
+    blocks: list[str] = []
+    matches = list(re.finditer(r"(?m)^##\s+\S+\s+UTC\s*$", content))
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        block = content[start:end].strip()
+        block = re.sub(r"\n+---\s*\Z", "", block).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
 def _parse_archive_sections(content: str, date_str: str) -> list[dict[str, str]]:
     sections_out: list[dict[str, str]] = []
-    sections = re.split(r"\n---\s*\n", content)
     file_session_title = _parse_archive_meta(content, "session_title")
     round_index = 0
 
-    for section in sections:
+    for section in _split_archive_entry_blocks(content):
         if "**User**:" not in section:
             continue
         ts_match = re.search(r"##\s*(\S+\s+UTC)", section)
@@ -277,3 +299,33 @@ def recall_conversations(
                 return matches
 
     return matches
+
+
+def get_archived_round(
+    archive_session_id: str,
+    round_id: str,
+) -> dict[str, str] | None:
+    """Return one archived round by exact archive session + round id match."""
+    ensure_conversations_dir()
+    target_session_id = str(archive_session_id or "").strip()
+    target_round_id = str(round_id or "").strip()
+    if not target_session_id or not target_round_id:
+        return None
+
+    for filepath in sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True):
+        if not filepath.exists():
+            continue
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to read conversation file %s", filepath)
+            continue
+
+        for section in reversed(_parse_archive_sections(content, filepath.stem)):
+            if str(section.get("archive_session_id", "")).strip() != target_session_id:
+                continue
+            if str(section.get("round_id", "")).strip() != target_round_id:
+                continue
+            return section
+
+    return None

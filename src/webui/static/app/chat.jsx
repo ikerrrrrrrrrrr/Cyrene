@@ -26,6 +26,26 @@ function renderMarkdown(text) {
   return escapeHtml(source).replace(/\n/g, "<br>");
 }
 
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function injectAttachmentLinks(text, attachments) {
+  var source = String(text || "");
+  var files = Array.isArray(attachments) ? attachments : [];
+  if (!source || files.length === 0) return source;
+  files.forEach(function(file) {
+    var url = String(file && file.url || "").trim();
+    var label = String(file && file.name || "").trim();
+    if (!url || !label) return;
+    var safeLabel = escapeRegExp(label);
+    source = source.replace(new RegExp("(^|[\\s(])(" + safeLabel + ")(?=$|[\\s).,!?])", "g"), function(_match, prefix, matched) {
+      return prefix + "[" + matched + "](" + url + ")";
+    });
+  });
+  return source;
+}
+
 function traceSummary(msg) {
   const parts = [];
   if (msg.thinking) parts.push("reasoning");
@@ -50,6 +70,28 @@ function syncTextareaHeight(textarea) {
 
 function isAbortError(error) {
   return error && (error.name === "AbortError" || String(error.message || "").includes("aborted"));
+}
+
+function attachmentAltText(file) {
+  return String(file && file.name || "uploaded image");
+}
+
+function attachmentThumbStyle(file, maxWidth, maxHeight) {
+  var width = Number(file && file.width) || 0;
+  var height = Number(file && file.height) || 0;
+  if (!(width > 0) || !(height > 0)) {
+    return {
+      maxWidth: maxWidth + "px",
+      maxHeight: maxHeight + "px",
+      width: "auto",
+      height: "auto",
+    };
+  }
+  var ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+  return {
+    width: Math.max(1, Math.round(width * ratio)) + "px",
+    height: Math.max(1, Math.round(height * ratio)) + "px",
+  };
 }
 
 async function readNdjsonStream(response, onEvent) {
@@ -288,7 +330,7 @@ function collectRetainedRuntimeAttachments(retainedMessages) {
 
 function guidanceAckMessage(guidanceId, body, insertAfterKey) {
   const safeGuidanceId = String(guidanceId || "");
-  const text = String(body || "已接受引导。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。");
+  const text = String(body || window.t("chat.guidanceAcceptedBody"));
   return {
     id: "guidance_ack_" + (safeGuidanceId || Date.now()),
     role: "agent",
@@ -414,6 +456,7 @@ function visibleRoundSubagents(session) {
   const currentRoundId = String(session && session.currentRoundId || "").trim();
   if (!currentRoundId) return all.filter(function (sa) { return isUnfinishedSubagent(sa && sa.status); });
   return all.filter(function (sa) {
+    if (sa && String(sa.id || "").startsWith("agent_summary_")) return false;
     const roundId = String(sa && sa.roundId || "").trim();
     if (roundId && roundId === currentRoundId) return true;
     return isUnfinishedSubagent(sa && sa.status);
@@ -538,6 +581,7 @@ window.resetChatRuntime = resetChatRuntime;
 
 function ChatPage({ selectedSessionId, onSelectSession }) {
   useDataVersion(); // re-render when DATA refreshes
+  const { t, lang } = useI18n();
 
   const session = (selectedSessionId
     ? DATA.sessions.find(function (s) { return s.id === selectedSessionId; })
@@ -567,17 +611,117 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     return function () { delete window.selectChatSession; };
   }, [onSelectSession]);
 
+  // Load context state (SOUL.md / workspace active status + workspace history)
+  useEffect(function () {
+    if (!isLiveSession) return;
+    fetch("/api/context/state")
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        setContextState(s);
+        setWorkspaceHistory(s.workspace_history || []);
+      })
+      .catch(function () {});
+  }, [isLiveSession, session.id]);
+
+  async function removeContext(label) {
+    setHiddenContexts(Object.assign({}, hiddenContexts, (function (o) { o[label] = true; return o; })({})));
+    var chips = session.chat.contextChips;
+    if (chips) {
+      for (var i = chips.length - 1; i >= 0; i--) {
+        if (chips[i].label === label) chips.splice(i, 1);
+      }
+    }
+    if (label === "SOUL.md") {
+      await fetch("/api/context/remove-soul", { method: "POST" });
+    } else if (label === "workspace") {
+      await fetch("/api/context/remove-workspace", { method: "POST" });
+    }
+    setContextPickerOpen(false);
+    if (window.refreshSessions) window.refreshSessions();
+  }
+
+  async function addContext(label, path) {
+    var h = Object.assign({}, hiddenContexts);
+    delete h[label];
+    setHiddenContexts(h);
+    var icon = label === "SOUL.md" ? "🧠" : "📁";
+    var chips = session.chat.contextChips;
+    if (chips) {
+      var found = false;
+      for (var i = 0; i < chips.length; i++) {
+        if (chips[i].label === label) { found = true; break; }
+      }
+      if (!found) chips.push({ icon: icon, label: label });
+    }
+    if (label === "SOUL.md") {
+      await fetch("/api/context/add-soul", { method: "POST" });
+    } else if (label === "workspace") {
+      await fetch("/api/context/add-workspace", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path || "" }),
+      });
+      if (path) {
+        setWorkspaceHistory((function (prev) {
+          var next = prev.filter(function (p) { return p !== path; });
+          next.unshift(path);
+          return next.slice(0, 10);
+        })());
+      }
+    }
+    setContextPickerOpen(false);
+    if (window.refreshSessions) window.refreshSessions();
+  }
+
+  async function pickWorkspaceDir() {
+    try {
+      var r = await fetch("/api/context/pick-directory", { method: "POST" });
+      var data = await r.json();
+      if (data.path) {
+        await addContext("workspace", data.path);
+      }
+    } catch (e) {}
+  }
+
   const [draft, setDraft] = useState("");
   const [questionDraft, setQuestionDraft] = useState("");
   const [answeringQuestion, setAnsweringQuestion] = useState(false);
   const [contextPickerOpen, setContextPickerOpen] = useState(false);
   const [selectedGuideRoundId, setSelectedGuideRoundId] = useState("");
   const [selectedGuideRoundTitle, setSelectedGuideRoundTitle] = useState("");
+  const [hiddenContexts, setHiddenContexts] = useState({});
+  const [workspaceHistory, setWorkspaceHistory] = useState([]);
+  const [contextState, setContextState] = useState({ soul_active: true, workspace_active: true, workspace_dir: "" });
   const [notice, setNotice] = useState("");
+  const [attachments, setAttachments] = useState([]);
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [command, setCommand] = useState("");
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
+  const [mentionedAgents, setMentionedAgents] = useState([]);
+
+  var ALL_COMMANDS = [
+    { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
+    { id: "deep-research",   icon: "🔬", label: t("chat.commandDeepResearch"),   desc: t("chat.commandDeepResearchDesc"),   placeholder: t("chat.deepResearchPlaceholder") },
+    { id: "help-me-decide",  icon: "🤔", label: t("chat.commandHelpMeDecide"),   desc: t("chat.commandHelpMeDecideDesc"),   placeholder: t("chat.helpMeDecidePlaceholder") },
+    { id: "learning-plan",   icon: "📚", label: t("chat.commandLearningPlan"),   desc: t("chat.commandLearningPlanDesc"),   placeholder: t("chat.learningPlanPlaceholder") },
+    { id: "daily-review",    icon: "🌙", label: t("chat.commandDailyReview"),    desc: t("chat.commandDailyReviewDesc"),    placeholder: t("chat.dailyReviewPlaceholder") },
+    { id: "deep-compare",    icon: "🔄", label: t("chat.commandDeepCompare"),    desc: t("chat.commandDeepCompareDesc"),    placeholder: t("chat.deepComparePlaceholder") },
+    { id: "claude-code",     icon: "💻", label: t("chat.commandClaudeCode"),     desc: t("chat.commandClaudeCodeDesc"),     placeholder: t("chat.claudeCodePlaceholder") },
+  ];
+  function findCommand(id) {
+    for (var i = 0; i < ALL_COMMANDS.length; i++) {
+      if (ALL_COMMANDS[i].id === id) return ALL_COMMANDS[i];
+    }
+    return null;
+  }
+  const [ccStatus, setCcStatus] = useState(null);
+  const [ccModal, setCcModal] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const taRef = useRef(null);
   const scrollRef = useRef(null);
+  const fileInputRef = useRef(null);
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
   const prunedRetainedMessages = isLiveSession
@@ -619,6 +763,33 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
+  useEffect(function () {
+    let cancelled = false;
+
+    function loadCcStatus() {
+      fetch("/api/cc/status")
+        .then(function (response) { return response.json(); })
+        .then(function (payload) {
+          if (!cancelled) setCcStatus(payload);
+        })
+        .catch(function () {
+          if (!cancelled) {
+            setCcStatus({
+              available: false,
+              reason: "Failed to reach /api/cc/status.",
+            });
+          }
+        });
+    }
+
+    loadCcStatus();
+    const timer = window.setInterval(loadCcStatus, 15000);
+    return function () {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   useEffect(() => {
     const runtime = getChatRuntime();
     runtime.listeners.add(setRuntimeState);
@@ -657,6 +828,26 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     setElapsedNow(Date.now());
     return function () { window.clearInterval(timer); };
   }, [sending, runtimeState.startedAt]);
+
+  useEffect(function () {
+    if (!slashMenuOpen) return;
+    function onDown(e) {
+      if (e.target.closest(".slash-menu") || e.target.closest(".iconbtn")) return;
+      setSlashMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return function () { document.removeEventListener("mousedown", onDown); };
+  }, [slashMenuOpen]);
+
+  useEffect(function () {
+    if (!mentionMenuOpen) return;
+    function onDown(e) {
+      if (e.target.closest(".mention-menu") || e.target.closest(".iconbtn")) return;
+      setMentionMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return function () { document.removeEventListener("mousedown", onDown); };
+  }, [mentionMenuOpen]);
 
   function autosize(e) {
     setDraft(e.target.value);
@@ -704,9 +895,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     const preserveProgress = Boolean(options && options.preserveProgress);
     const text = draft.trim();
     const runtime = getChatRuntime();
-    if (!text) return;
+    if (!text && attachments.length === 0) return;
     if (pendingQuestion) {
-      setNotice("Answer the pending question above before starting a new message.");
+      setNotice(t("chat.answerPendingWarning"));
+      return;
+    }
+    if (uploadingAttachments) {
+      setNotice(t("chat.filesStillUploading"));
       return;
     }
     setNotice("");
@@ -725,6 +920,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       id: "pending_user_" + Date.now(),
       role: "user", time: new Date().toLocaleTimeString(),
       body: text,
+      attachments: attachments.slice(),
       roundId: selectedGuideRoundId || "",
       clientRequestId: requestId,
     };
@@ -746,6 +942,9 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     });
     ensureChatRuntimeSseSubscription();
     setDraft("");
+    setAttachments([]);
+    setCommand("");
+    setMentionedAgents([]);
     syncTextareaHeight(taRef.current);
 
     let keepWatching = false;
@@ -756,9 +955,13 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         signal: controller.signal,
         body: JSON.stringify({
           message: text,
+          attachments: attachments,
           guide_round_id: selectedGuideRoundId || undefined,
           client_request_id: requestId,
           stream: true,
+          lang: lang,
+          command: command || undefined,
+          mentions: mentionedAgents.length > 0 ? mentionedAgents : undefined,
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -883,7 +1086,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   }
 
   async function submitQuestionAnswer(options) {
-    if (!pendingQuestion || answeringQuestion || sending) return;
+    if (!pendingQuestion || answeringQuestion) return;
     const selectedOption = String(options && options.selectedOption || "");
     const text = String(options && options.text || questionDraft || "").trim() || selectedOption;
     if (!text) return;
@@ -1088,6 +1291,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
     releaseWatchedRequest("", { retainMessages: false });
     delete runtime.requests[requestId];
     setDraft(requestMeta.message || "");
+    setAttachments([]);
     setSelectedGuideRoundId(requestMeta.guideRoundId || "");
     setSelectedGuideRoundTitle(requestMeta.guideRoundTitle || "");
     setContextPickerOpen(false);
@@ -1115,6 +1319,39 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       e.preventDefault();
       submitQuestionAnswer();
     }
+  }
+
+  async function handleAttachmentPick(event) {
+    const pickedFiles = Array.from(event.target.files || []);
+    if (pickedFiles.length === 0) return;
+    const formData = new FormData();
+    pickedFiles.forEach(function (file) {
+      formData.append("files", file);
+    });
+    setUploadingAttachments(true);
+    setNotice("");
+    try {
+      const response = await fetch("/api/chat/upload", {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const payload = await response.json();
+      setAttachments(function (prev) {
+        return prev.concat(Array.isArray(payload.files) ? payload.files : []);
+      });
+    } catch (error) {
+      setNotice(t("chat.uploadFailed", { error: error.message }));
+    } finally {
+      setUploadingAttachments(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function removeAttachment(index) {
+    setAttachments(function (prev) {
+      return prev.filter(function (_item, i) { return i !== index; });
+    });
   }
 
   const allMessages = isLiveSession
@@ -1147,7 +1384,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   const renderedMessageEntries = renderMessageEntries(renderedMessages);
 
   async function newSession() {
-    if (!confirm("Start a new session? The current conversation will be compressed into short-term memory.")) return;
+    if (!confirm(t("chat.confirmNewSession"))) return;
     try {
       resetChatRuntime({ abort: true });
       const r = await fetch("/api/sessions", { method: "POST" });
@@ -1156,13 +1393,38 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
       onSelectSession && onSelectSession(null);
     } catch (e) {
-      alert("Failed: " + e.message);
+      alert(t("chat.failedToCreate") + ": " + e.message);
     }
   }
+
+  var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[c.label]; });
+  var visibleLabels = visibleChips.map(function (c) { return c.label; });
+  var addableContexts = [];
+  if (visibleLabels.indexOf("SOUL.md") === -1) addableContexts.push({ icon: "🧠", label: "SOUL.md", hasPicker: false });
+  if (visibleLabels.indexOf("workspace") === -1) addableContexts.push({ icon: "📁", label: "workspace", hasPicker: true });
+  var hasAddable = addableContexts.length > 0 || liveRounds.length > 0;
 
   return (
     <div className="chat-layout">
       <div className="chat-main">
+        {ccModal ? (
+          <window.CCTerminalPanel
+            statusInfo={{
+              available: true,
+              tmux_session: ccModal.tmuxSession,
+              reason: "",
+              can_launch: false,
+              latest_jsonl: ccModal.latestJsonl || "",
+            }}
+            modal={true}
+            onClose={function () { setCcModal(null); }}
+            onRefresh={function () {
+              if (typeof window.refreshSessions === "function") window.refreshSessions();
+              if (typeof window.refreshStatus === "function") window.refreshStatus();
+            }}
+          />
+        ) : (
+        <>
         <div className="chat-scroll" ref={scrollRef}>
           <div className="thread-header">
             <span className={"sa-dot " + session.status} style={{ marginTop: 0, width: 6, height: 6 }}></span>
@@ -1176,22 +1438,22 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                   onClick={newSession}
                   onMouseEnter={(e) => (e.target.style.color = "var(--accent)")}
                   onMouseLeave={(e) => (e.target.style.color = "var(--text-3)")}
-                  title="Compress current session and start a new one">
-              + new session
+                  title={t("chat.newSessionTitle")}>
+              {t("chat.newSession")}
             </span>
           </div>
           {!isLiveSession && (
             <div className="archive-banner">
-              <span>Viewing archive · {session.started}</span>
+              <span>{t("chat.viewingArchive")} · {session.started}</span>
               <span className="archive-banner-action"
                     onClick={function () { onSelectSession && onSelectSession(null); }}>
-                ← return to live session
+                {t("chat.returnToLive")}
               </span>
             </div>
           )}
           {renderedMessages.length === 0 && (
             <div style={{ padding: "40px 0", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
-              No messages yet. Say hello to {DATA.assistantName}.
+              {t("chat.noMessages", { name: DATA.assistantName })}
             </div>
           )}
           {renderedMessageEntries.map((entry) => (
@@ -1266,9 +1528,9 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
         <div className="composer">
           <div className="composer-box">
             <div className="composer-chips">
-              {(session.chat.contextChips || []).map((c, i) => (
+              {visibleChips.map((c, i) => (
                 <span className="chip" key={i}>
-                  {c.icon} {c.label} <span className="x">×</span>
+                  {c.icon} {c.label} <span className="x" onClick={function () { removeContext(c.label); }}>×</span>
                 </span>
               ))}
               {hasSelectedGuideRound && (
@@ -1277,43 +1539,103 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                   <span className="x" onClick={function () { setSelectedGuideRoundId(""); setSelectedGuideRoundTitle(""); setContextPickerOpen(false); }}>×</span>
                 </span>
               )}
+              {command && findCommand(command) && (
+                <span className="chip chip-command" key="cmd">
+                  {findCommand(command).icon} {findCommand(command).label}
+                  <span className="x" onClick={function () { setCommand(""); }}>×</span>
+                </span>
+              )}
               <span
-                className={"chip chip-add-context" + (liveRounds.length === 0 ? " disabled" : "")}
-                style={{ borderStyle: "dashed", cursor: liveRounds.length === 0 ? "default" : "pointer" }}
+                className={"chip chip-add-context" + (hasAddable ? "" : " disabled")}
+                style={{ borderStyle: "dashed", cursor: hasAddable ? "pointer" : "default" }}
                 onClick={function () {
-                  if (liveRounds.length === 0) return;
+                  if (!hasAddable) return;
                   setContextPickerOpen(!contextPickerOpen);
                 }}
               >
                 + add context
               </span>
             </div>
-            {contextPickerOpen && liveRounds.length > 0 && (
-              <div className="context-picker">
-                <div className="context-picker-head">Running rounds</div>
-                {liveRounds.map(function (round) {
-                  const isActive = selectedGuideRoundId === round.id;
+            {mentionedAgents.length > 0 && (
+              <div className="composer-mentions">
+                {mentionedAgents.map(function (agentId) {
+                  var agent = session.subagents.find(function (a) { return a.id === agentId; });
+                  if (!agent) return null;
                   return (
-                    <button
-                      key={round.id}
-                      className={"context-option" + (isActive ? " active" : "")}
-                      onClick={function () {
-                        setSelectedGuideRoundId(round.id);
-                        setSelectedGuideRoundTitle(round.title || round.id);
-                        setContextPickerOpen(false);
-                      }}
-                    >
-                      <span className={"sa-dot " + round.status} style={{ marginTop: 0 }}></span>
-                      <span className="context-option-body">
-                        <span className="context-option-title">{round.title}</span>
-                        <span className="context-option-meta">
-                          {round.elapsed} · {round.runningSubagents}/{round.subagentCount} subagents
-                          {round.pendingGuidance ? " · " + round.pendingGuidance + " queued" : ""}
-                        </span>
-                      </span>
-                    </button>
+                    <span className="chip chip-mention" key={"mention-" + agentId}>
+                      <span className={"sa-dot " + agent.status} style={{marginTop: 0}} /> @{agent.name}
+                      <span className="x" onClick={function () { setMentionedAgents(function (prev) { return prev.filter(function (id) { return id !== agentId; }); }); }}>×</span>
+                    </span>
                   );
                 })}
+              </div>
+            )}
+            {contextPickerOpen && hasAddable && (
+              <div className="context-picker">
+                {addableContexts.length > 0 && (
+                  <div>
+                    <div className="context-picker-head">Context</div>
+                    {addableContexts.map(function (ctx) {
+                      return (
+                        <button
+                          key={ctx.label}
+                          className="context-option"
+                          onClick={function () { addContext(ctx.label, ""); }}
+                        >
+                          <span style={{ marginRight: 6 }}>{ctx.icon}</span> {ctx.label}
+                        </button>
+                      );
+                    })}
+                    {addableContexts.some(function (c) { return c.hasPicker; }) && (
+                      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 4, marginTop: 2 }}>
+                        <div className="context-picker-head" style={{ paddingLeft: 12 }}>workspace directories</div>
+                        {workspaceHistory.map(function (p) {
+                          return (
+                            <button
+                              key={p}
+                              className="context-option"
+                              style={{ paddingLeft: 20, fontFamily: "var(--mono)", fontSize: 10 }}
+                              onClick={function () { addContext("workspace", p); }}
+                            >{p}</button>
+                          );
+                        })}
+                        <button
+                          className="context-option"
+                          style={{ paddingLeft: 20 }}
+                          onClick={function () { pickWorkspaceDir(); }}
+                        >+ choose directory...</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {liveRounds.length > 0 && (
+                  <div>
+                    <div className="context-picker-head" style={{ marginTop: addableContexts.length > 0 ? 8 : 0 }}>Running rounds</div>
+                    {liveRounds.map(function (round) {
+                      var isActive = selectedGuideRoundId === round.id;
+                      return (
+                        <button
+                          key={round.id}
+                          className={"context-option" + (isActive ? " active" : "")}
+                          onClick={function () {
+                            setSelectedGuideRoundId(round.id);
+                            setSelectedGuideRoundTitle(round.title || round.id);
+                            setContextPickerOpen(false);
+                          }}
+                        >
+                          <span className={"sa-dot " + round.status} style={{ marginTop: 0 }}></span>
+                          <span className="context-option-body">
+                            <span className="context-option-title">{round.title}</span>
+                            <span className="context-option-meta">
+                              {round.elapsed} · {round.runningSubagents}/{round.subagentCount} subagents
+                              {round.pendingGuidance ? " · " + round.pendingGuidance + " queued" : ""}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             <textarea
@@ -1324,62 +1646,188 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
               disabled={Boolean(pendingQuestion)}
               placeholder={
                 pendingQuestion
-                  ? "Answer the pending question above to continue this round…"
-                  : ("Message " + DATA.assistantName + "… (⌘+↵ to send)")
+                  ? t("chat.answerPending")
+                  : command && findCommand(command)
+                  ? findCommand(command).placeholder
+                  : t("chat.messagePlaceholder", { name: DATA.assistantName })
               }
             />
+            {attachments.length > 0 && (
+              <div className="composer-attachments">
+                {attachments.map(function (file, index) {
+                  var isImage = String(file.content_type || "").startsWith("image/");
+                  return (
+                    <div className={"composer-attachment-card" + (isImage ? " image" : "")} key={file.id || (file.name + "_" + index)}>
+                      {isImage && file.url && (
+                        <div className="composer-attachment-thumb">
+                          <img
+                            src={file.url}
+                            alt={attachmentAltText(file)}
+                            style={attachmentThumbStyle(file, 112, 88)}
+                          />
+                        </div>
+                      )}
+                      {!isImage && <div className="composer-attachment-file" aria-label="uploaded file"></div>}
+                      <span className="x" onClick={function () { removeAttachment(index); }}>×</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div className="composer-actions">
-              <button className="iconbtn" title="Attach">+</button>
-              <button className="iconbtn" title="Slash command">/</button>
-              <button className="iconbtn" title="Mention">@</button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleAttachmentPick}
+              />
+              <button
+                className="iconbtn"
+                title={uploadingAttachments ? t("chat.uploading") : t("chat.attach")}
+                disabled={Boolean(pendingQuestion) || uploadingAttachments}
+                onClick={function () {
+                  if (fileInputRef.current) fileInputRef.current.click();
+                }}
+              >
+                {uploadingAttachments ? "…" : "+"}
+              </button>
+              <span style={{ position: "relative" }}>
+                <button
+                  className={"iconbtn" + (command ? " active" : "")}
+                  title={command && findCommand(command) ? findCommand(command).label + ": " + findCommand(command).desc : t("chat.slashCommand")}
+                  onClick={function () { setSlashMenuOpen(!slashMenuOpen); }}
+                  style={command ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
+                >/</button>
+                {slashMenuOpen && (
+                  <div className="slash-menu">
+                    <div className="slash-menu-head">{t("chat.commands")}</div>
+                    {ALL_COMMANDS.map(function (cmd) {
+                      var active = command === cmd.id;
+                      return (
+                        <button
+                          key={cmd.id}
+                          className={"slash-option" + (active ? " active" : "")}
+                          onClick={function () {
+                            setCommand(active ? "" : cmd.id);
+                            setSlashMenuOpen(false);
+                          }}
+                        >
+                          <span className="slash-option-icon">{cmd.icon}</span>
+                          <span className="slash-option-body">
+                            <span className="slash-option-label">{cmd.label}</span>
+                            <span className="slash-option-desc">{cmd.desc}</span>
+                          </span>
+                          {active && <span className="slash-option-check">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </span>
+              <span style={{ position: "relative" }}>
+                <button
+                  className={"iconbtn" + (mentionedAgents.length > 0 ? " active" : "")}
+                  title={mentionedAgents.length > 0 ? t("chat.mentionSubagents") : t("chat.mention")}
+                  disabled={session.subagents.length === 0}
+                  onClick={function () { setMentionMenuOpen(!mentionMenuOpen); }}
+                  style={mentionedAgents.length > 0 ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
+                >@</button>
+                {mentionMenuOpen && (
+                  <div className="mention-menu">
+                    <div className="mention-menu-head">{t("chat.mentionMenuHead")}</div>
+                    {session.subagents.length === 0 && (
+                      <div className="mention-option-empty">{t("chat.noSubagentsAvailable")}</div>
+                    )}
+                    {session.subagents.map(function (agent) {
+                      var isSelected = mentionedAgents.indexOf(agent.id) !== -1;
+                      return (
+                        <button
+                          key={agent.id}
+                          className={"mention-option" + (isSelected ? " active" : "")}
+                          onClick={function () {
+                            setMentionedAgents(function (prev) {
+                              var idx = prev.indexOf(agent.id);
+                              if (idx !== -1) return prev.filter(function (id) { return id !== agent.id; });
+                              return prev.concat([agent.id]);
+                            });
+                          }}
+                        >
+                          <span className={"sa-dot " + agent.status} style={{marginTop: 3, flexShrink: 0}} />
+                          <span className="mention-option-body">
+                            <span className="mention-option-name">@{agent.name}</span>
+                            <span className="mention-option-task">{agent.task || agent.status}</span>
+                          </span>
+                          {isSelected && <span className="mention-option-check">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </span>
               <span style={{ flex: 1 }}></span>
               <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>
                 {session.model}
               </span>
               {visibleSending && (
-                <button className="send secondary" disabled={!draft.trim() || Boolean(pendingQuestion)} onClick={openNextDialogue}>
-                  {hasSelectedGuideRound ? "guide" : "new dialogue"}
+                <button className="send secondary" disabled={(!draft.trim() && attachments.length === 0) || Boolean(pendingQuestion)} onClick={openNextDialogue}>
+                  {(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.newDialogue")}
                 </button>
               )}
               <button
                 className={"send" + (visibleSending ? " stop" : "")}
-                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim())}
+                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim() && attachments.length === 0)}
                 onClick={visibleSending ? stopActiveRun : send}
               >
-                {visibleSending ? "stop" : <>{hasSelectedGuideRound ? "guide" : "send"} <span className="kbd">⌘↵</span></>}
+                {visibleSending ? t("chat.stop") : <>{(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.send")} <span className="kbd">⌘↵</span></>}
               </button>
             </div>
           </div>
           <div className="composer-hint">
             <span>
               {visibleSending
-                ? (hasSelectedGuideRound
-                    ? "Watching the current run. Type the next message, then click guide to send it to the selected round without waiting."
-                    : "Watching the current run. Type the next message, then click new dialogue to send it without waiting.")
+                ? ((hasSelectedGuideRound || mentionedAgents.length > 0)
+                    ? t("chat.watchingRunGuide")
+                    : t("chat.watchingRunNew"))
                 : pendingQuestion
-                ? "The main agent is waiting for your answer above before it can continue this round."
-                : hasSelectedGuideRound
-                ? "Guidance mode: this message will be sent to the selected round's main-agent inbox."
-                : DATA.assistantName + " plans, then acts. Subagents spawn for parallel work."}
+                ? t("chat.waitingForAnswer")
+                : (hasSelectedGuideRound || mentionedAgents.length > 0)
+                ? t("chat.guidanceMode")
+                : t("chat.agentPlansActs", { name: DATA.assistantName })}
             </span>
             <span>
-              {visibleSending ? "running · " : ""}
-              {runningSubagents} active subagent(s)
+              {visibleSending ? t("chat.running") + " · " : ""}
+              {t("chat.activeSubagents", { n: runningSubagents, pl: runningSubagents !== 1 ? "s" : "" })}
             </span>
           </div>
         </div>
         )}
+      </>
+      )}
       </div>
 
-      <ChatSide session={session} subagents={subagents} />
+      <ChatSide
+        session={session}
+        subagents={subagents}
+        ccStatus={ccStatus}
+        refreshCcStatus={function () {
+          fetch("/api/cc/status")
+            .then(function (response) { return response.json(); })
+            .then(function (payload) { setCcStatus(payload); })
+            .catch(function () {});
+        }}
+        onOpenCCModal={function (info) { setCcModal(info); }}
+      />
     </div>
   );
 }
 
 function Message({ msg, assistantName }) {
+  const { t } = useI18n();
   const renderMarkdownBody = !msg.streamingReply;
+  const attachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
   const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
-    ? renderMarkdown(msg.body)
+    ? renderMarkdown(injectAttachmentLinks(msg.body, attachments))
     : "";
   const isRuntimeTrace = Boolean(msg.runtimeTrace);
   const attachedRuntime = msg.attachedRuntime || null;
@@ -1397,7 +1845,7 @@ function Message({ msg, assistantName }) {
     <div className={"msg " + msg.role}>
       <div className="msg-meta">
         <span className={"msg-role " + msg.role}>
-          {msg.role === "user" ? "▸ you" :
+          {msg.role === "user" ? "▸ " + t("chat.you") :
            msg.role === "agent" ? "● " + (assistantName || "agent") :
            msg.role}
         </span>
@@ -1426,7 +1874,7 @@ function Message({ msg, assistantName }) {
             )}
             {!isRuntimeTrace && msg.thinking && (
               <div className="thinking">
-                <div className="thinking-head">reasoning</div>
+                <div className="thinking-head">{t("chat.reasoning")}</div>
                 {msg.thinking}
               </div>
             )}
@@ -1453,24 +1901,66 @@ function Message({ msg, assistantName }) {
           ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
           : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
       )}
+      {attachments.length > 0 && (
+        <div className="msg-attachments">
+          {attachments.map(function (file, index) {
+            var isImage = String(file.content_type || "").startsWith("image/");
+            var label = String(file.name || "file");
+            var kind = String(file.kind || "file").toUpperCase();
+            return (
+              <div className={"msg-attachment" + (isImage ? " image" : "")} key={file.id || (file.name + "_" + index)}>
+                {isImage && file.url ? (
+                  <a className="msg-attachment-image" href={file.url} target="_blank" rel="noreferrer">
+                    <img
+                      src={file.url}
+                      alt={attachmentAltText(file)}
+                      style={attachmentThumbStyle(file, 360, 260)}
+                    />
+                  </a>
+                ) : (
+                  <a className="msg-attachment-file" href={file.url || "#"} download={label} target="_blank" rel="noreferrer" aria-label={label}>
+                    <span className="msg-attachment-kind">{kind}</span>
+                    <span className="msg-attachment-name">{label}</span>
+                  </a>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, onSubmit, onKeyDown, answering, sending, optionCount }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
   if (!pendingQuestion) return null;
   const options = Array.isArray(pendingQuestion.options) ? pendingQuestion.options : [];
-  const customDisabled = answering || sending;
+  const customDisabled = answering;
+  const questionText = String(pendingQuestion.text || "");
+  const canCollapse = questionText.length > 280;
   return (
     <div className="question-panel">
       <div className="question-panel-head">
-        <span className="question-panel-kicker">clarification needed</span>
+        <span className="question-panel-kicker">{t("chat.clarificationNeeded")}</span>
         <span className="question-panel-meta">
-          {optionCount ? optionCount + " option" + (optionCount === 1 ? "" : "s") + " + custom answer" : "custom answer"}
+          {optionCount ? t("chat.optionsPlusCustom", { n: optionCount, pl: optionCount === 1 ? "" : "s" }) : t("chat.customAnswer")}
         </span>
       </div>
       <div className="question-panel-body">
-        <div className="question-panel-title">{pendingQuestion.text}</div>
+        <div className={"question-panel-copy" + (expanded ? " expanded" : "")}>
+          <div className="question-panel-title">{questionText}</div>
+        </div>
+        {canCollapse && (
+          <button
+            className="question-panel-toggle"
+            type="button"
+            onClick={function () { setExpanded(function (value) { return !value; }); }}
+          >
+            {expanded ? t("chat.showLess") : t("chat.showMore")}
+          </button>
+        )}
         {options.length > 0 && (
           <div className="question-options">
             {options.map(function (option) {
@@ -1494,14 +1984,14 @@ function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, 
             onChange={function (e) { onDraftChange && onDraftChange(e.target.value); }}
             onKeyDown={onKeyDown}
             disabled={customDisabled}
-            placeholder="Type your answer… (⌘+↵ to submit)"
+            placeholder={t("chat.typeYourAnswer")}
           />
           <button
             className="question-submit"
             disabled={customDisabled || !String(draft || "").trim()}
             onClick={onSubmit}
           >
-            answer <span className="kbd">⌘↵</span>
+            {t("chat.answer")} <span className="kbd">⌘↵</span>
           </button>
         </div>
       </div>
@@ -1526,23 +2016,25 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal }) {
+  const { t } = useI18n();
   return (
     <div className="chat-side">
+
       <div className="side-section" style={{ maxHeight: "40%", overflowY: "auto" }}>
         <div className="side-head">
-          Active shells
+          {t("chat.activeShells")}
           <span className="count">{session.shells.length}</span>
         </div>
         {session.shells.length === 0 && (
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
         )}
-        {session.shells.map((s) => <ShellCard key={s.id} shell={s} />)}
+        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} />)}
       </div>
 
       <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
         <div className="side-head">
-          Subagents
+          {t("chat.subagents")}
           <span className="count">{subagents.length}</span>
         </div>
         {subagents.length === 0 && (
@@ -1552,35 +2044,64 @@ function ChatSide({ session, subagents }) {
       </div>
 
       <div className="side-section" style={{ borderBottom: 0 }}>
-        <div className="side-head">Run summary</div>
+        <div className="side-head">{t("chat.runSummary")}</div>
         <div className="kv" style={{ rowGap: 6 }}>
-          <span className="k">run id</span><span className="v">{session.id}</span>
-          <span className="k">started</span><span className="v">{session.started}</span>
-          <span className="k">elapsed</span><span className="v">{session.dur}</span>
-          <span className="k">tool calls</span><span className="v">{session.summary.toolCalls}</span>
-          <span className="k">tokens</span><span className="v">{session.summary.tokens}</span>
-          <span className="k">spend</span><span className="v">{session.summary.spend}</span>
+          <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
+          <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
+          <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
+          <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
+          <span className="k">{t("chat.tokens")}</span><span className="v">{session.summary.tokens}</span>
+          <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
         </div>
       </div>
     </div>
   );
 }
 
-function ShellCard({ shell }) {
+function ShellCard({ shell, ccStatus, onOpenCCModal }) {
+  const { t } = useI18n();
+  const isCC = shell.kind === "cc" && shell.tmuxSession;
+
+  if (!isCC) {
+    return (
+      <div className="shell-card">
+        <div className="shell-card-head">
+          <span>▣</span>
+          <span>{shell.title || t("chat.independentShell")}</span>
+          <span className="cwd">{shell.cwd}</span>
+          <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
+          <span className="pid">pid {shell.pid}</span>
+        </div>
+        <div className="shell-card-body">
+          {shell.lines.map((l, i) => (
+            <div key={i} className={"shell-" + l.kind}>{l.text}</div>
+          ))}
+        </div>
+        <div className="shell-card-foot">{shell.elapsed || "—"} · {shell.updatedAt || "—"}</div>
+      </div>
+    );
+  }
+
   return (
-    <div className="shell-card">
-      <div className="shell-card-head">
-        <span>▣</span>
-        <span>{shell.title || "independent shell"}</span>
-        <span className="cwd">{shell.cwd}</span>
+    <div className="shell-card shell-card--cc">
+      <div className="shell-card-head shell-card-head--clickable" onClick={function () {
+        onOpenCCModal && onOpenCCModal({
+          tmuxSession: shell.tmuxSession,
+          latestJsonl: shell.latestJsonl || "",
+        });
+      }}>
+        <span>▸</span>
+        <span>{"Claude Code"}</span>
         <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
-        <span className="pid">pid {shell.pid}</span>
+        <span className="pid">{t("chat.ccExpand")}</span>
       </div>
-      <div className="shell-card-body">
-        {shell.lines.map((l, i) => (
-          <div key={i} className={"shell-" + l.kind}>{l.text}</div>
-        ))}
-      </div>
+      {shell.lines.length > 0 && (
+        <div className="shell-card-body">
+          {shell.lines.map((l, i) => (
+            <div key={i} className={"shell-" + l.kind}>{l.text}</div>
+          ))}
+        </div>
+      )}
       <div className="shell-card-foot">{shell.elapsed || "—"} · {shell.updatedAt || "—"}</div>
     </div>
   );
@@ -1592,7 +2113,7 @@ function SubagentMini({ sa }) {
       <div className={"sa-dot " + sa.status}></div>
       <div className="sa-body">
         <div className="sa-name">
-          {sa.name} <span className="id">· {sa.id}</span>
+          {sa.name}{sa.id && sa.id !== sa.name ? <span className="id"> · {sa.id}</span> : null}
         </div>
         <div className="sa-task">{sa.task}</div>
         <div className="sa-meta">

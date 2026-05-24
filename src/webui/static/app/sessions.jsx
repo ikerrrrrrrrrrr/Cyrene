@@ -3,6 +3,7 @@ const { useState: useStateSes } = React;
 
 function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
   useDataVersion();
+  const { t } = useI18n();
   const [filter, setFilter] = useStateSes("all"); // all | running | done | err
   const [query, setQuery] = useStateSes("");
 
@@ -45,19 +46,19 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
     <div className="sessions-layout">
       <div className="sessions-main">
         <div className="sessions-summary">
-          <SummaryTile label="Total" value={totals.all} />
-          <SummaryTile label="Running" value={totals.running} dotClass="running" />
-          <SummaryTile label="Completed" value={totals.done} dotClass="done" />
-          <SummaryTile label="Errored" value={totals.err} dotClass="err" />
+          <SummaryTile label={t("sessions.total")} value={totals.all} />
+          <SummaryTile label={t("sessions.running")} value={totals.running} dotClass="running" />
+          <SummaryTile label={t("sessions.completed")} value={totals.done} dotClass="done" />
+          <SummaryTile label={t("sessions.errored")} value={totals.err} dotClass="err" />
         </div>
 
         <div className="sessions-controls">
           <div className="sessions-filters">
             {[
-              { id: "all",     label: "all" },
-              { id: "running", label: "running" },
-              { id: "done",    label: "done" },
-              { id: "err",     label: "errored" },
+              { id: "all",     label: t("sessions.all") },
+              { id: "running", label: t("sessions.running") },
+              { id: "done",    label: t("sessions.done") },
+              { id: "err",     label: t("sessions.err") },
             ].map((f) => (
               <div key={f.id}
                    className={"sessions-filter " + (filter === f.id ? "active" : "")}
@@ -70,12 +71,12 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
             <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
               <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
             </svg>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search sessions" />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("sessions.searchPlaceholder")} />
           </div>
           <button className="btn primary"
                   style={{ marginLeft: 8 }}
                   onClick={async () => {
-                    if (!confirm("Start a new session? The current conversation will be compressed into short-term memory and the active context window will be cleared.")) return;
+                    if (!confirm(t("sessions.confirmNewSession"))) return;
                     try {
                       if (window.resetChatRuntime) window.resetChatRuntime({ abort: true });
                       const r = await fetch("/api/sessions", { method: "POST" });
@@ -83,9 +84,9 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
                       const data = await r.json();
                       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
                       onSelectSession && onSelectSession(null);
-                    } catch (e) { alert("Failed to create session: " + e.message); }
+                    } catch (e) { alert(t("chat.failedToCreate") + ": " + e.message); }
                   }}>
-            + new session
+            {t("sessions.newSession")}
           </button>
         </div>
 
@@ -94,14 +95,14 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
             <thead>
               <tr>
                 <th style={{ width: 28 }}></th>
-                <th>title</th>
-                <th>id</th>
-                <th>started</th>
-                <th>duration</th>
-                <th style={{ textAlign: "right" }}>tools</th>
-                <th style={{ textAlign: "right" }}>tokens</th>
-                <th style={{ textAlign: "right" }}>spend</th>
-                <th>model</th>
+                <th>{t("sessions.title")}</th>
+                <th>{t("sessions.id")}</th>
+                <th>{t("sessions.started")}</th>
+                <th>{t("sessions.duration")}</th>
+                <th style={{ textAlign: "right" }}>{t("sessions.tools")}</th>
+                <th style={{ textAlign: "right" }}>{t("sessions.tokens")}</th>
+                <th style={{ textAlign: "right" }}>{t("sessions.spend")}</th>
+                <th>{t("sessions.model")}</th>
                 <th style={{ width: 28 }}></th>
               </tr>
             </thead>
@@ -139,7 +140,7 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
                     padding: "40px 16px", textAlign: "center",
                     color: "var(--text-4)", fontFamily: "var(--mono)"
                   }}>
-                    no sessions match.
+                    {t("sessions.noMatch")}
                   </td>
                 </tr>
               )}
@@ -202,6 +203,7 @@ function SessionDetailPane({ session, onOpenAgents, onDelete }) {
           <span className="k">started</span><span className="v">{session.started}</span>
           <span className="k">duration</span><span className="v">{session.dur}</span>
           <span className="k">tool calls</span><span className="v">{session.summary.toolCalls}</span>
+          <span className="k">requests</span><span className="v">{session.summary.requests ?? "—"}</span>
           <span className="k">tokens</span><span className="v">{session.summary.tokens}</span>
           <span className="k">spend</span><span className="v">{session.summary.spend}</span>
         </div>

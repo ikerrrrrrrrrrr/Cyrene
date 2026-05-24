@@ -1,25 +1,44 @@
 """Route handlers for the Cyrene Web UI (SPA backend)."""
 
 import asyncio
+import base64
 import getpass
 import json
 import logging
+import mimetypes
 import os
 import re
+import shutil
+import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, Request
+from PIL import Image
+from fastapi import APIRouter, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
+from cyrene.cc_bridge import get_cc_preview, get_cc_status
+from cyrene.cc_learner import analyze_session, learn_from_session
+from cyrene.cc_terminal import CCTerminalSession
 from cyrene import debug
+from cyrene.attachments import (
+    EXPORTS_DIR as _EXPORTS_DIR,
+    attachment_kind_from_meta,
+    build_public_attachment_payload,
+    model_supports_multimodal,
+)
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
+    _append_session_message,
+    _call_llm,
+    _publish_runtime_event,
     _reply_stream_writer,
     answer_pending_question,
+    append_system_message,
     clear_session_id,
     format_httpx_error,
     get_pending_question,
@@ -31,10 +50,14 @@ from cyrene.agent import (
 )
 from cyrene.config import (
     ASSISTANT_NAME,
+    BASE_DIR,
     DATA_DIR,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
     DB_PATH,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
+    PATTERNS_DIR,
     SEARXNG_HOST,
     SEARXNG_PORT,
     SOUL_PATH,
@@ -42,14 +65,29 @@ from cyrene.config import (
     WORKSPACE_DIR,
 )
 from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange
-from cyrene.onboarding import get_onboarding_status, save_and_test_llm_setup, save_personality_setup
+from cyrene.onboarding import (
+    get_onboarding_status,
+    reset_onboarding_state,
+    save_and_test_llm_setup,
+    save_personality_setup,
+)
 from cyrene.scheduler import reset_lottery
 from cyrene.settings_store import get_all as get_web_settings
+from cyrene.skills_registry import (
+    build_skills as _build_skills,
+    install_skill_from_path,
+    skill_payload_from_record as _skill_payload_from_record,
+    toggle_skill as _toggle_skill,
+    uninstall_skill as _uninstall_skill,
+)
 from cyrene.shells import list_shells as list_live_shells
+from cyrene.shells import set_cc_since
 from cyrene.short_term import load_entries
-from cyrene.soul import read_soul, get_soul_path
+from cyrene.soul import get_default_soul_content, read_soul, get_soul_path
+from cyrene.version import get_version_label
 
 logger = logging.getLogger(__name__)
+_CC_PROJECT_DIR = WORKSPACE_DIR.parent
 
 _bot: Any = None
 _db_path: str = ""
@@ -57,12 +95,93 @@ _CHAT_ID = -1
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _APP_DIR = _STATIC_DIR / "app"
-
+_UPLOADS_DIR = DATA_DIR / "webui_uploads"
 _SERVER_STARTED_AT = time.time()
 
 
 def _ndjson_line(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False) + "\n"
+
+
+def _live_llm_config() -> tuple[str, str]:
+    from cyrene import config as cy_config
+
+    return cy_config.OPENAI_MODEL, cy_config.OPENAI_BASE_URL
+
+
+def _remove_path(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+async def _reset_app_data() -> dict[str, Any]:
+    """Wipe user-modifiable runtime data and restore first-run defaults."""
+    from cyrene import agent as cy_agent
+    from cyrene.config import write_env_keys
+    from cyrene.db import init_db
+    from cyrene.inbox import clear_all_inboxes
+    from cyrene.settings_store import reset_all as reset_web_settings
+
+    await clear_session_id()
+
+    for task in list(cy_agent._pending_compressors):
+        task.cancel()
+    cy_agent._pending_compressors.clear()
+    await asyncio.sleep(0)
+
+    reset_lottery()
+    await clear_all_inboxes()
+    reset_web_settings()
+    reset_onboarding_state()
+
+    for path in (
+        STATE_FILE,
+        DATA_DIR / "short_term.json",
+        DATA_DIR / "lottery_state.json",
+        DATA_DIR / "web_settings.json",
+        DATA_DIR / "onboarding_state.json",
+        DATA_DIR / ".setup_done",
+    ):
+        _remove_path(path)
+
+    for path in (
+        CONVERSATIONS_DIR,
+        _UPLOADS_DIR,
+        _EXPORTS_DIR,
+        PATTERNS_DIR,
+    ):
+        _remove_path(path)
+
+    db_path = Path(_db_path or str(DB_PATH))
+    _remove_path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    await init_db(str(db_path))
+
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+    CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    soul_path = get_soul_path()
+    soul_path.parent.mkdir(parents=True, exist_ok=True)
+    soul_path.write_text(get_default_soul_content(), encoding="utf-8")
+
+    write_env_keys({
+        "OPENAI_API_KEY": "",
+        "OPENAI_BASE_URL": DEFAULT_OPENAI_BASE_URL,
+        "OPENAI_MODEL": DEFAULT_OPENAI_MODEL,
+        "TELEGRAM_BOT_TOKEN": "",
+    })
+
+    return {
+        "ok": True,
+        "onboarding": get_onboarding_status(),
+        "sessions": _build_sessions(),
+    }
 
 
 def _reply_stream_chunks(text: str, target_chars: int = 36) -> list[str]:
@@ -91,6 +210,81 @@ def _reply_stream_chunks(text: str, target_chars: int = 36) -> list[str]:
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:]
     return [chunk for chunk in chunks if chunk]
+
+
+def _consume_cc_input_buffer(buffer: str, data: str) -> tuple[str, list[str]]:
+    current = str(buffer or "")
+    submitted: list[str] = []
+    if not data:
+        return current, submitted
+
+    index = 0
+    while index < len(data):
+        char = data[index]
+        if char == "\x1b":
+            break
+        if char in ("\r", "\n"):
+            text = current.strip()
+            if text:
+                submitted.append(text)
+            current = ""
+        elif char in ("\x7f", "\b"):
+            current = current[:-1]
+        elif char == "\t":
+            current += "\t"
+        elif ord(char) >= 32:
+            current += char
+        index += 1
+    return current, submitted
+
+
+async def _publish_cc_learning(text: str, tmux_session: str = "") -> None:
+    prompt = str(text or "").strip()
+    if not prompt:
+        return
+
+    status = get_cc_status(_CC_PROJECT_DIR)
+    latest_jsonl = str(status.get("latest_jsonl") or "").strip()
+    await debug.publish_event(
+        {
+            "type": "cc_learning",
+            "phase": "started",
+            "tmux_session": tmux_session,
+            "user_input": prompt[:200],
+            "latest_jsonl": latest_jsonl,
+        }
+    )
+    if not latest_jsonl:
+        return
+
+    try:
+        result = await asyncio.to_thread(learn_from_session, Path(latest_jsonl))
+    except Exception:
+        logger.exception("Failed learning from Claude Code transcript %s", latest_jsonl)
+        await debug.publish_event(
+            {
+                "type": "cc_learning",
+                "phase": "error",
+                "tmux_session": tmux_session,
+                "user_input": prompt[:200],
+                "latest_jsonl": latest_jsonl,
+            }
+        )
+        return
+
+    summary = result.get("summary", {})
+    await debug.publish_event(
+        {
+            "type": "cc_learning",
+            "phase": "completed",
+            "tmux_session": tmux_session,
+            "user_input": prompt[:200],
+            "latest_jsonl": latest_jsonl,
+            "highlights": summary.get("highlights", []),
+            "top_tools": summary.get("top_tools", []),
+            "top_tasks": summary.get("top_tasks", []),
+        }
+    )
 
 
 async def _stream_reply_payload(response_text: str) -> StreamingResponse:
@@ -163,6 +357,94 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
     )
 
 
+def _safe_upload_name(filename: str) -> str:
+    raw = Path(str(filename or "upload.bin")).name
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+    return sanitized or "upload.bin"
+
+
+def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
+    try:
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return None, None
+
+
+def _attachment_prompt_block(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return ""
+    lines = [
+        "",
+        "[Uploaded attachments]",
+        "The user uploaded the following files into the local workspace-accessible runtime data directory.",
+        "Before answering anything about these files, you MUST inspect the relevant attachment with AnalyzeAttachment.",
+        "Do not answer from the filename, extension, or metadata alone.",
+        "After AnalyzeAttachment returns extracted content, use that extracted content to answer the user.",
+    ]
+    for item in items:
+        lines.append(f'- {item["name"]} ({item["content_type"]}): {item["path"]}')
+    return "\n".join(lines)
+
+
+async def _chat_with_uploaded_images(message: str, attachments: list[dict[str, Any]]) -> str:
+    prompt = str(message or "").strip() or "Describe the uploaded image in detail and extract any visible text."
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for item in attachments:
+        path = Path(str(item.get("path") or "")).resolve()
+        mime = str(item.get("content_type") or mimetypes.guess_type(str(path))[0] or "image/png")
+        image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}})
+    try:
+        response = await _call_llm([{"role": "user", "content": content}], tools=None, max_tokens=None)
+    except httpx.HTTPError as exc:
+        detail = format_httpx_error(exc).lower()
+        if any(token in detail for token in ("image", "vision", "multimodal", "unsupported", "invalid content")):
+            return "Current model does not support image understanding. Switch to a vision-capable model to analyze uploaded images."
+        raise
+    response_text = str((response.get("content") if isinstance(response.get("content"), str) else "") or "").strip()
+    if response_text:
+        return response_text
+    parts: list[str] = []
+    if isinstance(response.get("content"), list):
+        for item in response.get("content") or []:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+    merged = "".join(parts).strip()
+    return merged or "The model returned no usable image analysis."
+
+
+async def _persist_direct_image_chat(
+    message: str,
+    response: str,
+    public_attachments: list[dict[str, Any]],
+    client_request_id: str,
+) -> None:
+    round_id = f"round_{int(time.time() * 1000)}"
+    user_entry: dict[str, Any] = {
+        "role": "user",
+        "content": str(message or ""),
+        "attachments": [dict(item) for item in public_attachments],
+        "round_id": round_id,
+    }
+    if client_request_id:
+        user_entry["client_request_id"] = client_request_id
+    await _append_session_message(user_entry)
+    await append_system_message(
+        response,
+        message_meta={
+            "system_initiated": False,
+            "round_id": round_id,
+            **({"client_request_id": client_request_id} if client_request_id else {}),
+        },
+        publish_event={
+            "type": "chat_message",
+            "round_id": round_id,
+            "client_request_id": client_request_id,
+        },
+    )
+
+
 def register_routes(app, bot: Any, db_path: str) -> None:
     global _bot, _db_path
     _bot = bot
@@ -174,32 +456,172 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/", response_class=HTMLResponse)
     async def spa_root():
-        return FileResponse(_APP_DIR / "index.html")
+        return FileResponse(
+            _APP_DIR / "index.html",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
     # ---- UI bootstrap data ----
 
     @router.get("/api/ui-data")
-    async def api_ui_data():
-        return await _build_ui_data()
+    async def api_ui_data(tz: str = ""):
+        return await _build_ui_data(tz)
 
     # ---- Chat API ----
+
+    @router.post("/api/chat/upload")
+    async def api_chat_upload(files: list[UploadFile]):
+        if not files:
+            return JSONResponse({"error": "no files uploaded"}, status_code=400)
+
+        _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        uploaded: list[dict[str, Any]] = []
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        for index, file in enumerate(files, start=1):
+            safe_name = _safe_upload_name(file.filename or "")
+            target = _UPLOADS_DIR / f"{now}_{index:02d}_{safe_name}"
+            content = await file.read()
+            target.write_bytes(content)
+            content_type = str(file.content_type or mimetypes.guess_type(str(target))[0] or "application/octet-stream")
+            kind = attachment_kind_from_meta(content_type, target.name)
+            width, height = _image_dimensions(target) if kind == "image" else (None, None)
+            uploaded.append({
+                "id": target.name,
+                "name": file.filename or safe_name,
+                "path": str(target.resolve()),
+                "content_type": content_type,
+                "size": len(content),
+                "kind": kind,
+                "url": f"/api/chat/upload/{target.name}",
+                **({"width": width} if isinstance(width, int) else {}),
+                **({"height": height} if isinstance(height, int) else {}),
+            })
+
+        return {"files": uploaded}
+
+    @router.get("/api/chat/upload/{upload_id}")
+    async def api_chat_upload_file(upload_id: str):
+        safe_upload_id = _safe_upload_name(upload_id)
+        target = (_UPLOADS_DIR / safe_upload_id).resolve()
+        uploads_root = _UPLOADS_DIR.resolve()
+        if target != uploads_root and uploads_root not in target.parents:
+            return JSONResponse({"error": "invalid upload path"}, status_code=400)
+        if not target.exists() or not target.is_file():
+            return JSONResponse({"error": "upload not found"}, status_code=404)
+        return FileResponse(target)
+
+    @router.get("/api/chat/export/{export_id}")
+    async def api_chat_export_file(export_id: str):
+        safe_export_id = _safe_upload_name(export_id)
+        target = (_EXPORTS_DIR / safe_export_id).resolve()
+        exports_root = _EXPORTS_DIR.resolve()
+        if target != exports_root and exports_root not in target.parents:
+            return JSONResponse({"error": "invalid export path"}, status_code=400)
+        if not target.exists() or not target.is_file():
+            return JSONResponse({"error": "export not found"}, status_code=404)
+        return FileResponse(target, filename=safe_export_id)
 
     @router.post("/api/chat")
     async def api_chat(request: Request):
         body = await request.json()
         message = (body.get("message") or "").strip()
+        attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
         guide_round_id = str(body.get("guide_round_id") or "").strip()
         client_request_id = str(body.get("client_request_id") or "").strip()
         wants_stream = bool(body.get("stream"))
-        if not message:
+        lang = str(body.get("lang") or "").strip()
+        command = str(body.get("command") or "").strip()
+        mentions = body.get("mentions") if isinstance(body.get("mentions"), list) else []
+        normalized_attachments = [
+            {
+                "id": str(item.get("id") or "").strip(),
+                "name": str(item.get("name") or "file"),
+                "path": str(item.get("path") or ""),
+                "content_type": str(item.get("content_type") or "application/octet-stream"),
+                "size": int(item.get("size") or 0),
+                "kind": str(item.get("kind") or "file"),
+                **({"width": int(item.get("width"))} if str(item.get("width", "")).strip().isdigit() else {}),
+                **({"height": int(item.get("height"))} if str(item.get("height", "")).strip().isdigit() else {}),
+            }
+            for item in attachments
+            if str(item.get("path") or "").strip()
+        ]
+        public_attachments = [build_public_attachment_payload(item) for item in normalized_attachments]
+        if not message and not normalized_attachments:
             return JSONResponse({"error": "empty message"}, status_code=400)
+        all_images = bool(normalized_attachments) and all(str(item.get("kind") or "") == "image" for item in normalized_attachments)
+        message_with_attachments = (message or "[Attachment upload]") + _attachment_prompt_block(normalized_attachments)
 
         reset_lottery()
+        if mentions and message:
+            from cyrene.inbox import send_message
+            from cyrene.subagent import _registry, reactivate, get_raw_messages, _spawn_subagent_task, _run_subagent
+
+            valid_mentions = []
+            for agent_id in mentions:
+                agent_id = str(agent_id).strip()
+                if not agent_id:
+                    continue
+                info = _registry.get(agent_id)
+                if info is None:
+                    continue
+                valid_mentions.append(agent_id)
+                status = str(info.get("status", "")).strip()
+                if status in ("done", "timeout"):
+                    mention_text = f"User sent you a new task. This is a round — complete it and report your result via quit.\n\n{message}"
+                    await send_message("user", agent_id, "guidance", mention_text)
+                    reactivated = await reactivate(agent_id)
+                    if reactivated:
+                        raw_msgs = await get_raw_messages(agent_id)
+                        _spawn_subagent_task(
+                            _run_subagent(agent_id, str(info.get("task") or ""), _bot, _CHAT_ID, _db_path, resume_messages=raw_msgs),
+                            agent_id,
+                        )
+                else:
+                    mention_text = (
+                        f"[DIRECT_MESSAGE]\n"
+                        f"The user has sent you guidance. This takes priority over your current approach — "
+                        f"adjust your work accordingly. Use send_message_to_user ONCE to acknowledge and "
+                        f"briefly say what you will change. Then continue working with the adjusted approach.\n\n"
+                        f"User guidance:\n{message}"
+                    )
+                    await send_message("user", agent_id, "guidance", mention_text)
+
+            if not valid_mentions:
+                return JSONResponse({"error": "none of the mentioned agents exist"}, status_code=400)
+
+            names = ", ".join(["@" + aid for aid in valid_mentions])
+            response_text = f"Message sent to {names}."
+            mention_prefix = " ".join(["@" + aid for aid in valid_mentions]) + " "
+
+            user_entry = {
+                "role": "user",
+                "content": mention_prefix + message,
+                "mentions": valid_mentions,
+            }
+            if normalized_attachments:
+                user_entry["attachments"] = public_attachments
+            if client_request_id:
+                user_entry["client_request_id"] = client_request_id
+            await _append_session_message(user_entry)
+
+            if wants_stream:
+                return StreamingResponse(
+                    iter([_ndjson_line({"type": "reply_done", "response": response_text})]),
+                    media_type="application/x-ndjson",
+                    headers={"Cache-Control": "no-cache"},
+                )
+            return {"response": response_text}
         if guide_round_id:
             try:
                 item = await queue_round_guidance(
                     guide_round_id,
-                    message,
+                    message_with_attachments,
                     _bot,
                     _CHAT_ID,
                     _db_path,
@@ -222,12 +644,51 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return payload
 
         try:
+            if all_images:
+                async def _run_direct_image_chat() -> str:
+                    response_text = await _chat_with_uploaded_images(message, normalized_attachments)
+                    await _persist_direct_image_chat(message, response_text, public_attachments, client_request_id)
+                    labels = get_session_labels()
+                    await archive_exchange(
+                        message,
+                        response_text,
+                        _CHAT_ID,
+                        session_title=labels.get("session_title", ""),
+                        round_title=labels.get("round_title", ""),
+                        round_id=labels.get("round_id", ""),
+                        archive_session_id=labels.get("archive_session_id", ""),
+                    )
+                    return response_text
+
+                if wants_stream:
+                    return _stream_agent_reply(_run_direct_image_chat, message or "")
+                return {"response": await _run_direct_image_chat()}
             if wants_stream:
                 return _stream_agent_reply(
-                    lambda: run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id),
-                    message,
+                    lambda: run_agent(
+                        message_with_attachments,
+                        _bot,
+                        _CHAT_ID,
+                        _db_path,
+                        client_request_id=client_request_id,
+                        lang=lang,
+                        command=command,
+                        public_user_message=message,
+                        public_attachments=public_attachments,
+                    ),
+                    message or "",
                 )
-            response = await run_agent(message, _bot, _CHAT_ID, _db_path, client_request_id=client_request_id)
+            response = await run_agent(
+                message_with_attachments,
+                _bot,
+                _CHAT_ID,
+                _db_path,
+                client_request_id=client_request_id,
+                lang=lang,
+                command=command,
+                public_user_message=message,
+                public_attachments=public_attachments,
+            )
             if response == _AWAITING_USER_SENTINEL:
                 return {"awaiting_user": True, "pending_question": get_pending_question()}
             labels = get_session_labels()
@@ -427,6 +888,88 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "event not found"}, status_code=404)
         return event
 
+    # ---- Claude Code terminal / learning ----
+
+    @router.get("/api/cc/status")
+    async def api_cc_status():
+        return get_cc_status(_CC_PROJECT_DIR)
+
+    async def _build_cc_learning_snapshot() -> dict[str, Any]:
+        status = get_cc_status(_CC_PROJECT_DIR)
+        latest_jsonl = str(status.get("latest_jsonl") or "").strip()
+        if not latest_jsonl:
+            return {
+                "available": False,
+                "reason": "No Claude transcript found for learning.",
+                "summary": {"highlights": [], "top_tools": [], "top_tasks": []},
+            }
+        analysis = await asyncio.to_thread(analyze_session, Path(latest_jsonl))
+        return {
+            "available": True,
+            **analysis,
+        }
+
+    @router.get("/api/cc/learning")
+    async def api_cc_learning():
+        return await _build_cc_learning_snapshot()
+
+    @router.post("/api/cc/learn")
+    async def api_cc_learn():
+        status = get_cc_status(_CC_PROJECT_DIR)
+        latest_jsonl = str(status.get("latest_jsonl") or "").strip()
+        if not latest_jsonl:
+            return JSONResponse({"error": "no Claude transcript found"}, status_code=404)
+        result = await asyncio.to_thread(learn_from_session, Path(latest_jsonl))
+        await debug.publish_event(
+            {
+                "type": "cc_learning",
+                "phase": "completed",
+                "user_input": "",
+                "latest_jsonl": latest_jsonl,
+                "highlights": result.get("summary", {}).get("highlights", []),
+                "top_tools": result.get("summary", {}).get("top_tools", []),
+                "top_tasks": result.get("summary", {}).get("top_tasks", []),
+            }
+        )
+        return result
+
+    @router.websocket("/ws/cc-terminal/{tmux_session}")
+    async def ws_cc_terminal(websocket: WebSocket, tmux_session: str):
+        await websocket.accept()
+        session = CCTerminalSession(tmux_session)
+        input_buffer = ""
+
+        try:
+            await session.start()
+        except Exception:
+            logger.exception("Failed to attach CC terminal to tmux session %s", tmux_session)
+            await websocket.send_text("\r\n[Cyrene] Failed to attach to tmux session.\r\n")
+            await websocket.close(code=1011)
+            return
+
+        stream_task = asyncio.create_task(session.stream_to_ws(websocket))
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    payload = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                message_type = str(payload.get("type") or "").strip()
+                if message_type == "input":
+                    data = str(payload.get("data") or "")
+                    await session.handle_input(data)
+                    input_buffer, submitted = _consume_cc_input_buffer(input_buffer, data)
+                    for prompt in submitted:
+                        asyncio.create_task(_publish_cc_learning(prompt, tmux_session=tmux_session))
+                elif message_type == "resize":
+                    await session.handle_resize(int(payload.get("cols") or 80), int(payload.get("rows") or 24))
+        except WebSocketDisconnect:
+            pass
+        finally:
+            stream_task.cancel()
+            await session.stop()
+
     # ---- Sessions API ----
 
     @router.get("/api/sessions")
@@ -477,11 +1020,112 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         return JSONResponse({"error": "unknown session id"}, status_code=400)
 
-    # ---- Status API ----
+    # ---- Evolution API ----
 
-    @router.get("/api/status")
-    async def api_status():
-        return await _build_status()
+    @router.get("/api/evolution")
+    async def api_evolution():
+        """Aggregated data for the Evolution page."""
+        from cyrene import pattern as _pattern
+        status = await _build_status()
+        scripts = _pattern.list_scripts("all")
+        cc_learning = await _build_cc_learning_snapshot()
+        return {
+            "phase": status.get("phase", ""),
+            "state": status.get("state", ""),
+            "scripts": scripts,
+            "cc_learning": cc_learning,
+        }
+
+    @router.get("/api/scripts")
+    async def api_scripts(status: str = "all"):
+        from cyrene import pattern as _pattern
+        return {"scripts": _pattern.list_scripts(status)}
+
+    @router.post("/api/scripts/{script_id}/approve")
+    async def api_approve_script(script_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.approve_script(script_id)
+        return {"ok": ok}
+
+    @router.post("/api/scripts/{script_id}/reject")
+    async def api_reject_script(script_id: str):
+        from cyrene import pattern as _pattern
+        ok = _pattern.reject_script(script_id)
+        return {"ok": ok}
+
+    @router.post("/api/scripts/{script_id}/run")
+    async def api_run_script(script_id: str):
+        from cyrene import pattern as _pattern
+        result = await _pattern.run_script(script_id)
+        return {"ok": True, "result": result}
+
+    @router.post("/api/patterns/learn")
+    async def api_patterns_learn():
+        from cyrene import pattern as _pattern
+
+        stats = await _pattern.scan_for_manual_learn()
+        return {
+            "ok": True,
+            "stats": stats,
+            "scripts": _pattern.list_scripts("all"),
+        }
+
+    # ---- Skills install API ----
+
+    @router.get("/api/skills/installed")
+    async def api_installed_skills():
+        return {"skills": _build_skills()}
+
+    @router.post("/api/skills/install")
+    async def api_install_skill(request: Request):
+        body = await request.json()
+        source_path = Path(str(body.get("path") or "")).expanduser()
+        if not source_path.exists():
+            return JSONResponse({"ok": False, "error": "invalid skill source path"}, status_code=400)
+        result = install_skill_from_path(source_path)
+        if not result.get("ok", False):
+            return JSONResponse(result, status_code=400)
+        return result
+
+    @router.post("/api/skills/install-picker")
+    async def api_install_skill_picker():
+        import platform
+        import subprocess
+
+        system = platform.system()
+        if system != "Darwin":
+            return JSONResponse({"ok": False, "error": f"Skill picker not supported on {system}"}, status_code=400)
+
+        result = subprocess.run(
+            ["osascript", "-e", 'POSIX path of (choose file or folder with prompt "Select skill file, folder, or zip")'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        selected = result.stdout.strip()
+        if not selected:
+            return {"ok": False, "cancelled": True}
+
+        source_path = Path(selected).expanduser()
+        if not source_path.exists():
+            return JSONResponse({"ok": False, "error": "selected skill source is invalid"}, status_code=400)
+
+        result = install_skill_from_path(source_path)
+        if not result.get("ok", False):
+            return JSONResponse(result, status_code=400)
+        return result
+
+    @router.post("/api/skills/{skill_id}/toggle")
+    async def api_toggle_skill(skill_id: str):
+        if not _toggle_skill(skill_id):
+            return JSONResponse({"ok": False, "error": "skill not found"}, status_code=404)
+        return {"ok": True}
+
+    @router.post("/api/skills/{skill_id}/uninstall")
+    async def api_uninstall_skill(skill_id: str):
+        if not _uninstall_skill(skill_id):
+            return JSONResponse({"ok": False, "error": "skill not found"}, status_code=404)
+        return {"ok": True}
 
     # ---- Memory API ----
 
@@ -545,6 +1189,62 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 status_code=502,
             )
 
+    # ---- Context management (SOUL.md / workspace chips) ----
+
+    @router.get("/api/context/state")
+    async def api_context_state():
+        from cyrene.settings_store import is_workspace_active, is_soul_active, get_workspace_history
+        return {
+            "soul_active": is_soul_active(),
+            "workspace_active": is_workspace_active(),
+            "workspace_dir": str(WORKSPACE_DIR),
+            "workspace_history": get_workspace_history(),
+        }
+
+    @router.post("/api/context/remove-soul")
+    async def api_remove_soul():
+        from cyrene.settings_store import set_soul_active
+        set_soul_active(False)
+        return {"ok": True}
+
+    @router.post("/api/context/add-soul")
+    async def api_add_soul():
+        from cyrene.settings_store import set_soul_active
+        set_soul_active(True)
+        return {"ok": True}
+
+    @router.post("/api/context/remove-workspace")
+    async def api_remove_workspace():
+        from cyrene.settings_store import set_workspace_active
+        set_workspace_active(False)
+        return {"ok": True}
+
+    @router.post("/api/context/add-workspace")
+    async def api_add_workspace(request: Request):
+        from cyrene.settings_store import set_workspace_active, add_workspace_to_history
+        body = await request.json()
+        path = str(body.get("path", "")).strip()
+        set_workspace_active(True)
+        if path:
+            add_workspace_to_history(path)
+        return {"ok": True}
+
+    @router.post("/api/context/pick-directory")
+    async def api_pick_directory():
+        import platform
+        import subprocess
+        system = platform.system()
+        if system == "Darwin":
+            result = subprocess.run(
+                ['osascript', '-e', 'POSIX path of (choose folder with prompt "Select workspace directory")'],
+                capture_output=True, text=True, timeout=30,
+            )
+            path = result.stdout.strip()
+            if path:
+                return {"path": path}
+            return {"path": "", "cancelled": True}
+        return {"path": "", "error": f"Directory picker not supported on {system}"}
+
     @router.get("/api/settings/soul")
     async def api_get_soul():
         return {"content": _read_soul()}
@@ -581,8 +1281,23 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/settings/models")
     async def api_get_models():
         from cyrene.settings_store import get_models
-        from cyrene.config import OPENAI_MODEL, OPENAI_BASE_URL
-        return {"models": get_models(), "active": OPENAI_MODEL, "base_url": OPENAI_BASE_URL}
+        models = get_models()
+        active_model_name, base_url = _live_llm_config()
+        active_model_id = next(
+            (
+                str(model.get("id") or "").strip()
+                for model in models
+                if str(model.get("name") or "").strip() == active_model_name
+                or str(model.get("id") or "").strip() == active_model_name
+            ),
+            active_model_name,
+        )
+        return {
+            "models": models,
+            "active": active_model_id,
+            "active_model_name": active_model_name,
+            "base_url": base_url,
+        }
 
     @router.put("/api/settings/models")
     async def api_update_models(request: Request):
@@ -595,14 +1310,28 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not isinstance(models, list) or len(models) == 0:
             return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
         save_models(models)
+        selected_model_name = next(
+            (
+                str(model.get("name") or "").strip()
+                for model in models
+                if str(model.get("id") or "").strip() == str(selected or "").strip()
+            ),
+            str(selected or "").strip(),
+        )
         updates = {}
-        if selected:
-            updates["OPENAI_MODEL"] = selected
+        if selected_model_name:
+            updates["OPENAI_MODEL"] = selected_model_name
         if base_url:
             updates["OPENAI_BASE_URL"] = base_url
         if updates:
             write_env_keys(updates)
-        return {"ok": True, "models": models, "active": selected, "base_url": base_url}
+        return {
+            "ok": True,
+            "models": models,
+            "active": str(selected or "").strip(),
+            "active_model_name": selected_model_name,
+            "base_url": base_url,
+        }
 
     @router.get("/api/settings/tools")
     async def api_get_tools():
@@ -646,6 +1375,23 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/settings/config")
     async def api_get_config():
         return _build_config()
+
+    @router.put("/api/settings/config")
+    async def api_update_config(request: Request):
+        from cyrene.settings_store import set_ as set_setting
+        body = await request.json()
+        changed = []
+        if "spawn_policy" in body:
+            value = str(body.get("spawn_policy") or "").strip().lower()
+            if value not in {"aggressive", "conservative", "off"}:
+                return JSONResponse({"error": "invalid spawn_policy"}, status_code=400)
+            set_setting("spawn_policy", value)
+            changed.append("spawn_policy")
+        return {"ok": True, "changed": changed}
+
+    @router.post("/api/settings/reset-data")
+    async def api_reset_data():
+        return await _reset_app_data()
 
     @router.get("/api/settings/search")
     async def api_get_search():
@@ -691,6 +1437,112 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         import os as _os
         _os._exit(0)
 
+    # ---- Update checker ----
+
+    @router.get("/api/update/check")
+    async def api_update_check():
+        """Check for updates via GitHub Releases."""
+        from cyrene.updater import check_for_update, set_cached_update_info
+
+        info = await check_for_update()
+        set_cached_update_info(info)
+
+        return {
+            "update_available": info.available,
+            "current_version": info.current_version,
+            "latest_version": info.latest_version,
+            "download_url": info.download_url,
+            "release_notes": info.release_notes,
+            "asset_name": info.asset_name,
+            "asset_size": info.asset_size,
+        }
+
+    @router.post("/api/update/download")
+    async def api_update_download():
+        """下载更新包。返回下载状态。"""
+        from cyrene.updater import (
+            get_cached_update_info,
+            download_update,
+            _download_progress,
+        )
+
+        info = get_cached_update_info()
+        if not info or not info.download_url:
+            return {"ok": False, "error": "No update available"}
+
+        def _progress(downloaded: int, total: int) -> None:
+            _download_progress["downloaded"] = downloaded
+            _download_progress["total"] = total
+
+        _download_progress["downloaded"] = 0
+        _download_progress["total"] = info.asset_size
+        _download_progress["done"] = False
+
+        dest = await download_update(info.download_url, _progress)
+        _download_progress["done"] = True
+        _download_progress["path"] = str(dest) if dest else ""
+
+        if dest:
+            return {
+                "ok": True,
+                "path": str(dest),
+                "size": _download_progress["downloaded"],
+            }
+        return {"ok": False, "error": "Download failed"}
+
+    @router.get("/api/update/progress")
+    async def api_update_progress():
+        """查询下载进度。"""
+        from cyrene.updater import get_download_progress
+        return get_download_progress()
+
+    @router.post("/api/update/restart")
+    async def api_update_restart():
+        """写入重启脚本并退出进程（安装更新后调用）。
+
+        无论更新文件是否存在，都通过退出码 42 通知 Electron 重启，
+        避免因提前返回导致进程继续运行、关闭时误弹"崩溃"对话框。
+        """
+        from cyrene.updater import get_restart_script, _download_progress
+        import subprocess as _sp
+
+        dest_str = _download_progress.get("path", "")
+        if dest_str:
+            dest = Path(dest_str)
+            if dest.exists():
+                try:
+                    script = get_restart_script(dest)
+                    if sys.platform == "win32":
+                        script_path = dest.parent / "update.bat"
+                        script_path.write_text(script)
+                        _sp.Popen(
+                            ["cmd", "/c", str(script_path)],
+                            creationflags=(
+                                0x00000010 |  # CREATE_NEW_CONSOLE
+                                0x00000200 |  # CREATE_NEW_PROCESS_GROUP
+                                0x00000008    # DETACHED_PROCESS
+                            ),
+                        )
+                    else:
+                        script_path = dest.parent / "update.sh"
+                        script_path.write_text(script)
+                        script_path.chmod(0o755)
+                        _sp.Popen(
+                            ["bash", str(script_path)], start_new_session=True
+                        )
+                except Exception:
+                    logger.warning(
+                        "Failed to spawn updater script", exc_info=True
+                    )
+            else:
+                logger.warning("Update file vanished: %s", dest)
+        else:
+            logger.warning("Restart called but no downloaded update found")
+
+        # 始终用退出码 42 退出，通知 Electron 释放 single-instance lock
+        import os as _os
+        _os._exit(42)
+
     app.include_router(router)
 
 
@@ -699,14 +1551,27 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _build_ui_data() -> dict:
+def _resolve_ui_tz(tz_name: str = ""):
+    name = str(tz_name or "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+async def _build_ui_data(tz_name: str = "") -> dict:
     """Assemble the full DATA payload the SPA expects."""
     sessions = _build_sessions()
     if not sessions:
         sessions = [_empty_session()]
+    ui_tz = _resolve_ui_tz(tz_name)
     return {
         "user": _build_user(),
         "assistantName": ASSISTANT_NAME,
+        "appVersion": get_version_label(),
+        "dashboard": await _build_dashboard(ui_tz),
         "sessions": sessions,
         "status": await _build_status(),
         "skills": _build_skills(),
@@ -748,6 +1613,9 @@ def _resolve_local_username() -> str:
 # ---------------------------------------------------------------------------
 
 
+# Per-session CC preview cache — archived sessions keep their initial snapshot
+_cc_preview_cache: dict[str, list] = {}
+
 def _build_sessions() -> list[dict]:
     """Build session list — current state.json + parsed conversation archives."""
     sessions: list[dict] = []
@@ -758,18 +1626,37 @@ def _build_sessions() -> list[dict]:
         sessions.append(current)
 
     # 2. Historical sessions from conversation archives (one per day, most recent first)
-    archive_sessions = _build_archive_sessions()
+    skip_archive_ids: set[str] = set()
+    current_archive_session_id = str(current.get("archiveSessionId", "")).strip() if current else ""
+    current_archive_date = str(current.get("archiveDate", "")).strip() if current else ""
+    if current_archive_session_id and current_archive_date:
+        skip_archive_ids.add(f"{current_archive_date}:{current_archive_session_id}")
+
+    archive_sessions = _build_archive_sessions(skip_archive_ids=skip_archive_ids)
     sessions.extend(archive_sessions)
+
+    # Per-session CC preview: live session always fresh, archives use cached snapshot
+    for session in sessions:
+        sid = session["id"]
+        for shell in session.get("shells", []):
+            if shell.get("kind") == "cc":
+                if sid == "run_live":
+                    _cc_preview_cache[sid] = list(shell.get("lines", []))
+                elif sid in _cc_preview_cache:
+                    shell["lines"] = list(_cc_preview_cache[sid])
+                else:
+                    _cc_preview_cache[sid] = list(shell.get("lines", []))
 
     return sessions
 
 
 def _build_summary(raw_msgs: list[dict]) -> dict:
-    prompt, completion = _usage_totals(raw_msgs)
+    usage = _usage_totals(raw_msgs)
     return {
-        "tokens": _format_tokens(prompt, completion),
-        "spend": _calc_spend(prompt, completion),
+        "tokens": _format_tokens(usage),
+        "spend": _calc_spend(usage),
         "toolCalls": _count_tool_calls(raw_msgs),
+        "requests": usage["requests"],
     }
 
 
@@ -876,37 +1763,55 @@ def _build_current_session() -> dict | None:
     elif live_rounds and any(int(item.get("pendingGuidance", 0) or 0) > 0 for item in live_rounds):
         live_status = "queued"
     elif is_empty:
-        live_status = "queued"  # nothing happening yet — fresh session
+        live_status = "idle"  # nothing happening yet — fresh session
     else:
         live_status = "done"
+
+    live_summary = _build_summary(raw_msgs)
+    subagent_usage = _merge_usage_totals(*[
+        _usage_totals(info.get("messages", []))
+        for info in subagent_registry.values()
+    ])
+    combined_live_usage = _merge_usage_totals(_usage_totals(raw_msgs), subagent_usage)
+    if combined_live_usage.get("requests") is not None:
+        live_summary["requests"] = combined_live_usage.get("requests")
+        live_summary["tokens"] = _format_tokens(combined_live_usage)
+        live_summary["spend"] = _calc_spend(combined_live_usage)
+
+    # Set timestamp filter so CC preview only shows entries from this session
+    set_cc_since(started_at)
+
+    visible_shells = [] if is_empty else list_live_shells(include_exited=False)
 
     return {
         "id": "run_live",
         "title": str(state.get("session_title", "")).strip() or ("new session" if is_empty else "current session"),
         "status": live_status,
         "started": started_at,
+        "archiveDate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "archiveSessionId": str(state.get("archive_session_id", "")).strip(),
         "dur": duration,
         "preview": (last_msg["body"][:80] + "…") if last_msg and last_msg.get("body") else "—",
         "model": OPENAI_MODEL,
         "currentRoundId": current_round_id,
         "currentRoundTitle": current_round_title,
         "pendingQuestion": pending_question,
-        "summary": _build_summary(raw_msgs),
+        "summary": live_summary,
         "chat": {
-            "contextChips": [
-                {"icon": "🧠", "label": "SOUL.md"},
-                {"icon": "📁", "label": "workspace"},
-            ],
+            "contextChips": _build_context_chips(),
             "messages": messages,
         },
         "liveRounds": live_rounds,
-        "shells": list_live_shells(include_exited=False),
+        "shells": visible_shells,
         "subagents": subagents,
         "flow": _build_live_flow(raw_msgs, messages, subagents, subagent_registry),
     }
 
 
-def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
+def _build_archive_sessions(
+    skip_dates: set[str] | None = None,
+    skip_archive_ids: set[str] | None = None,
+) -> list[dict]:
     """Build session entries from conversation archives (one per archived session)."""
     if not CONVERSATIONS_DIR.exists():
         return []
@@ -936,6 +1841,9 @@ def _build_archive_sessions(skip_dates: set[str] | None = None) -> list[dict]:
             groups[archive_session_id].append({**section, "_order": index})
 
         for archive_session_id in reversed(order):
+            archive_key = f"{date_str}:{archive_session_id}"
+            if skip_archive_ids and archive_key in skip_archive_ids:
+                continue
             group_sections = groups[archive_session_id]
             messages = _messages_from_archive_sections(group_sections)
             if not messages:
@@ -993,14 +1901,26 @@ def _parse_archive_session_title(content: str) -> str:
     return _parse_archive_meta(content, "session_title")
 
 
+def _split_archive_entry_blocks(content: str) -> list[str]:
+    blocks: list[str] = []
+    matches = list(re.finditer(r"(?m)^##\s+\S+\s+UTC\s*$", content))
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        block = content[start:end].strip()
+        block = re.sub(r"\n+---\s*\Z", "", block).strip()
+        if block:
+            blocks.append(block)
+    return blocks
+
+
 def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
     """Parse a conversations/YYYY-MM-DD.md file into archive sections with metadata."""
     sections_out: list[dict[str, Any]] = []
-    sections = re.split(r"\n---\s*\n", content)
     file_session_title = _parse_archive_session_title(content)
     round_index = 0
 
-    for section in sections:
+    for section in _split_archive_entry_blocks(content):
         if "**User**:" not in section:
             continue
         ts_match = re.search(r"##\s*(\S+\s+UTC)", section)
@@ -1084,24 +2004,55 @@ def _upsert_archive_session_title(content: str, date_str: str, session_title: st
     return header + marker + content[len(header):]
 
 
+def _is_hidden_internal_message(message: dict[str, Any]) -> bool:
+    if bool(message.get("hidden_from_ui")):
+        return True
+    role = str(message.get("role", "")).strip()
+    content = str(message.get("content", "") or "").strip()
+    if role != "user" or not content:
+        return False
+    return (
+        content.startswith("## Research Materials\n\nBelow are the research findings gathered on this question.")
+        or content.startswith("[Decision-phase correction] You attempted unavailable tool(s):")
+    )
+
+
 def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
     """Convert state.json raw messages → UI message format."""
     out = []
     for i, m in enumerate(raw_msgs):
+        if _is_hidden_internal_message(m):
+            continue
         role = m.get("role", "")
         if role not in ("user", "assistant"):
             continue
         content = (m.get("content") or "").strip()
         has_live_detail = bool(m.get("reasoning_content") or m.get("tool_calls"))
-        if role == "user" and not content:
+        has_attachments = isinstance(m.get("attachments"), list) and bool(m.get("attachments"))
+        if role == "user" and not content and not m.get("attachments"):
             continue
-        if role == "assistant" and not content and not has_live_detail:
+        if role == "assistant" and not content and not has_live_detail and not has_attachments:
             continue
         ui_role = "user" if role == "user" else "agent"
         message_id = str(m.get("message_id", "")).strip() or f"m{i}"
         ui_msg = {"id": message_id, "messageId": message_id, "role": ui_role, "time": "—"}
         if content:
             ui_msg["body"] = content
+        if isinstance(m.get("attachments"), list):
+            ui_msg["attachments"] = [
+                {
+                    "id": str(item.get("id") or "").strip(),
+                    "name": str(item.get("name") or "file"),
+                    "content_type": str(item.get("content_type") or "application/octet-stream"),
+                    "size": int(item.get("size") or 0),
+                    "kind": str(item.get("kind") or "file"),
+                    "url": str(item.get("url") or "").strip(),
+                    **({"width": int(item.get("width"))} if str(item.get("width", "")).strip().isdigit() else {}),
+                    **({"height": int(item.get("height"))} if str(item.get("height", "")).strip().isdigit() else {}),
+                }
+                for item in m.get("attachments")
+                if isinstance(item, dict)
+            ]
         if bool(m.get("intermediate_reply")):
             ui_msg["intermediateReply"] = True
         if bool(m.get("question_prompt")):
@@ -1506,8 +2457,8 @@ def _prune_flow_rounds(rounds: list[list[dict]]) -> tuple[list[list[dict]], int]
 
 
 def _round_registry_for_flow(raw_msgs: list[dict], live_registry: dict[str, dict]) -> dict[str, dict]:
-    entries: dict[str, dict] = {}
     round_id = _latest_round_id_from_messages(raw_msgs)
+    entries: dict[str, dict] = _snapshot_entries_from_messages(raw_msgs, round_id=round_id)
     for msg in raw_msgs:
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function", {})
@@ -1523,15 +2474,28 @@ def _round_registry_for_flow(raw_msgs: list[dict], live_registry: dict[str, dict
             if round_id and live.get("round_id") and live.get("round_id") != round_id:
                 live = {}
             task = str(args.get("task") or live.get("task") or "")
-            entries[agent_id] = {
+            _merge_subagent_record(entries, agent_id, {
                 "task": task,
-                "status": live.get("status", "done"),
-                "result": live.get("result", ""),
-                "messages": list(live.get("messages", [])),
-                "created_at": live.get("created_at"),
-                "updated_at": live.get("updated_at"),
-                "round_id": round_id or live.get("round_id", ""),
-            }
+                "status": live.get("status", entries.get(agent_id, {}).get("status", "done")),
+                "result": live.get("result", entries.get(agent_id, {}).get("result", "")),
+                "messages": list(live.get("messages", [])) or list(entries.get(agent_id, {}).get("messages", [])),
+                "created_at": live.get("created_at", entries.get(agent_id, {}).get("created_at")),
+                "updated_at": live.get("updated_at", entries.get(agent_id, {}).get("updated_at")),
+                "round_id": round_id or live.get("round_id", entries.get(agent_id, {}).get("round_id", "")),
+            })
+    for agent_id, live in live_registry.items():
+        live_round_id = str(live.get("round_id", "")).strip()
+        if round_id and live_round_id and live_round_id != round_id:
+            continue
+        _merge_subagent_record(entries, agent_id, {
+            "task": live.get("task", ""),
+            "status": live.get("status", "done"),
+            "result": live.get("result", ""),
+            "messages": list(live.get("messages", [])),
+            "created_at": live.get("created_at"),
+            "updated_at": live.get("updated_at"),
+            "round_id": round_id or live_round_id,
+        })
     return entries
 
 
@@ -1606,6 +2570,91 @@ def _registry_status_from_ui(status: str) -> str:
     }.get(status, status)
 
 
+def _is_summary_agent_id(agent_id: str) -> bool:
+    return str(agent_id or "").startswith("agent_summary_")
+
+
+def _iter_flow_snapshots(raw_msgs: list[dict], round_id: str = "") -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for msg in raw_msgs:
+        snapshot = msg.get("subagent_flow_snapshot")
+        if not isinstance(snapshot, dict):
+            continue
+        snapshot_round_id = str(snapshot.get("round_id", "")).strip() or str(msg.get("round_id", "")).strip()
+        if round_id and snapshot_round_id and snapshot_round_id != round_id:
+            continue
+        snapshots.append(snapshot)
+    return snapshots
+
+
+def _merge_subagent_record(entries: dict[str, dict[str, Any]], agent_id: str, meta: dict[str, Any]) -> None:
+    incoming = dict(meta)
+    incoming_round_id = str(incoming.get("round_id", "")).strip()
+    existing = entries.get(agent_id)
+    if existing is None:
+        entries[agent_id] = incoming
+        return
+
+    existing_round_id = str(existing.get("round_id", "")).strip()
+    if incoming_round_id and existing_round_id and incoming_round_id != existing_round_id:
+        entries[agent_id] = incoming
+        return
+
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if key == "messages":
+            if value:
+                merged["messages"] = value
+            else:
+                merged.setdefault("messages", [])
+            continue
+        if value not in (None, "", []):
+            merged[key] = value
+        else:
+            merged.setdefault(key, value)
+    entries[agent_id] = merged
+
+
+def _snapshot_entries_from_messages(raw_msgs: list[dict], round_id: str = "") -> dict[str, dict[str, Any]]:
+    entries: dict[str, dict[str, Any]] = {}
+    for snapshot in _iter_flow_snapshots(raw_msgs, round_id=round_id):
+        agents = snapshot.get("agents") or {}
+        if not isinstance(agents, dict):
+            continue
+        snapshot_round_id = str(snapshot.get("round_id", "")).strip()
+        for agent_id, info in agents.items():
+            if not isinstance(info, dict):
+                continue
+            meta = dict(info)
+            meta.setdefault("round_id", snapshot_round_id)
+            meta.setdefault("messages", [])
+            _merge_subagent_record(entries, str(agent_id), meta)
+    return entries
+
+
+def _snapshot_comm_messages_from_messages(raw_msgs: list[dict], round_id: str = "") -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for snapshot in _iter_flow_snapshots(raw_msgs, round_id=round_id):
+        comm_messages = snapshot.get("comm_messages") or []
+        if not isinstance(comm_messages, list):
+            continue
+        for item in comm_messages:
+            if not isinstance(item, dict):
+                continue
+            from_agent = str(item.get("from", "")).strip()
+            to_agent = str(item.get("to", "")).strip()
+            body = str(item.get("content", ""))
+            message_id = str(item.get("message_id") or "").strip()
+            dedupe_key = (message_id, from_agent, to_agent, body)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            items.append(dict(item))
+    items.sort(key=lambda item: str(item.get("timestamp") or ""))
+    return items
+
+
 def _subagent_cards_from_registry(round_registry: dict[str, dict]) -> list[dict]:
     cards: list[dict] = []
     for agent_id, info in round_registry.items():
@@ -1654,7 +2703,10 @@ def _build_live_flow_round(
     latest_agent = next((m for m in reversed(messages) if m["role"] == "agent"), None)
     latest_assistant_raw = next((m for m in reversed(raw_msgs) if m.get("role") == "assistant"), None)
     round_title = next((str(m.get("round_title", "")).strip() for m in raw_msgs if m.get("round_title")), "") or "user request"
-    main_tokens_in, main_tokens_out = _usage_totals(raw_msgs)
+    system_initiated = any(bool(m.get("system_initiated")) for m in raw_msgs if isinstance(m, dict))
+    if system_initiated and round_title == "user request":
+        round_title = "proactive check-in"
+    main_usage = _usage_totals(raw_msgs)
     main_tool_base_y = main_y + 150
 
     main_id = f"{prefix}n_main"
@@ -1682,16 +2734,6 @@ def _build_live_flow_round(
 
     nodes = [
         {
-            "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
-            "title": round_title, "status": "done",
-            "detail": {
-                "role": "User",
-                "text": last_user["body"] if last_user else "—",
-                "tokens": 0,
-                "time": last_user["time"] if last_user else "—",
-            },
-        },
-        {
             "id": main_id, "kind": "main", "x": main_x, "y": main_y,
             "title": f"main agent · {ASSISTANT_NAME}",
             "subtitle": latest_phase["to"] if latest_phase and latest_phase.get("to") else "orchestrator",
@@ -1711,13 +2753,30 @@ def _build_live_flow_round(
                     if latest_phase and latest_phase.get("detail")
                     else "Session step completed."
                 ),
-                "tokensIn": main_tokens_in if main_tokens_in is not None else "—",
-                "tokensOut": main_tokens_out if main_tokens_out is not None else "—",
+                "tokensIn": main_usage.get("prompt_tokens") if main_usage.get("prompt_tokens") is not None else "—",
+                "tokensOut": main_usage.get("completion_tokens") if main_usage.get("completion_tokens") is not None else "—",
                 "model": OPENAI_MODEL, "temp": 0.2,
             },
         },
     ]
-    edges = [{"from": user_id, "to": main_id, "kind": "active" if main_status == "running" else None}]
+    edges: list[dict[str, Any]] = []
+    if last_user and not system_initiated:
+        user_text = str(last_user.get("body") or "").strip() or (
+            "[Uploaded attachment]"
+            if last_user.get("attachments")
+            else "—"
+        )
+        nodes.insert(0, {
+            "id": user_id, "kind": "input", "x": 40, "y": y_offset + 80,
+            "title": round_title, "status": "done",
+            "detail": {
+                "role": "User",
+                "text": user_text,
+                "tokens": 0,
+                "time": last_user["time"] if last_user else "—",
+            },
+        })
+        edges.append({"from": user_id, "to": main_id, "kind": "active" if main_status == "running" else None})
     nodes.extend(tool_nodes)
     edges.extend(tool_edges)
 
@@ -1727,10 +2786,11 @@ def _build_live_flow_round(
     for i, sa in enumerate(subagents):
         nid = f"{prefix}n_sa_{i}"
         agent_node_ids[sa["name"]] = nid
+        is_summary_agent = _is_summary_agent_id(sa["name"])
         info = registry.get(sa["name"], {})
         agent_messages = info.get("messages", [])
         latest_subassistant = next((m for m in reversed(agent_messages) if m.get("role") == "assistant"), None)
-        sub_tokens_in, sub_tokens_out = _usage_totals(agent_messages)
+        sub_usage = _usage_totals(agent_messages)
         sub_tool_count = _count_tool_nodes_for_owner(
             raw_messages=agent_messages,
             recent_events=recent_events,
@@ -1739,24 +2799,26 @@ def _build_live_flow_round(
         nodes.append({
             "id": nid, "kind": "subagent",
             "x": subagent_x, "y": subagent_y,
-            "title": f"subagent · {sa['name']}",
-            "subtitle": sa["task"][:30],
+            "title": f"{'summary subagent' if is_summary_agent else 'subagent'} · {sa['name']}",
+            "subtitle": ("synthesizer" if is_summary_agent else sa["task"][:30]),
             "status": sa["status"],
             "detail": {
                 "name": sa["name"],
                 "task": sa["task"],
                 "parent": "main agent",
+                "role": "summary" if is_summary_agent else "worker",
                 "spawnedAt": sa.get("createdAt", "—"),
-                "tokensIn": sub_tokens_in if sub_tokens_in is not None else "—",
-                "tokensOut": sub_tokens_out if sub_tokens_out is not None else "—",
+                "tokensIn": sub_usage.get("prompt_tokens") if sub_usage.get("prompt_tokens") is not None else "—",
+                "tokensOut": sub_usage.get("completion_tokens") if sub_usage.get("completion_tokens") is not None else "—",
                 "model": OPENAI_MODEL,
                 "reasoning": latest_subassistant.get("reasoning_content") if latest_subassistant else "",
                 "result": sa.get("result", ""),
             },
         })
         edges.append({
-            "from": main_id, "to": nid,
-            "kind": "active" if sa["status"] == "running" else None,
+            "from": main_id,
+            "to": nid,
+            "kind": "dashed" if is_summary_agent else ("active" if sa["status"] == "running" else None),
         })
 
         sub_nodes, sub_edges = _build_tool_nodes_for_owner(
@@ -1777,7 +2839,20 @@ def _build_live_flow_round(
         subagent_bottoms.append(subagent_y + lane_height)
         subagent_y += lane_height + subagent_gap_y
 
-    edges.extend(_build_comm_edges(agent_node_ids, round_id=round_id))
+    summary_agent_name = next((name for name in agent_node_ids if _is_summary_agent_id(name)), "")
+    if summary_agent_name:
+        summary_node_id = agent_node_ids[summary_agent_name]
+        for agent_name, node_id in agent_node_ids.items():
+            if agent_name == summary_agent_name:
+                continue
+            edges.append({"from": node_id, "to": summary_node_id, "kind": "dashed"})
+
+    edges.extend(_build_comm_edges(
+        agent_node_ids,
+        agent_entries=registry,
+        round_id=round_id,
+        persisted_messages=_snapshot_comm_messages_from_messages(raw_msgs, round_id=round_id),
+    ))
 
     output_content = str(latest_agent.get("body") or "") if latest_agent else ""
     output_status = "done" if output_content else ("running" if subagents else "queued")
@@ -1797,6 +2872,12 @@ def _build_live_flow_round(
             "to": output_id,
             "kind": "active" if output_status == "running" else None,
         })
+        if summary_agent_name:
+            edges.append({
+                "from": agent_node_ids[summary_agent_name],
+                "to": output_id,
+                "kind": "dashed",
+            })
 
     bottom = max((node["y"] + 86) for node in nodes) if nodes else y_offset
     return nodes, edges, bottom
@@ -1814,7 +2895,7 @@ def _empty_session() -> dict:
         "model": OPENAI_MODEL,
         "summary": {"tokens": "0", "spend": "$0.00", "toolCalls": 0},
         "chat": {
-            "contextChips": [{"icon": "🧠", "label": "SOUL.md"}],
+            "contextChips": _build_context_chips(),
             "messages": [],
         },
         "liveRounds": [],
@@ -1846,82 +2927,20 @@ def _empty_session() -> dict:
 
 
 async def _build_status() -> dict:
-    """Real status metrics for the Status page."""
-    from cyrene import db as cy_db
-    from cyrene.subagent import _registry  # noqa: WPS437
-
-    st_entries = load_entries()
-    session_msgs: list = []
-    if STATE_FILE.exists():
-        try:
-            session_msgs = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("messages", [])
-        except Exception:
-            session_msgs = []
-    try:
-        tasks = await cy_db.get_all_tasks(_db_path)
-    except Exception:
-        tasks = []
-
-    running_subagents = sum(1 for v in _registry.values() if v.get("status") == "running")
-    total_subagents = len(_registry)
-
-    main_prompt, main_completion = _usage_totals(session_msgs)
-    workers = [{
-        "id": "main", "role": "orchestrator", "status": "running",
-        "host": "local", "uptime": _format_duration(time.time() - _SERVER_STARTED_AT),
-        "tokens": _format_tokens(main_prompt, main_completion),
-        "spend": _calc_spend(main_prompt, main_completion),
-    }]
-    for aid, info in _registry.items():
-        sub_msgs = info.get("messages", [])
-        sub_prompt, sub_completion = _usage_totals(sub_msgs)
-        workers.append({
-            "id": aid,
-            "role": "subagent",
-            "status": info.get("status", "running"),
-            "host": "local",
-            "uptime": "—",
-            "tokens": _format_tokens(sub_prompt, sub_completion),
-            "spend": _calc_spend(sub_prompt, sub_completion),
-        })
-
-    metrics = [
-        {"label": "Subagents", "value": str(total_subagents), "unit": "",
-         "sub": f"{running_subagents} running", "delta": "up" if running_subagents else None},
-        {"label": "Session msgs", "value": str(len(session_msgs)), "unit": "",
-         "sub": "context window", "delta": None},
-        {"label": "Short-term", "value": str(len(st_entries)), "unit": "",
-         "sub": "memory entries", "delta": None},
-        {"label": "Scheduled", "value": str(len(tasks)), "unit": "",
-         "sub": "tasks pending", "delta": None},
-    ]
-
-    spark = [max(1, len(session_msgs) + i) for i in range(20)]
-
-    services = [
-        {"name": OPENAI_BASE_URL, "status": "ok", "latency": "—", "note": OPENAI_MODEL},
-        {"name": "SOUL.md", "status": "ok" if SOUL_PATH.exists() else "warn",
-         "latency": "—", "note": "loaded" if SOUL_PATH.exists() else "missing"},
-        {"name": "SQLite (scheduled)", "status": "ok", "latency": "—",
-         "note": f"{len(tasks)} tasks"},
-        {"name": "Conversations archive", "status": "ok" if CONVERSATIONS_DIR.exists() else "warn",
-         "latency": "—", "note": str(len(list(CONVERSATIONS_DIR.glob("*.md")))) + " days"
-         if CONVERSATIONS_DIR.exists() else "none"},
-    ]
-
-    logs = _read_recent_logs()
-
+    """Status data for the Status / Dashboard page."""
     return {
-        "metrics": metrics,
-        "sparkData": spark,
-        "workers": workers,
-        "logs": logs,
-        "services": services,
+        "phase": "evolve",
+        "state": "进化",
+        "metrics": [],
+        "sparkData": [],
+        "workers": [],
+        "logs": [],
+        "services": [],
         "model": OPENAI_MODEL,
         "base_url": OPENAI_BASE_URL,
-        "short_term_entries": len(st_entries),
-        "session_messages": len(session_msgs),
-        "scheduled_tasks": len(tasks),
+        "short_term_entries": 0,
+        "session_messages": 0,
+        "scheduled_tasks": 0,
         "soul_exists": SOUL_PATH.exists(),
     }
 
@@ -2015,6 +3034,235 @@ async def _build_memory() -> dict:
     }
 
 
+async def _build_dashboard(ui_tz=None) -> dict:
+    """Aggregate homepage data from memory, soul, archive, and scheduler state."""
+    from cyrene import db as cy_db
+    from cyrene.subagent import _registry  # noqa: WPS437
+
+    ui_tz = ui_tz or (datetime.now().astimezone().tzinfo or timezone.utc)
+    now_local = datetime.now(ui_tz)
+
+    st_entries = load_entries()
+    try:
+        tasks = await cy_db.get_all_tasks(_db_path)
+    except Exception:
+        tasks = []
+
+    today = now_local.strftime("%Y-%m-%d")
+    soul_content = read_soul()
+    soul_path = get_soul_path()
+    soul_stat = soul_path.stat() if soul_path.exists() else None
+    soul_lines = [line.strip() for line in soul_content.splitlines() if line.strip().startswith("- ")]
+    recent_soul_items = soul_lines[-3:]
+    recent_memories = sorted(
+        st_entries,
+        key=lambda entry: (str(entry.get("last_mentioned", "")), int(entry.get("mention_count", 0))),
+        reverse=True,
+    )[:6]
+
+    today_entries = [
+        entry for entry in st_entries
+        if str(entry.get("last_mentioned", "")).strip() == today
+    ]
+    learned_today = sorted(
+        today_entries,
+        key=lambda entry: (int(entry.get("mention_count", 0)), abs(int(entry.get("emotional_valence", 0)))),
+        reverse=True,
+    )[:4]
+
+    session_msgs: list[dict[str, Any]] = []
+    if STATE_FILE.exists():
+        try:
+            session_state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            session_msgs = session_state.get("messages", []) if isinstance(session_state, dict) else []
+        except Exception:
+            session_msgs = []
+    session_usage = _usage_totals(session_msgs)
+    subagent_usage = _merge_usage_totals(*[
+        _usage_totals(info.get("messages", []))
+        for info in _registry.values()
+    ])
+    combined_usage = _merge_usage_totals(session_usage, subagent_usage)
+
+    reminder_items = []
+    for task in sorted(tasks, key=lambda item: str(item.get("next_run") or "")):
+        next_run = str(task.get("next_run") or "").strip()
+        status = str(task.get("status") or "").strip()
+        if not next_run or status not in {"active", "paused"}:
+            continue
+        reminder_items.append({
+            "id": str(task.get("id") or ""),
+            "prompt": str(task.get("prompt") or "").strip(),
+            "next_run": next_run,
+            "schedule_type": str(task.get("schedule_type") or "").strip(),
+            "status": status,
+        })
+    reminder_items = reminder_items[:6]
+
+    archive_snippets: list[dict[str, Any]] = []
+    for filepath in sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)[:7]:
+        date_str = filepath.stem
+        try:
+            sections = _parse_archive_sections(filepath.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for section in reversed(sections):
+            user_body = str(section.get("user_body", "")).strip()
+            assistant_body = str(section.get("assistant_body", "")).strip()
+            if user_body or assistant_body:
+                archive_snippets.append({
+                    "date": date_str,
+                    "title": str(section.get("round_title") or section.get("session_title") or "").strip(),
+                    "user": user_body,
+                    "assistant": assistant_body,
+                })
+    archive_snippets = archive_snippets[:6]
+
+    day_from = (now_local - timedelta(days=6)).strftime("%Y-%m-%d")
+    day_to = today
+    stats_rows = await cy_db.get_daily_stats_range(_db_path, day_from, day_to)
+    stats_by_day = {
+        str(row.get("day") or ""): row
+        for row in stats_rows
+        if str(row.get("day") or "").strip()
+    }
+    topic_rows = await cy_db.get_topic_counts_range(_db_path, day_from, day_to, limit=18)
+    archive_day_count = await cy_db.count_stat_days(_db_path)
+
+    emotion_days: dict[str, list[float]] = {}
+    for offset in range(6, -1, -1):
+        day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
+        emotion_days[day] = []
+
+    emotion_series = []
+    for day in emotion_days:
+        row = stats_by_day.get(day) or {}
+        emotion_count = int(row.get("emotion_count") or 0)
+        emotion_sum = float(row.get("emotion_sum") or 0)
+        avg = round(emotion_sum / emotion_count, 2) if emotion_count else 0.0
+        emotion_series.append({
+            "date": day,
+            "value": avg,
+            "count": emotion_count,
+        })
+
+    token_timeline: dict[str, dict[str, int]] = {}
+    for offset in range(6, -1, -1):
+        day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
+        row = stats_by_day.get(day) or {}
+        token_timeline[day] = {
+            "prompt": int(row.get("prompt_tokens") or 0),
+            "completion": int(row.get("completion_tokens") or 0),
+            "requests": int(row.get("llm_requests") or 0),
+        }
+
+    heatmap_days = [
+        (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
+        for offset in range(6, -1, -1)
+    ]
+    heatmap_row_defs = [
+        ("00:00", 0, 4),
+        ("04:00", 4, 8),
+        ("08:00", 8, 12),
+        ("12:00", 12, 16),
+        ("16:00", 16, 20),
+        ("20:00", 20, 24),
+    ]
+    heatmap_column_map = {
+        "00:00": "activity_00_04",
+        "04:00": "activity_04_08",
+        "08:00": "activity_08_12",
+        "12:00": "activity_12_16",
+        "16:00": "activity_16_20",
+        "20:00": "activity_20_24",
+    }
+    heatmap_buckets: dict[str, list[int]] = {}
+    for label, _, _ in heatmap_row_defs:
+        column = heatmap_column_map[label]
+        heatmap_buckets[label] = [
+            int((stats_by_day.get(day) or {}).get(column) or 0)
+            for day in heatmap_days
+        ]
+
+    activity_heatmap = {
+        "days": heatmap_days,
+        "rows": [
+            {"label": label, "values": heatmap_buckets[label]}
+            for label, _, _ in heatmap_row_defs
+        ],
+    }
+
+    return {
+        "today": {
+            "learned": learned_today,
+            "learned_count": int((stats_by_day.get(today) or {}).get("memory_new") or 0),
+            "memory_count": len(st_entries),
+            "archive_days": archive_day_count,
+        },
+        "soul": {
+            "path": str(soul_path),
+            "updated_at": datetime.fromtimestamp(soul_stat.st_mtime, tz=timezone.utc).isoformat() if soul_stat else "",
+            "recent_items": recent_soul_items,
+            "section_count": soul_content.count("\n## ") + (1 if soul_content.strip().startswith("# ") else 0),
+        },
+        "topic_cloud": topic_rows,
+        "emotion": emotion_series,
+        "usage": {
+            "requests": combined_usage.get("requests"),
+            "tokens": _format_tokens(combined_usage),
+            "spend": _calc_spend(combined_usage),
+            "prompt_tokens": combined_usage.get("prompt_tokens"),
+            "completion_tokens": combined_usage.get("completion_tokens"),
+            "total_tokens": combined_usage.get("total_tokens"),
+            "cache_hit_tokens": combined_usage.get("prompt_cache_hit_tokens"),
+            "cache_miss_tokens": combined_usage.get("prompt_cache_miss_tokens"),
+            "timeline": [
+                {
+                    "date": day,
+                    "prompt": values["prompt"],
+                    "completion": values["completion"],
+                    "requests": values["requests"],
+                }
+                for day, values in token_timeline.items()
+            ],
+        },
+        "reminders": reminder_items,
+        "recent_memories": recent_memories,
+        "recent_archive": archive_snippets,
+        "activity_heatmap": activity_heatmap,
+    }
+
+
+def _extract_topic_terms(text: str, limit: int = 12) -> list[str]:
+    """Extract simple high-signal topic terms from mixed Chinese/English text."""
+    source = (text or "").lower()
+    english_stop = {
+        "the", "and", "for", "that", "this", "with", "from", "have", "about",
+        "what", "when", "your", "just", "into", "then", "they", "them", "their",
+        "would", "could", "should", "there", "here", "been", "were", "will",
+        "some", "more", "than", "after", "before", "need", "want", "like",
+        "today", "yesterday", "tomorrow", "really", "also", "maybe", "because",
+        "http", "https", "assistant", "cyrene", "user",
+    }
+    chinese_stop = {
+        "今天", "最近", "这个", "那个", "一下", "已经", "我们", "你们", "然后",
+        "需要", "可以", "还是", "就是", "一个", "没有", "什么", "怎么", "如果",
+        "现在", "自己", "因为", "所以", "以及", "但是", "进行", "相关", "问题",
+        "工作", "页面", "功能", "内容",
+    }
+    tokens = re.findall(r"[\u4e00-\u9fff]{2,}|[a-z][a-z0-9_-]{2,}", source)
+    results: list[str] = []
+    for token in tokens:
+        if token in english_stop or token in chinese_stop:
+            continue
+        if token.isascii() and len(token) < 4:
+            continue
+        results.append(token)
+        if len(results) >= limit:
+            break
+    return results
+
+
 def _read_recent_logs() -> list[dict]:
     """Read the most recent debug log file and convert to status log rows."""
     from cyrene.config import DATA_DIR
@@ -2053,91 +3301,7 @@ def _read_recent_logs() -> list[dict]:
 
 def _placeholder_logs() -> list[dict]:
     now = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    return [{"t": now, "lvl": "info", "msg": "no logs yet — start the agent with --verbose"}]
-
-
-# ---------------------------------------------------------------------------
-# Skills (Cyrene tools → skills)
-# ---------------------------------------------------------------------------
-
-
-def _build_skills() -> list[dict]:
-    """Map Cyrene's actual tools to skills shown in the UI."""
-    return [
-        {
-            "id": "filesystem", "name": "Filesystem", "icon": "▤",
-            "desc": "Read, write, edit, and search files in workspace/.",
-            "enabled": True, "installed": True, "hotkey": "F",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["read", "write", "edit", "glob", "grep"],
-            "prompt": "File ops are scoped to workspace/. Edit must match exactly once unless replace_all.",
-            "tags": ["core", "io"],
-            "recent": [],
-        },
-        {
-            "id": "shell", "name": "Shell", "icon": "▣",
-            "desc": "Execute shell commands. WARNING: hardcoded to powershell on macOS/Linux — needs fix.",
-            "enabled": True, "installed": True, "hotkey": "B",
-            "version": "0.9.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 0.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["bash"],
-            "prompt": "Run shell commands with a timeout. Currently broken on non-Windows.",
-            "tags": ["core", "exec"],
-            "recent": [],
-        },
-        {
-            "id": "search", "name": "Web search", "icon": "◐",
-            "desc": "Built-in SearXNG (auto-start, no Docker) + DDG/Bing/Baidu fallback.",
-            "enabled": True, "installed": True, "hotkey": "S",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 0.95, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["web_search", "web_fetch"],
-            "prompt": "Built-in SearXNG via SimpleXNG. Auto-starts on launch. Falls back to DDG/Bing/Baidu.",
-            "tags": ["core", "web"],
-            "recent": [],
-        },
-        {
-            "id": "subagent", "name": "Sub-agents", "icon": "✸",
-            "desc": "Spawn parallel agents with inbox communication. Lifecycle: running→waiting→resumed→done.",
-            "enabled": True, "installed": True, "hotkey": "A",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["spawn_subagent", "send_agent_message"],
-            "prompt": "Spawn for parallelizable work. Each subagent has its own inbox.",
-            "tags": ["core", "orchestration"],
-            "recent": [],
-        },
-        {
-            "id": "scheduler", "name": "Scheduler", "icon": "◷",
-            "desc": "Schedule cron/interval/once tasks. Stored in SQLite. Heartbeat + lottery for proactive messages.",
-            "enabled": True, "installed": True, "hotkey": "T",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["schedule_task", "list_tasks", "pause_task", "resume_task", "cancel_task"],
-            "prompt": "Schedule recurring tasks. Lottery sends proactive messages on probability tick.",
-            "tags": ["core", "automation"],
-            "recent": [],
-        },
-        {
-            "id": "soul", "name": "SOUL memory", "icon": "✱",
-            "desc": "Three-layer memory: context window (40) → short-term (compressed) → SOUL.md (long-term).",
-            "enabled": True, "installed": True,
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["read_soul", "steward_agent"],
-            "prompt": "Steward agent updates SOUL.md every 30min via APPEND/ERASE/MERGE commands.",
-            "tags": ["core", "memory"],
-            "recent": [],
-        },
-        {
-            "id": "telegram", "name": "Telegram bot", "icon": "✈",
-            "desc": "Optional Telegram interface. Requires TELEGRAM_BOT_TOKEN + OWNER_ID env vars.",
-            "enabled": False, "installed": False,
-            "version": "1.0.0", "author": "Cyrene core",
-            "tools": ["send_message"], "tags": ["interface"],
-        },
-    ]
+    return [{"t": now, "lvl": "info", "msg": "no debug logs yet — verbose mode is enabled, logs appear after agent runs"}]
 
 
 # ---------------------------------------------------------------------------
@@ -2158,33 +3322,38 @@ def _build_settings_meta() -> dict:
             {"id": "appearance", "label": "Appearance"},
             {"id": "danger", "label": "Danger zone"},
         ],
-        "models": [
-            {"id": "current", "name": OPENAI_MODEL, "desc": "Currently active",
-             "ctx": "—", "price": "—"},
-            {"id": "haiku45", "name": "claude-haiku-4-5", "desc": "Fast, capable",
-             "ctx": "200k", "price": "$0.25 / $1.25"},
-            {"id": "sonnet45", "name": "claude-sonnet-4-5", "desc": "Heavy reasoning",
-             "ctx": "200k", "price": "$3.00 / $15.00"},
-            {"id": "deepseek-chat", "name": "deepseek-chat", "desc": "DeepSeek default",
-             "ctx": "64k", "price": "low"},
-        ],
     }
 
 
 def _build_config() -> dict:
     settings = get_web_settings()
+    live_model, live_base_url = _live_llm_config()
     return {
-        "model": OPENAI_MODEL,
-        "base_url": OPENAI_BASE_URL,
+        "model": live_model,
+        "base_url": live_base_url,
         "assistant_name": ASSISTANT_NAME,
+        "base_dir": str(BASE_DIR),
+        "data_dir": str(DATA_DIR),
         "soul_path": str(SOUL_PATH),
         "workspace_dir": str(WORKSPACE_DIR),
         "soul_content": _read_soul(),
         "search_mode": settings.get("search_mode", "builtin"),
         "search_external_url": settings.get("search_external_url", ""),
+        "spawn_policy": settings.get("spawn_policy", "conservative"),
         "search_port": str(SEARXNG_PORT),
         "search_host": SEARXNG_HOST,
     }
+
+
+def _build_context_chips() -> list[dict]:
+    """Build context chips reflecting current SOUL.md and workspace state."""
+    from cyrene.settings_store import is_workspace_active, is_soul_active
+    chips = []
+    if is_soul_active():
+        chips.append({"icon": "🧠", "label": "SOUL.md"})
+    if is_workspace_active():
+        chips.append({"icon": "📁", "label": "workspace"})
+    return chips
 
 
 def _build_search_config() -> dict:
@@ -2235,10 +3404,9 @@ def _load_state_messages() -> list[dict]:
 
 
 def _infer_subagent_entries(raw_msgs: list[dict], registry: dict[str, dict]) -> dict[str, dict]:
-    entries: dict[str, dict] = {
-        agent_id: dict(info)
-        for agent_id, info in registry.items()
-    }
+    entries: dict[str, dict] = _snapshot_entries_from_messages(raw_msgs)
+    for agent_id, info in registry.items():
+        _merge_subagent_record(entries, agent_id, dict(info))
     for entry in entries.values():
         entry.setdefault("messages", [])
 
@@ -2433,35 +3601,71 @@ def _tool_args_signature(value: Any) -> str:
         return json.dumps(str(normalized), ensure_ascii=False)
 
 
-def _usage_totals(raw_messages: list[dict]) -> tuple[int | None, int | None]:
-    prompt_total = 0
-    completion_total = 0
+def _usage_totals(raw_messages: list[dict]) -> dict[str, int | None]:
+    totals: dict[str, int | None] = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 0,
+        "requests": 0,
+    }
     found = False
     for msg in raw_messages:
         usage = msg.get("usage")
         if not isinstance(usage, dict):
             continue
-        prompt = usage.get("prompt_tokens")
-        completion = usage.get("completion_tokens")
-        if isinstance(prompt, int):
-            prompt_total += prompt
-            found = True
-        if isinstance(completion, int):
-            completion_total += completion
-            found = True
+        totals["requests"] = int(totals["requests"] or 0) + 1
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int):
+                totals[key] = int(totals[key] or 0) + value
+                found = True
+    if not found and not totals["requests"]:
+        return {key: None for key in totals}
+    if not totals["total_tokens"] and (totals["prompt_tokens"] or totals["completion_tokens"]):
+        totals["total_tokens"] = int(totals["prompt_tokens"] or 0) + int(totals["completion_tokens"] or 0)
+    return totals
+
+
+def _merge_usage_totals(*usage_items: dict[str, int | None]) -> dict[str, int | None]:
+    merged = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 0,
+        "requests": 0,
+    }
+    found = False
+    for usage in usage_items:
+        if not isinstance(usage, dict):
+            continue
+        for key in merged:
+            value = usage.get(key)
+            if isinstance(value, int):
+                merged[key] += value
+                found = True
     if not found:
-        return None, None
-    return prompt_total, completion_total
+        return {key: None for key in merged}
+    if not merged["total_tokens"] and (merged["prompt_tokens"] or merged["completion_tokens"]):
+        merged["total_tokens"] = merged["prompt_tokens"] + merged["completion_tokens"]
+    return merged
 
 
-def _format_tokens(prompt_tokens: int | None, completion_tokens: int | None) -> str:
-    if prompt_tokens is None and completion_tokens is None:
+def _format_tokens(usage: dict[str, int | None] | None) -> str:
+    if not isinstance(usage, dict):
         return "—"
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
     parts: list[str] = []
     if prompt_tokens is not None:
         parts.append(f"{_fmt_tok(prompt_tokens)} in")
     if completion_tokens is not None:
         parts.append(f"{_fmt_tok(completion_tokens)} out")
+    if total_tokens is not None:
+        parts.append(f"{_fmt_tok(total_tokens)} total")
     return " / ".join(parts) if parts else "—"
 
 
@@ -2473,32 +3677,45 @@ def _fmt_tok(n: int) -> str:
     return str(n)
 
 
-def _model_pricing() -> tuple[float, float] | None:
-    """Return (input_price_per_1M, output_price_per_1M) for known models, or None."""
+def _model_pricing() -> dict[str, float] | None:
+    """Return token pricing metadata for known models, or None."""
     model_lower = OPENAI_MODEL.lower()
     if "opus-4" in model_lower or "claude-opus-4" in model_lower:
-        return (15.0, 75.0)
+        return {"input": 15.0, "output": 75.0}
     if "sonnet-4" in model_lower or "claude-sonnet-4" in model_lower:
-        return (3.0, 15.0)
+        return {"input": 3.0, "output": 15.0}
     if "haiku-4" in model_lower or "claude-haiku-4" in model_lower:
-        return (0.25, 1.25)
-    if "deepseek" in model_lower:
-        return (0.14, 0.28)
+        return {"input": 0.25, "output": 1.25}
+    if "deepseek-v4-flash" in model_lower:
+        return {"input": 0.14, "output": 0.28, "cache_hit": 0.0}
+    if "deepseek-v4" in model_lower or "deepseek-chat" in model_lower:
+        return {"input": 0.14, "output": 0.28, "cache_hit": 0.05}
+    if "deepseek-reasoner" in model_lower:
+        return {"input": 0.55, "output": 2.19, "cache_hit": 0.14}
     return None
 
 
-def _calc_spend(prompt_tokens: int | None, completion_tokens: int | None) -> str:
-    if prompt_tokens is None and completion_tokens is None:
+def _calc_spend(usage: dict[str, int | None] | None) -> str:
+    if not isinstance(usage, dict):
         return "—"
     pricing = _model_pricing()
     if pricing is None:
         return "—"
-    in_price, out_price = pricing
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    cache_hit_tokens = usage.get("prompt_cache_hit_tokens")
+    cache_miss_tokens = usage.get("prompt_cache_miss_tokens")
+    input_price = pricing["input"]
+    output_price = pricing["output"]
+    cache_hit_price = pricing.get("cache_hit", input_price)
     cost = 0.0
-    if prompt_tokens is not None:
-        cost += (prompt_tokens / 1_000_000) * in_price
+    if isinstance(cache_hit_tokens, int) and isinstance(cache_miss_tokens, int) and (cache_hit_tokens or cache_miss_tokens):
+        cost += (cache_hit_tokens / 1_000_000) * cache_hit_price
+        cost += (cache_miss_tokens / 1_000_000) * input_price
+    elif prompt_tokens is not None:
+        cost += (prompt_tokens / 1_000_000) * input_price
     if completion_tokens is not None:
-        cost += (completion_tokens / 1_000_000) * out_price
+        cost += (completion_tokens / 1_000_000) * output_price
     if cost < 0.01:
         return "<$0.01"
     return f"${cost:.2f}"
@@ -2692,12 +3909,152 @@ def _agent_lane_height(tool_count: int) -> int:
     return max(base_height, base_height + (tool_count - 1) * 112)
 
 
-def _build_comm_edges(agent_node_ids: dict[str, str], round_id: str = "") -> list[dict]:
+def _build_comm_edges(
+    agent_node_ids: dict[str, str],
+    agent_entries: dict[str, dict[str, Any]] | None = None,
+    round_id: str = "",
+    persisted_messages: list[dict[str, Any]] | None = None,
+) -> list[dict]:
     edges: list[dict] = []
     if not agent_node_ids:
         return edges
-    seen: set[tuple[str, str, str]] = set()
-    for agent_name, target_node_id in agent_node_ids.items():
+
+    # Track per-pair messages for threading and weight
+    pair_messages: dict[tuple[str, str], list[dict]] = {}
+    pair_index: dict[tuple[str, str, str, str], int] = {}
+    # Map to deduplicate: (from_agent, to_agent, content[:80]) -> edge_index
+    content_index: dict[tuple[str, str, str], int] = {}
+
+    def _add_message_to_pair(
+        from_agent: str,
+        to_agent: str,
+        body: str,
+        *,
+        label: str = "chat",
+        timestamp: str = "",
+        source: str = "",
+        summary: str = "",
+        priority: str = "normal",
+        raw_timestamp: str = "",
+    ) -> None:
+        if from_agent not in agent_node_ids or to_agent not in agent_node_ids:
+            return
+        if not body.strip():
+            return
+
+        pair_key = (from_agent, to_agent)
+        content_key = (from_agent, to_agent, body[:80])
+
+        if content_key in content_index:
+            # Update existing edge with richer metadata
+            idx = content_index[content_key]
+            existing_msg = edges[idx].setdefault("message", {})
+            if (not existing_msg.get("time") or existing_msg.get("time") == "—") and timestamp:
+                existing_msg["time"] = _short_time(timestamp)
+            if summary and not existing_msg.get("summary"):
+                existing_msg["summary"] = summary
+            if priority == "high":
+                existing_msg["priority"] = "high"
+            # Increment weight even for duplicates (counts total messages)
+            edges[idx]["weight"] = edges[idx].get("weight", 1) + 1
+            pair_messages.setdefault(pair_key, []).append({
+                "from": from_agent,
+                "to": to_agent,
+                "body": body,
+                "label": label,
+                "time": _short_time(timestamp) if timestamp else "—",
+                "summary": summary,
+                "priority": priority,
+                "source": source,
+            })
+            return
+
+        edge_summary = summary if summary else _summarize_text(body, 90)
+        edge_label = label
+        if priority == "high":
+            edge_label = label + " !"
+
+        edge_entry = {
+            "from": agent_node_ids[from_agent],
+            "to": agent_node_ids[to_agent],
+            "kind": "comm",
+            "label": edge_label,
+            "weight": 1,
+            "message": {
+                "time": _short_time(timestamp) if timestamp else "—",
+                "raw_timestamp": raw_timestamp or timestamp or "",
+                "summary": edge_summary,
+                "body": body,
+                "source": source or "tool_call",
+                "msg_type": label,
+                "priority": priority,
+            },
+        }
+        edges.append(edge_entry)
+        content_index[content_key] = len(edges) - 1
+        pair_messages.setdefault(pair_key, []).append({
+            "from": from_agent,
+            "to": to_agent,
+            "body": body,
+            "label": label,
+            "time": _short_time(timestamp) if timestamp else "—",
+            "raw_timestamp": raw_timestamp or timestamp or "",
+            "summary": edge_summary,
+            "priority": priority,
+            "source": source,
+        })
+
+    for agent_name, info in (agent_entries or {}).items():
+        if agent_name not in agent_node_ids:
+            continue
+        messages = info.get("messages", []) or []
+        tool_outputs = {
+            str(msg.get("tool_call_id") or ""): str(msg.get("content") or "")
+            for msg in messages
+            if isinstance(msg, dict) and msg.get("role") == "tool" and msg.get("tool_call_id")
+        }
+        for msg in messages:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                tool_name = str(fn.get("name") or "").strip()
+                if tool_name not in ("send_agent_message", "broadcast_agent_message"):
+                    continue
+                args = _safe_json_loads(fn.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    continue
+                output = tool_outputs.get(str(tc.get("id") or ""), "")
+                output_lower = output.lower()
+                if output and "message sent to" not in output_lower and "broadcast sent to" not in output_lower:
+                    continue
+                body = str(args.get("content") or "")
+                if tool_name == "broadcast_agent_message":
+                    # Broadcast edges go to each peer
+                    peer_ids = [aid for aid in agent_node_ids if aid != agent_name]
+                    for peer_id in peer_ids:
+                        _add_message_to_pair(agent_name, peer_id, body, label="progress", source="tool_call")
+                else:
+                    to_agent = str(args.get("to") or "").strip()
+                    _add_message_to_pair(agent_name, to_agent, body, source="tool_call")
+
+    for payload in persisted_messages or []:
+        if not isinstance(payload, dict):
+            continue
+        if round_id and str(payload.get("round_id", "")).strip() != round_id:
+            continue
+        _add_message_to_pair(
+            str(payload.get("from", "")).strip(),
+            str(payload.get("to", "")).strip(),
+            str(payload.get("content", "")),
+            label=str(payload.get("type", "chat") or "chat"),
+            timestamp=str(payload.get("timestamp", "") or ""),
+            source="snapshot_log",
+            summary=str(payload.get("summary", "") or ""),
+            priority=str(payload.get("priority", "normal") or "normal"),
+        )
+
+    for agent_name in agent_node_ids:
         inbox_dir = DATA_DIR / "inbox" / agent_name
         if not inbox_dir.exists():
             continue
@@ -2710,24 +4067,28 @@ def _build_comm_edges(agent_node_ids: dict[str, str], round_id: str = "") -> lis
             to_agent = str(payload.get("to", ""))
             if round_id and str(payload.get("round_id", "")) != round_id:
                 continue
-            if from_agent not in agent_node_ids or to_agent not in agent_node_ids:
-                continue
-            edge_key = (from_agent, to_agent, str(payload.get("message_id", msg_file.stem)))
-            if edge_key in seen:
-                continue
-            seen.add(edge_key)
-            body = str(payload.get("content", ""))
-            edges.append({
-                "from": agent_node_ids[from_agent],
-                "to": agent_node_ids[to_agent],
-                "kind": "comm",
-                "label": payload.get("type", "chat"),
-                "message": {
-                    "time": _short_time(payload.get("timestamp")),
-                    "summary": _summarize_text(body, 90),
-                    "body": body,
-                },
-            })
+            _add_message_to_pair(
+                from_agent,
+                to_agent,
+                str(payload.get("content", "")),
+                label=str(payload.get("type", "chat") or "chat"),
+                timestamp=str(payload.get("timestamp", "") or ""),
+                source="inbox_log",
+                summary=str(payload.get("summary", "") or ""),
+                priority=str(payload.get("priority", "normal") or "normal"),
+            )
+
+    # Attach all messages for each pair to the edge
+    for i, edge in enumerate(edges):
+        pair = None
+        for (f, t), msgs in pair_messages.items():
+            if edge["from"] == agent_node_ids.get(f) and edge["to"] == agent_node_ids.get(t):
+                pair = (f, t)
+                edge["messages"] = msgs
+                break
+        if pair:
+            edge["weight"] = len(pair_messages.get(pair, []))
+
     return edges
 
 

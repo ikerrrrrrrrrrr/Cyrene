@@ -22,6 +22,13 @@ from urllib.parse import quote
 import httpx
 from croniter import croniter
 
+from cyrene.attachments import (
+    analyze_attachment,
+    build_public_attachment_payload,
+    is_exported_attachment_path,
+    is_uploaded_attachment_path,
+    register_generated_attachment,
+)
 from cyrene import db
 from cyrene.config import (
     DATA_DIR,
@@ -41,6 +48,15 @@ from cyrene.inbox import send_message as _send_inbox
 from cyrene.soul import read_shallow_memory
 
 logger = logging.getLogger(__name__)
+_CC_PROJECT_DIR = WORKSPACE_DIR.parent
+_MAIN_ONLY_TOOLS = {
+    "send_telegram",
+    "send_message",
+    "send_file",
+    "ask_user",
+    "spawn_subagent",
+    "query_round",
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,6 +79,41 @@ def _json_result(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _resolve_tool_path(path_str: str) -> Path:
+    if is_uploaded_attachment_path(path_str) or is_exported_attachment_path(path_str):
+        return Path(path_str).resolve()
+    return _resolve_workspace_path(path_str)
+
+
+def _resolve_exportable_path(path_str: str) -> Path:
+    candidate = Path(path_str)
+    path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
+    resolved = path.resolve()
+    workspace = WORKSPACE_DIR.resolve()
+    data_root = DATA_DIR.resolve()
+    if (
+        resolved == workspace
+        or workspace in resolved.parents
+        or resolved == data_root
+        or data_root in resolved.parents
+    ):
+        return resolved
+    raise ValueError(f"Path cannot be sent to WebUI: {path_str}")
+
+
+def _normalize_schedule_datetime(raw_value: str) -> str:
+    """Normalize a user-facing datetime string to UTC ISO-8601.
+
+    If the input is naive, interpret it in the machine's local timezone so
+    Web UI scheduling like "2 minutes later" behaves as the user expects.
+    """
+    parsed = datetime.fromisoformat(raw_value)
+    if parsed.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+        parsed = parsed.replace(tzinfo=local_tz)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -77,11 +128,33 @@ async def _tool_send_message(args: dict[str, Any], bot: Any, chat_id: int, _db_p
     return "Message sent."
 
 
+async def _tool_send_message_to_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    """Send a message directly to the user. Only available to subagents responding to @mentions."""
+    text = str(args.get("text", "") or "").strip()
+    if not text:
+        return "Error: 'text' is required."
+
+    from cyrene.subagent import _direct_message_mode
+    if not _direct_message_mode.get():
+        return (
+            "Error: send_message_to_user is only available when responding to a direct "
+            "user message via @mention. Use quit with your result for normal rounds."
+        )
+
+    from cyrene.agent import append_system_message
+    await append_system_message(text)
+    if _notify_state is not None:
+        _notify_state["sent"] = True
+    _direct_message_mode.set(False)
+    return "Message sent. Now act on the user's guidance — adjust your approach and continue working with your other tools."
+
+
 async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     text = str(args.get("text", "") or "").strip()
     if not text:
         return "Error: 'text' is required."
     from cyrene.agent import (
+        append_system_message,
         _current_agent_id,
         _current_client_request_id,
         _current_round_id,
@@ -89,11 +162,14 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     )
 
     if _current_agent_id.get() != "main":
-        return "Only the main agent can send a user-visible mid-run message. Sub-agents should use send_agent_message."
+        return "Only the main agent can send a user-visible WebUI message. Subagents must report via quit or send_agent_message."
 
     round_id = str(_current_round_id.get() or "").strip()
     if not round_id:
-        return "Cannot send a mid-run message outside an active round."
+        await append_system_message(text)
+        if _notify_state is not None:
+            _notify_state["sent"] = True
+        return "System message sent to the user."
 
     client_request_id = str(_current_client_request_id.get() or "").strip()
     await _insert_intermediate_user_reply(
@@ -101,7 +177,56 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
         round_id=round_id,
         client_request_id=client_request_id,
     )
+    if _notify_state is not None:
+        _notify_state["sent"] = True
     return "Mid-run message sent to the user."
+
+
+async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    path_arg = str(args.get("path", "") or "").strip()
+    if not path_arg:
+        return "Error: 'path' is required."
+
+    from cyrene.agent import (
+        append_system_message,
+        _current_agent_id,
+        _current_client_request_id,
+        _current_round_id,
+        _insert_intermediate_user_reply,
+    )
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can send a file to the WebUI."
+
+    path = _resolve_exportable_path(path_arg)
+    if not path.exists() or not path.is_file():
+        return f"Error: file not found: {path}"
+
+    text = str(args.get("text", "") or "").strip()
+    attachment = build_public_attachment_payload(
+        register_generated_attachment(str(path), display_name=str(args.get("name", "") or "").strip() or None)
+    )
+
+    round_id = str(_current_round_id.get() or "").strip()
+    client_request_id = str(_current_client_request_id.get() or "").strip()
+    if round_id:
+        await _insert_intermediate_user_reply(
+            text,
+            round_id=round_id,
+            client_request_id=client_request_id,
+            attachments=[attachment],
+        )
+    else:
+        await append_system_message(
+            text,
+            message_meta={"attachments": [attachment]},
+        )
+    if _notify_state is not None:
+        _notify_state["sent"] = True
+    return _json_result({
+        "status": "sent",
+        "attachment": attachment,
+    })
 
 
 async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -112,6 +237,7 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
     from cyrene.agent import (
         _current_agent_id,
         _current_client_request_id,
+        _current_command,
         _current_round_id,
         _upsert_pending_question,
     )
@@ -141,11 +267,68 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
         "client_request_id": str(_current_client_request_id.get() or "").strip(),
         "options": options[:6],
         "allow_custom": True,
+        "meta": {"command": _current_command.get() or ""},
     })
     return _json_result({
         "status": "awaiting_user",
         "question_id": question.get("id", ""),
         "option_count": len(question.get("options", []) or []),
+    })
+
+
+async def _tool_prompt_claude_code(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    task = str(args.get("task", "") or "").strip()
+    if not task:
+        return "Error: 'task' is required."
+
+    from cyrene.agent import (
+        _current_agent_id,
+        _current_client_request_id,
+        _current_round_id,
+        _upsert_pending_question,
+        build_claude_code_question_payload,
+        get_session_labels,
+        optimize_claude_code_prompt,
+    )
+    from cyrene.cc_bridge import get_cc_status
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can prepare a Claude Code prompt for user confirmation."
+
+    round_id = str(_current_round_id.get() or "").strip()
+    if not round_id:
+        return "Cannot prepare a Claude Code prompt outside an active chat round."
+
+    status = get_cc_status(_CC_PROJECT_DIR)
+    if not bool(status.get("available")):
+        reason = str(status.get("reason") or "Claude Code is not running.").strip()
+        return _json_result({
+            "status": "error",
+            "reason": reason,
+            "can_launch": bool(status.get("can_launch")),
+        })
+
+    optimized_prompt = await optimize_claude_code_prompt(task)
+    payload = build_claude_code_question_payload(
+        task,
+        optimized_prompt,
+        tmux_session=str(status.get("tmux_session") or "").strip(),
+    )
+    labels = get_session_labels(round_id)
+    question = await _upsert_pending_question({
+        "text": payload["text"],
+        "round_id": round_id,
+        "round_title": labels.get("round_title", ""),
+        "client_request_id": str(_current_client_request_id.get() or "").strip(),
+        "options": payload["options"],
+        "allow_custom": bool(payload.get("allow_custom", True)),
+        "meta": payload.get("meta", {}),
+    })
+    return _json_result({
+        "status": "awaiting_user",
+        "question_id": question.get("id", ""),
+        "prompt": optimized_prompt,
+        "tmux_session": str(status.get("tmux_session") or "").strip(),
     })
 
 
@@ -159,7 +342,8 @@ async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_
     elif stype == "interval":
         next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
     elif stype == "once":
-        next_run = svalue
+        next_run = _normalize_schedule_datetime(svalue)
+        svalue = next_run
     else:
         raise ValueError(f"Unknown schedule_type: {stype}")
 
@@ -194,11 +378,17 @@ async def _tool_cancel_task(args: dict[str, Any], _bot: Any, _chat_id: int, db_p
 
 
 async def _tool_read(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
-    path = _resolve_workspace_path(str(args["path"]))
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
+    path = _resolve_tool_path(str(args["path"]))
     return _truncate(path.read_text(encoding="utf-8"))
 
 
 async def _tool_write(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     path = _resolve_workspace_path(str(args["path"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(args.get("content", "")), encoding="utf-8")
@@ -206,6 +396,9 @@ async def _tool_write(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: 
 
 
 async def _tool_edit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     path = _resolve_workspace_path(str(args["path"]))
     old_string = str(args["old_string"])
     new_string = str(args["new_string"])
@@ -224,13 +417,27 @@ async def _tool_edit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     return f"Edited {path}. Replacements: {replaced}"
 
 
+async def _tool_analyze_attachment(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    path = _resolve_tool_path(str(args["path"]))
+    prompt = str(args.get("prompt", "") or "")
+    force_refresh = bool(args.get("force_refresh", False))
+    result = await analyze_attachment(str(path), prompt=prompt, force_refresh=force_refresh)
+    return _json_result(result)
+
+
 async def _tool_glob(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     pattern = str(args["pattern"])
     matches = sorted(str(path.relative_to(WORKSPACE_DIR)) for path in WORKSPACE_DIR.glob(pattern))
     return "\n".join(matches[:200]) if matches else "No matches."
 
 
 async def _tool_grep(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.settings_store import is_workspace_active
+    if not is_workspace_active():
+        return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
     pattern = re.compile(str(args["pattern"]))
     search_root = _resolve_workspace_path(str(args.get("path", ".")))
     glob_pattern = str(args.get("glob", "**/*"))
@@ -409,7 +616,72 @@ async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: in
         return f"Cannot deliver: agent '{target}' is not available (finished or timed out)."
     from_agent = _current_agent_id.get()
     await _send_inbox(from_agent, target, "chat", content, round_id=current_round_id)
+    # Publish SSE event for real-time flow diagram updates
+    from cyrene import debug as _debug_comm
+    await _debug_comm.publish_event({
+        "type": "agent_comm",
+        "from": from_agent,
+        "to": target,
+        "content": content[:240],
+        "summary": content[:100].replace("\n", " ").strip() + ("..." if len(content) > 100 else ""),
+        "msg_type": "chat",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "round_id": current_round_id,
+    })
     return f"Message sent to {target}."
+
+
+async def _tool_broadcast_agent_message(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    """Broadcast a message to all peer sub-agents in the current round."""
+    content = str(args.get("content", ""))
+    if not content:
+        return "Error: 'content' is required."
+    from cyrene.agent import _current_agent_id, _current_round_id
+    from cyrene.subagent import _registry as _sub_registry, _lock as _reg_lock
+    current_round_id = _current_round_id.get()
+    from_agent = _current_agent_id.get()
+
+    # Collect all peer agent IDs in the current round
+    async with _reg_lock:
+        peers = [
+            aid for aid, info in _sub_registry.items()
+            if aid != from_agent
+            and (not current_round_id or str(info.get("round_id", "")) == current_round_id)
+        ]
+
+    if not peers:
+        return "No peer sub-agents are available to receive the broadcast."
+
+    sent_count = 0
+    errors: list[str] = []
+    for peer_id in peers:
+        if await can_receive(peer_id, round_id=current_round_id):
+            msg_id = await _send_inbox(from_agent, peer_id, "progress", content, round_id=current_round_id)
+            if msg_id:
+                sent_count += 1
+            else:
+                errors.append(f"{peer_id}: failed to deliver")
+        else:
+            errors.append(f"{peer_id}: not available")
+
+    result = f"Broadcast sent to {sent_count}/{len(peers)} peers."
+    if errors:
+        result += f" Skipped: {', '.join(errors)}"
+
+    # Publish SSE event for real-time flow diagram updates
+    from cyrene import debug as _debug_comm
+    await _debug_comm.publish_event({
+        "type": "agent_comm",
+        "from": from_agent,
+        "to": "all",
+        "content": content[:240],
+        "summary": content[:100].replace("\n", " ").strip() + ("..." if len(content) > 100 else ""),
+        "msg_type": "progress",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "round_id": current_round_id,
+        "broadcast": True,
+    })
+    return result
 
 
 async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -418,7 +690,9 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
     task = str(args.get("task", ""))
     if not agent_id or not task:
         return "Error: agent_id and task are required."
-    from cyrene.agent import _current_round_id
+    from cyrene.agent import _current_agent_id, _current_round_id
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can spawn subagents."
     await _reg_subagent(agent_id, task, round_id=_current_round_id.get())
     _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path), agent_id)
     return f"Sub-agent '{agent_id}' spawned. Task: {task[:80]}"
@@ -426,6 +700,10 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
 
 async def _tool_query_round(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     """Query live round status for the main agent."""
+    from cyrene.agent import _current_agent_id
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can inspect live round status."
     from cyrene.agent import query_live_rounds
 
     return query_live_rounds(round_id=str(args.get("round_id", "")).strip())
@@ -532,6 +810,17 @@ async def _tool_close_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
     })
 
 
+async def _tool_cc_status(_args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.cc_bridge import get_cc_status
+    return json.dumps(get_cc_status(_CC_PROJECT_DIR), ensure_ascii=False)
+
+
+async def _tool_cc_launch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.cc_bridge import launch_cc_tmux
+    session_name = str(args.get("session_name", "") or "").strip()
+    return json.dumps(launch_cc_tmux(cwd=_CC_PROJECT_DIR, session_name=session_name), ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Tool definitions and dispatch
 # ---------------------------------------------------------------------------
@@ -549,15 +838,39 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "send_message",
-            "description": "Send a brief user-visible mid-run reply in the current chat. Use this sparingly when there is meaningful progress or a useful intermediate result, then continue working toward the final answer.",
+            "description": "Main agent only. Send a brief user-visible mid-run reply in the current chat. Never use this for subagent coordination or subagent final delivery.",
             "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
         },
     },
     {
         "type": "function",
         "function": {
+            "name": "send_message_to_user",
+            "description": "Reply directly to the user. Only available when the user has @mentioned you directly. Use this to respond to the user's direct message. Not for normal rounds — use quit for those.",
+            "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_file",
+            "description": "Main agent only. Send a file you have ACTUALLY CREATED to the WebUI as a downloadable attachment. Only call this for files that exist in the workspace — never fabricate or guess paths. The path must point to a real file you wrote via Write/Bash. Do NOT merely print a filename or path in chat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative or absolute path to a file you created that actually exists."},
+                    "name": {"type": "string", "description": "Optional display filename shown in the WebUI."},
+                    "text": {"type": "string", "description": "Brief description of the file contents. Keep it factual and short."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_user",
-            "description": "Ask the user a clarification question and pause the current round until they answer. For a direct freeform question, send only text. For a choice-based question, also provide a short options array. The UI will still allow the user to type a custom answer even when options are present.",
+            "description": "Ask the user a clarification question and pause until they answer. Use this liberally — asking is better than assuming. Trigger when: the request is ambiguous, details are missing, multiple reasonable approaches exist, or you need sign-off before a risky action. Use freeform text for open questions, or add a short options array for structured choices. The UI always allows custom answers even with options.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -569,6 +882,20 @@ TOOL_DEFS = [
                     },
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "PromptClaudeCode",
+            "description": "Prepare a stronger Claude Code prompt from the user's task, then show it to the user for confirmation. Use this when the user wants Claude Code to execute a task and you want Cyrene to optimize the prompt first. Requires Claude Code to already be running; check with CheckClaudeCode and launch with StartClaudeCode if needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "The task that should be turned into a better Claude Code prompt."},
+                },
+                "required": ["task"],
             },
         },
     },
@@ -650,6 +977,22 @@ TOOL_DEFS = [
                     "replace_all": {"type": "boolean"},
                 },
                 "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "AnalyzeAttachment",
+            "description": "Analyze an uploaded attachment or workspace file. PDFs are parsed to text locally. Images return metadata and, when the current model appears multimodal, a vision-based description/OCR. Use this whenever the user uploaded a PDF or image and you need its contents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute path to the uploaded file or a workspace-relative path."},
+                    "prompt": {"type": "string", "description": "Optional custom instruction for image analysis."},
+                    "force_refresh": {"type": "boolean", "description": "Recompute analysis instead of using cached sidecar output."},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -803,8 +1146,22 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "broadcast_agent_message",
+            "description": "Broadcast a message to ALL peer sub-agents simultaneously. Use this to share progress updates, draft findings, or ask all peers a question at once. This is the preferred way to keep the team coordinated.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "Message content to broadcast to all peers"},
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "spawn_subagent",
-            "description": "Spawn a sub-agent. A sub-agent has independent full tool access and can communicate with other agents via send_agent_message. The parent agent automatically collects each sub-agent's final result from its quit text, so do not invent a separate coordinator agent.",
+            "description": "Main agent only. Spawn a sub-agent. Subagents must not spawn more subagents; they should coordinate with peers via send_agent_message and finish via quit.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -828,6 +1185,33 @@ TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "CheckClaudeCode",
+            "description": "Check if Claude Code is currently running in a tmux session. Use this when the user asks about Claude Code status, or before StartClaudeCode to see if it's already running. Returns whether CC is running, the session name, and whether it can be launched.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "StartClaudeCode",
+            "description": "Start Claude Code in a new tmux session. Use this when the user asks you to start, open, launch, or run Claude Code. Creates a detached tmux session named after the project, then registers it so it appears in the WebUI active shells list. Do NOT use Bash to start Claude Code — use this tool instead.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_name": {
+                        "type": "string",
+                        "description": "Optional custom tmux session name. If omitted a name is derived from the project directory.",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 
@@ -835,8 +1219,12 @@ TOOL_DEFS = [
 TOOL_HANDLERS: dict[str, Any] = {
     "send_telegram": _tool_send_message,
     "send_message": _tool_send_user_message,
+    "send_message_to_user": _tool_send_message_to_user,
+    "send_file": _tool_send_file,
     "ask_user": _tool_ask_user,
+    "PromptClaudeCode": _tool_prompt_claude_code,
     "send_agent_message": _tool_send_agent_message,
+    "broadcast_agent_message": _tool_broadcast_agent_message,
     "spawn_subagent": _tool_spawn_subagent,
     "query_round": _tool_query_round,
     "schedule_task": _tool_schedule_task,
@@ -847,6 +1235,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "Read": _tool_read,
     "Write": _tool_write,
     "Edit": _tool_edit,
+    "AnalyzeAttachment": _tool_analyze_attachment,
     "Glob": _tool_glob,
     "Grep": _tool_grep,
     "Bash": _tool_bash,
@@ -857,6 +1246,8 @@ TOOL_HANDLERS: dict[str, Any] = {
     "CloseShell": _tool_close_shell,
     "WebFetch": _tool_webfetch,
     "WebSearch": _tool_websearch,
+    "CheckClaudeCode": _tool_cc_status,
+    "StartClaudeCode": _tool_cc_launch,
 }
 
 
@@ -865,11 +1256,25 @@ def get_active_tool_defs() -> list[dict]:
 
     Protected tools (quit) are always included.
     """
+    return get_active_tool_defs_for_actor()
+
+
+def _tool_blocklist_for_actor(actor: str) -> set[str]:
+    return set(_MAIN_ONLY_TOOLS) if actor == "subagent" else set()
+
+
+def is_tool_allowed_for_actor(name: str, actor: str = "main") -> bool:
+    return str(name or "") not in _tool_blocklist_for_actor(actor)
+
+
+def get_active_tool_defs_for_actor(actor: str = "main") -> list[dict]:
+    """Return enabled tool defs filtered for the requested actor type."""
     from cyrene.settings_store import is_tool_enabled
 
+    blocked = _tool_blocklist_for_actor(actor)
     defs = [
         td for td in TOOL_DEFS
-        if is_tool_enabled(td["function"]["name"])
+        if is_tool_enabled(td["function"]["name"]) and td["function"]["name"] not in blocked
     ]
 
     # Append MCP tools from connected servers
@@ -879,7 +1284,7 @@ def get_active_tool_defs() -> list[dict]:
         manager = _get_mcp_mgr()
         for mcp_td in manager.get_tool_defs():
             name = mcp_td["function"]["name"]
-            if is_tool_enabled(name):
+            if is_tool_enabled(name) and name not in blocked:
                 defs.append(mcp_td)
     except Exception:
         logger.warning("Failed to fetch MCP tool defs", exc_info=True)
@@ -888,6 +1293,10 @@ def get_active_tool_defs() -> list[dict]:
 
 
 async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None) -> str:
+    if name == "spawn_subagent":
+        from cyrene.settings_store import get_spawn_policy
+        if get_spawn_policy() == "off":
+            return "Subagent spawning is disabled by the current spawn policy (`off`). Stay in single-agent mode unless the user explicitly changes this setting."
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
         # Fallback: try MCP tool
@@ -906,6 +1315,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
                 "result": str(result),
                 "round_id": _current_round_id.get(),
             })
+            from cyrene.pattern import record_action
+            record_action(name, arguments, _caller_type.get(), _current_round_id.get(),
+                          (__import__("time").monotonic() - _t0) * 1000)
             return result
         except ValueError:
             raise ValueError(f"Unknown tool: {name}")
@@ -924,4 +1336,6 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
         "result": str(result),
         "round_id": _current_round_id.get(),
     })
+    from cyrene.pattern import record_action
+    record_action(name, arguments, _caller_type.get(), _current_round_id.get(), (__import__("time").monotonic() - _t0) * 1000)
     return result

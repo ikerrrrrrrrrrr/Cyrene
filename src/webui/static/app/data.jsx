@@ -2,12 +2,23 @@
 // Loads real data from the FastAPI backend before the React tree mounts.
 // Static fallback values keep the UI usable if the backend is unreachable.
 
-const APP_VERSION = "v0.1.7";
+const APP_VERSION = "—";
 
 const DATA = {
   user: { name: "loading…", handle: "loading", initials: "…" },
   assistantName: "Cyrene",
   appVersion: APP_VERSION,
+  dashboard: {
+    today: { learned: [], learned_count: 0, memory_count: 0, archive_days: 0 },
+    soul: { path: "", updated_at: "", recent_items: [], section_count: 0 },
+    topic_cloud: [],
+    emotion: [],
+    usage: { requests: 0, tokens: "—", spend: "—", prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cache_hit_tokens: 0, cache_miss_tokens: 0, timeline: [] },
+    reminders: [],
+    recent_memories: [],
+    recent_archive: [],
+    activity_heatmap: { days: [], rows: [] },
+  },
 
   sessions: [
     {
@@ -119,14 +130,17 @@ window.useDataVersion = useDataVersion;
 
 async function bootstrapData() {
   try {
-    const r = await fetch("/api/ui-data");
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    const r = await fetch("/api/ui-data?tz=" + encodeURIComponent(tz));
     if (!r.ok) throw new Error("ui-data fetch failed: " + r.status);
     const fresh = await r.json();
     if (fresh.user) DATA.user = fresh.user;
     if (fresh.assistantName) DATA.assistantName = fresh.assistantName;
+    if (fresh.appVersion) DATA.appVersion = fresh.appVersion;
+    if (fresh.dashboard) DATA.dashboard = fresh.dashboard;
     if (Array.isArray(fresh.sessions) && fresh.sessions.length) DATA.sessions = fresh.sessions;
     if (fresh.status) DATA.status = fresh.status;
-    if (Array.isArray(fresh.skills) && fresh.skills.length) DATA.skills = fresh.skills;
+    if (Array.isArray(fresh.skills)) DATA.skills = fresh.skills;
     if (fresh.settings) DATA.settings = { ...DATA.settings, ...fresh.settings };
     if (fresh.onboarding) DATA.onboarding = fresh.onboarding;
     bumpData();
@@ -139,6 +153,16 @@ let __sessionsRequestSeq = 0;
 let __statusRequestSeq = 0;
 let __refreshTimer = null;
 
+function sessionsFingerprint(sessions) {
+  if (!Array.isArray(sessions)) return "";
+  return sessions.map(function (s) {
+    var flow = s.flow || {};
+    var nodes = Array.isArray(flow.nodes) ? flow.nodes.length : 0;
+    var edges = Array.isArray(flow.edges) ? flow.edges.length : 0;
+    return s.id + "|" + (s.status || "") + "|" + nodes + "|" + edges;
+  }).join(",");
+}
+
 async function refreshSessions() {
   const seq = ++__sessionsRequestSeq;
   try {
@@ -147,8 +171,10 @@ async function refreshSessions() {
     const { sessions } = await r.json();
     if (seq !== __sessionsRequestSeq) return;
     if (Array.isArray(sessions) && sessions.length) {
+      var prev = sessionsFingerprint(DATA.sessions);
+      var next = sessionsFingerprint(sessions);
       DATA.sessions = sessions;
-      bumpData();
+      if (prev !== next) bumpData();
     }
   } catch (e) { /* swallow */ }
 }
@@ -160,8 +186,10 @@ async function refreshStatus() {
     if (!r.ok) return;
     const status = await r.json();
     if (seq !== __statusRequestSeq) return;
+    var prev = JSON.stringify(DATA.status);
+    var next = JSON.stringify(status);
     DATA.status = status;
-    bumpData();
+    if (prev !== next) bumpData();
   } catch (e) { /* swallow */ }
 }
 
@@ -209,7 +237,10 @@ function connectEvents() {
           "subagent_update",
           "session_update",
           "shell_update",
+          "cc_learning",
           "round_guidance_update",
+          "agent_comm",
+          "assistant_message",
         ].includes(data.type)) {
           scheduleRealtimeRefresh();
         }

@@ -1,33 +1,43 @@
 [project]
 name = "cyrene"
-version = "0.1.3"
+version = "0.4.7"
 description = "Cyrene AI Agent — self-evolving AI companion with SOUL.md memory"
 requires-python = ">=3.12"
 dependencies = [
     "aiosqlite>=0.22.1",
+    "anyio>=4.0",
     "apscheduler>=3.10,<4.0",
     "croniter>=6.0.0",
     "fastapi>=0.115.0",
     "httpx>=0.28.1",
     "jinja2>=3.1.0",
+    "packaging>=24.0",
     "python-dotenv>=1.2.1",
     "python-telegram-bot>=22.6",
     "requests>=2.34.0",
     "sniffio>=1.3.1",
     "simplexng>=0.1.0",
     "mcp>=1.27.0",
+    "pillow>=11.2.1",
+    "pypdf>=5.5.0",
+    "python-multipart>=0.0.20",
+    "reportlab>=4.4.1",
     "uvicorn>=0.34.0",
+    "websockets>=15.0.1",
 ]
 
 [project.scripts]
 cyrene = "cyrene.cli:main"
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0", "pillow>=11.0"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cyrene"]
+packages = ["src/cyrene", "src/webui"]
 
 [tool.ruff]
 line-length = 180

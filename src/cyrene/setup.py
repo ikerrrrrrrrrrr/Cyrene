@@ -82,7 +82,7 @@ async def _setup_from_name(name: str) -> None:
     print(f"   文件: {get_soul_path()}")
 
 
-async def _generate_soul_profile(name: str, bio: str = "", style: str = "") -> str:
+async def _generate_soul_profile(name: str, bio: str = "", style: str = "", lang: str = "") -> str:
     """用搜索结果 + 模型知识生成行为人格文件。"""
     from cyrene.agent import _call_llm, _assistant_text
 
@@ -131,7 +131,7 @@ Include EXACTLY these sections:
 - 2-3 example dialogues showing how they respond to common questions
 
 Write in concise bullet points with exact example quotes. No markdown formatting.
-Write the ENTIRE profile in Chinese."""
+Write the ENTIRE profile in English."""
 
     try:
         response = await _call_llm([

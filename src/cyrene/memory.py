@@ -44,9 +44,11 @@ def get_memory_context(include_short_term: bool = True) -> str:
 
     # 1. SOUL.md shallow memory (core sections + non-expired temporaries)
     try:
-        shallow = read_shallow_memory()
-        if shallow:
-            parts.append(shallow)
+        from cyrene.settings_store import is_soul_active
+        if is_soul_active():
+            shallow = read_shallow_memory()
+            if shallow:
+                parts.append(shallow)
     except Exception:
         logger.exception("Failed to read shallow memory")
 

@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import socket
+import uuid
 
 from cyrene.agent import clear_session_id, run_agent
 from cyrene.config import (
     ASSISTANT_NAME, DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR,
-    SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,
+    SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT, WEB_PORT,
 )
 from cyrene.db import init_db
 from cyrene.inbox import ensure_inbox
@@ -12,6 +14,19 @@ from cyrene.short_term import init_short_term
 from cyrene.soul import ensure_soul
 
 logger = logging.getLogger(__name__)
+
+
+def _pick_web_port(preferred_port: int = WEB_PORT) -> int:
+    """Return the preferred port when free, otherwise choose an ephemeral port."""
+    for candidate in (preferred_port, 0):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return int(sock.getsockname()[1])
+    raise RuntimeError("Failed to allocate a local web port")
 
 
 async def _prepare_cli() -> None:
@@ -295,10 +310,126 @@ async def _cli_loop() -> None:
 
             response = await run_agent(user_input, None, 0, str(DB_PATH))
             print(f"\n{ASSISTANT_NAME}: {response}")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             break
         except Exception:
             logger.exception("Error in CLI loop")
+
+
+def _run_electron_mode() -> None:
+    """Start web UI mode for Electron embedding.
+
+    Similar to _run_web_mode() but uses 127.0.0.1, dynamic port,
+    fire-and-forget background services, and prints PORT=<n> to stdout
+    so Electron can discover the server.
+    """
+    import sys as _sys
+    if "--verbose" in _sys.argv:
+        import cyrene.debug as _debug
+        _debug.VERBOSE = True
+        _debug.init_debug_log()
+
+    # On Windows, console=False makes stdout/stderr None.
+    # Redirect to devnull to prevent uvicorn formatters from crashing.
+    if _sys.stdout is None:
+        import os as _os
+        _sys.stdout = open(_os.devnull, "w")
+    if _sys.stderr is None:
+        import os as _os
+        _sys.stderr = open(_os.devnull, "w")
+
+    # Prevent ALL subprocesses from creating console windows on Windows.
+    # Our backend has no console (console=False), so any subprocess spawned
+    # by dependencies (e.g. git calls from vendored searx) would get a new
+    # console window unless CREATE_NO_WINDOW is specified.
+    # Monkey-patch subprocess.Popen to inject CREATE_NO_WINDOW + SW_HIDE
+    # on every call — there is no clean global default in Python 3.13.
+    if _sys.platform == "win32":
+        import subprocess as _sp
+        _orig_popen_init = _sp.Popen.__init__
+        _CREATE_NO_WINDOW = 0x08000000
+        def _patched_popen_init(self, *args, **kwargs):
+            kwargs['creationflags'] = kwargs.get('creationflags', 0) | _CREATE_NO_WINDOW
+            if 'startupinfo' not in kwargs or kwargs['startupinfo'] is None:
+                _si = _sp.STARTUPINFO()
+                _si.dwFlags = _sp.STARTF_USESHOWWINDOW
+                _si.wShowWindow = 0  # SW_HIDE
+                kwargs['startupinfo'] = _si
+            _orig_popen_init(self, *args, **kwargs)
+        _sp.Popen.__init__ = _patched_popen_init
+
+    import asyncio
+    from cyrene.debug import enable_event_bus
+    from cyrene.scheduler import setup_scheduler
+    from webui.server import create_app, WebBot
+
+    selected_port = _pick_web_port(WEB_PORT)
+    instance_id = uuid.uuid4().hex
+
+    async def _start():
+        for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
+            d.mkdir(parents=True, exist_ok=True)
+        await init_db(str(DB_PATH))
+        ensure_soul()
+        ensure_inbox("cyrene")
+        init_short_term(DATA_DIR)
+        enable_event_bus()
+
+        async def _start_background_services() -> None:
+            if SEARXNG_AUTO_START:
+                from cyrene.searxng_manager import start_searxng
+                try:
+                    url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+                    logger.info("SearXNG auto-started at %s", url)
+                except Exception as exc:
+                    logger.warning("SearXNG auto-start failed: %s", exc)
+            from cyrene.mcp_manager import start_mcp as _start_mcp
+            try:
+                await _start_mcp()
+                logger.info("MCP manager started")
+            except Exception as exc:
+                logger.warning("MCP manager start failed: %s", exc)
+
+        bot = WebBot()
+        scheduler = setup_scheduler(bot, str(DB_PATH))
+        scheduler.start()
+
+        try:
+            from cyrene.updater import background_check
+            _ = asyncio.create_task(background_check())
+        except Exception:
+            pass
+
+        # Fire-and-forget: background services don't block server start
+        _ = asyncio.create_task(_start_background_services())
+
+        app = create_app(bot, str(DB_PATH), instance_id=instance_id)
+        import uvicorn
+        config = uvicorn.Config(app, host="127.0.0.1", port=selected_port, log_level="info")
+        server = uvicorn.Server(config)
+
+        # Monkey-patch startup so we only tell Electron the port AFTER the
+        # uvicorn server is actually listening.  Previously PORT was printed
+        # before server.serve() — Electron got the port, navigated to the URL,
+        # but the server wasn't ready yet → white screen.
+        _orig_startup = server.startup
+
+        async def _startup_and_notify(sockets=None):
+            await _orig_startup(sockets=sockets)
+            if not server.should_exit:
+                print(f"PORT={selected_port}", flush=True)
+
+        server.startup = _startup_and_notify
+
+        await server.serve()
+
+    try:
+        asyncio.run(_start())
+    finally:
+        from cyrene.searxng_manager import stop_searxng
+        stop_searxng()
+        from cyrene.mcp_manager import stop_mcp as _stop_mcp
+        _stop_mcp()
 
 
 def _run_web_mode() -> None:
@@ -344,6 +475,13 @@ def _run_web_mode() -> None:
         scheduler.start()
         print(f"{ASSISTANT_NAME} Web UI starting...")
 
+        # 后台检查更新（不阻塞启动）
+        try:
+            from cyrene.updater import background_check
+            _ = asyncio.create_task(background_check())
+        except Exception:
+            pass
+
         try:
             await run_web(bot, str(DB_PATH))
         except KeyboardInterrupt:
@@ -360,6 +498,262 @@ def _run_web_mode() -> None:
         _stop_mcp()
 
 
+def _dump_error(message: str) -> None:
+    """Write an error message to temp files so the user can inspect it."""
+    import os as _os
+    _paths = []
+    for _key in ("TMPDIR", "TEMP", "TMP"):
+        if _os.environ.get(_key):
+            _paths.append(_os.environ[_key])
+    # Fallback: write next to the executable or current directory
+    try:
+        _paths.append(str(_os.path.dirname(_os.path.abspath(_os.path.realpath(__file__)))))
+    except Exception:
+        pass
+    for _dir in _paths:
+        try:
+            _log_path = _os.path.join(_dir, "cyrene_error.log")
+            with open(_log_path, "a", encoding="utf-8") as _f:
+                _f.write(message + "\n")
+        except Exception:
+            pass
+
+
+def _show_error(title: str, message: str) -> None:
+    """Show an error to the user, preferring a native dialog on Windows
+    (where console=False hides stderr)."""
+    import sys as _sys
+    if _sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
+            return
+        except Exception:
+            pass  # MessageBoxW failed — try fallback below
+    print(f"{title}: {message}", file=_sys.stderr)
+
+
+def _run_web_gui() -> None:
+    """Start web UI with native desktop window (PyInstaller GUI mode).
+
+    Server init runs in a background thread; pywebview window on the main thread.
+    """
+    import sys as _sys
+    if "--verbose" in _sys.argv:
+        import cyrene.debug as _debug
+        _debug.VERBOSE = True
+        _debug.init_debug_log()
+
+    # On Windows GUI mode (console=False in PyInstaller), sys.stdout and
+    # sys.stderr are None.  uvicorn and its logging formatters
+    # (DefaultFormatter -> sys.stdout.isatty()) crash on None.
+    if _sys.stdout is None:
+        import os as _os
+        _sys.stdout = open(_os.devnull, "w")
+    if _sys.stderr is None:
+        import os as _os
+        _sys.stderr = open(_os.devnull, "w")
+
+    import asyncio
+    import threading
+    import time
+    from pathlib import Path
+    from cyrene.debug import enable_event_bus
+    from cyrene.scheduler import setup_scheduler
+    from webui.server import create_app, WebBot
+
+    selected_port = _pick_web_port(WEB_PORT)
+    instance_id = uuid.uuid4().hex
+    server_failed = threading.Event()
+    server_error: list[str] = []
+
+    async def _start_all():
+        for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
+            d.mkdir(parents=True, exist_ok=True)
+        await init_db(str(DB_PATH))
+        ensure_soul()
+        ensure_inbox("cyrene")
+        init_short_term(DATA_DIR)
+        enable_event_bus()
+
+        async def _start_background_services() -> None:
+            if SEARXNG_AUTO_START:
+                from cyrene.searxng_manager import start_searxng
+                try:
+                    url = await start_searxng(SEARXNG_PORT, SEARXNG_HOST)
+                    logger.info("SearXNG auto-started at %s", url)
+                except Exception as exc:
+                    logger.warning("SearXNG auto-start failed: %s", exc)
+
+            from cyrene.mcp_manager import start_mcp as _start_mcp
+            try:
+                await _start_mcp()
+                logger.info("MCP manager started")
+            except Exception as exc:
+                logger.warning("MCP manager start failed: %s", exc)
+
+        bot = WebBot()
+        scheduler = setup_scheduler(bot, str(DB_PATH))
+        scheduler.start()
+
+        try:
+            from cyrene.updater import background_check
+            _ = asyncio.create_task(background_check())
+        except Exception:
+            pass
+
+        # Fire-and-forget: SearXNG + MCP start in the background so the
+        # web server is available immediately (SearXNG health-check can
+        # take up to 30 s, which would otherwise cause "Server not responding").
+        _ = asyncio.create_task(_start_background_services())
+
+        app = create_app(bot, str(DB_PATH), instance_id=instance_id)
+        import uvicorn
+        config = uvicorn.Config(app, host="127.0.0.1", port=selected_port, log_level="info")
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    def _run_server():
+        try:
+            asyncio.run(_start_all())
+        except Exception as exc:
+            server_error.append(str(exc))
+            server_failed.set()
+        finally:
+            from cyrene.searxng_manager import stop_searxng
+            stop_searxng()
+            from cyrene.mcp_manager import stop_mcp as _stop_mcp
+            _stop_mcp()
+
+    _server_thread = threading.Thread(target=_run_server, daemon=True)
+    _server_thread.start()
+
+    url = f"http://127.0.0.1:{selected_port}"
+
+    # Wait for the server to start listening (raw TCP, no HTTP, no proxy).
+    # Try up to 60 times × 0.5s = 30s.  If it still fails, warn and proceed
+    # anyway — the server might be slow but will come online eventually.
+    import socket as _socket
+    _sock_ok = False
+    for _ in range(60):
+        if server_failed.is_set():
+            break
+        try:
+            _s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            _s.settimeout(0.5)
+            _s.connect(("127.0.0.1", selected_port))
+            _s.close()
+            _sock_ok = True
+            break
+        except Exception:
+            time.sleep(0.25)
+    if not _sock_ok and not server_failed.is_set():
+        _show_error("Cyrene - Server Starting",
+                     f"Web server is taking longer than expected.\n"
+                     f"If it doesn't load automatically, open:\n"
+                     f"{url}")
+
+    if server_failed.is_set():
+        _show_error("Cyrene - Server Error", server_error[0] if server_error else "Server failed to start.")
+        _sys.exit(1)
+
+    # macOS: use compiled Swift WKWebView helper (native, zero deps).
+    # Give it a short grace period, then verify the window actually appeared
+    # by checking whether the process is still alive.  If not — fall through
+    # and let the user open the URL in their browser.
+    if _sys.platform == "darwin":
+        _bin = Path(_sys._MEIPASS) / "cyrene_window" if getattr(_sys, "frozen", False) else Path(__file__).resolve().parent.parent.parent / "build" / "cyrene_window"
+        if _bin.exists():
+            import subprocess
+            proc = subprocess.Popen([str(_bin), url])
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                # Process is still alive — window was shown successfully
+                proc.wait()
+                return
+            # Process exited within 3 s — window likely failed to appear
+            logger.warning("cyrene_window exited early (rc=%d), falling back to browser", proc.returncode)
+
+    # Windows/Linux: try pywebview
+    try:
+        import webview
+    except ImportError:
+        _show_error("Cyrene - Missing Dependency",
+                     "pywebview is not installed.\n\n"
+                     "Install it with: pip install pywebview>=5.0")
+        _sys.exit(1)
+
+    # On Windows, the Edge Chromium backend requires WebView2 Runtime.
+    # Detect this early so we can give a specific error message instead
+    # of a generic pywebview crash.
+    if _sys.platform == "win32":
+        try:
+            from webview.platforms.edgechromium import _version as edge_v  # noqa: F401
+        except Exception:
+            _show_error("Cyrene - WebView2 Required",
+                         "Microsoft Edge WebView2 Runtime is not installed.\n\n"
+                         "Download it from:\n"
+                         "https://go.microsoft.com/fwlink/p/?LinkId=2124703\n\n"
+                         "After installing, restart Cyrene.")
+            _fallback_to_browser(url, _server_thread)
+
+    try:
+        webview.create_window("Cyrene", url, width=1200, height=800, min_size=(800, 600))
+        webview.start()
+    except Exception as exc:
+        logger.warning("pywebview failed (%s)", exc)
+        _dump_error(f"pywebview failed: {exc}")
+        _hint = ""
+        if _sys.platform == "win32":
+            _hint = ("\n\nOn Windows this usually means the Edge WebView2 Runtime\n"
+                     "is missing. Download from:\n"
+                     "https://go.microsoft.com/fwlink/p/?LinkId=2124703")
+        _show_error("Cyrene - Window Error",
+                     f"Failed to create native window:\n{exc}{_hint}\n\n"
+                     f"Server running at {url}\n"
+                     "Open this address in your browser.")
+        _fallback_to_browser(url, _server_thread)
+
+
+def _fallback_to_browser(url: str, _server_thread=None) -> None:
+    """Open the web UI in the default browser and keep the process alive."""
+    import sys as _sys
+    print(f"Cyrene server is running at {url}", flush=True)
+    try:
+        import webbrowser
+        webbrowser.open(url)
+    except Exception:
+        pass
+    print("Press Ctrl+C to stop.", flush=True)
+    import http.client
+    import json as _json
+    _health_host = "127.0.0.1"
+    _health_port = int(url.rsplit(":", 1)[1])
+    _health_skip = 0
+    try:
+        while True:
+            import time
+            time.sleep(5)
+            # Periodically check if the server thread is still alive.
+            # It could exit silently if the asyncio loop inside crashes.
+            if _server_thread is not None and not _server_thread.is_alive():
+                _health_skip += 1
+                if _health_skip > 3:  # 3 × 5s = 15s grace period
+                    print("Server stopped responding — keeping process alive for browser connections.", flush=True)
+            # Also try a lightweight health check to detect frozen server.
+            if _health_skip <= 0:
+                try:
+                    _conn = http.client.HTTPConnection(_health_host, _health_port, timeout=2.0)
+                    _conn.request("GET", "/api/instance-id")
+                    _conn.getresponse().read()
+                    _conn.close()
+                except Exception:
+                    pass
+    except KeyboardInterrupt:
+        pass
+
+
 async def _run_one_shot_mcp(args: list[str]) -> None:
     """Run a single MCP command and exit."""
     await _prepare_cli()
@@ -371,6 +765,12 @@ async def _run_one_shot_mcp(args: list[str]) -> None:
 
 def main() -> None:
     import sys
+    if "--electron-mode" in sys.argv:
+        _run_electron_mode()
+        return
+    if "--gui" in sys.argv:
+        _run_web_gui()
+        return
     if "--web" in sys.argv:
         _run_web_mode()
         return

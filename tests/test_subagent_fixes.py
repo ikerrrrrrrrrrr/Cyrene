@@ -311,6 +311,66 @@ async def test_get_raw_messages_returns_full_history():
     print("PASS test_get_raw_messages_returns_full_history")
 
 
+async def test_run_summary_subagent_collects_peer_messages():
+    """总结 subagent 应该读取其他 subagent 的 transcript 和互发消息。"""
+    from cyrene import agent
+    from cyrene import inbox
+    from cyrene import subagent
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        old_data_dir = subagent.DATA_DIR
+        old_inbox_dir = inbox.INBOX_DIR
+        old_call_llm = agent._call_llm
+        captured: dict[str, str] = {}
+        try:
+            subagent.DATA_DIR = tmp_path
+            inbox.INBOX_DIR = tmp_path / "inbox"
+
+            await subagent.clear()
+            await subagent.register("agent_alpha", "Find alpha facts", round_id="round_1")
+            await subagent.save_messages("agent_alpha", [
+                {"role": "system", "content": "hidden"},
+                {"role": "user", "content": "Find alpha facts"},
+                {"role": "assistant", "content": "Alpha found source A"},
+                {"role": "tool", "content": "tool output A"},
+            ])
+            await subagent.mark_done("agent_alpha", "Alpha result")
+
+            await subagent.register("agent_beta", "Find beta facts", round_id="round_1")
+            await subagent.save_messages("agent_beta", [
+                {"role": "user", "content": "Find beta facts"},
+                {"role": "assistant", "content": "Beta found source B"},
+            ])
+            await subagent.mark_done("agent_beta", "Beta result")
+
+            await inbox.send_message("agent_alpha", "agent_beta", "chat", "Cross-check this lead", round_id="round_1")
+
+            async def fake_call_llm(messages, tools=None, max_tokens=None):
+                captured["prompt"] = messages[1]["content"]
+                return {"content": "Integrated peer summary"}
+
+            agent._call_llm = fake_call_llm
+
+            result = await subagent.run_summary_subagent(
+                round_id="round_1",
+                parent_task="Original task",
+                round_history=[{"role": "user", "content": "Original task", "round_id": "round_1"}],
+            )
+
+            assert result == "Integrated peer summary"
+            assert "Alpha result" in captured["prompt"]
+            assert "Beta result" in captured["prompt"]
+            assert "Cross-check this lead" in captured["prompt"]
+            snapshot = await subagent.get_snapshot(round_id="round_1")
+            assert any(agent_id.startswith("agent_summary_") for agent_id in snapshot)
+        finally:
+            subagent.DATA_DIR = old_data_dir
+            inbox.INBOX_DIR = old_inbox_dir
+            agent._call_llm = old_call_llm
+    print("PASS test_run_summary_subagent_collects_peer_messages")
+
+
 async def main():
     await test_set_waiting_writes_result()
     await test_set_waiting_accepts_resumed_agents()
@@ -325,7 +385,8 @@ async def main():
     await test_reactivate_dormant_agent()
     await test_mark_done_accumulates_result()
     await test_get_raw_messages_returns_full_history()
-    print("\nAll 13 tests passed.")
+    await test_run_summary_subagent_collects_peer_messages()
+    print("\nAll 14 tests passed.")
 
 
 if __name__ == "__main__":

@@ -83,9 +83,16 @@ def cmd_start(args: argparse.Namespace) -> None:
     except Exception:
         pass
 
-    # Launch daemon as subprocess
+    # Launch daemon as subprocess.
+    # In PyInstaller frozen builds, sys.executable is the app binary and "-m"
+    # does not work — use the trampoline flag that run_cyrene.py understands.
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--launch-web"]
+    else:
+        cmd = [sys.executable, "-m", "cyrene.local_cli", "--web"]
+
     proc = subprocess.Popen(
-        [sys.executable, "-m", "cyrene.local_cli", "--web"],
+        cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,

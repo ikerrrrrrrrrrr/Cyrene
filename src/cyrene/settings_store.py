@@ -4,6 +4,7 @@ These are NOT env vars (which require restart) — they are live-editable settin
 stored in a JSON file under DATA_DIR.
 """
 
+import copy
 import json
 import logging
 
@@ -43,9 +44,13 @@ _DEFAULT_ENABLED_TOOLS = {
     "resume_task": True,
     "cancel_task": True,
     "send_message": True,
+    "send_file": True,
     "ask_user": True,
+    "PromptClaudeCode": True,
     "send_telegram": False,
     "query_round": True,
+    "CheckClaudeCode": True,
+    "StartClaudeCode": True,
 }
 
 # quit is always enabled — never stored, never filtered
@@ -54,6 +59,7 @@ _PROTECTED_TOOLS = {"quit"}
 _DEFAULTS: dict = {
     "search_mode": "builtin",
     "search_external_url": "",
+    "spawn_policy": "conservative",
     "models": _DEFAULT_MODELS,
     "enabled_tools": _DEFAULT_ENABLED_TOOLS,
 }
@@ -61,22 +67,30 @@ _DEFAULTS: dict = {
 
 def _load() -> dict:
     if not _SETTINGS_PATH.exists():
-        return dict(_DEFAULTS)
+        return copy.deepcopy(_DEFAULTS)
     try:
         data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
     except Exception:
         logger.warning("Corrupted web_settings.json, using defaults")
-        return dict(_DEFAULTS)
-    merged = dict(_DEFAULTS)
+        return copy.deepcopy(_DEFAULTS)
+    merged = copy.deepcopy(_DEFAULTS)
     merged.update(data)
     return merged
 
 
 def _save(data: dict) -> None:
-    _SETTINGS_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    # Atomic write: write to temp then rename, so a crash mid-write never corrupts the file
+    tmp = _SETTINGS_PATH.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(_SETTINGS_PATH)
+    finally:
+        # Clean up orphaned temp file if the rename itself crashed
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
 
 
 def get(key: str, default=None):
@@ -94,6 +108,21 @@ def set_(key: str, value) -> None:
 def get_all() -> dict:
     """Return all settings as a flat dict."""
     return _load()
+
+
+def reset_all() -> None:
+    """Delete the persisted settings file so defaults apply again."""
+    try:
+        if _SETTINGS_PATH.exists():
+            _SETTINGS_PATH.unlink()
+    except Exception:
+        logger.exception("Failed to reset web settings")
+
+
+def get_spawn_policy() -> str:
+    """Return subagent spawn policy normalized to a supported value."""
+    value = str(_load().get("spawn_policy", "conservative") or "conservative").strip().lower()
+    return value if value in {"aggressive", "conservative", "off"} else "conservative"
 
 
 # ---------------------------------------------------------------------------
@@ -133,3 +162,41 @@ def save_enabled_tools(tools: dict[str, bool]) -> None:
     # Never persist protected tools
     clean = {k: v for k, v in tools.items() if k not in _PROTECTED_TOOLS}
     set_("enabled_tools", clean)
+
+
+# ---------------------------------------------------------------------------
+# Workspace history helpers
+# ---------------------------------------------------------------------------
+
+def get_workspace_history() -> list[str]:
+    """Return list of previously used workspace directories."""
+    return _load().get("workspace_history", [])
+
+
+def add_workspace_to_history(path: str) -> None:
+    """Record a workspace directory in history (most recent first, max 10)."""
+    history = [p for p in get_workspace_history() if p != path]
+    history.insert(0, path)
+    if len(history) > 10:
+        history = history[:10]
+    set_("workspace_history", history)
+
+
+def is_workspace_active() -> bool:
+    """Check if workspace access is granted (filesystem tools allowed to execute)."""
+    return _load().get("workspace_active", True)
+
+
+def set_workspace_active(active: bool) -> None:
+    """Grant or revoke workspace file access."""
+    set_("workspace_active", active)
+
+
+def is_soul_active() -> bool:
+    """Check if SOUL.md should be loaded into the agent context."""
+    return _load().get("soul_active", True)
+
+
+def set_soul_active(active: bool) -> None:
+    """Enable or disable SOUL.md loading without touching the file content."""
+    set_("soul_active", active)

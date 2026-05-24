@@ -39,19 +39,24 @@ class WebBot:
         return matched
 
 
-def create_app(bot: Any, db_path: str) -> FastAPI:
+def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
     from webui.routes import register_routes
 
     app = FastAPI(title="Cyrene")
-    _STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    app.state.instance_id = instance_id
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    @app.get("/api/instance-id")
+    async def api_instance_id() -> dict[str, str]:
+        return {"instance_id": str(app.state.instance_id or "")}
+
     register_routes(app, bot, db_path)
     return app
 
 
-async def run_web(bot: Any, db_path: str) -> None:
-    app = create_app(bot, db_path)
-    config = uvicorn.Config(app, host="0.0.0.0", port=WEB_PORT, log_level="info", loop="asyncio")
+async def run_web(bot: Any, db_path: str, port: int = WEB_PORT, instance_id: str = "") -> None:
+    app = create_app(bot, db_path, instance_id=instance_id)
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info", loop="asyncio")
     server = uvicorn.Server(config)
-    logger.info("Web UI at http://0.0.0.0:%d", WEB_PORT)
+    logger.info("Web UI at http://0.0.0.0:%d", port)
     await server.serve()

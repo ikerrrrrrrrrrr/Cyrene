@@ -1,7 +1,8 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
-build/
+build/build/
+build/cyrene_window
 dist/
 wheels/
 *.egg-info
@@ -17,6 +18,11 @@ data/
 # Environment
 .env
 
+# Electron
+electron/node_modules/
+electron/out/
+dist-electron/
+
 # IDE
 .idea/
 .vscode/
@@ -30,3 +36,10 @@ data/
 CLAUDE.md
 CLAUDE.local.md
 uv.lock
+.codex
+.codex.lock
+.codex-run
+.pytest_cache
+
+# Tests
+tests*

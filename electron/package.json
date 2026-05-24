@@ -1,0 +1,77 @@
+{
+  "name": "cyrene",
+  "version": "0.4.7",
+  "description": "Cyrene AI Agent — self-evolving AI companion",
+  "author": {
+    "name": "Cyrene",
+    "email": "ikerrrrrrrrrrr@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/ikerrrrrrrrrrr/Cyrene",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "ELECTRON_DEV=1 electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.cyrene.app",
+    "productName": "Cyrene",
+    "directories": {
+      "output": "../dist-electron"
+    },
+    "extraResources": [
+      {
+        "from": "../dist/Cyrene",
+        "to": "python-bundle",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "../build/icon.icns",
+      "target": ["dmg"],
+      "minimumSystemVersion": "12.0",
+      "artifactName": "Cyrene-${version}-mac.${ext}"
+    },
+    "win": {
+      "icon": "../build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "Cyrene-${version}-win64.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "icon": "../build/icon.png",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Utility",
+      "artifactName": "Cyrene-${version}-x64.${ext}"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

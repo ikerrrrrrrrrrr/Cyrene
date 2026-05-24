@@ -1,20 +1,79 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# 从项目根目录加载 .env，不依赖 CWD
-_base_dir = Path(__file__).resolve().parent.parent.parent
-load_dotenv(_base_dir / ".env")
+
+def _bundle_contents_dir() -> Path | None:
+    """Return ``.../MyApp.app/Contents`` when running from a macOS app bundle."""
+    exe = Path(sys.executable).resolve()
+    parts = exe.parts
+    for idx, part in enumerate(parts):
+        if part.endswith(".app") and idx + 2 < len(parts) and parts[idx + 1] == "Contents":
+            return Path(*parts[: idx + 2])
+    return None
+
+
+def _is_bundled() -> bool:
+    """检测是否为 PyInstaller 打包后的运行环境。"""
+    return getattr(sys, "frozen", False) or _bundle_contents_dir() is not None
+
+
+def _get_user_data_dir() -> Path:
+    """返回平台特定的用户数据目录。"""
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif sys.platform == "win32":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+        base = Path(xdg)
+    return base / "Cyrene"
+
+
+def _get_source_root() -> Path:
+    """返回源码根目录或打包资源根目录。"""
+    if _is_bundled() and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS)
+    bundle_contents = _bundle_contents_dir()
+    if bundle_contents is not None:
+        for candidate in (bundle_contents / "Resources", bundle_contents / "Frameworks"):
+            if (candidate / "pyproject.toml").exists() or (candidate / ".env.example").exists():
+                return candidate
+    return Path(__file__).resolve().parent.parent.parent
+
+
+SOURCE_ROOT = _get_source_root()
+
+# 确定 BASE_DIR：打包模式用用户数据目录，源码模式用项目根目录
+if _is_bundled():
+    BASE_DIR = _get_user_data_dir()
+else:
+    BASE_DIR = SOURCE_ROOT
+
+# 首次启动：如果用户数据目录没有 .env，从模板复制
+_ENV_PATH = BASE_DIR / ".env"
+if _is_bundled() and not _ENV_PATH.exists():
+    _template = SOURCE_ROOT / ".env.example"
+    if _template.exists():
+        BASE_DIR.mkdir(parents=True, exist_ok=True)
+        import shutil
+        shutil.copy(_template, _ENV_PATH)
+
+load_dotenv(_ENV_PATH)
 
 # === Bot 配置 ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_ID = int(os.environ["OWNER_ID"]) if os.getenv("OWNER_ID") else None
 
 # === LLM 配置 ===
+DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
+DEFAULT_OPENAI_MODEL = "deepseek-v4-flash"
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-v4-flash")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL)
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
 # 禁止使用 pro 型号（消耗太快）
 if "pro" in OPENAI_MODEL.lower():
     import logging
@@ -51,7 +110,6 @@ SEARXNG_HOST = os.getenv("SEARXNG_HOST", "127.0.0.1")  # SearXNG 绑定地址
 STEWARD_INTERVAL = int(os.getenv("STEWARD_INTERVAL", "1800"))  # 30 分钟
 
 # === 路径 ===
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
 WORKSPACE_DIR = BASE_DIR / "workspace"      # 工作区，存放 SOUL.md、CLAUDE.md 等运行时文件
 STORE_DIR = BASE_DIR / "store"              # 持久化存储，数据库文件
 DATA_DIR = BASE_DIR / "data"                # 运行时数据，状态文件、收件箱等
@@ -61,12 +119,15 @@ LOTTERY_FILE = DATA_DIR / "lottery_state.json"  # 抽奖状态持久化
 INBOX_DIR = DATA_DIR / "inbox"              # 收件箱目录，存放外部消息
 SOUL_PATH = WORKSPACE_DIR / "SOUL.md"       # 人格/身份文件
 
+# Pattern (automatic script learning)
+PATTERNS_DIR = WORKSPACE_DIR / "patterns"
+PATTERN_DETECTION_INTERVAL = int(os.getenv("PATTERN_DETECTION_INTERVAL", "600"))
+
 # Web UI
 WEB_PORT = int(os.getenv("WEB_PORT", "4242"))
 
 
-# .env 文件路径
-_ENV_PATH = _base_dir / ".env"
+# .env 文件路径（已在模块顶部定义）
 
 # 可在 Web UI 中编辑的 key 白名单
 _EDITABLE_KEYS = {
