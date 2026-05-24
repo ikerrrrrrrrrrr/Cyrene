@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cyrene.config import WORKSPACE_DIR
+from cyrene.config import DB_PATH, WORKSPACE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def ensure_conversations_dir() -> None:
 
 def _get_today_file() -> Path:
     """Get the conversation file for today."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
     return CONVERSATIONS_DIR / f"{today}.md"
 
 
@@ -63,8 +63,10 @@ async def archive_exchange(
     ensure_conversations_dir()
 
     filepath = _get_today_file()
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+    now = datetime.now().astimezone()
+    date_str = now.strftime("%Y-%m-%d")
+    timestamp = now.strftime("%H:%M:%S UTC")
+    stats_timestamp = now.isoformat()
     meta_lines = []
     if archive_session_id:
         meta_lines.append(f"<!-- archive_session_id: {archive_session_id} -->")
@@ -98,6 +100,14 @@ async def archive_exchange(
         content = _upsert_session_title(content, date_str, session_title)
         content += entry
         filepath.write_text(content, encoding="utf-8")
+        from cyrene import db as cy_db
+
+        await cy_db.record_archive_exchange(
+            str(DB_PATH),
+            timestamp=stats_timestamp,
+            user_message=user_message,
+            assistant_response=assistant_response,
+        )
         logger.debug(f"Archived exchange to {filepath}")
     except Exception:
         logger.exception(f"Failed to archive exchange to {filepath}")
@@ -111,7 +121,7 @@ async def get_recent_conversations(days: int = 1) -> str:
     Returns an empty string when no conversation files are found.
     """
     ensure_conversations_dir()
-    now = datetime.now(timezone.utc)
+    now = datetime.now().astimezone()
     result_parts: list[str] = []
 
     for i in range(days):

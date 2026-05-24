@@ -15,6 +15,7 @@ import os
 import re
 import time
 import uuid
+import asyncio
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ _PATTERNS_DIR: Path | None = None
 _ACTION_LOG_PATH: Path | None = None
 _PATTERN_HISTORY_PATH: Path | None = None
 _DETECTION_INTERVAL: int = 600  # seconds between detection runs
+_SCAN_LOCK = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -57,6 +59,7 @@ class PatternCandidate:
     first_seen: str
     last_seen: str
     confidence: float
+    params: dict[str, dict] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +321,7 @@ def detect_patterns(
 
         candidates.append(PatternCandidate(
             sequence=abstracted,
+            params=params,
             fingerprint=h,
             occurrences=len(raw),
             round_ids=meta["round_ids"],
@@ -438,9 +442,8 @@ async def create_pending_script(candidate: PatternCandidate) -> dict | None:
     if _find_existing_script(candidate.fingerprint):
         return None
 
-    abstracted, params = candidate.sequence, {}
-    # Recompute params from raw occurrences stored in candidate
-    # (params already computed during detection; stored inline)
+    abstracted = candidate.sequence
+    params = dict(candidate.params or {})
 
     # Use LLM to name and describe
     step_desc = "\n".join(
@@ -512,7 +515,7 @@ def _observe_candidate(history: dict[str, Any], candidate: PatternCandidate) -> 
     }
 
 
-async def scan_for_session_start() -> dict[str, int]:
+async def _scan_for_session_start_unlocked() -> dict[str, int]:
     """Scan action history when a new session starts.
 
     First detection only records a fingerprint. A later scan must observe new
@@ -558,6 +561,11 @@ async def scan_for_session_start() -> dict[str, int]:
     except Exception:
         logger.debug("Pattern scan on session start failed", exc_info=True)
         return {"observed": 0, "promoted": 0, "candidates": 0}
+
+
+async def scan_for_session_start() -> dict[str, int]:
+    async with _SCAN_LOCK:
+        return await _scan_for_session_start_unlocked()
 
 
 async def run_script(script_id: str, param_overrides: dict[str, str] | None = None) -> str:
@@ -669,6 +677,19 @@ async def _tool_reject_script(
     return f"Script '{script_id}' rejected." if ok else f"Script '{script_id}' not found or not in pending status."
 
 
+async def _tool_learn_patterns(
+    args: dict[str, Any],
+    bot: Any, chat_id: int, db_path: str, notify_state: dict | None,
+) -> str:
+    stats = await scan_for_session_start()
+    return (
+        "Pattern learning completed. "
+        f"Observed {int(stats.get('observed') or 0)} new pattern(s), "
+        f"promoted {int(stats.get('promoted') or 0)} pattern(s) to pending scripts, "
+        f"from {int(stats.get('candidates') or 0)} candidate(s)."
+    )
+
+
 _PATTERN_TOOL_DEFS = [
     {
         "type": "function",
@@ -732,6 +753,17 @@ _PATTERN_TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "LearnPatterns",
+            "description": "Actively scan recorded tool-call history, learn repeated behavior patterns, and create pending scripts when enough evidence exists. Use this when the user explicitly asks the agent to learn from recent behavior now.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 _PATTERN_HANDLERS = {
@@ -739,6 +771,7 @@ _PATTERN_HANDLERS = {
     "RunScript": _tool_run_script,
     "ApproveScript": _tool_approve_script,
     "RejectScript": _tool_reject_script,
+    "LearnPatterns": _tool_learn_patterns,
 }
 
 

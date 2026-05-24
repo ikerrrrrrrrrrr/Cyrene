@@ -9,6 +9,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cyrene.config import DB_PATH
+
 logger = logging.getLogger(__name__)
 
 # 文件路径由 init_short_term 设置
@@ -54,10 +56,11 @@ def touch_entry(content_keyword: str, metadata: dict | None = None) -> None:
     如果不存在且 metadata 提供，新增条目。
     """
     entries = load_entries()
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now().astimezone().strftime("%Y-%m-%d")
 
     kw_lower = content_keyword.lower()
     found = False
+    touched_valence = metadata.get("emotional_valence", 0) if metadata else 0
     for entry in entries:
         entry_content = entry.get("content", "").lower()
         # Exact match or one is a near-complete substring of the other
@@ -68,6 +71,7 @@ def touch_entry(content_keyword: str, metadata: dict | None = None) -> None:
         ):
             entry["last_mentioned"] = now
             entry["mention_count"] = entry.get("mention_count", 1) + 1
+            touched_valence = entry.get("emotional_valence", touched_valence)
             found = True
             break
 
@@ -82,6 +86,17 @@ def touch_entry(content_keyword: str, metadata: dict | None = None) -> None:
         })
 
     save_entries(entries)
+    try:
+        from cyrene import db as cy_db
+
+        cy_db.record_memory_touch_sync(
+            str(DB_PATH),
+            day=now,
+            emotional_valence=float(touched_valence or 0),
+            is_new=not found and bool(metadata),
+        )
+    except Exception:
+        logger.exception("Failed to persist memory stats")
 
 
 def get_context(max_chars: int = 5000, header: str = "[Previous context:]") -> str:

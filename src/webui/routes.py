@@ -11,10 +11,10 @@ import re
 import shutil
 import sys
 import time
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from PIL import Image
@@ -468,8 +468,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     # ---- UI bootstrap data ----
 
     @router.get("/api/ui-data")
-    async def api_ui_data():
-        return await _build_ui_data()
+    async def api_ui_data(tz: str = ""):
+        return await _build_ui_data(tz)
 
     # ---- Chat API ----
 
@@ -1059,6 +1059,17 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         result = await _pattern.run_script(script_id)
         return {"ok": True, "result": result}
 
+    @router.post("/api/patterns/learn")
+    async def api_patterns_learn():
+        from cyrene import pattern as _pattern
+
+        stats = await _pattern.scan_for_session_start()
+        return {
+            "ok": True,
+            "stats": stats,
+            "scripts": _pattern.list_scripts("all"),
+        }
+
     # ---- Skills install API ----
 
     @router.get("/api/skills/installed")
@@ -1071,7 +1082,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         source_path = Path(str(body.get("path") or "")).expanduser()
         if not source_path.exists() or not source_path.is_file():
             return JSONResponse({"ok": False, "error": "invalid skill file path"}, status_code=400)
-        return install_skill_from_path(source_path)
+        result = install_skill_from_path(source_path)
+        if not result.get("ok", False):
+            return JSONResponse(result, status_code=400)
+        return result
 
     @router.post("/api/skills/install-picker")
     async def api_install_skill_picker():
@@ -1096,7 +1110,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not source_path.exists() or not source_path.is_file():
             return JSONResponse({"ok": False, "error": "selected file is invalid"}, status_code=400)
 
-        return install_skill_from_path(source_path)
+        result = install_skill_from_path(source_path)
+        if not result.get("ok", False):
+            return JSONResponse(result, status_code=400)
+        return result
 
     @router.post("/api/skills/{skill_id}/toggle")
     async def api_toggle_skill(skill_id: str):
@@ -1530,16 +1547,27 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _build_ui_data() -> dict:
+def _resolve_ui_tz(tz_name: str = ""):
+    name = str(tz_name or "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo or timezone.utc
+
+
+async def _build_ui_data(tz_name: str = "") -> dict:
     """Assemble the full DATA payload the SPA expects."""
     sessions = _build_sessions()
     if not sessions:
         sessions = [_empty_session()]
+    ui_tz = _resolve_ui_tz(tz_name)
     return {
         "user": _build_user(),
         "assistantName": ASSISTANT_NAME,
         "appVersion": get_version_label(),
-        "dashboard": await _build_dashboard(),
+        "dashboard": await _build_dashboard(ui_tz),
         "sessions": sessions,
         "status": await _build_status(),
         "skills": _build_skills(),
@@ -3002,10 +3030,13 @@ async def _build_memory() -> dict:
     }
 
 
-async def _build_dashboard() -> dict:
+async def _build_dashboard(ui_tz=None) -> dict:
     """Aggregate homepage data from memory, soul, archive, and scheduler state."""
     from cyrene import db as cy_db
     from cyrene.subagent import _registry  # noqa: WPS437
+
+    ui_tz = ui_tz or (datetime.now().astimezone().tzinfo or timezone.utc)
+    now_local = datetime.now(ui_tz)
 
     st_entries = load_entries()
     try:
@@ -3013,7 +3044,7 @@ async def _build_dashboard() -> dict:
     except Exception:
         tasks = []
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = now_local.strftime("%Y-%m-%d")
     soul_content = read_soul()
     soul_path = get_soul_path()
     soul_stat = soul_path.stat() if soul_path.exists() else None
@@ -3064,7 +3095,6 @@ async def _build_dashboard() -> dict:
         })
     reminder_items = reminder_items[:6]
 
-    topic_counts: Counter[str] = Counter()
     archive_snippets: list[dict[str, Any]] = []
     for filepath in sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)[:7]:
         date_str = filepath.stem
@@ -3082,68 +3112,48 @@ async def _build_dashboard() -> dict:
                     "user": user_body,
                     "assistant": assistant_body,
                 })
-            for token in _extract_topic_terms(" ".join([user_body, assistant_body])):
-                topic_counts[token] += 1
     archive_snippets = archive_snippets[:6]
+
+    day_from = (now_local - timedelta(days=6)).strftime("%Y-%m-%d")
+    day_to = today
+    stats_rows = await cy_db.get_daily_stats_range(_db_path, day_from, day_to)
+    stats_by_day = {
+        str(row.get("day") or ""): row
+        for row in stats_rows
+        if str(row.get("day") or "").strip()
+    }
+    topic_rows = await cy_db.get_topic_counts_range(_db_path, day_from, day_to, limit=18)
+    archive_day_count = await cy_db.count_stat_days(_db_path)
 
     emotion_days: dict[str, list[float]] = {}
     for offset in range(6, -1, -1):
-        day = (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
+        day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
         emotion_days[day] = []
-    for entry in st_entries:
-        day = str(entry.get("last_mentioned", "")).strip()
-        if day in emotion_days:
-            try:
-                emotion_days[day].append(float(entry.get("emotional_valence", 0) or 0))
-            except (TypeError, ValueError):
-                emotion_days[day].append(0.0)
 
     emotion_series = []
-    for day, values in emotion_days.items():
-        avg = round(sum(values) / len(values), 2) if values else 0.0
+    for day in emotion_days:
+        row = stats_by_day.get(day) or {}
+        emotion_count = int(row.get("emotion_count") or 0)
+        emotion_sum = float(row.get("emotion_sum") or 0)
+        avg = round(emotion_sum / emotion_count, 2) if emotion_count else 0.0
         emotion_series.append({
             "date": day,
             "value": avg,
-            "count": len(values),
+            "count": emotion_count,
         })
 
     token_timeline: dict[str, dict[str, int]] = {}
     for offset in range(6, -1, -1):
-        day = (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
-        token_timeline[day] = {"prompt": 0, "completion": 0, "requests": 0}
-
-    debug_logs = sorted((DATA_DIR.glob("debug_*.jsonl") if DATA_DIR.exists() else []), reverse=True)[:5]
-    for log_path in debug_logs:
-        try:
-            for line in log_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                entry = json.loads(line)
-                if entry.get("type") != "llm_call":
-                    continue
-                timestamp = str(entry.get("timestamp", "")).strip()
-                if not timestamp:
-                    continue
-                day = timestamp[:10]
-                if day not in token_timeline:
-                    continue
-                usage = entry.get("usage") or {}
-                if isinstance(usage.get("prompt_tokens"), int):
-                    token_timeline[day]["prompt"] += int(usage.get("prompt_tokens") or 0)
-                if isinstance(usage.get("completion_tokens"), int):
-                    token_timeline[day]["completion"] += int(usage.get("completion_tokens") or 0)
-                token_timeline[day]["requests"] += 1
-        except Exception:
-            continue
-
-    today_bucket = token_timeline.get(today)
-    if today_bucket and not debug_logs:
-        today_bucket["prompt"] = int(combined_usage.get("prompt_tokens") or 0)
-        today_bucket["completion"] = int(combined_usage.get("completion_tokens") or 0)
-        today_bucket["requests"] = int(combined_usage.get("requests") or 0)
+        day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
+        row = stats_by_day.get(day) or {}
+        token_timeline[day] = {
+            "prompt": int(row.get("prompt_tokens") or 0),
+            "completion": int(row.get("completion_tokens") or 0),
+            "requests": int(row.get("llm_requests") or 0),
+        }
 
     heatmap_days = [
-        (datetime.now(timezone.utc) - timedelta(days=offset)).strftime("%Y-%m-%d")
+        (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
         for offset in range(6, -1, -1)
     ]
     heatmap_row_defs = [
@@ -3154,30 +3164,21 @@ async def _build_dashboard() -> dict:
         ("16:00", 16, 20),
         ("20:00", 20, 24),
     ]
-    heatmap_buckets: dict[str, list[int]] = {
-        label: [0 for _ in heatmap_days]
-        for label, _, _ in heatmap_row_defs
+    heatmap_column_map = {
+        "00:00": "activity_00_04",
+        "04:00": "activity_04_08",
+        "08:00": "activity_08_12",
+        "12:00": "activity_12_16",
+        "16:00": "activity_16_20",
+        "20:00": "activity_20_24",
     }
-    for day_index, day in enumerate(heatmap_days):
-        filepath = CONVERSATIONS_DIR / f"{day}.md"
-        if not filepath.exists():
-            continue
-        try:
-            sections = _parse_archive_sections(filepath.read_text(encoding="utf-8"))
-        except Exception:
-            sections = []
-        for section in sections:
-            stamp = str(section.get("timestamp", "")).strip()
-            if not stamp:
-                continue
-            try:
-                hour = int(stamp.split(":")[0])
-            except Exception:
-                continue
-            for label, start_hour, end_hour in heatmap_row_defs:
-                if start_hour <= hour < end_hour:
-                    heatmap_buckets[label][day_index] += 1
-                    break
+    heatmap_buckets: dict[str, list[int]] = {}
+    for label, _, _ in heatmap_row_defs:
+        column = heatmap_column_map[label]
+        heatmap_buckets[label] = [
+            int((stats_by_day.get(day) or {}).get(column) or 0)
+            for day in heatmap_days
+        ]
 
     activity_heatmap = {
         "days": heatmap_days,
@@ -3190,9 +3191,9 @@ async def _build_dashboard() -> dict:
     return {
         "today": {
             "learned": learned_today,
-            "learned_count": len(today_entries),
+            "learned_count": int((stats_by_day.get(today) or {}).get("memory_new") or 0),
             "memory_count": len(st_entries),
-            "archive_days": len(list(CONVERSATIONS_DIR.glob("*.md"))) if CONVERSATIONS_DIR.exists() else 0,
+            "archive_days": archive_day_count,
         },
         "soul": {
             "path": str(soul_path),
@@ -3200,10 +3201,7 @@ async def _build_dashboard() -> dict:
             "recent_items": recent_soul_items,
             "section_count": soul_content.count("\n## ") + (1 if soul_content.strip().startswith("# ") else 0),
         },
-        "topic_cloud": [
-            {"term": term, "count": count}
-            for term, count in topic_counts.most_common(18)
-        ],
+        "topic_cloud": topic_rows,
         "emotion": emotion_series,
         "usage": {
             "requests": combined_usage.get("requests"),

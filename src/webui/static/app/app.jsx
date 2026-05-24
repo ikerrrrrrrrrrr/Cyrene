@@ -21,6 +21,7 @@ function readStoredUiPage() {
   try {
     var page = localStorage.getItem("cyrene-ui-page");
     if (page === "status") page = "evolution"; // migrate old key
+    if (page === "skills") page = "evolution"; // merge old skills page
     return VALID_UI_PAGES.has(page) ? page : "chat";
   } catch (e) {
     return "dashboard";

@@ -11,6 +11,8 @@ function EvolutionPage() {
   const [selectedSkillId, setSelectedSkillId] = useStateSet("");
   const [skillError, setSkillError] = useStateSet("");
   const [skillBusy, setSkillBusy] = useStateSet(false);
+  const [learnBusy, setLearnBusy] = useStateSet(false);
+  const [learnMessage, setLearnMessage] = useStateSet("");
 
   const fetchData = async () => {
     setLoading(true);
@@ -42,6 +44,30 @@ function EvolutionPage() {
   };
   const handleRun = async (id) => {
     await fetch(`/api/scripts/${id}/run`, { method: "POST" });
+  };
+  const handleLearnPatterns = async () => {
+    setLearnBusy(true);
+    setLearnMessage("");
+    try {
+      const res = await fetch("/api/patterns/learn", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        setLearnMessage(data.error || t("evolution.learnFailed"));
+        setLearnBusy(false);
+        return;
+      }
+      setScripts(data.scripts || []);
+      const stats = data.stats || {};
+      setLearnMessage(t("evolution.learnSummary", {
+        observed: stats.observed || 0,
+        promoted: stats.promoted || 0,
+        candidates: stats.candidates || 0,
+      }));
+    } catch (e) {
+      setLearnMessage(t("evolution.learnFailed"));
+    } finally {
+      setLearnBusy(false);
+    }
   };
   const handleInstall = async () => {
     setSkillBusy(true);
@@ -341,6 +367,14 @@ function EvolutionPage() {
       {/* patterns / scripts tab */}
       {tab === "patterns" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+            <div style={{ fontSize: 12, color: "var(--text-4)" }}>
+              {learnMessage || " "}
+            </div>
+            <button className="btn primary" style={{ fontSize: 11 }} onClick={handleLearnPatterns} disabled={learnBusy}>
+              {learnBusy ? t("evolution.learning") : t("evolution.learnNow")}
+            </button>
+          </div>
           {scripts.length === 0 && (
             <div style={{ textAlign: "center", padding: 40, color: "var(--text-4)", fontSize: 12 }}>
               {t("evolution.noScripts")}

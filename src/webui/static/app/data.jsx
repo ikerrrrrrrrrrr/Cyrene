@@ -130,7 +130,8 @@ window.useDataVersion = useDataVersion;
 
 async function bootstrapData() {
   try {
-    const r = await fetch("/api/ui-data");
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    const r = await fetch("/api/ui-data?tz=" + encodeURIComponent(tz));
     if (!r.ok) throw new Error("ui-data fetch failed: " + r.status);
     const fresh = await r.json();
     if (fresh.user) DATA.user = fresh.user;

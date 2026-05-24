@@ -9,7 +9,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cyrene.config import DATA_DIR
+from cyrene.config import DATA_DIR, DB_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,16 @@ async def publish_event(event: dict) -> None:
             overflow = len(_full_events) - _MAX_FULL_EVENTS
             for key in list(_full_events.keys())[:overflow]:
                 _full_events.pop(key, None)
+
+    try:
+        from cyrene import db as cy_db
+
+        if event.get("type") == "llm_call":
+            await cy_db.record_runtime_usage(str(DB_PATH), str(event.get("timestamp") or ""), event.get("usage") or {})
+        elif event.get("type") == "tool_call":
+            await cy_db.record_tool_call(str(DB_PATH), str(event.get("timestamp") or ""))
+    except Exception:
+        logger.exception("Failed to persist runtime stats")
 
     _recent_events.append(event)
     if _event_queue is None:

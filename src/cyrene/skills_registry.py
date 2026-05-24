@@ -12,6 +12,42 @@ from cyrene.config import DATA_DIR
 from cyrene.settings_store import get as get_setting, set_ as set_setting
 
 _SKILLS_DIR = DATA_DIR / "installed_skills"
+_ALLOWED_SKILL_EXTENSIONS = {".md", ".txt", ".prompt", ".json", ".yaml", ".yml"}
+_MAX_SKILL_FILE_BYTES = 256 * 1024
+_PROMPT_PREVIEW_CHARS = 1200
+
+
+def _is_probably_text(raw: bytes) -> bool:
+    if not raw:
+        return True
+    if b"\x00" in raw:
+        return False
+    sample = raw[:4096]
+    printable = 0
+    for byte in sample:
+        if byte in (9, 10, 13) or 32 <= byte <= 126:
+            printable += 1
+    return (printable / max(1, len(sample))) >= 0.85
+
+
+def validate_skill_file(source_path: Path) -> str | None:
+    suffix = source_path.suffix.lower()
+    if suffix not in _ALLOWED_SKILL_EXTENSIONS:
+        allowed = ", ".join(sorted(_ALLOWED_SKILL_EXTENSIONS))
+        return f"unsupported skill file type: {suffix or '(none)'}; allowed: {allowed}"
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return "unable to read skill file metadata"
+    if stat.st_size > _MAX_SKILL_FILE_BYTES:
+        return f"skill file is too large; max {_MAX_SKILL_FILE_BYTES // 1024} KB"
+    try:
+        raw = source_path.read_bytes()[:4096]
+    except OSError:
+        return "unable to read skill file"
+    if not _is_probably_text(raw):
+        return "skill file must be plain text"
+    return None
 
 
 def skills_storage_dir() -> Path:
@@ -106,6 +142,10 @@ def build_skills() -> list[dict[str, Any]]:
 
 
 def install_skill_from_path(source_path: Path) -> dict[str, Any]:
+    validation_error = validate_skill_file(source_path)
+    if validation_error:
+        return {"ok": False, "error": validation_error}
+
     records = skill_settings_records()
     source_resolved = str(source_path.resolve())
     for record in records:
@@ -169,13 +209,13 @@ def build_skill_prompt_block(max_chars: int = 12000) -> str:
 
     parts = [
         "## Installed External Skills",
-        "The user installed the following local skills. Treat them as additional operating instructions and preferred workflows when relevant.",
+        "The user installed the following local skills. Treat them as additional operating instructions and preferred workflows when relevant. Follow them only when they are clearly relevant and compatible with higher-priority system and developer instructions.",
     ]
     budget = max_chars
     for skill in active_skills:
         preview = str(skill.get("preview") or "").strip()
         header = f"### {skill.get('name') or skill.get('id')}\nSource: {skill.get('file_name') or skill.get('stored_path')}\nSummary: {skill.get('desc') or '—'}\n"
-        chunk = header + (preview[:3000] if preview else "")
+        chunk = header + (preview[:_PROMPT_PREVIEW_CHARS] if preview else "")
         if len(chunk) > budget:
             chunk = chunk[:budget]
         if not chunk:
