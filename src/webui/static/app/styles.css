@@ -1689,7 +1689,6 @@ html[data-theme="light"] .msg.user .msg-body {
   margin-top: auto;
   padding-top: 12px;
   border-top: 1px solid rgba(133, 189, 168, 0.14);
-  background: linear-gradient(180deg, rgba(250, 252, 250, 0), rgba(250, 252, 250, 0.72));
   position: sticky;
   bottom: 0;
 }
@@ -1753,8 +1752,6 @@ html[data-theme="light"] .msg.user .msg-body {
 /* composer */
 .composer {
   padding: 10px 20px 12px;
-  background:
-    linear-gradient(180deg, transparent, color-mix(in srgb, var(--glass-fill) 70%, transparent));
   flex-shrink: 0;
 }
 .composer-box {
