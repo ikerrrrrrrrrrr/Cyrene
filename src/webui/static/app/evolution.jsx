@@ -147,14 +147,11 @@ function EvolutionPage() {
           return (
             <div className="skills-layout">
               <div className="skills-side">
-                <div className="skills-tabs" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                <div className="skills-tabs">
                   <div className="skills-tab active">
                     {t("skills.installed")}
                     <span className="skills-tab-count">{installedSkills.length}</span>
                   </div>
-                  <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>
-                    {skillBusy ? t("skills.installing") : t("skills.installSkill")}
-                  </button>
                 </div>
                 <div className="skills-search">
                   <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
