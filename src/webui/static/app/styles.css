@@ -3268,6 +3268,7 @@ html[data-theme="light"] .canvas-wrap {
   display: flex;
   padding: 0 8px;
   border-bottom: 1px solid var(--line);
+  position: relative;
 }
 .skills-tab {
   padding: 10px 10px;
@@ -3413,6 +3414,43 @@ html[data-theme="light"] .canvas-wrap {
   color: var(--accent);
   font-family: var(--mono);
   flex-shrink: 0;
+}
+.install-menu-item {
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.install-menu-item:hover {
+  background: var(--bg-3);
+  color: var(--text-1);
+}
+.skill-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.skill-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.skill-file-row:hover {
+  background: var(--bg-2);
+}
+.skill-file-path {
+  color: var(--text-2);
+  word-break: break-all;
+}
+.skill-file-size {
+  color: var(--text-4);
+  margin-left: 12px;
+  white-space: nowrap;
 }
 .skill-detail-meta {
   display: flex; flex-wrap: wrap; gap: 6px;

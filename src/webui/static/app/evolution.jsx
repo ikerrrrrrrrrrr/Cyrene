@@ -15,6 +15,7 @@ function EvolutionPage() {
   const [selectedSkillId, setSelectedSkillId] = useStateSet("");
   const [skillError, setSkillError] = useStateSet("");
   const [skillBusy, setSkillBusy] = useStateSet(false);
+  const [showInstallMenu, setShowInstallMenu] = useStateSet(false);
   const [learnBusy, setLearnBusy] = useStateSet(false);
   const [learnMessage, setLearnMessage] = useStateSet("");
   const [selectedLearnedSkillId, setSelectedLearnedSkillId] = useStateSet("");
@@ -90,6 +91,15 @@ function EvolutionPage() {
     loadLearnedSkillWorkbench(selectedLearnedSkillId);
   }, [selectedLearnedSkillId]);
 
+  useEffect(() => {
+    if (!showInstallMenu) return;
+    const handler = (e) => {
+      if (!e.target.closest(".install-menu-wrap")) setShowInstallMenu(false);
+    };
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
+  }, [showInstallMenu]);
+
   const loadLearnedSkillWorkbench = async (skillId) => {
     try {
       const [detailRes, versionsRes, patchesRes, runsRes, testsRes] = await Promise.all([
@@ -162,11 +172,39 @@ function EvolutionPage() {
     }
   };
   const handleInstall = () => {
+    setShowInstallMenu((v) => !v);
+  };
+  const handleInstallFile = () => {
+    setShowInstallMenu(false);
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".md,.txt,.zip,.json,.yaml,.yml,.prompt";
     input.onchange = handleFileSelected;
     input.click();
+  };
+  const handleInstallFolder = async () => {
+    setShowInstallMenu(false);
+    setSkillBusy(true);
+    setSkillError("");
+    try {
+      const res = await fetch("/api/skills/install-picker", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (data.cancelled) {
+        setSkillError(t("skills.installCancelled"));
+        setTimeout(() => setSkillError(""), 2000);
+        return;
+      }
+      if (!res.ok || !data.ok) {
+        setSkillError(data.error || t("skills.installFailed"));
+        return;
+      }
+      await fetchOverview();
+      window.reloadUiData && window.reloadUiData();
+    } catch (e) {
+      setSkillError(t("skills.networkError"));
+    } finally {
+      setSkillBusy(false);
+    }
   };
   const handleFileSelected = async (e) => {
     const file = e.target.files?.[0];
@@ -499,9 +537,6 @@ function EvolutionPage() {
                   {t("skills.installed")}
                   <span className="skills-tab-count">{installedSkills.length}</span>
                 </div>
-                <button className="btn primary" style={{ fontSize: 10, padding: "2px 10px", marginLeft: "auto" }} onClick={handleInstall} disabled={skillBusy}>
-                  + {t("skills.installSkill")}
-                </button>
               </div>
               <div className="skills-search">
                 <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -519,8 +554,7 @@ function EvolutionPage() {
                       <div className="skill-row-name">{skill.name}</div>
                       <div className="skill-row-desc">{skill.desc}</div>
                       <div className="skill-row-meta">
-                        <span>{skill.file_name}</span>
-                        <span>· {fmtBytes(skill.size_bytes || 0)}</span>
+                        <span>{fmtBytes(skill.size_bytes || 0)}</span>
                       </div>
                     </div>
                     <div className="skill-row-state" style={{ paddingTop: 0 }}>
@@ -538,7 +572,20 @@ function EvolutionPage() {
                     <h1 className="skill-detail-title">{t("skills.emptyTitle")}</h1>
                     <p className="skill-detail-desc">{t("skills.emptyDesc")}</p>
                   </div>
-                  <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>{t("skills.installSkill")}</button>
+                  <div className="install-menu-wrap" style={{ position: "relative" }}>
+                    <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>{t("skills.installSkill")}</button>
+                    {showInstallMenu && (
+                      <div style={{
+                        position: "absolute", top: "100%", right: 0, zIndex: 100,
+                        background: "var(--bg-2)", border: "1px solid var(--border)",
+                        borderRadius: 6, boxShadow: "0 4px 12px rgba(0,0,0,.15)",
+                        minWidth: 130, overflow: "hidden", marginTop: 2,
+                      }} onClick={(e) => e.stopPropagation()}>
+                        <div className="install-menu-item" onClick={handleInstallFile}>{t("skills.installFile")}</div>
+                        <div className="install-menu-item" onClick={handleInstallFolder}>{t("skills.installFolder")}</div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <>
@@ -547,7 +594,7 @@ function EvolutionPage() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="skill-detail-meta">
                         {(selectedSkill.tags || []).map((tag) => <span key={tag} className="skill-tag">{tag}</span>)}
-                        <span className="skill-detail-version">{selectedSkill.file_name}</span>
+                        {(selectedSkill.files?.length || 0) > 1 && <span className="skill-tag">{t("skills.folderTag")}</span>}
                       </div>
                       <h1 className="skill-detail-title">{selectedSkill.name}</h1>
                       <p className="skill-detail-desc">{selectedSkill.desc}</p>
@@ -570,6 +617,18 @@ function EvolutionPage() {
                     </div>
                     <SkillSection title={t("skills.source")}><pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.source_path || "—"}</pre></SkillSection>
                     <SkillSection title={t("skills.path")}><pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.stored_path || "—"}</pre></SkillSection>
+                    {selectedSkill.files?.length > 1 && (
+                      <SkillSection title={t("skills.files")}>
+                        <div className="skill-files">
+                          {selectedSkill.files.map((f) => (
+                            <div key={f.path} className="skill-file-row">
+                              <span className="skill-file-path">{f.path}</span>
+                              <span className="skill-file-size">{fmtBytes(f.size)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </SkillSection>
+                    )}
                     <SkillSection title={t("skills.preview")}><pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.preview || "—"}</pre></SkillSection>
                   </div>
                 </>

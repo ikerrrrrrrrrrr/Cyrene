@@ -154,20 +154,51 @@ def _skill_entrypoint(stored_path: Path) -> Path | None:
     return None
 
 
+def _parse_frontmatter_field(text: str, field: str) -> str | None:
+    """Extract a simple `field: value` from YAML frontmatter (---...---) at the start of text."""
+    stripped = text.lstrip("﻿")
+    if not stripped.startswith("---"):
+        return None
+    end = stripped.find("---", 3)
+    if end == -1:
+        return None
+    block = stripped[3:end]
+    for line in block.splitlines():
+        line_stripped = line.strip()
+        if line_stripped.startswith(f"{field}:"):
+            val = line_stripped[len(field) + 1:].strip().strip('"').strip("'")
+            if val:
+                return val
+    return None
+
+
 def extract_skill_summary(path: Path) -> tuple[str, str, str]:
     text = read_skill_text(path)
-    lines = [line.rstrip() for line in text.splitlines()]
-    name = path.stem
-    desc = ""
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("#"):
-            name = stripped.lstrip("#").strip() or name
-            continue
-        desc = stripped
-        break
+    fm_name = _parse_frontmatter_field(text, "name")
+    fm_desc = _parse_frontmatter_field(text, "description")
+    if fm_name:
+        name = fm_name
+    else:
+        lines = [line.rstrip() for line in text.splitlines()]
+        name = path.parent.name if path.stem.lower() == "skill" else path.stem
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                name = stripped.lstrip("#").strip() or name
+                break
+    desc = fm_desc or ""
+    if not desc:
+        lines = [line.rstrip() for line in text.splitlines()]
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped == "---":
+                continue
+            if stripped.startswith("#"):
+                continue
+            desc = stripped
+            break
     if not desc:
         desc = "External skill file"
     return name, desc[:240], text[:12000]
@@ -182,21 +213,34 @@ def skill_payload_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
         return None
     name, desc, preview = extract_skill_summary(entrypoint)
     stat = entrypoint.stat()
+    files: list[dict[str, Any]] = []
+    total_size = 0
+    if stored_path.is_dir():
+        for child in sorted(stored_path.rglob("*")):
+            if child.is_file():
+                rel = str(child.relative_to(stored_path))
+                fs = child.stat().st_size
+                files.append({"path": rel, "name": child.name, "size": fs})
+                total_size += fs
+    else:
+        files.append({"path": stored_path.name, "name": stored_path.name, "size": stat.st_size})
+        total_size = stat.st_size
     return {
         "id": str(record.get("id") or ""),
-        "name": str(record.get("name") or name),
-        "desc": str(record.get("desc") or desc),
+        "name": name,
+        "desc": desc,
         "enabled": bool(record.get("enabled", True)),
         "installed": True,
         "installed_at": str(record.get("installed_at") or ""),
         "updated_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        "size_bytes": stat.st_size,
+        "size_bytes": total_size,
         "source_path": str(record.get("source_path") or ""),
         "stored_path": str(stored_path),
         "entrypoint_path": str(entrypoint),
         "file_name": stored_path.name,
         "entrypoint_name": entrypoint.name,
         "source_kind": str(record.get("source_kind") or ("directory" if stored_path.is_dir() else "file")),
+        "files": files,
         "preview": preview,
         "tags": ["external"],
         "version": "external",

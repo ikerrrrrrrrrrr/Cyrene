@@ -43,6 +43,11 @@ from cyrene.shells import list_shells as _list_shell_sessions
 from cyrene.shells import send_shell as _send_shell_session
 from cyrene.shells import start_shell as _start_shell_session
 from cyrene.short_term import get_context as _get_short_term_context
+from cyrene.skills_registry import (
+    build_skills as _build_skills,
+    install_skill_from_path as _install_skill,
+    uninstall_skill as _uninstall_skill,
+)
 from cyrene.subagent import register as _reg_subagent, can_receive, _run_subagent, _spawn_subagent_task
 from cyrene.inbox import send_message as _send_inbox
 from cyrene.soul import read_shallow_memory
@@ -822,6 +827,70 @@ async def _tool_cc_launch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
 
 
 # ---------------------------------------------------------------------------
+# Skill management tools
+# ---------------------------------------------------------------------------
+
+
+async def _tool_install_skill(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    path_str = str(args.get("path", "")).strip()
+    if not path_str:
+        return json.dumps({"ok": False, "error": "path is required"}, ensure_ascii=False)
+    source = Path(path_str)
+    if not source.is_absolute():
+        source = WORKSPACE_DIR / source
+    source = source.resolve()
+    if not source.exists():
+        return json.dumps({"ok": False, "error": f"path does not exist: {source}"}, ensure_ascii=False)
+    result = _install_skill(source)
+    if result.get("ok"):
+        skill = result.get("skill", {})
+        summary = {
+            "ok": True,
+            "skill": {
+                "id": skill.get("id"),
+                "name": skill.get("name"),
+                "desc": skill.get("desc"),
+                "enabled": skill.get("enabled", True),
+                "files": len(skill.get("files", [])),
+            },
+        }
+        if result.get("already_installed"):
+            summary["already_installed"] = True
+        return json.dumps(summary, ensure_ascii=False)
+    return json.dumps({"ok": False, "error": result.get("error", "unknown error")}, ensure_ascii=False)
+
+
+async def _tool_uninstall_skill(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    skill_id = str(args.get("skill_id", "")).strip()
+    if not skill_id:
+        return json.dumps({"ok": False, "error": "skill_id is required"}, ensure_ascii=False)
+    skills = _build_skills()
+    match = None
+    for s in skills:
+        if s.get("id") == skill_id or s.get("name", "").lower() == skill_id.lower():
+            match = s
+            break
+    if not match:
+        return json.dumps({"ok": False, "error": f"skill not found: {skill_id}"}, ensure_ascii=False)
+    removed = _uninstall_skill(match["id"])
+    return json.dumps({"ok": removed, "skill_id": match["id"], "name": match.get("name")}, ensure_ascii=False)
+
+
+async def _tool_list_skills(_args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    skills = [
+        {
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "desc": s.get("desc", "")[:120],
+            "enabled": s.get("enabled", True),
+            "files": len(s.get("files", [])),
+        }
+        for s in _build_skills()
+    ]
+    return json.dumps({"ok": True, "skills": skills}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
 # Tool definitions and dispatch
 # ---------------------------------------------------------------------------
 
@@ -1212,6 +1281,51 @@ TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "InstallSkill",
+            "description": "Install an external skill from a local path. Supports .md / .txt / .prompt / .json / .yaml / .yml files, directories containing SKILL.md, and .zip archives. The skill is added to the agent's system prompt on the next conversation turn.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or workspace-relative path to the skill file, directory, or zip archive.",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "UninstallSkill",
+            "description": "Uninstall an external skill by its ID or name. Removes the skill files and disables it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "The ID or name of the skill to uninstall.",
+                    },
+                },
+                "required": ["skill_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ListSkills",
+            "description": "List all installed external skills with their ID, name, description, and enabled status.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 
@@ -1248,6 +1362,9 @@ TOOL_HANDLERS: dict[str, Any] = {
     "WebSearch": _tool_websearch,
     "CheckClaudeCode": _tool_cc_status,
     "StartClaudeCode": _tool_cc_launch,
+    "InstallSkill": _tool_install_skill,
+    "UninstallSkill": _tool_uninstall_skill,
+    "ListSkills": _tool_list_skills,
 }
 
 

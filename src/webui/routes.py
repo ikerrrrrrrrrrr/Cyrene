@@ -1266,14 +1266,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             if not file:
                 return JSONResponse({"ok": False, "error": "No file provided"}, status_code=400)
             content = await file.read()
-            if len(content) > 262144:  # 256 KB
-                return JSONResponse({"ok": False, "error": "File too large (max 256 KB)"}, status_code=400)
+            if len(content) > 8 * 1024 * 1024:  # 8 MB (matches _MAX_SKILL_ARCHIVE_BYTES)
+                return JSONResponse({"ok": False, "error": "File too large (max 8 MB)"}, status_code=400)
             suffix = Path(file.filename or "skill.tmp").suffix or ".tmp"
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
             try:
-                result = install_skill_from_path(tmp_path)
+                result = install_skill_from_path(Path(tmp_path))
                 if not result.get("ok", False):
                     return JSONResponse(result, status_code=400)
                 return result
