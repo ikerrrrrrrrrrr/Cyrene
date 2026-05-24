@@ -73,6 +73,13 @@ from cyrene.onboarding import (
 )
 from cyrene.scheduler import reset_lottery
 from cyrene.settings_store import get_all as get_web_settings
+from cyrene.skills_registry import (
+    build_skills as _build_skills,
+    install_skill_from_path,
+    skill_payload_from_record as _skill_payload_from_record,
+    toggle_skill as _toggle_skill,
+    uninstall_skill as _uninstall_skill,
+)
 from cyrene.shells import list_shells as list_live_shells
 from cyrene.shells import set_cc_since
 from cyrene.short_term import load_entries
@@ -89,7 +96,6 @@ _CHAT_ID = -1
 _STATIC_DIR = Path(__file__).parent / "static"
 _APP_DIR = _STATIC_DIR / "app"
 _UPLOADS_DIR = DATA_DIR / "webui_uploads"
-
 _SERVER_STARTED_AT = time.time()
 
 
@@ -888,8 +894,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_cc_status():
         return get_cc_status(_CC_PROJECT_DIR)
 
-    @router.get("/api/cc/learning")
-    async def api_cc_learning():
+    async def _build_cc_learning_snapshot() -> dict[str, Any]:
         status = get_cc_status(_CC_PROJECT_DIR)
         latest_jsonl = str(status.get("latest_jsonl") or "").strip()
         if not latest_jsonl:
@@ -903,6 +908,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "available": True,
             **analysis,
         }
+
+    @router.get("/api/cc/learning")
+    async def api_cc_learning():
+        return await _build_cc_learning_snapshot()
 
     @router.post("/api/cc/learn")
     async def api_cc_learn():
@@ -1019,12 +1028,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         from cyrene import pattern as _pattern
         status = await _build_status()
         scripts = _pattern.list_scripts("all")
-        cc_status = await _api_cc_status()
+        cc_learning = await _build_cc_learning_snapshot()
         return {
             "phase": status.get("phase", ""),
             "state": status.get("state", ""),
             "scripts": scripts,
-            "cc_learning": cc_status,
+            "cc_learning": cc_learning,
         }
 
     @router.get("/api/scripts")
@@ -1054,44 +1063,51 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/api/skills/installed")
     async def api_installed_skills():
-        from cyrene.settings_store import get as _get_setting
-        installed = _get_setting("installed_skills", [])
-        return {"skills": installed}
+        return {"skills": _build_skills()}
 
     @router.post("/api/skills/install")
     async def api_install_skill(request: Request):
-        from cyrene.settings_store import get as _get_setting, set_ as _set_setting
         body = await request.json()
-        skill_id = str(body.get("id", "")).strip()
-        skill_def = body.get("def", {})
-        if not skill_id:
-            return {"ok": False, "error": "missing skill id"}
-        installed = _get_setting("installed_skills", [])
-        if any(s.get("id") == skill_id for s in installed):
-            return {"ok": False, "error": "already installed"}
-        installed.append({"id": skill_id, "name": skill_def.get("name", skill_id),
-                          "desc": skill_def.get("desc", ""), "enabled": True,
-                          "installed_at": __import__("datetime").datetime.now().isoformat()})
-        _set_setting("installed_skills", installed)
-        return {"ok": True}
+        source_path = Path(str(body.get("path") or "")).expanduser()
+        if not source_path.exists() or not source_path.is_file():
+            return JSONResponse({"ok": False, "error": "invalid skill file path"}, status_code=400)
+        return install_skill_from_path(source_path)
+
+    @router.post("/api/skills/install-picker")
+    async def api_install_skill_picker():
+        import platform
+        import subprocess
+
+        system = platform.system()
+        if system != "Darwin":
+            return JSONResponse({"ok": False, "error": f"Skill picker not supported on {system}"}, status_code=400)
+
+        result = subprocess.run(
+            ["osascript", "-e", 'POSIX path of (choose file with prompt "Select skill file")'],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        selected = result.stdout.strip()
+        if not selected:
+            return {"ok": False, "cancelled": True}
+
+        source_path = Path(selected).expanduser()
+        if not source_path.exists() or not source_path.is_file():
+            return JSONResponse({"ok": False, "error": "selected file is invalid"}, status_code=400)
+
+        return install_skill_from_path(source_path)
 
     @router.post("/api/skills/{skill_id}/toggle")
     async def api_toggle_skill(skill_id: str):
-        from cyrene.settings_store import get as _get_setting, set_ as _set_setting
-        installed = _get_setting("installed_skills", [])
-        for s in installed:
-            if s.get("id") == skill_id:
-                s["enabled"] = not s.get("enabled", True)
-                break
-        _set_setting("installed_skills", installed)
+        if not _toggle_skill(skill_id):
+            return JSONResponse({"ok": False, "error": "skill not found"}, status_code=404)
         return {"ok": True}
 
     @router.post("/api/skills/{skill_id}/uninstall")
     async def api_uninstall_skill(skill_id: str):
-        from cyrene.settings_store import get as _get_setting, set_ as _set_setting
-        installed = _get_setting("installed_skills", [])
-        installed = [s for s in installed if s.get("id") != skill_id]
-        _set_setting("installed_skills", installed)
+        if not _uninstall_skill(skill_id):
+            return JSONResponse({"ok": False, "error": "skill not found"}, status_code=404)
         return {"ok": True}
 
     # ---- Memory API ----
@@ -3284,101 +3300,6 @@ def _read_recent_logs() -> list[dict]:
 def _placeholder_logs() -> list[dict]:
     now = datetime.now(timezone.utc).strftime("%H:%M:%S")
     return [{"t": now, "lvl": "info", "msg": "no debug logs yet — verbose mode is enabled, logs appear after agent runs"}]
-
-
-# ---------------------------------------------------------------------------
-# Skills (Cyrene tools → skills)
-# ---------------------------------------------------------------------------
-
-
-def _build_skills() -> list[dict]:
-    """Map Cyrene's actual tools to skills shown in the UI."""
-    return [
-        {
-            "id": "filesystem", "name": "Filesystem", "icon": "▤",
-            "desc": "Read, write, edit, and search files in workspace/.",
-            "enabled": True, "installed": True, "hotkey": "F",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["read", "write", "edit", "glob", "grep"],
-            "prompt": "File ops are scoped to workspace/. Edit must match exactly once unless replace_all.",
-            "tags": ["core", "io"],
-            "recent": [],
-        },
-        {
-            "id": "attachments", "name": "Attachments", "icon": "◫",
-            "desc": "Parse uploaded PDFs and inspect images. Uses local PDF extraction and multimodal vision when available.",
-            "enabled": True, "installed": True, "hotkey": "P",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["AnalyzeAttachment", "Read"],
-            "prompt": "Use AnalyzeAttachment for uploaded PDFs and images. PDFs extract text locally; images use the current model's vision capability when supported.",
-            "tags": ["core", "attachments", "vision"],
-            "recent": [],
-        },
-        {
-            "id": "shell", "name": "Shell", "icon": "▣",
-            "desc": "Execute shell commands. WARNING: hardcoded to powershell on macOS/Linux — needs fix.",
-            "enabled": True, "installed": True, "hotkey": "B",
-            "version": "0.9.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 0.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["bash"],
-            "prompt": "Run shell commands with a timeout. Currently broken on non-Windows.",
-            "tags": ["core", "exec"],
-            "recent": [],
-        },
-        {
-            "id": "search", "name": "Web search", "icon": "◐",
-            "desc": "Built-in SearXNG (auto-start, no Docker) + DDG/Bing/Baidu fallback.",
-            "enabled": True, "installed": True, "hotkey": "S",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 0.95, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["web_search", "web_fetch"],
-            "prompt": "Built-in SearXNG via SimpleXNG. Auto-starts on launch. Falls back to DDG/Bing/Baidu.",
-            "tags": ["core", "web"],
-            "recent": [],
-        },
-        {
-            "id": "subagent", "name": "Sub-agents", "icon": "✸",
-            "desc": "Spawn parallel agents with inbox communication. Lifecycle: running→waiting→resumed→done.",
-            "enabled": True, "installed": True, "hotkey": "A",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["spawn_subagent", "send_agent_message"],
-            "prompt": "Spawn for parallelizable work. Each subagent has its own inbox.",
-            "tags": ["core", "orchestration"],
-            "recent": [],
-        },
-        {
-            "id": "scheduler", "name": "Scheduler", "icon": "◷",
-            "desc": "Schedule cron/interval/once tasks. Stored in SQLite. Heartbeat + lottery for proactive messages.",
-            "enabled": True, "installed": True, "hotkey": "T",
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["schedule_task", "list_tasks", "pause_task", "resume_task", "cancel_task"],
-            "prompt": "Schedule recurring tasks. Lottery sends proactive messages on probability tick.",
-            "tags": ["core", "automation"],
-            "recent": [],
-        },
-        {
-            "id": "soul", "name": "SOUL memory", "icon": "✱",
-            "desc": "Three-layer memory: context window (40) → short-term (compressed) → SOUL.md (long-term).",
-            "enabled": True, "installed": True,
-            "version": "1.0.0", "author": "Cyrene core",
-            "invocations": 0, "successRate": 1.0, "avgDuration": "—", "lastUsed": "—",
-            "tools": ["read_soul", "steward_agent"],
-            "prompt": "Steward agent updates SOUL.md every 30min via APPEND/ERASE/MERGE commands.",
-            "tags": ["core", "memory"],
-            "recent": [],
-        },
-        {
-            "id": "telegram", "name": "Telegram bot", "icon": "✈",
-            "desc": "Optional Telegram interface. Requires TELEGRAM_BOT_TOKEN + OWNER_ID env vars.",
-            "enabled": False, "installed": False,
-            "version": "1.0.0", "author": "Cyrene core",
-            "tools": ["send_message"], "tags": ["interface"],
-        },
-    ]
 
 
 # ---------------------------------------------------------------------------

@@ -7,18 +7,25 @@ function EvolutionPage() {
   const [ccData, setCcData] = useStateSet(null);
   const [installedSkills, setInstalledSkills] = useStateSet([]);
   const [loading, setLoading] = useStateSet(true);
+  const [query, setQuery] = useStateSet("");
+  const [selectedSkillId, setSelectedSkillId] = useStateSet("");
+  const [skillError, setSkillError] = useStateSet("");
+  const [skillBusy, setSkillBusy] = useStateSet(false);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [evRes, ccRes, skillsRes] = await Promise.all([
+      const [evRes, skillsRes] = await Promise.all([
         fetch("/api/evolution").then(r => r.json()),
-        fetch("/api/cc/learning").then(r => r.json()),
         fetch("/api/skills/installed").then(r => r.json()),
       ]);
       setScripts(evRes.scripts || []);
-      setCcData(ccRes);
-      setInstalledSkills(skillsRes.skills || []);
+      setCcData(evRes.cc_learning || null);
+      const skills = skillsRes.skills || [];
+      setInstalledSkills(skills);
+      setSelectedSkillId((current) => (
+        current && skills.some((skill) => skill.id === current) ? current : (skills[0]?.id || "")
+      ));
     } catch (e) { /* ignore */ }
     setLoading(false);
   };
@@ -36,33 +43,64 @@ function EvolutionPage() {
   const handleRun = async (id) => {
     await fetch(`/api/scripts/${id}/run`, { method: "POST" });
   };
-  const handleInstall = async (skill) => {
-    await fetch("/api/skills/install", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: skill.id, def: skill }),
-    });
-    fetchData();
+  const handleInstall = async () => {
+    setSkillBusy(true);
+    setSkillError("");
+    const res = await fetch("/api/skills/install-picker", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      if (!data.cancelled) setSkillError(data.error || t("skills.installFailed"));
+      setSkillBusy(false);
+      return;
+    }
+    await fetchData();
+    window.reloadUiData && window.reloadUiData();
+    setSkillBusy(false);
   };
   const handleUninstall = async (id) => {
-    await fetch(`/api/skills/${id}/uninstall`, { method: "POST" });
-    fetchData();
+    setSkillBusy(true);
+    setSkillError("");
+    const res = await fetch(`/api/skills/${id}/uninstall`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      setSkillError(data.error || t("skills.deleteFailed"));
+      setSkillBusy(false);
+      return;
+    }
+    await fetchData();
+    window.reloadUiData && window.reloadUiData();
+    setSkillBusy(false);
   };
   const handleToggle = async (id) => {
-    await fetch(`/api/skills/${id}/toggle`, { method: "POST" });
-    fetchData();
+    setSkillBusy(true);
+    setSkillError("");
+    const res = await fetch(`/api/skills/${id}/toggle`, { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      setSkillError(data.error || t("skills.toggleFailed"));
+      setSkillBusy(false);
+      return;
+    }
+    await fetchData();
+    window.reloadUiData && window.reloadUiData();
+    setSkillBusy(false);
   };
 
   const fmtPct = (v) => (v * 100).toFixed(0) + "%";
   const fmtTime = (ts) => ts ? new Date(ts).toLocaleDateString() : "—";
+  const fmtDateTime = (ts) => ts ? new Date(ts).toLocaleString() : "—";
+  const fmtBytes = (bytes) => {
+    if (!bytes) return "0 B";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  };
 
   const tabs = [
     { id: "skills", label: t("evolution.skills") },
     { id: "cc", label: t("evolution.ccLearning") },
     { id: "patterns", label: t("evolution.patterns") },
   ];
-
-  const installedIds = new Set(installedSkills.map(s => s.id));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", gap: 16, padding: "0 4px" }}>
@@ -95,46 +133,136 @@ function EvolutionPage() {
 
       {/* skills tab */}
       {tab === "skills" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {DATA.skills && DATA.skills.map((sk) => {
-            const isInstalled = installedIds.has(sk.id);
-            const inst = installedSkills.find(s => s.id === sk.id);
-            return (
-              <div key={sk.id} className="card" style={{
-                display: "flex", alignItems: "center", gap: 12,
-                padding: "12px 16px"
-              }}>
-                <span style={{ fontSize: 18 }}>{sk.icon || "✸"}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>{sk.name}</div>
-                  <div style={{ fontSize: 11, color: "var(--text-4)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {sk.desc || sk.id}
+        (() => {
+          const filteredSkills = installedSkills.filter((skill) => {
+            if (!query) return true;
+            const haystack = [skill.name, skill.desc, skill.file_name, skill.source_path].join(" ").toLowerCase();
+            return haystack.includes(query.toLowerCase());
+          });
+          const selectedSkill = filteredSkills.find((skill) => skill.id === selectedSkillId)
+            || installedSkills.find((skill) => skill.id === selectedSkillId)
+            || filteredSkills[0]
+            || null;
+
+          return (
+            <div className="skills-layout">
+              <div className="skills-side">
+                <div className="skills-tabs" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                  <div className="skills-tab active">
+                    {t("skills.installed")}
+                    <span className="skills-tab-count">{installedSkills.length}</span>
                   </div>
+                  <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>
+                    {skillBusy ? t("skills.installing") : t("skills.installSkill")}
+                  </button>
                 </div>
-                {isInstalled ? (
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <div className={"toggle " + (inst && inst.enabled !== false ? "on" : "")}
-                         onClick={() => handleToggle(sk.id)} />
-                    <button className="btn" style={{ fontSize: 11 }}
-                            onClick={() => handleUninstall(sk.id)}>
-                      {t("evolution.uninstall")}
+                <div className="skills-search">
+                  <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+                    <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
+                  </svg>
+                  <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("skills.filterPlaceholder")} />
+                </div>
+                {skillError && (
+                  <div style={{ margin: "12px 10px 0", color: "var(--err)", fontSize: 12 }}>
+                    {skillError}
+                  </div>
+                )}
+                <div className="skills-list-page">
+                  {loading && (
+                    <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
+                      {t("skills.loading")}
+                    </div>
+                  )}
+                  {!loading && filteredSkills.map((skill) => (
+                    <div key={skill.id}
+                         className={"skill-row " + (skill.id === selectedSkillId ? "active" : " installed")}
+                         onClick={() => setSelectedSkillId(skill.id)}>
+                      <div className="skill-row-icon">{skill.name?.slice(0, 1) || "S"}</div>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="skill-row-name">{skill.name}</div>
+                        <div className="skill-row-desc">{skill.desc}</div>
+                        <div className="skill-row-meta">
+                          <span>{skill.file_name}</span>
+                          <span>· {fmtBytes(skill.size_bytes || 0)}</span>
+                        </div>
+                      </div>
+                      <div className="skill-row-state" style={{ paddingTop: 0 }}>
+                        <div className={"toggle " + (skill.enabled !== false ? "on" : "")}
+                             onClick={(e) => { e.stopPropagation(); handleToggle(skill.id); }} />
+                      </div>
+                    </div>
+                  ))}
+                  {!loading && filteredSkills.length === 0 && (
+                    <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
+                      {installedSkills.length === 0 ? t("skills.empty") : t("skills.noMatch")}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="skill-detail">
+                {!selectedSkill ? (
+                  <div className="skill-detail-head">
+                    <div style={{ flex: 1 }}>
+                      <h1 className="skill-detail-title">{t("skills.emptyTitle")}</h1>
+                      <p className="skill-detail-desc">{t("skills.emptyDesc")}</p>
+                    </div>
+                    <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>
+                      {t("skills.installSkill")}
                     </button>
                   </div>
                 ) : (
-                  <button className="btn primary" style={{ fontSize: 11 }}
-                          onClick={() => handleInstall(sk)}>
-                    {t("evolution.installSkill")}
-                  </button>
+                  <>
+                    <div className="skill-detail-head">
+                      <div className="skill-detail-icon">{selectedSkill.name?.slice(0, 1) || "S"}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="skill-detail-meta">
+                          {(selectedSkill.tags || []).map((tag) => <span key={tag} className="skill-tag">{tag}</span>)}
+                          <span className="skill-detail-version">{selectedSkill.file_name}</span>
+                        </div>
+                        <h1 className="skill-detail-title">{selectedSkill.name}</h1>
+                        <p className="skill-detail-desc">{selectedSkill.desc}</p>
+                      </div>
+                      <div className="skill-detail-actions">
+                        <div className="enable-toggle">
+                          <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
+                            {selectedSkill.enabled ? t("skills.enabled") : t("skills.disabled")}
+                          </span>
+                          <div className={"toggle " + (selectedSkill.enabled ? "on" : "")}
+                               onClick={() => handleToggle(selectedSkill.id)} />
+                        </div>
+                        <button className="btn" onClick={() => handleUninstall(selectedSkill.id)} disabled={skillBusy}>
+                          {t("skills.delete")}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="skill-detail-body">
+                      <div className="skill-stats">
+                        <Stat label={t("skills.fileSize")} value={fmtBytes(selectedSkill.size_bytes || 0)} />
+                        <Stat label={t("skills.updatedAt")} value={fmtDateTime(selectedSkill.updated_at)} />
+                        <Stat label={t("skills.installedAt")} value={fmtDateTime(selectedSkill.installed_at)} />
+                        <Stat label={t("skills.agentVisible")} value={selectedSkill.agent_visible ? t("skills.yes") : t("skills.no")} />
+                      </div>
+
+                      <SkillSection title={t("skills.source")}>
+                        <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.source_path || "—"}</pre>
+                      </SkillSection>
+
+                      <SkillSection title={t("skills.path")}>
+                        <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.stored_path || "—"}</pre>
+                      </SkillSection>
+
+                      <SkillSection title={t("skills.preview")}>
+                        <pre className="code-block" style={{ color: "var(--text)", whiteSpace: "pre-wrap" }}>{selectedSkill.preview || "—"}</pre>
+                      </SkillSection>
+                    </div>
+                  </>
                 )}
               </div>
-            );
-          })}
-          {(!DATA.skills || DATA.skills.length === 0) && (
-            <div style={{ textAlign: "center", padding: 40, color: "var(--text-4)", fontSize: 12 }}>
-              {t("evolution.noPatterns")}
             </div>
-          )}
-        </div>
+          );
+        })()
       )}
 
       {/* CC learning tab */}
@@ -175,13 +303,13 @@ function EvolutionPage() {
                 </div>
               )}
 
-              {ccData.tools && ccData.tools.common_tasks && ccData.tools.common_tasks.length > 0 && (
+              {ccData.style && ccData.style.common_tasks && ccData.style.common_tasks.length > 0 && (
                 <div className="card" style={{ padding: "12px 16px" }}>
                   <div className="card-head">
                     <span className="card-title">{t("evolution.commonTasks")}</span>
                   </div>
                   <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
-                    {ccData.tools.common_tasks.map(([task, count], i) => (
+                    {ccData.style.common_tasks.map(([task, count], i) => (
                       <div key={i} style={{ display: "flex", justifyContent: "space-between" }}>
                         <span style={{ color: "var(--text)" }}>{task}</span>
                         <span style={{ color: "var(--text-4)" }}>{count}x</span>
@@ -287,3 +415,21 @@ function EvolutionPage() {
 }
 
 window.EvolutionPage = EvolutionPage;
+
+function SkillSection({ title, children }) {
+  return (
+    <div className="skill-section">
+      <div className="skill-section-title">{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="stat-tile">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{value}</div>
+    </div>
+  );
+}

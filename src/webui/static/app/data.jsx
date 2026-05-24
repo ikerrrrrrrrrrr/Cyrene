@@ -139,7 +139,7 @@ async function bootstrapData() {
     if (fresh.dashboard) DATA.dashboard = fresh.dashboard;
     if (Array.isArray(fresh.sessions) && fresh.sessions.length) DATA.sessions = fresh.sessions;
     if (fresh.status) DATA.status = fresh.status;
-    if (Array.isArray(fresh.skills) && fresh.skills.length) DATA.skills = fresh.skills;
+    if (Array.isArray(fresh.skills)) DATA.skills = fresh.skills;
     if (fresh.settings) DATA.settings = { ...DATA.settings, ...fresh.settings };
     if (fresh.onboarding) DATA.onboarding = fresh.onboarding;
     bumpData();

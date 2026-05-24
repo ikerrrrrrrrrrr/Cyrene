@@ -15,6 +15,7 @@ from contextvars import ContextVar
 from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
+from cyrene.skills_registry import build_skill_prompt_block
 from cyrene.settings_store import get_spawn_policy
 from cyrene import debug
 from cyrene.attachments import build_public_attachment_payload, register_generated_attachment
@@ -2905,10 +2906,10 @@ async def clear_session_id() -> None:
         STATE_FILE.unlink()
     # 不清短期记忆。它用于在 session 重置后注入上下文。
 
-    # 每次开新 session 时启动后台模式检测（避免阻塞主流程）
+    # 每次开新 session 时扫描历史行为模式；首次观察只记录，后续出现才提升为 pending script。
     try:
         from cyrene import pattern as _pattern_module
-        _ = asyncio.create_task(_pattern_module.tick(None, ""))
+        _ = asyncio.create_task(_pattern_module.scan_for_session_start())
     except Exception:
         pass
 
@@ -3863,6 +3864,9 @@ async def _run_chat_agent(
             main_system += f"\n\nThe user has set their preferred language to {lang}. Reply in this language."
         if memory_context:
             main_system = main_system + "\n\n## Memory Context\n" + memory_context
+        skill_prompt_block = build_skill_prompt_block()
+        if skill_prompt_block:
+            main_system = main_system + "\n\n" + skill_prompt_block
 
         is_deep_research = command == "deep-research"
         dr_token = _deep_research_mode.set(is_deep_research)

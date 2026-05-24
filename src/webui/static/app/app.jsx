@@ -15,7 +15,7 @@ const ACCENT_PRESETS = {
   dark:  ["#4fd1a0", "#6dbde0", "#b8a2e0", "#e8ae5c", "#e87070"],
   light: ["#2da873", "#3b90c8", "#7858b0", "#c88520", "#d04848"],
 };
-const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "skills", "memory", "evolution", "settings"]);
+const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "memory", "evolution", "settings"]);
 
 function readStoredUiPage() {
   try {
@@ -391,7 +391,6 @@ function App() {
                                     selectSession(sessionId);
                                     setPage("agents");
                                   }} />}
-        {page === "skills"   && <SkillsPage />}
         {page === "memory"   && <MemoryPage />}
         {page === "evolution" && <EvolutionPage />}
         {page === "settings" && (
@@ -419,10 +418,9 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
     { id: "chat",     label: t("nav.chat"),     icon: "▸", key: "2" },
     { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "3" },
     { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "4", badge: sessionCount > 0 ? String(sessionCount) : null },
-    { id: "skills",   label: t("nav.skills"),   icon: "✸", key: "5" },
-    { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "6" },
-    { id: "evolution", label: t("nav.evolution"), icon: "⚡", key: "7" },
-    { id: "settings", label: t("nav.settings"), icon: "✱", key: "8" },
+    { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "5" },
+    { id: "evolution", label: t("nav.evolution"), icon: "⚡", key: "6" },
+    { id: "settings", label: t("nav.settings"), icon: "✱", key: "7" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
@@ -454,11 +452,11 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
         <span className="nav-section-chevron">{skillsOpen ? "▾" : "▸"}</span>
         <span>Skills</span>
         <span className="nav-section-link"
-              onClick={(e) => { e.stopPropagation(); setPage("skills"); }}>
+              onClick={(e) => { e.stopPropagation(); setPage("evolution"); }}>
           {t("nav.manage")}
         </span>
       </div>
-      {skillsOpen && <SkillsRail onOpenPage={() => setPage("skills")} />}
+      {skillsOpen && <SkillsRail onOpenPage={() => setPage("evolution")} />}
 
       <div className="nav-section nav-section-collapsible" style={{ cursor: "default" }}>
         <span>{t("nav.recentSessions")}</span>
@@ -509,14 +507,10 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
 
 function SkillsRail({ onOpenPage }) {
   const dv = useDataVersion();
-  const [skills, setSkills] = useStateApp(() => (DATA.skills || []).filter((s) => s.installed).map((s) => ({ ...s })));
-  // Re-seed when DATA.skills arrives from backend.
+  const [skills, setSkills] = useStateApp(() => (DATA.skills || []).map((s) => ({ ...s })));
   useEffectApp(() => {
-    setSkills((DATA.skills || []).filter((s) => s.installed).map((s) => ({ ...s })));
+    setSkills((DATA.skills || []).map((s) => ({ ...s })));
   }, [dv]);
-  function toggle(id) {
-    setSkills((arr) => arr.map((s) => s.id === id ? { ...s, enabled: !s.enabled } : s));
-  }
   const { t: skT } = useI18n();
   const enabledCount = skills.filter((s) => s.enabled).length;
   return (
@@ -528,7 +522,7 @@ function SkillsRail({ onOpenPage }) {
         {skills.map((s) => (
           <div key={s.id}
                className={"skill-item " + (s.enabled ? "on" : "off")}
-               onClick={() => toggle(s.id)}
+               onClick={onOpenPage}
                title={s.desc}>
             <span className="skill-check" aria-hidden="true">
               {s.enabled ? (
@@ -541,6 +535,11 @@ function SkillsRail({ onOpenPage }) {
             {s.hotkey && <span className="skill-hotkey">/{s.hotkey.toLowerCase()}</span>}
           </div>
         ))}
+        {skills.length === 0 && (
+          <div className="skill-item off" onClick={onOpenPage}>
+            <span className="skill-name">{skT("skills.empty")}</span>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -557,7 +556,6 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
     page === "chat" ? <>{t("topbar.chat")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "agents" ? <>{t("topbar.agentFlow")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "sessions" ? <>{t("topbar.sessions")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
-    page === "skills" ? <>{t("topbar.skills")}<span className="crumb-sep">/</span><b>{t("topbar.library")}</b></> :
     page === "memory" ? <>{t("topbar.memory")}<span className="crumb-sep">/</span><b>{t("topbar.pipeline")}</b></> :
     page === "evolution" ? <>{t("topbar.evolution")}<span className="crumb-sep">/</span><b>evolve</b></> :
     <>{t("topbar.settings")}<span className="crumb-sep">/</span><b>{t("topbar.workspace")}</b></>;

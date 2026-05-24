@@ -170,7 +170,7 @@ def get_sequences_since(since: datetime | None = None) -> dict[str, list[ActionE
 
 _MIN_PATTERN_LEN = 2
 _MAX_PATTERN_LEN = 8
-_MIN_OCCURRENCES = 3
+_MIN_OCCURRENCES = 2
 
 
 def _hash_seq(fps: list[str]) -> str:
@@ -272,20 +272,28 @@ def detect_patterns(
                     if h not in seq_meta:
                         seq_meta[h] = {
                             "round_ids": [],
-                            "first_seen": datetime.now(timezone.utc).isoformat(),
+                            "first_seen": "",
                             "last_seen": "",
                             "raw_occurrences": [],
                         }
                     seq_meta[h]["round_ids"].append(rid)
-                    seq_meta[h]["last_seen"] = datetime.now(timezone.utc).isoformat()
                     # Store raw occurrence for abstraction
                     entries = groups.get(rid, [])
                     for s2 in range(len(entries) - length + 1):
-                        efps = [e.arg_fingerprint for e in entries[s2 : s2 + length]]
+                        matched_entries = entries[s2 : s2 + length]
+                        efps = [e.arg_fingerprint for e in matched_entries]
                         if _hash_seq(efps) == h:
+                            first_seen = matched_entries[0].timestamp
+                            last_seen = matched_entries[-1].timestamp
+                            existing_first = seq_meta[h]["first_seen"]
+                            existing_last = seq_meta[h]["last_seen"]
+                            if not existing_first or first_seen < existing_first:
+                                seq_meta[h]["first_seen"] = first_seen
+                            if not existing_last or last_seen > existing_last:
+                                seq_meta[h]["last_seen"] = last_seen
                             seq_meta[h]["raw_occurrences"].append([
                                 {"tool": e.tool, "args": e.args}
-                                for e in entries[s2 : s2 + length]
+                                for e in matched_entries
                             ])
                             break
 
@@ -299,6 +307,8 @@ def detect_patterns(
         if len(raw) < min_occurrences:
             continue
 
+        if not meta["first_seen"]:
+            continue
         first_dt = datetime.fromisoformat(meta["first_seen"])
         last_dt = datetime.fromisoformat(meta.get("last_seen", meta["first_seen"]))
         seq_len = len(raw[0]) if raw else 0
@@ -484,6 +494,70 @@ Return:
     }
     _save_script(script)
     return script
+
+
+def _candidate_has_new_evidence(candidate: PatternCandidate, record: dict[str, Any]) -> bool:
+    previous_occurrences = int(record.get("occurrences") or 0)
+    previous_last_seen = str(record.get("last_seen") or "")
+    return candidate.occurrences > previous_occurrences or candidate.last_seen > previous_last_seen
+
+
+def _observe_candidate(history: dict[str, Any], candidate: PatternCandidate) -> None:
+    history[candidate.fingerprint] = {
+        "first_seen": candidate.first_seen,
+        "last_seen": candidate.last_seen,
+        "occurrences": candidate.occurrences,
+        "tools": [step.get("tool", "") for step in candidate.sequence],
+        "status": "observed",
+    }
+
+
+async def scan_for_session_start() -> dict[str, int]:
+    """Scan action history when a new session starts.
+
+    First detection only records a fingerprint. A later scan must observe new
+    evidence for the same fingerprint before a pending script is generated.
+    """
+    try:
+        candidates = detect_patterns()
+        history = _load_pattern_history()
+        observed = 0
+        promoted = 0
+
+        for candidate in candidates:
+            if candidate.confidence < 0.55:
+                continue
+
+            existing_script = _find_existing_script(candidate.fingerprint)
+            record = history.get(candidate.fingerprint)
+            if record is None:
+                _observe_candidate(history, candidate)
+                observed += 1
+                continue
+
+            if existing_script is not None:
+                if _candidate_has_new_evidence(candidate, record):
+                    record["last_seen"] = candidate.last_seen
+                    record["occurrences"] = candidate.occurrences
+                continue
+
+            if not _candidate_has_new_evidence(candidate, record):
+                continue
+
+            script = await create_pending_script(candidate)
+            if script:
+                record["status"] = "promoted"
+                record["promoted_at"] = datetime.now(timezone.utc).isoformat()
+                record["script_id"] = script["id"]
+                record["last_seen"] = candidate.last_seen
+                record["occurrences"] = candidate.occurrences
+                promoted += 1
+
+        _save_pattern_history(history)
+        return {"observed": observed, "promoted": promoted, "candidates": len(candidates)}
+    except Exception:
+        logger.debug("Pattern scan on session start failed", exc_info=True)
+        return {"observed": 0, "promoted": 0, "candidates": 0}
 
 
 async def run_script(script_id: str, param_overrides: dict[str, str] | None = None) -> str:
@@ -742,26 +816,8 @@ async def tick(bot: Any, db_path: str) -> None:
     _detection_last_run = now
 
     try:
-        candidates = detect_patterns()
-        history = _load_pattern_history()
-        new_scripts = 0
-        for c in candidates:
-            if c.confidence >= 0.7:
-                fp = c.fingerprint
-                if fp in history:
-                    # Second+ occurrence → create pending script
-                    script = await create_pending_script(c)
-                    if script:
-                        new_scripts += 1
-                else:
-                    # First occurrence → record in history, no script yet
-                    history[fp] = {
-                        "first_seen": datetime.now(timezone.utc).isoformat(),
-                        "occurrences": c.occurrences,
-                        "tools": [s.get("tool", "") for s in c.sequence],
-                    }
-                    _save_pattern_history(history)
-
+        stats = await scan_for_session_start()
+        new_scripts = int(stats.get("promoted") or 0)
         if new_scripts:
             logger.info("Pattern detection: %d new pending script(s)", new_scripts)
             try:
@@ -769,7 +825,7 @@ async def tick(bot: Any, db_path: str) -> None:
                 await publish_event({
                     "type": "pattern_detected",
                     "new_scripts": new_scripts,
-                    "total_candidates": len(candidates),
+                    "total_candidates": int(stats.get("candidates") or 0),
                 })
             except Exception:
                 pass
@@ -784,7 +840,7 @@ async def tick(bot: Any, db_path: str) -> None:
 
 async def init(data_dir: Path, workspace_dir: Path) -> None:
     """Initialize the pattern module.  Call once at startup."""
-    global _DATA_DIR, _PATTERNS_DIR, _ACTION_LOG_PATH, _DETECTION_INTERVAL
+    global _DATA_DIR, _PATTERNS_DIR, _ACTION_LOG_PATH, _PATTERN_HISTORY_PATH, _DETECTION_INTERVAL
 
     _DATA_DIR = data_dir
     _PATTERNS_DIR = workspace_dir / "patterns"
