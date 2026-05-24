@@ -5,7 +5,14 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
   useDataVersion();
   const { t } = useI18n();
   const [filter, setFilter] = useStateSes("all"); // all | running | done | err
-  const [query, setQuery] = useStateSes("");
+  const [query, setQuery] = useStateSes(window._searchQuery || "");
+  const searchRef = React.useRef(null);
+  React.useEffect(() => {
+    if (window._searchQuery !== undefined) {
+      window._searchQuery = undefined;
+      searchRef.current?.focus();
+    }
+  }, []);
 
   async function deleteSession(id) {
     const sess = DATA.sessions.find((s) => s.id === id);
@@ -71,7 +78,7 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
             <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
               <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
             </svg>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("sessions.searchPlaceholder")} />
+            <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("sessions.searchPlaceholder")} />
           </div>
           <button className="btn primary"
                   style={{ marginLeft: 8 }}

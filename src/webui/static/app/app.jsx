@@ -381,6 +381,7 @@ function App() {
           theme={t.theme}
           onToggleTheme={toggleTheme}
           activeSession={activeSession}
+          setPage={setPage}
         />
         {page === "dashboard" && <DashboardPage />}
         {page === "chat"     && <ChatPage selectedSessionId={activeSession ? activeSession.id : null} onSelectSession={selectSession} />}
@@ -500,7 +501,6 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
           {DATA.user.name}
           <small>@{DATA.user.handle} · {DATA.appVersion || "—"}</small>
         </div>
-        <button className="iconbtn" title={t("nav.account")}>▾</button>
       </div>
     </div>
   );
@@ -546,7 +546,7 @@ function SkillsRail({ onOpenPage }) {
   );
 }
 
-function Topbar({ page, theme, onToggleTheme, activeSession }) {
+function Topbar({ page, theme, onToggleTheme, activeSession, setPage }) {
   useDataVersion();
   const { t } = useI18n();
   const session = activeSession || { title: "—", subagents: [] };
@@ -579,15 +579,9 @@ function Topbar({ page, theme, onToggleTheme, activeSession }) {
           <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
           <span>{theme === "system" ? t("settings.system") : theme === "dark" ? t("settings.light") : t("settings.dark")}</span>
         </button>
-        <button className="iconbtn" title={t("topbar.search")}>
+        <button className="iconbtn" title={t("topbar.search")} onClick={() => { window._searchQuery = ""; setPage("sessions"); }}>
           <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
             <circle cx="9" cy="9" r="5" /><path d="M13 13 L17 17" />
-          </svg>
-        </button>
-        <button className="iconbtn" title={t("topbar.pause")}>
-          <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor">
-            <rect x="5" y="4" width="3" height="12" rx="0.5" />
-            <rect x="12" y="4" width="3" height="12" rx="0.5" />
           </svg>
         </button>
       </div>

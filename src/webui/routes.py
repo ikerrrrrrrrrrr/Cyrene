@@ -64,7 +64,7 @@ from cyrene.config import (
     STATE_FILE,
     WORKSPACE_DIR,
 )
-from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange
+from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange, search_conversations
 from cyrene.onboarding import (
     get_onboarding_status,
     reset_onboarding_state,
@@ -1321,6 +1321,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not _uninstall_skill(skill_id):
             return JSONResponse({"ok": False, "error": "skill not found"}, status_code=404)
         return {"ok": True}
+
+    # ---- Search API ----
+
+    @router.get("/api/search/conversations")
+    async def api_search_conversations(q: str = ""):
+        if not q.strip():
+            return {"ok": False, "error": "query is required"}
+        return {"ok": True, "results": await search_conversations(q.strip())}
 
     # ---- Memory API ----
 
