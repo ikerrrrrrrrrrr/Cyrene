@@ -1701,11 +1701,6 @@ def _normalized_usage(usage: Any, messages: list[dict[str, Any]], response_messa
     }
 
 
-def _sanitize_content(text: str) -> str:
-    """Strip tool call text that leaked into the content field from the upstream API."""
-    return re.sub(r"(?s)<tool_calls?>.*?</tool_calls?>", "", text).strip()
-
-
 def _message_from_upstream_payload(data: dict[str, Any]) -> dict[str, Any]:
     choices = data.get("choices")
     if isinstance(choices, list) and choices:
@@ -1734,7 +1729,7 @@ def _message_from_upstream_payload(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _assistant_entry_from_response(response: dict[str, Any], round_id: str, include_tool_calls: bool = True) -> dict[str, Any]:
-    entry: dict[str, Any] = {"role": "assistant", "content": _sanitize_content(response.get("content") or "")}
+    entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
     if response.get("reasoning_content"):
         entry["reasoning_content"] = response["reasoning_content"]
     if include_tool_calls and response.get("tool_calls"):
@@ -3750,7 +3745,7 @@ async def _run_main_agent(
 
         for _ in range(_MAX_TOOL_ROUNDS):
             response = await _call_llm(messages, tools=get_active_tool_defs())
-            entry: dict = {"role": "assistant", "content": _sanitize_content(response.get("content") or "")}
+            entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):
                 entry["reasoning_content"] = response["reasoning_content"]
             if response.get("tool_calls"):
@@ -3762,19 +3757,6 @@ async def _run_main_agent(
             messages.append(_apply_assistant_meta(entry))
 
             tcs = response.get("tool_calls") or []
-            raw_content = response.get("content") or ""
-            if not tcs and "<tool_calls" in raw_content and not entry["content"].strip():
-                messages.pop()
-                retry_entry: dict = {
-                    "role": "tool",
-                    "tool_call_id": "xml_retry",
-                    "content": "Error: tool calls must use the structured JSON format, not XML text. Retry with proper tool_calls.",
-                }
-                if round_id:
-                    retry_entry["round_id"] = round_id
-                messages.append(retry_entry)
-                await _save_session_messages(_session_messages_to_save(messages))
-                continue
             if any(t.get("function", {}).get("name") == "quit" for t in tcs):
                 await _publish_runtime_event({
                     "type": "phase_transition",
