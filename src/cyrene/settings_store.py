@@ -60,6 +60,7 @@ _DEFAULTS: dict = {
     "search_mode": "builtin",
     "search_external_url": "",
     "spawn_policy": "conservative",
+    "write_permission_mode": "workspace_only",
     "models": _DEFAULT_MODELS,
     "enabled_tools": _DEFAULT_ENABLED_TOOLS,
 }
@@ -190,6 +191,18 @@ def is_workspace_active() -> bool:
 def set_workspace_active(active: bool) -> None:
     """Grant or revoke workspace file access."""
     set_("workspace_active", active)
+
+
+def get_write_permission_mode() -> str:
+    value = str(_load().get("write_permission_mode", "workspace_only") or "workspace_only").strip().lower()
+    return value if value in {"workspace_only", "full_access"} else "workspace_only"
+
+
+def set_write_permission_mode(mode: str) -> None:
+    normalized = str(mode or "workspace_only").strip().lower()
+    if normalized not in {"workspace_only", "full_access"}:
+        normalized = "workspace_only"
+    set_("write_permission_mode", normalized)
 
 
 def is_soul_active() -> bool:

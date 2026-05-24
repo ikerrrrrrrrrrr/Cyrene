@@ -9,7 +9,6 @@ function EvolutionPage() {
   const [learnedSkills, setLearnedSkills] = useStateSet([]);
   const [ccData, setCcData] = useStateSet(null);
   const [installedSkills, setInstalledSkills] = useStateSet([]);
-  const [vocabulary, setVocabulary] = useStateSet({ labels: [], aliases: [], unknown_labels: [], vocabulary_version: 1 });
   const [loading, setLoading] = useStateSet(true);
   const [query, setQuery] = useStateSet("");
   const [selectedSkillId, setSelectedSkillId] = useStateSet("");
@@ -22,39 +21,25 @@ function EvolutionPage() {
   const [selectedPatternId, setSelectedPatternId] = useStateSet("");
   const [workbenchBusy, setWorkbenchBusy] = useStateSet(false);
   const [workbenchMessage, setWorkbenchMessage] = useStateSet("");
+  const [learnedSkillLoading, setLearnedSkillLoading] = useStateSet(false);
   const [learnedSkillDetail, setLearnedSkillDetail] = useStateSet(null);
   const [learnedSkillVersions, setLearnedSkillVersions] = useStateSet([]);
   const [learnedSkillPatches, setLearnedSkillPatches] = useStateSet([]);
   const [learnedSkillRuns, setLearnedSkillRuns] = useStateSet([]);
   const [learnedSkillReplayTests, setLearnedSkillReplayTests] = useStateSet([]);
   const [skillForm, setSkillForm] = useStateSet(emptySkillForm());
-  const [labelForm, setLabelForm] = useStateSet({
-    label_type: "intent_type",
-    canonical_label: "",
-    domain: "",
-    parent_label: "",
-    raw_description: "",
-  });
-  const [aliasForm, setAliasForm] = useStateSet({
-    label_type: "intent_type",
-    canonical_label: "",
-    alias_label: "",
-  });
-  const [unknownDrafts, setUnknownDrafts] = useStateSet({});
 
   const fetchOverview = async () => {
     setLoading(true);
     try {
-      const [evRes, skillsRes, vocabRes] = await Promise.all([
+      const [evRes, skillsRes] = await Promise.all([
         fetch("/api/evolution").then((r) => r.json()),
         fetch("/api/skills/installed").then((r) => r.json()),
-        fetch("/api/vocabulary").then((r) => r.json()),
       ]);
       setScripts(evRes.scripts || []);
       setPatterns(evRes.patterns || []);
       setLearnedSkills(evRes.learned_skills || []);
       setCcData(evRes.cc_learning || null);
-      setVocabulary(vocabRes || { labels: [], aliases: [], unknown_labels: [], vocabulary_version: 1 });
       const skills = skillsRes.skills || [];
       setInstalledSkills(skills);
       setSelectedSkillId((current) => (
@@ -80,6 +65,7 @@ function EvolutionPage() {
 
   useEffect(() => {
     if (!selectedLearnedSkillId) {
+      setLearnedSkillLoading(false);
       setLearnedSkillDetail(null);
       setLearnedSkillVersions([]);
       setLearnedSkillPatches([]);
@@ -101,6 +87,7 @@ function EvolutionPage() {
   }, [showInstallMenu]);
 
   const loadLearnedSkillWorkbench = async (skillId) => {
+    setLearnedSkillLoading(true);
     try {
       const [detailRes, versionsRes, patchesRes, runsRes, testsRes] = await Promise.all([
         fetch(`/api/learned-skills/${skillId}`).then((r) => r.json()),
@@ -118,12 +105,9 @@ function EvolutionPage() {
       setSkillForm(skillFormFromDetail(detail));
     } catch (e) {
       setWorkbenchMessage(t("evolution.loadFailed"));
+    } finally {
+      setLearnedSkillLoading(false);
     }
-  };
-
-  const refreshVocabulary = async () => {
-    const data = await fetch("/api/vocabulary").then((r) => r.json());
-    setVocabulary(data || { labels: [], aliases: [], unknown_labels: [], vocabulary_version: 1 });
   };
 
   const refreshWorkbench = async () => {
@@ -158,12 +142,35 @@ function EvolutionPage() {
       setScripts(data.scripts || []);
       setPatterns(data.patterns || []);
       setLearnedSkills(data.learned_skills || []);
-      await refreshVocabulary();
       const stats = data.stats || {};
       setLearnMessage(t("evolution.learnSummary", {
         observed: stats.processed_turns || 0,
         promoted: stats.skills_created || 0,
         candidates: (stats.merged_patterns || 0) + (stats.new_patterns || 0),
+      }));
+    } catch (e) {
+      setLearnMessage(t("evolution.learnFailed"));
+    } finally {
+      setLearnBusy(false);
+    }
+  };
+  const handleRebuildLearning = async () => {
+    setLearnBusy(true);
+    setLearnMessage("");
+    try {
+      const res = await fetch("/api/patterns/rebuild", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        setLearnMessage(data.error || t("evolution.learnFailed"));
+        return;
+      }
+      setScripts(data.scripts || []);
+      setPatterns(data.patterns || []);
+      setLearnedSkills(data.learned_skills || []);
+      const stats = data.result || {};
+      setLearnMessage(t("evolution.rebuildSummary", {
+        observed: stats.processed_turns || 0,
+        promoted: stats.skills_created || 0,
       }));
     } catch (e) {
       setLearnMessage(t("evolution.learnFailed"));
@@ -386,93 +393,6 @@ function EvolutionPage() {
     }
   };
 
-  const handleCreateLabel = async () => {
-    setWorkbenchBusy(true);
-    try {
-      const res = await fetch("/api/vocabulary/labels", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(labelForm),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setWorkbenchMessage(data.error || t("evolution.labelCreateFailed"));
-      } else {
-        setWorkbenchMessage(t("evolution.labelCreated"));
-        setLabelForm({ label_type: labelForm.label_type, canonical_label: "", domain: "", parent_label: "", raw_description: "" });
-        await refreshVocabulary();
-      }
-    } catch (e) {
-      setWorkbenchMessage(t("evolution.labelCreateFailed"));
-    } finally {
-      setWorkbenchBusy(false);
-    }
-  };
-
-  const handleCreateAlias = async () => {
-    setWorkbenchBusy(true);
-    try {
-      const res = await fetch("/api/vocabulary/aliases", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(aliasForm),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setWorkbenchMessage(data.error || t("evolution.aliasCreateFailed"));
-      } else {
-        setWorkbenchMessage(t("evolution.aliasCreated"));
-        setAliasForm({ label_type: aliasForm.label_type, canonical_label: "", alias_label: "" });
-        await refreshVocabulary();
-      }
-    } catch (e) {
-      setWorkbenchMessage(t("evolution.aliasCreateFailed"));
-    } finally {
-      setWorkbenchBusy(false);
-    }
-  };
-
-  const handlePromoteUnknown = async (unknownId) => {
-    const draft = unknownDrafts[unknownId] || {};
-    setWorkbenchBusy(true);
-    try {
-      const res = await fetch(`/api/vocabulary/unknown/${unknownId}/promote`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(draft),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setWorkbenchMessage(data.error || t("evolution.unknownPromoteFailed"));
-      } else {
-        setWorkbenchMessage(t("evolution.unknownPromoted"));
-        await refreshVocabulary();
-      }
-    } catch (e) {
-      setWorkbenchMessage(t("evolution.unknownPromoteFailed"));
-    } finally {
-      setWorkbenchBusy(false);
-    }
-  };
-
-  const handleDismissUnknown = async (unknownId) => {
-    setWorkbenchBusy(true);
-    try {
-      const res = await fetch(`/api/vocabulary/unknown/${unknownId}/dismiss`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        setWorkbenchMessage(data.error || t("evolution.unknownDismissFailed"));
-      } else {
-        setWorkbenchMessage(t("evolution.unknownDismissed"));
-        await refreshVocabulary();
-      }
-    } catch (e) {
-      setWorkbenchMessage(t("evolution.unknownDismissFailed"));
-    } finally {
-      setWorkbenchBusy(false);
-    }
-  };
-
   const fmtPct = (v) => (Number(v || 0) * 100).toFixed(0) + "%";
   const fmtTime = (ts) => ts ? new Date(ts).toLocaleDateString() : "—";
   const fmtDateTime = (ts) => ts ? new Date(ts).toLocaleString() : "—";
@@ -490,9 +410,8 @@ function EvolutionPage() {
   ];
 
   const workbenchTabs = [
-    { id: "learned", label: t("evolution.learnedSkills") },
-    { id: "patterns", label: t("evolution.patterns") },
-    { id: "vocabulary", label: t("evolution.vocabulary") },
+    { id: "learned", label: t("evolution.autoSkills") },
+    { id: "patterns", label: t("evolution.learningHistory") },
   ];
 
   const filteredSkills = installedSkills.filter((skill) => {
@@ -508,14 +427,6 @@ function EvolutionPage() {
 
   return (
     <div className="evolution-page">
-      <div className="evolution-banner">
-        <span className="evolution-banner-icon">⚡</span>
-        <div>
-          <div className="evolution-banner-title">evolve / 进化</div>
-          <div className="evolution-banner-desc">{t("status.evolveHint")}</div>
-        </div>
-      </div>
-
       <div className="seg evolution-tabbar">
         {tabs.map((item) => (
           <button
@@ -546,7 +457,7 @@ function EvolutionPage() {
               </div>
               {skillError && <div style={{ margin: "12px 10px 0", color: "var(--err)", fontSize: 12 }}>{skillError}</div>}
               <div className="skills-list-page">
-                {loading && <div style={{ padding: "32px 16px", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>{t("skills.loading")}</div>}
+                {loading && <div className="skill-empty-state skill-empty-state-stable">{t("skills.loading")}</div>}
                 {!loading && filteredSkills.map((skill) => (
                   <div key={skill.id} className={"skill-row " + (skill.id === selectedSkillId ? "active" : " installed")} onClick={() => setSelectedSkillId(skill.id)}>
                     <div className="skill-row-icon">{skill.name?.slice(0, 1) || "S"}</div>
@@ -566,8 +477,10 @@ function EvolutionPage() {
             </div>
 
             <div className="skill-detail">
-              {!selectedSkill ? (
-                <div className="skill-detail-head">
+              {loading ? (
+                <div className="skill-empty-state skill-empty-state-stable">{t("skills.loading")}</div>
+              ) : !selectedSkill ? (
+                <div className="skill-detail-head skill-detail-empty">
                   <div style={{ flex: 1 }}>
                     <h1 className="skill-detail-title">{t("skills.emptyTitle")}</h1>
                     <p className="skill-detail-desc">{t("skills.emptyDesc")}</p>
@@ -691,32 +604,42 @@ function EvolutionPage() {
 
         {tab === "patterns" && (
           <div className="evolution-workbench">
-            <div className="card evolution-pattern-banner">
-              <div>
-                <div className="card-title">{t("evolution.workbench")}</div>
-                <div className="evolution-pattern-hint">{t("evolution.workbenchIntro")}</div>
+            <div className="card evolution-workbench-shell">
+              <div className="evolution-workbench-shell-top">
+                <div>
+                  <div className="card-title">{t("evolution.workbench")}</div>
+                  <div className="evolution-pattern-hint">{t("evolution.workbenchIntro")}</div>
+                </div>
+                <div className="evolution-pattern-actions">
+                  <button className="btn" style={{ fontSize: 11 }} onClick={handleRebuildLearning} disabled={learnBusy}>
+                    {t("evolution.rebuildLearning")}
+                  </button>
+                  <button className="btn primary" style={{ fontSize: 11 }} onClick={handleLearnPatterns} disabled={learnBusy}>
+                    {learnBusy ? t("evolution.learning") : t("evolution.learnNow")}
+                  </button>
+                </div>
               </div>
-              <button className="btn primary" style={{ fontSize: 11 }} onClick={handleLearnPatterns} disabled={learnBusy}>
-                {learnBusy ? t("evolution.learning") : t("evolution.learnNow")}
-              </button>
+              <div className="seg evolution-workbench-tabs">
+                {workbenchTabs.map((item) => (
+                  <button key={item.id} className={"seg-btn " + (workbenchTab === item.id ? "active" : "")} onClick={() => setWorkbenchTab(item.id)}>
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className={"evolution-inline-note " + ((learnMessage || workbenchMessage) ? "show" : "")}>{learnMessage || workbenchMessage || " "}</div>
-            <div className="seg evolution-workbench-tabs">
-              {workbenchTabs.map((item) => (
-                <button key={item.id} className={"seg-btn " + (workbenchTab === item.id ? "active" : "")} onClick={() => setWorkbenchTab(item.id)}>
-                  {item.label}
-                </button>
-              ))}
-            </div>
 
             {workbenchTab === "learned" && (
               <div className="evolution-workbench-grid">
                 <div className="card evolution-workbench-side">
                   <div className="evolution-side-head">
-                    <div className="card-title">{t("evolution.learnedSkills")}</div>
+                    <div className="card-title">{t("evolution.autoSkills")}</div>
                     <span className="skills-tab-count">{learnedSkills.length}</span>
                   </div>
                   <div className="evolution-side-list">
+                    {loading && learnedSkills.length === 0 && (
+                      <div className="evolution-empty-card evolution-empty-stable">{t("skills.loading")}</div>
+                    )}
                     {learnedSkills.map((skill) => (
                       <button key={skill.id} className={"evolution-side-item " + (selectedLearnedSkillId === skill.id ? "active" : "")} onClick={() => setSelectedLearnedSkillId(skill.id)}>
                         <div className="evolution-side-item-top">
@@ -732,8 +655,12 @@ function EvolutionPage() {
                 </div>
 
                 <div className="card evolution-workbench-main">
-                  {!learnedSkillDetail ? (
-                    <div className="evolution-empty-card">{t("evolution.selectSkill")}</div>
+                  {(loading || learnedSkillLoading) && !learnedSkillDetail ? (
+                    <div className="evolution-empty-card evolution-empty-stable">{t("skills.loading")}</div>
+                  ) : learnedSkills.length === 0 ? (
+                    <div className="evolution-empty-card evolution-empty-stable">{t("evolution.noScripts")}</div>
+                  ) : !learnedSkillDetail ? (
+                    <div className="evolution-empty-card evolution-empty-stable">{t("evolution.selectSkill")}</div>
                   ) : (
                     <div className="evolution-detail-stack">
                       <div className="evolution-detail-head">
@@ -760,6 +687,14 @@ function EvolutionPage() {
                         <Stat label={t("evolution.runCount")} value={String(learnedSkillDetail.run_statistics?.total_runs || 0)} />
                         <Stat label={t("evolution.shadowStatus")} value={`${learnedSkillDetail.run_statistics?.shadow_success || 0}/${learnedSkillDetail.run_statistics?.shadow_failure || 0}`} />
                       </div>
+                      <MiniPanel title={t("evolution.howItWorks")}>
+                        <div className="evolution-mini-row compact">
+                          <div>
+                            <div className="evolution-mini-title">{t("evolution.whenUsed")}</div>
+                            <div className="evolution-mini-sub">{(learnedSkillDetail.trigger?.positive_examples || []).join(" / ") || "—"}</div>
+                          </div>
+                        </div>
+                      </MiniPanel>
 
                       <div className="evolution-editor-grid">
                         <FormField label={t("evolution.name")}>
@@ -855,10 +790,13 @@ function EvolutionPage() {
               <div className="evolution-workbench-grid">
                 <div className="card evolution-workbench-side">
                   <div className="evolution-side-head">
-                    <div className="card-title">{t("evolution.patterns")}</div>
+                    <div className="card-title">{t("evolution.learningHistory")}</div>
                     <span className="skills-tab-count">{patterns.length}</span>
                   </div>
                   <div className="evolution-side-list">
+                    {loading && patterns.length === 0 && (
+                      <div className="evolution-empty-card evolution-empty-stable">{t("skills.loading")}</div>
+                    )}
                     {patterns.map((pattern) => (
                       <button key={pattern.id} className={"evolution-side-item " + (selectedPatternId === pattern.id ? "active" : "")} onClick={() => setSelectedPatternId(pattern.id)}>
                         <div className="evolution-side-item-top">
@@ -866,20 +804,22 @@ function EvolutionPage() {
                           <span className="evolution-side-item-version">{pattern.frequency}x</span>
                         </div>
                         <div className="evolution-side-item-title">{pattern.description || pattern.id}</div>
-                        <div className="evolution-side-item-desc">{pattern.id}</div>
+                        <div className="evolution-side-item-desc">{t("evolution.patternCardHint", { count: pattern.frequency || 0 })}</div>
                       </button>
                     ))}
                   </div>
                 </div>
                 <div className="card evolution-workbench-main">
-                  {!selectedPattern ? (
-                    <div className="evolution-empty-card">{t("evolution.noPatterns")}</div>
+                  {loading && !selectedPattern ? (
+                    <div className="evolution-empty-card evolution-empty-stable">{t("skills.loading")}</div>
+                  ) : !selectedPattern ? (
+                    <div className="evolution-empty-card evolution-empty-stable">{t("evolution.noPatterns")}</div>
                   ) : (
                     <div className="evolution-detail-stack">
                       <div className="evolution-detail-head">
                         <div>
                           <div className="evolution-pattern-title">{selectedPattern.description || selectedPattern.id}</div>
-                          <div className="evolution-pattern-desc">{selectedPattern.id}</div>
+                          <div className="evolution-pattern-desc">{t("evolution.patternDetailHint")}</div>
                         </div>
                       </div>
                       <div className="evolution-stat-grid">
@@ -888,85 +828,17 @@ function EvolutionPage() {
                         <Stat label={t("evolution.actionStability")} value={fmtPct(selectedPattern.action_stability || 0)} />
                         <Stat label={t("evolution.lastSeen")} value={fmtTime(selectedPattern.last_seen_at)} />
                       </div>
-                      <MiniPanel title="prototype_fingerprint">
+                      <MiniPanel title={t("evolution.patternSummary")}>
                         <pre className="code-block evolution-code-block">{prettyJson(selectedPattern.prototype_fingerprint || {})}</pre>
                       </MiniPanel>
-                      <MiniPanel title="action_sequence">
+                      <MiniPanel title={t("evolution.commonSteps")}>
                         <pre className="code-block evolution-code-block">{prettyJson(selectedPattern.action_sequence || [])}</pre>
                       </MiniPanel>
-                      <MiniPanel title="skillability">
+                      <MiniPanel title={t("evolution.automationReadiness")}>
                         <pre className="code-block evolution-code-block">{prettyJson(selectedPattern.skillability || {})}</pre>
                       </MiniPanel>
                     </div>
                   )}
-                </div>
-              </div>
-            )}
-
-            {workbenchTab === "vocabulary" && (
-              <div className="evolution-detail-stack">
-                <div className="evolution-stat-grid">
-                  <Stat label={t("evolution.vocabularyVersion")} value={String(vocabulary.vocabulary_version || 1)} />
-                  <Stat label={t("evolution.labelCount")} value={String((vocabulary.labels || []).length)} />
-                  <Stat label={t("evolution.aliasCount")} value={String((vocabulary.aliases || []).length)} />
-                  <Stat label={t("evolution.unknownCount")} value={String((vocabulary.unknown_labels || []).length)} />
-                </div>
-
-                <div className="evolution-detail-panels">
-                  <MiniPanel title={t("evolution.createLabel")}>
-                    <div className="evolution-form-grid">
-                      <input value={labelForm.label_type} onChange={(e) => setLabelForm((s) => ({ ...s, label_type: e.target.value }))} placeholder="label_type" />
-                      <input value={labelForm.canonical_label} onChange={(e) => setLabelForm((s) => ({ ...s, canonical_label: e.target.value }))} placeholder="canonical_label" />
-                      <input value={labelForm.domain} onChange={(e) => setLabelForm((s) => ({ ...s, domain: e.target.value }))} placeholder="domain" />
-                      <input value={labelForm.parent_label} onChange={(e) => setLabelForm((s) => ({ ...s, parent_label: e.target.value }))} placeholder="parent_label" />
-                      <input value={labelForm.raw_description} onChange={(e) => setLabelForm((s) => ({ ...s, raw_description: e.target.value }))} placeholder="raw_description" />
-                    </div>
-                    <div className="evolution-pattern-actions"><button className="btn primary" onClick={handleCreateLabel}>{t("evolution.createLabel")}</button></div>
-                  </MiniPanel>
-
-                  <MiniPanel title={t("evolution.createAlias")}>
-                    <div className="evolution-form-grid">
-                      <input value={aliasForm.label_type} onChange={(e) => setAliasForm((s) => ({ ...s, label_type: e.target.value }))} placeholder="label_type" />
-                      <input value={aliasForm.canonical_label} onChange={(e) => setAliasForm((s) => ({ ...s, canonical_label: e.target.value }))} placeholder="canonical_label" />
-                      <input value={aliasForm.alias_label} onChange={(e) => setAliasForm((s) => ({ ...s, alias_label: e.target.value }))} placeholder="alias_label" />
-                    </div>
-                    <div className="evolution-pattern-actions"><button className="btn primary" onClick={handleCreateAlias}>{t("evolution.createAlias")}</button></div>
-                  </MiniPanel>
-                </div>
-
-                <div className="evolution-detail-panels">
-                  <MiniPanel title={t("evolution.unknownPool")}>
-                    {(vocabulary.unknown_labels || []).map((unknown) => (
-                      <div key={unknown.unknown_id} className="evolution-unknown-card">
-                        <div className="evolution-mini-title">{unknown.label_type} · {unknown.raw_description}</div>
-                        <div className="evolution-mini-sub">seen {unknown.seen_count} · status {unknown.status}</div>
-                        <div className="evolution-form-grid compact">
-                          <input
-                            value={unknownDrafts[unknown.unknown_id]?.canonical_label || unknown.proposed_subtype || unknown.proposed_type || unknown.proposed_domain || ""}
-                            onChange={(e) => setUnknownDrafts((drafts) => ({ ...drafts, [unknown.unknown_id]: { ...(drafts[unknown.unknown_id] || {}), canonical_label: e.target.value } }))}
-                            placeholder="canonical_label"
-                          />
-                          <input
-                            value={unknownDrafts[unknown.unknown_id]?.alias_label || ""}
-                            onChange={(e) => setUnknownDrafts((drafts) => ({ ...drafts, [unknown.unknown_id]: { ...(drafts[unknown.unknown_id] || {}), alias_label: e.target.value } }))}
-                            placeholder="alias_label"
-                          />
-                        </div>
-                        <div className="evolution-pattern-actions">
-                          <button className="btn" onClick={() => handlePromoteUnknown(unknown.unknown_id)}>{t("evolution.promoteUnknown")}</button>
-                          <button className="btn" onClick={() => handleDismissUnknown(unknown.unknown_id)}>{t("evolution.dismissUnknown")}</button>
-                        </div>
-                      </div>
-                    ))}
-                  </MiniPanel>
-
-                  <MiniPanel title={t("evolution.aliases")}>
-                    <pre className="code-block evolution-code-block">{prettyJson(vocabulary.aliases || [])}</pre>
-                  </MiniPanel>
-
-                  <MiniPanel title={t("evolution.labels")}>
-                    <pre className="code-block evolution-code-block">{prettyJson(vocabulary.labels || [])}</pre>
-                  </MiniPanel>
                 </div>
               </div>
             )}

@@ -1308,14 +1308,14 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   }
 
   function onKey(e) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       send();
     }
   }
 
   function onQuestionKey(e) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       submitQuestionAnswer();
     }
@@ -1779,7 +1779,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
                 disabled={pendingQuestion ? true : (!visibleSending && !draft.trim() && attachments.length === 0)}
                 onClick={visibleSending ? stopActiveRun : send}
               >
-                {visibleSending ? t("chat.stop") : <>{(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.send")} <span className="kbd">⌘↵</span></>}
+                {visibleSending ? t("chat.stop") : <>{(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.send")} <span className="kbd">↵</span></>}
               </button>
             </div>
           </div>
@@ -1991,7 +1991,7 @@ function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, 
             disabled={customDisabled || !String(draft || "").trim()}
             onClick={onSubmit}
           >
-            {t("chat.answer")} <span className="kbd">⌘↵</span>
+            {t("chat.answer")} <span className="kbd">↵</span>
           </button>
         </div>
       </div>

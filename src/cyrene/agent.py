@@ -2787,6 +2787,18 @@ async def answer_pending_question(
         except Exception:
             await _restore_pending_question(pending)
             raise
+    if isinstance(pending_meta, dict) and str(pending_meta.get("kind", "")).strip() == "write_permission_request":
+        try:
+            return await _handle_write_permission_answer(
+                round_id=round_id,
+                pending=cleared,
+                answer_text=content,
+                client_request_id=client_request_id,
+                context=context,
+            )
+        except Exception:
+            await _restore_pending_question(pending)
+            raise
 
     answer_system = (
         "This user message answers your earlier clarification question for the same round.\n"
@@ -2885,6 +2897,45 @@ async def _handle_claude_code_prompt_answer(
         "round_id": round_id,
     })
     return reply
+
+
+async def _handle_write_permission_answer(
+    *,
+    round_id: str,
+    pending: dict[str, Any],
+    answer_text: str,
+    client_request_id: str,
+    context: dict[str, Any],
+) -> str:
+    from cyrene.settings_store import set_write_permission_mode
+
+    normalized = str(answer_text or "").strip().lower()
+    if normalized in {"仅这次允许", "始终允许", "allow once", "always allow", "allow", "always", "同意", "允许", "可以", "yes", "ok"}:
+        set_write_permission_mode("full_access")
+        system = (
+            "The user granted elevated write/delete permission outside the workspace. "
+            "Retry the blocked action if it is still required."
+        )
+    else:
+        set_write_permission_mode("workspace_only")
+        system = (
+            "The user denied elevated write/delete permission. "
+            "Stay within the workspace and choose a safer alternative."
+        )
+    return await _run_chat_agent(
+        str(answer_text or "").strip(),
+        None,
+        0,
+        "",
+        ephemeral_system=system,
+        forced_round_id=round_id,
+        history_override=context.get("round_history") or [],
+        persist_base_messages=context.get("persist_base_messages") or [],
+        persist_insert_at=context.get("persist_insert_at"),
+        client_request_id=client_request_id,
+        persist_user_message=True,
+        command=str(context.get("command", "") or "").strip(),
+    )
 
 
 def _ensure_main_inbox_worker(bot: Any, chat_id: int, db_path: str) -> None:

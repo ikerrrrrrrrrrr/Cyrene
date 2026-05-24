@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,135 @@ def _resolve_workspace_path(path_str: str) -> Path:
     if resolved != workspace and workspace not in resolved.parents:
         raise ValueError(f"Path escapes workspace: {path_str}")
     return resolved
+
+
+def _workspace_permission_error() -> str:
+    return "Write and delete permissions are limited to the current workspace."
+
+
+def _resolve_workspace_write_target(path_str: str) -> Path:
+    from cyrene.settings_store import get_write_permission_mode
+    if get_write_permission_mode() == "full_access":
+        candidate = Path(path_str)
+        path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
+        return path.resolve()
+    try:
+        return _resolve_workspace_path(path_str)
+    except Exception as exc:
+        raise ValueError(_workspace_permission_error()) from exc
+
+
+async def _request_write_elevation(
+    *,
+    tool_name: str,
+    path_hint: str,
+    reason: str = "",
+) -> str:
+    from cyrene.agent import (
+        _current_agent_id,
+        _current_client_request_id,
+        _current_command,
+        _current_round_id,
+        _upsert_pending_question,
+        get_session_labels,
+    )
+    if _current_agent_id.get() != "main":
+        return _workspace_permission_error()
+    round_id = str(_current_round_id.get() or "").strip()
+    if not round_id:
+        return _workspace_permission_error()
+    labels = get_session_labels(round_id)
+    detail = f"\n目标路径：{path_hint}" if path_hint else ""
+    why = f"\n原因：{reason}" if reason else ""
+    question = await _upsert_pending_question({
+        "text": f"这个操作需要当前 workspace 之外的写入/删除权限。是否允许提升权限？{detail}{why}",
+        "round_id": round_id,
+        "round_title": labels.get("round_title", ""),
+        "client_request_id": str(_current_client_request_id.get() or "").strip(),
+        "options": ["仅这次允许", "始终允许", "保持仅限 workspace"],
+        "allow_custom": True,
+        "meta": {
+            "kind": "write_permission_request",
+            "tool_name": tool_name,
+            "path_hint": path_hint,
+            "reason": reason,
+            "command": _current_command.get() or "",
+        },
+    })
+    return _json_result({
+        "status": "awaiting_user",
+        "question_id": question.get("id", ""),
+        "permission": "write_elevation",
+    })
+
+
+def _shell_command_requires_write_guard(command: str) -> bool:
+    lowered = str(command or "").lower()
+    return any(
+        token in lowered
+        for token in (
+            " rm ",
+            "rm -",
+            "mv ",
+            "cp ",
+            "mkdir ",
+            "touch ",
+            "tee ",
+            "sed -i",
+            "truncate ",
+            "install ",
+            "rmdir ",
+            "unlink ",
+            ">",
+        )
+    )
+
+
+def _guard_shell_command_workspace_write(command: str) -> None:
+    raw = str(command or "").strip()
+    if not raw or not _shell_command_requires_write_guard(raw):
+        return
+    try:
+        tokens = shlex.split(raw, posix=True)
+    except Exception:
+        raise ValueError(_workspace_permission_error())
+    write_cmds = {"rm", "mv", "cp", "mkdir", "touch", "tee", "truncate", "install", "rmdir", "unlink"}
+    cd_cmds = {"cd", "pushd"}
+    path_like_tokens: list[str] = []
+    previous = ""
+    for token in tokens:
+        stripped = token.strip()
+        if not stripped:
+            previous = stripped
+            continue
+        if previous in write_cmds | cd_cmds:
+            path_like_tokens.append(stripped)
+        elif previous in {"-o", "--output"}:
+            path_like_tokens.append(stripped)
+        elif stripped in write_cmds | cd_cmds:
+            previous = stripped
+            continue
+        elif stripped.startswith((">", ">>")):
+            candidate = stripped.lstrip(">").strip()
+            if candidate:
+                path_like_tokens.append(candidate)
+        elif stripped not in {"&&", "||", "|", ";"} and (
+            stripped.startswith("/")
+            or stripped.startswith("./")
+            or stripped.startswith("../")
+            or "/" in stripped
+            or re.search(r"\.[A-Za-z0-9]{1,8}$", stripped)
+        ):
+            if previous in write_cmds:
+                path_like_tokens.append(stripped)
+        previous = stripped
+    if ">" in raw or ">>" in raw:
+        redirection_targets = re.findall(r"(?:^|[^\d])>>?\s*([^\s;&|]+)", raw)
+        path_like_tokens.extend(redirection_targets)
+    for token in path_like_tokens:
+        if token.startswith("-"):
+            continue
+        _resolve_workspace_write_target(token)
 
 
 def _json_result(payload: Any) -> str:
@@ -394,7 +524,10 @@ async def _tool_write(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: 
     from cyrene.settings_store import is_workspace_active
     if not is_workspace_active():
         return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
-    path = _resolve_workspace_path(str(args["path"]))
+    try:
+        path = _resolve_workspace_write_target(str(args["path"]))
+    except ValueError:
+        return await _request_write_elevation(tool_name="Write", path_hint=str(args.get("path", "")))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(args.get("content", "")), encoding="utf-8")
     return f"Wrote {path}"
@@ -404,7 +537,10 @@ async def _tool_edit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     from cyrene.settings_store import is_workspace_active
     if not is_workspace_active():
         return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
-    path = _resolve_workspace_path(str(args["path"]))
+    try:
+        path = _resolve_workspace_write_target(str(args["path"]))
+    except ValueError:
+        return await _request_write_elevation(tool_name="Edit", path_hint=str(args.get("path", "")))
     old_string = str(args["old_string"])
     new_string = str(args["new_string"])
     replace_all = bool(args.get("replace_all", False))
@@ -466,6 +602,10 @@ async def _tool_grep(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
 
 async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     command = str(args["command"])
+    try:
+        _guard_shell_command_workspace_write(command)
+    except ValueError:
+        return await _request_write_elevation(tool_name="Bash", path_hint="", reason=command[:240])
     timeout_ms = int(args.get("timeout_ms", 120000))
     timeout_sec = timeout_ms / 1000
     shell = os.environ.get("SHELL") or "/bin/sh"
@@ -762,9 +902,16 @@ async def _tool_recall_memory(args: dict[str, Any], _bot: Any, _chat_id: int, _d
 async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     from cyrene.agent import _current_round_id
 
+    cwd = str(_resolve_workspace_path(str(args.get("cwd", ".") or ".")))
+    command = str(args.get("command", "") or "")
+    if command:
+        try:
+            _guard_shell_command_workspace_write(command)
+        except ValueError:
+            return await _request_write_elevation(tool_name="StartShell", path_hint=cwd, reason=command[:240])
     snap = await _start_shell_session(
-        command=str(args.get("command", "") or ""),
-        cwd=str(args.get("cwd", ".") or "."),
+        command=command,
+        cwd=cwd,
         title=str(args.get("title", "") or ""),
         round_id=_current_round_id.get(),
     )
@@ -777,9 +924,14 @@ async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
 
 
 async def _tool_send_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    command = str(args.get("command", ""))
+    try:
+        _guard_shell_command_workspace_write(command)
+    except ValueError:
+        return await _request_write_elevation(tool_name="SendShell", path_hint="", reason=command[:240])
     snap = await _send_shell_session(
         str(args.get("shell_id", "")),
-        str(args.get("command", "")),
+        command,
         wait_ms=int(args.get("wait_ms", 700) or 700),
     )
     return _json_result({

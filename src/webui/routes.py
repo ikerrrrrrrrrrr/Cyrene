@@ -1177,6 +1177,19 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "scripts": _pattern.list_scripts("all"),
         }
 
+    @router.post("/api/patterns/rebuild")
+    async def api_patterns_rebuild():
+        from cyrene import pattern as _pattern
+
+        result = await _pattern.rebuild_learning_state(reprocess_all_turns=True)
+        return {
+            "ok": True,
+            "result": result,
+            "patterns": _pattern.list_patterns("all"),
+            "learned_skills": _pattern.list_learned_skills(),
+            "scripts": _pattern.list_scripts("all"),
+        }
+
     @router.get("/api/vocabulary")
     async def api_vocabulary():
         from cyrene import pattern as _pattern

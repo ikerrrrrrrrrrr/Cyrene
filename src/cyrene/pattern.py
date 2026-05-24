@@ -126,6 +126,10 @@ async def scan_for_manual_learn() -> dict[str, Any]:
     return await _behavior.scan_for_manual_learn()
 
 
+async def rebuild_learning_state(*, reprocess_all_turns: bool = True) -> dict[str, Any]:
+    return await _behavior.rebuild_learning_state(reprocess_all_turns=reprocess_all_turns)
+
+
 async def tick(bot: Any, db_path: str) -> None:
     await _behavior.tick(bot, db_path)
 

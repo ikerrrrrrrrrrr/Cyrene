@@ -325,6 +325,10 @@ _STATIC_ALIASES = {
     "type:run_shell_command": "run_command",
     "type:ask_user": "ask_clarification",
     "type:tool_call": "call_tool",
+    "intent_type:search_weather": "query_realtime_info",
+    "intent_subtype:search_weather": "weather_lookup",
+    "intent_subtype:compare_weather": "weather_lookup",
+    "object_type:weather_forecast": "weather_data",
 }
 
 _TOOL_ACTION_MAP: dict[str, tuple[str, str, str, int]] = {
@@ -391,6 +395,61 @@ _IO_FAMILIES = {
     },
     "web": {
         "url", "web_page", "search_results", "external_data",
+    },
+    "weather": {
+        "weather_report", "weather_info", "weather_forecast", "current_weather", "city_names",
+    },
+}
+
+_CITY_ALIASES = {
+    "beijing": "beijing",
+    "北京": "beijing",
+    "toronto": "toronto",
+    "多伦多": "toronto",
+}
+
+_WEATHER_ENTITY_HINTS = tuple(_CITY_ALIASES.keys())
+
+_NOISY_CONSTRAINTS = {
+    "unknown",
+    "search_returned_no_results",
+    "tool_failure",
+    "fetch_failed",
+}
+
+_GENERIC_ROUTER_ENTITIES = {
+    "location",
+    "locations",
+    "city",
+    "cities",
+    "time",
+    "date",
+    "topic",
+    "information",
+}
+
+_GENERIC_ROUTER_CONSTRAINTS = {
+    "location_multi",
+    "time_today",
+    "time_now",
+    "today",
+    "now",
+}
+
+_SEMANTIC_FAMILIES = {
+    "weather": {
+        "weather", "forecast", "temperature", "humidity", "current_weather", "weather_data",
+        "weather_report", "weather_forecast", "weather_lookup",
+    },
+    "realtime_info": {
+        "query_realtime_info", "information_lookup", "search_weather", "compare_weather",
+        "weather_lookup", "stock_lookup", "news_lookup", "price_lookup", "rate_lookup",
+    },
+    "information": {
+        "information", "topic", "requested_output", "text_response", "general_request",
+    },
+    "code_change": {
+        "edit_resource", "code_change", "source_code_file", "workspace_file", "codebase", "workspace",
     },
 }
 
@@ -461,6 +520,243 @@ def _safe_slug(value: str, default: str = "unknown") -> str:
     slug = re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower())
     slug = re.sub(r"_+", "_", slug).strip("_")
     return slug or default
+
+
+def _canonical_city_name(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    for alias, canonical in _CITY_ALIASES.items():
+        if alias.lower() in lowered:
+            return canonical
+    return ""
+
+
+def _semantic_tokens(value: str) -> set[str]:
+    normalized = _safe_slug(value, default="")
+    if not normalized:
+        return set()
+    tokens = {token for token in normalized.split("_") if token and token not in {"current", "data", "requested"}}
+    for family, members in _SEMANTIC_FAMILIES.items():
+        if normalized in members or tokens & members:
+            tokens.add(family)
+    return tokens
+
+
+def _extract_city_entities(*values: Any) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, dict):
+            candidates = value.values()
+        elif isinstance(value, (list, tuple, set)):
+            candidates = value
+        else:
+            candidates = [value]
+        for candidate in candidates:
+            text = str(candidate or "")
+            if not text:
+                continue
+            for hint in _WEATHER_ENTITY_HINTS:
+                if hint.lower() in text.lower():
+                    canonical = _canonical_city_name(hint)
+                    if canonical and canonical not in seen:
+                        seen.add(canonical)
+                        found.append(canonical)
+            canonical = _canonical_city_name(text)
+            if canonical and canonical not in seen:
+                seen.add(canonical)
+                found.append(canonical)
+    return found
+
+
+def _normalize_entity_value(value: Any) -> list[str]:
+    text = _normalize_whitespace(str(value or ""))
+    if not text:
+        return []
+    city_entities = _extract_city_entities(text)
+    if city_entities:
+        return city_entities
+    lowered = text.lower()
+    normalized: list[str] = []
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        host_match = re.search(r"https?://([^/?#]+)", lowered)
+        if host_match:
+            host = host_match.group(1).replace("www.", "")
+            normalized.append(_safe_slug(host))
+        path_tokens = re.findall(r"[a-zA-Z]{3,}", lowered)
+        for token in path_tokens[:6]:
+            slug = _safe_slug(token, default="")
+            if slug and slug not in normalized and slug not in {"https", "http", "www", "com", "cn"}:
+                normalized.append(slug)
+        return normalized[:6]
+    if "/" in text or "." in text:
+        slug = _safe_slug(text, default="")
+        return [slug] if slug else []
+    words = re.findall(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}", text)
+    for word in words[:6]:
+        slug = _safe_slug(word, default="")
+        if slug and slug not in normalized:
+            normalized.append(slug)
+    return normalized[:6]
+
+
+def _normalize_entities(values: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        for item in _normalize_entity_value(value):
+            if item not in seen:
+                seen.add(item)
+                normalized.append(item)
+    return normalized
+
+
+def _coerce_short_text_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = _normalize_whitespace(value)
+        if not text:
+            return []
+        return [text]
+    if isinstance(value, (list, tuple, set)):
+        result: list[str] = []
+        for item in value:
+            text = _normalize_whitespace(str(item or ""))
+            if text:
+                result.append(text)
+        return result
+    text = _normalize_whitespace(str(value))
+    return [text] if text else []
+
+
+def _compress_action_sequence(action_sequence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compressed: list[dict[str, Any]] = []
+    previous_key: tuple[str, str, str] | None = None
+    for action in action_sequence:
+        if not isinstance(action, dict):
+            continue
+        key = (
+            str(action.get("domain") or ""),
+            str(action.get("type") or ""),
+            str(action.get("subtype") or ""),
+        )
+        if key == previous_key:
+            continue
+        compressed.append(action)
+        previous_key = key
+    return compressed
+
+
+def _looks_like_file_path(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(
+        text
+        and not text.startswith("http://")
+        and not text.startswith("https://")
+        and ("/" in text or re.search(r"\.[A-Za-z0-9]{1,8}$", text))
+    )
+
+
+def _arg_value_family(value: Any) -> str:
+    text = str(value or "").strip()
+    lowered = text.lower()
+    if not text:
+        return "empty"
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return "url"
+    if _looks_like_file_path(text):
+        return "file_path"
+    if re.search(r"-?\d+(?:\.\d+)?", text):
+        return "number"
+    return "text"
+
+
+def _arg_entities(value: Any) -> tuple[str, ...]:
+    return tuple(_normalize_entities([value]))
+
+
+def _should_parameterize_arg(key: str, observed_values: list[Any]) -> bool:
+    values = [value for value in observed_values if value not in (None, "")]
+    if len(values) <= 1:
+        return False
+    families = {_arg_value_family(value) for value in values}
+    if "file_path" in families:
+        return True
+    if key in {"query", "url"}:
+        entity_sets = {tuple(_arg_entities(value)) for value in values}
+        if len(entity_sets) == 1 and next(iter(entity_sets), ()):
+            return False
+    return True
+
+
+def _looks_like_weather_request(user_message: str, action_sequence: list[dict[str, Any]] | None = None) -> bool:
+    text = str(user_message or "")
+    lowered = text.lower()
+    if re.search(r"(weather|forecast|temperature|humidity|天气|气温|预报)", lowered):
+        return True
+    action_types = {str((action or {}).get("type") or "") for action in (action_sequence or [])}
+    action_subtypes = {str((action or {}).get("subtype") or "") for action in (action_sequence or [])}
+    return bool(
+        {"query_realtime_info", "retrieve_external_knowledge"} & action_types
+        and {"search_web", "fetch_web_page"} & action_subtypes
+        and _extract_city_entities(text)
+    )
+
+
+def _looks_like_referential_request(user_message: str) -> bool:
+    text = _normalize_whitespace(user_message)
+    if not text:
+        return False
+    lowered = text.lower()
+    return bool(
+        len(text) <= 18
+        or re.search(r"(再|继续|还是|这个|那个|这些|这两个|those|them|it|again|retry|再试|重新|换个)", lowered)
+    )
+
+
+def _infer_context_entities(context_summary: str) -> list[str]:
+    if not context_summary:
+        return []
+    return _normalize_entities([context_summary])
+
+
+def _infer_context_domain_hints(context_summary: str) -> dict[str, str]:
+    summary = str(context_summary or "")
+    lowered = summary.lower()
+    if _looks_like_weather_request(summary):
+        return {
+            "intent_type": "query_realtime_info",
+            "intent_subtype": "weather_lookup",
+            "object_type": "weather_data",
+            "object_subtype": "current_weather",
+            "domain": "external_information_query",
+            "input_type": "city_names",
+            "output_type": "weather_report",
+        }
+    if re.search(r"(stock|price|股价|市值|行情|latest price)", lowered):
+        return {
+            "intent_type": "query_realtime_info",
+            "intent_subtype": "information_lookup",
+            "object_type": "topic",
+            "object_subtype": "information",
+            "domain": "external_information_query",
+            "input_type": "text",
+            "output_type": "text",
+        }
+    if re.search(r"(refactor|fix|patch|rewrite|重构|修复|修改|补测试|测试用例|登录)", lowered):
+        return {
+            "intent_type": "edit_resource",
+            "intent_subtype": "code_change",
+            "object_type": "codebase",
+            "object_subtype": "workspace",
+            "domain": "software_development",
+            "input_type": "text",
+            "output_type": "modified_source_code_file",
+        }
+    return {}
 
 
 def _history_summary(history: list[dict[str, Any]], limit: int = 6) -> str:
@@ -1034,6 +1330,16 @@ def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> 
         turn_id=turn_id,
     )
     normalized_domain = _normalize_domain(str(fp.get("domain") or "unknown"), turn_id)
+    raw_text = " ".join(
+        str(part or "")
+        for part in (
+            (intent or {}).get("raw_description"),
+            (obj or {}).get("raw_description"),
+            fp.get("domain"),
+            " ".join(str(item) for item in (fp.get("constraints") or [])),
+            " ".join(str(item) for item in (fp.get("entities") or [])),
+        )
+    )
 
     normalized_actions: list[dict[str, Any]] = []
     has_unknown = False
@@ -1053,6 +1359,14 @@ def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> 
                 "raw_description": _truncate_text(action.get("raw_description") or "", 180),
             }
         )
+    normalized_actions = _compress_action_sequence(normalized_actions)
+
+    if _looks_like_weather_request(raw_text, normalized_actions):
+        normalized_intent_type = "query_realtime_info"
+        normalized_intent_subtype = "weather_lookup"
+        normalized_object_type = "weather_data"
+        normalized_object_subtype = "current_weather"
+        normalized_domain = "external_information_query"
 
     normalized = {
         "intent": {
@@ -1068,8 +1382,14 @@ def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> 
         "input_type": _safe_slug(str(fp.get("input_type") or "unknown")),
         "output_type": _safe_slug(str(fp.get("output_type") or "unknown")),
         "domain": normalized_domain,
-        "constraints": sorted({_safe_slug(item) for item in (fp.get("constraints") or []) if str(item).strip()}),
-        "entities": sorted({_safe_slug(item) for item in (fp.get("entities") or []) if str(item).strip()}),
+        "constraints": sorted(
+            {
+                _safe_slug(item)
+                for item in _coerce_short_text_list(fp.get("constraints"))
+                if str(item).strip() and _safe_slug(item) not in _NOISY_CONSTRAINTS
+            }
+        ),
+        "entities": sorted(_normalize_entities(fp.get("entities") or [])),
         "action_sequence": normalized_actions,
         "parameter_slots": [_normalize_slot(slot) for slot in (fp.get("parameter_slots") or []) if isinstance(slot, dict)],
         "llm_dependency": _safe_slug(str(fp.get("llm_dependency") or "medium")),
@@ -1104,6 +1424,7 @@ def _heuristic_request_fingerprint(
 ) -> dict[str, Any]:
     text = str(user_message or "")
     lowered = text.lower()
+    weather_request = _looks_like_weather_request(text, action_sequence)
     intent_type = "generate_content"
     intent_subtype = "general_request"
     domain = "content_generation"
@@ -1153,6 +1474,13 @@ def _heuristic_request_fingerprint(
         intent_type = "extract_information"
         intent_subtype = "code_explanation"
         domain = "software_development"
+    elif weather_request:
+        intent_type = "query_realtime_info"
+        intent_subtype = "weather_lookup"
+        domain = "external_information_query"
+        object_type = "weather_data"
+        object_subtype = "current_weather"
+        output_type = "weather_report"
     elif realtime_request:
         intent_type = "query_realtime_info"
         intent_subtype = "information_lookup"
@@ -1161,9 +1489,10 @@ def _heuristic_request_fingerprint(
         intent_type = "generate_content"
         intent_subtype = "summary"
         domain = "content_generation"
-    entities = []
+    entities = _extract_city_entities(text)
     for match in re.findall(r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+|[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})", text):
-        entities.append(match)
+        if match not in entities:
+            entities.append(match)
     if domain == "software_development":
         object_type = "source_code_file" if entities else "codebase"
         object_subtype = "workspace_file" if entities else "workspace"
@@ -1194,10 +1523,12 @@ def _heuristic_request_fingerprint(
                 "subtype": object_subtype,
                 "raw_description": _truncate_text(text, 180),
             },
-            "input_type": "file_path" if entities and domain == "software_development" else "text",
+            "input_type": "city_names" if weather_request else ("file_path" if entities and domain == "software_development" else "text"),
             "output_type": output_type,
             "domain": domain,
-            "constraints": ["chinese"] if re.search(r"[\u4e00-\u9fff]", text) else [],
+            "constraints": (
+                ["multiple_cities"] if len(_extract_city_entities(text)) >= 2 else []
+            ) + (["chinese"] if re.search(r"[\u4e00-\u9fff]", text) else []),
             "entities": entities,
             "action_sequence": action_sequence,
             "parameter_slots": [],
@@ -1264,9 +1595,7 @@ async def build_turn_fingerprint(turn_id: str) -> dict[str, Any]:
     deterministic_entities: list[str] = []
     for row in action_rows:
         raw_args = (row.get("metadata_json") or {}).get("raw_args") or {}
-        for value in raw_args.values():
-            if isinstance(value, str) and ("/" in value or "." in value):
-                deterministic_entities.append(value)
+        deterministic_entities.extend(_normalize_entities(list(raw_args.values())))
         action_summary.append(
             {
                 "tool_name": row["tool_name"],
@@ -1342,9 +1671,9 @@ JSON only.
         if not str(payload.get("domain") or "").strip():
             payload["domain"] = heuristic_fp.get("domain")
         payload["action_sequence"] = deterministic_actions or payload.get("action_sequence") or []
-        merged_entities = set(payload.get("entities") or [])
-        merged_entities.update(deterministic_entities)
-        payload["entities"] = sorted(merged_entities)
+        merged_entities = list(payload.get("entities") or [])
+        merged_entities.extend(deterministic_entities)
+        payload["entities"] = _normalize_entities(merged_entities)
     fingerprint = normalize_fingerprint(payload, turn_id=turn_id)
     now = _now_iso()
     with _conn() as conn:
@@ -1362,6 +1691,7 @@ JSON only.
 
 async def build_request_fingerprint(user_message: str, history: list[dict[str, Any]]) -> dict[str, Any]:
     context_summary = _history_summary(history)
+    heuristic = _heuristic_request_fingerprint(user_message)
     prompt = f"""You are matching a new user request against learned automation skills.
 
 Return exactly one JSON object with these keys:
@@ -1383,8 +1713,55 @@ JSON only.
 """
     payload = await _call_llm_json(prompt, caller="skill_router")
     if not payload:
-        return _heuristic_request_fingerprint(user_message)
-    return normalize_fingerprint(payload)
+        return heuristic
+    normalized = normalize_fingerprint(payload)
+    heuristic_actions = heuristic.get("action_sequence") or []
+    normalized_actions = normalized.get("action_sequence") or []
+    if (
+        not normalized_actions
+        or all(str((item or {}).get("type") or "") in {"", "unknown"} for item in normalized_actions)
+        or all(str((item or {}).get("domain") or "") in {"", "unknown"} for item in normalized_actions)
+    ):
+        normalized["action_sequence"] = heuristic_actions
+    if not normalized.get("constraints") and heuristic.get("constraints"):
+        normalized["constraints"] = list(heuristic.get("constraints") or [])
+    elif heuristic.get("constraints"):
+        normalized_constraints = {str(item) for item in (normalized.get("constraints") or [])}
+        heuristic_constraints = {str(item) for item in (heuristic.get("constraints") or [])}
+        if normalized_constraints and heuristic_constraints and (
+            normalized_constraints <= _GENERIC_ROUTER_CONSTRAINTS
+            or not (normalized_constraints & heuristic_constraints)
+        ):
+            normalized["constraints"] = list(heuristic.get("constraints") or [])
+    if not normalized.get("entities") and heuristic.get("entities"):
+        normalized["entities"] = list(heuristic.get("entities") or [])
+    elif heuristic.get("entities"):
+        normalized_entities = {str(item) for item in (normalized.get("entities") or [])}
+        heuristic_entities = {str(item) for item in (heuristic.get("entities") or [])}
+        if normalized_entities and heuristic_entities and (
+            normalized_entities <= _GENERIC_ROUTER_ENTITIES
+            or not (normalized_entities & heuristic_entities)
+        ):
+            normalized["entities"] = list(heuristic.get("entities") or [])
+    if str(normalized.get("input_type") or "unknown") == "unknown" and heuristic.get("input_type"):
+        normalized["input_type"] = heuristic.get("input_type")
+    elif str(normalized.get("input_type") or "") in {"text", "text_query", "query"} and heuristic.get("input_type") not in {"", "text", "text_query", "query"}:
+        normalized["input_type"] = heuristic.get("input_type")
+    if str(normalized.get("output_type") or "unknown") == "unknown" and heuristic.get("output_type"):
+        normalized["output_type"] = heuristic.get("output_type")
+    elif str(normalized.get("output_type") or "") in {"text", "text_response", "answer"} and heuristic.get("output_type") not in {"", "text", "text_response", "answer"}:
+        normalized["output_type"] = heuristic.get("output_type")
+    if str((normalized.get("intent") or {}).get("type") or "unknown") == "unknown":
+        normalized["intent"] = dict(heuristic.get("intent") or {})
+    if str((normalized.get("object") or {}).get("type") or "unknown") == "unknown":
+        normalized["object"] = dict(heuristic.get("object") or {})
+    if str(normalized.get("domain") or "unknown") == "unknown" and heuristic.get("domain"):
+        normalized["domain"] = heuristic.get("domain")
+    if heuristic.get("parameter_slots") == [] and (normalized.get("parameter_slots") or []):
+        slot_names = {_safe_slug(str((slot or {}).get("name") or ""), default="") for slot in (normalized.get("parameter_slots") or [])}
+        if slot_names <= {"location", "locations", "time", "date", "city", "cities"}:
+            normalized["parameter_slots"] = []
+    return normalized
 
 
 def _node_similarity(node_a: dict[str, Any], node_b: dict[str, Any]) -> float:
@@ -1396,6 +1773,14 @@ def _node_similarity(node_a: dict[str, Any], node_b: dict[str, Any]) -> float:
         return 1.0
     if type_a and type_a == type_b:
         return 0.75
+    type_tokens_a = _semantic_tokens(type_a) | _semantic_tokens(subtype_a)
+    type_tokens_b = _semantic_tokens(type_b) | _semantic_tokens(subtype_b)
+    if type_tokens_a and type_tokens_b:
+        overlap = len(type_tokens_a & type_tokens_b) / max(len(type_tokens_a), len(type_tokens_b))
+        if overlap >= 0.6:
+            return 0.75
+        if overlap >= 0.34:
+            return 0.5
     if type_a and type_b and type_a == "unknown" and type_b == "unknown":
         return 0.25
     return 0.0
@@ -1809,39 +2194,66 @@ def _derive_parameter_templates(turn_ids: list[str]) -> tuple[list[dict[str, Any
                 }
             )
         if group:
-            action_groups.append(group)
+            compressed_group: list[dict[str, Any]] = []
+            previous_signature: tuple[str, str] | None = None
+            for item in group:
+                signature = (str(item.get("action_type") or ""), str(item.get("action_subtype") or ""))
+                if signature == previous_signature:
+                    continue
+                compressed_group.append(item)
+                previous_signature = signature
+            action_groups.append(compressed_group)
     if not action_groups:
         return [], []
-    template_group = action_groups[0]
+    grouped_by_signature: dict[tuple[tuple[str, str], ...], list[list[dict[str, Any]]]] = defaultdict(list)
+    for group in action_groups:
+        signature = tuple(
+            (str(item.get("action_type") or ""), str(item.get("action_subtype") or ""))
+            for item in group
+        )
+        grouped_by_signature[signature].append(group)
+    template_group = max(
+        grouped_by_signature.values(),
+        key=lambda groups: (len(groups), -len(groups[0]), -sum(len(g) for g in groups)),
+    )[0]
     steps: list[dict[str, Any]] = []
     schema: dict[str, dict[str, Any]] = {}
+    schema_reuse: dict[tuple[str, str, tuple[str, ...]], str] = {}
     param_index = 1
     for step_index, template in enumerate(template_group):
         args_template = dict(template.get("args") or {})
         for key, value in list(args_template.items()):
-            values = {json.dumps(group[step_index].get("args", {}).get(key), ensure_ascii=False)
-                      for group in action_groups
-                      if step_index < len(group)}
-            if len(values) > 1:
-                param_name = f"param_{_safe_slug(key)}_{param_index}"
-                param_index += 1
+            observed_values = [
+                group[step_index].get("args", {}).get(key)
+                for group in action_groups
+                if step_index < len(group)
+            ]
+            values = {json.dumps(item, ensure_ascii=False) for item in observed_values}
+            if len(values) > 1 and _should_parameterize_arg(key, observed_values):
                 examples = []
                 for item in sorted(values):
                     try:
                         examples.append(str(json.loads(item)))
                     except Exception:
                         examples.append(str(item))
+                param_type = "path" if _arg_value_family(value) == "file_path" else ("url" if _arg_value_family(value) == "url" else "text")
+                reuse_key = (_safe_slug(key), param_type, tuple(examples[:6]))
+                param_name = schema_reuse.get(reuse_key, "")
+                if not param_name:
+                    param_name = f"param_{_safe_slug(key)}_{param_index}"
+                    param_index += 1
+                    schema_reuse[reuse_key] = param_name
+                    schema[param_name] = {
+                        "parameter_name": param_name,
+                        "type": param_type,
+                        "required": True,
+                        "default_value": str(value) if value is not None else "",
+                        "default_strategy": "use_first_observed",
+                        "validation_rule": "",
+                        "examples": examples[:6],
+                        "aliases": [key],
+                    }
                 args_template[key] = f"{{{{{param_name}}}}}"
-                schema[param_name] = {
-                    "parameter_name": param_name,
-                    "type": "text",
-                    "required": True,
-                    "default_value": str(value) if value is not None else "",
-                    "default_strategy": "use_first_observed",
-                    "validation_rule": "",
-                    "examples": examples[:6],
-                    "aliases": [key],
-                }
         steps.append(
             {
                 "step_id": f"step_{step_index + 1}",
@@ -3320,7 +3732,13 @@ async def _validate_shadow_skill_for_turn(skill: dict[str, Any], turn_row: dict[
         input_schema=skill["input_schema"],
         llm_fallback=bool((skill.get("parameter_extractor") or {}).get("llm_fallback", True)),
     )
-    success = extraction["complete"] and consistency >= _SHADOW_CONSISTENCY_THRESHOLD
+    success = extraction["complete"] and (
+        consistency >= _SHADOW_CONSISTENCY_THRESHOLD
+        or (
+            float(similarity["total"]) >= _PATTERN_STRONG_THRESHOLD
+            and consistency >= 0.50
+        )
+    )
     run_id = _new_id("skill_run")
     with _conn() as conn:
         conn.execute(
@@ -3365,6 +3783,39 @@ async def _validate_shadow_skills_for_turn(turn_id: str, fingerprint: dict[str, 
     for row in rows:
         skill = _skill_row_to_definition(row)
         await _validate_shadow_skill_for_turn(skill, dict(turn_row), fingerprint)
+
+
+async def _backfill_shadow_validation(skill_id: str) -> None:
+    skill = get_learned_skill(skill_id)
+    if skill is None or str(skill.get("status") or "") != "shadow":
+        return
+    turn_ids = list((skill.get("created_from") or {}).get("turn_list") or [])
+    if not turn_ids and skill.get("pattern_id"):
+        turn_ids = _member_turn_ids(str(skill["pattern_id"]))
+    for turn_id in turn_ids:
+        with _conn() as conn:
+            existing = conn.execute(
+                """
+                SELECT 1
+                FROM learned_skill_runs
+                WHERE skill_id = ? AND version = ? AND turn_id = ? AND dry_run = 1
+                LIMIT 1
+                """,
+                (skill_id, int(skill["version"]), str(turn_id)),
+            ).fetchone()
+            turn_row = conn.execute(
+                "SELECT * FROM behavior_turns WHERE turn_id = ?",
+                (str(turn_id),),
+            ).fetchone()
+        if existing is not None or turn_row is None:
+            continue
+        fingerprint = _fingerprint_for_turn(str(turn_id))
+        if not fingerprint:
+            continue
+        await _validate_shadow_skill_for_turn(skill, dict(turn_row), fingerprint)
+        skill = get_learned_skill(skill_id)
+        if skill is None or str(skill.get("status") or "") != "shadow":
+            return
 
 
 def _replay_tests_for_skill(skill_id: str) -> list[dict[str, Any]]:
@@ -3638,6 +4089,7 @@ async def _maybe_create_or_update_skill(pattern_id: str) -> None:
                         ),
                     },
                 )
+    await _backfill_shadow_validation(skill_id)
 
 
 def _promote_unknown_pool() -> None:
@@ -3753,6 +4205,28 @@ async def scan_for_session_start() -> dict[str, Any]:
 
 async def scan_for_manual_learn() -> dict[str, Any]:
     return await process_unprocessed_turns(force=True)
+
+
+async def rebuild_learning_state(*, reprocess_all_turns: bool = True) -> dict[str, Any]:
+    with _conn() as conn:
+        conn.execute("DELETE FROM behavior_pattern_turns")
+        conn.execute("DELETE FROM behavior_patterns")
+        conn.execute("DELETE FROM behavior_fingerprints")
+        conn.execute("DELETE FROM behavior_replay_tests")
+        conn.execute("DELETE FROM learned_skill_patches")
+        conn.execute("DELETE FROM learned_skill_runs")
+        conn.execute("DELETE FROM learned_skill_versions")
+        conn.execute("DELETE FROM learned_skills")
+        if reprocess_all_turns:
+            conn.execute("UPDATE behavior_turns SET processed_status = 0, linked_skill_id = '', updated_at = updated_at")
+        conn.commit()
+    stats = await process_unprocessed_turns(force=True)
+    learned = list_learned_skills()
+    return {
+        **stats,
+        "patterns": list_patterns("all"),
+        "learned_skills": learned,
+    }
 
 
 async def run_learned_skill(skill_id: str, param_overrides: dict[str, Any] | None = None) -> str:
