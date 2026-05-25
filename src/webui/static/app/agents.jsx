@@ -337,6 +337,8 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
         var _a = nodeSize(n), w = _a.w, h = _a.h;
         var relX = (Number(n.x) || 0) - minX;
         var relY = (Number(n.y) || 0) - minY;
+        if (orientation === "horizontal") relX *= 0.68;
+        if (orientation === "vertical") relY *= 0.68;
         var x = orientation === "vertical" ? padding + relY : padding + relX;
         var y = orientation === "vertical" ? topOffset + padding + relX : topOffset + padding + relY;
         if (n.kind === "subagent") {

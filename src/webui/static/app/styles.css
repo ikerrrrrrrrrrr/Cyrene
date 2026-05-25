@@ -5519,6 +5519,472 @@ html[data-text-size="large"] .settings-content .subtitle { font-size: 16px; }
 html[data-text-size="large"] .field .label { font-size: 16.5px; }
 html[data-text-size="large"] .field .label small { font-size: 14.5px; }
 html[data-text-size="large"] .input, html[data-text-size="large"] .select { font-size: 15.5px; }
+
+/* ============================================================
+   Main workspace refresh — Claude/Codex style shell
+   ============================================================ */
+html[data-theme="light"] {
+  --canvas-bg: #ffffff;
+  --canvas-bg-soft: #ffffff;
+  --bg: #ffffff;
+  --bg-1: #ffffff;
+  --bg-2: #f5f5f4;
+  --bg-3: #e9e9e7;
+  --line: #e1e1df;
+  --line-2: #d2d2cf;
+  --text: #242424;
+  --text-2: #4c4c49;
+  --text-3: #858580;
+  --text-4: #aaa9a4;
+  --surface-1: #ffffff;
+  --surface-2: #f7f7f6;
+  --surface-3: #ededeb;
+  --material-border: #dededb;
+  --material-border-strong: #ccccca;
+  --shadow-sm: 0 1px 2px rgba(28,28,25,0.04);
+  --shadow-md: 0 12px 34px rgba(28,28,25,0.06);
+}
+
+body {
+  background: var(--canvas-bg);
+}
+
+.app {
+  grid-template-columns: 300px 1fr;
+  gap: 0;
+  padding: 0;
+  background: var(--canvas-bg);
+  --bg: #ffffff;
+  --bg-1: #ffffff;
+  --bg-2: #f5f5f4;
+  --bg-3: #e9e9e7;
+  --line: #e1e1df;
+  --line-2: #d2d2cf;
+  --text: #242424;
+  --text-2: #4c4c49;
+  --text-3: #858580;
+  --text-4: #aaa9a4;
+  --surface-1: #ffffff;
+  --surface-2: #f7f7f6;
+  --surface-3: #ededeb;
+  --material-border: #dededb;
+  --material-border-strong: #ccccca;
+  color: #242424;
+}
+
+.app.sidebar-collapsed {
+  grid-template-columns: 72px 1fr;
+}
+
+.sidebar {
+  border-radius: 0 14px 14px 0;
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-top: 0;
+  border-bottom: 0;
+  background: #f7f7f5;
+  box-shadow: 10px 0 30px rgba(28, 28, 25, 0.04);
+  backdrop-filter: none;
+}
+
+.sidebar::before,
+.topbar::before {
+  display: none;
+}
+
+.sidebar-windowbar,
+.sidebar-tools {
+  height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  color: var(--text-4);
+  flex-shrink: 0;
+}
+
+.sidebar-tools {
+  justify-content: flex-start;
+  height: 46px;
+  padding: 10px 16px 4px;
+}
+
+.sidebar-tool-spacer {
+  flex: 1;
+}
+
+.sidebar-brand-button {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+
+.sidebar-brand-button:hover {
+  background: var(--sidebar-hover, #eeeeec);
+}
+
+.sidebar-brand {
+  padding: 14px 20px 10px;
+  border-bottom: 0;
+  color: var(--text-3);
+}
+
+.brand-mark,
+.welcome-mark {
+  filter: hue-rotate(325deg) saturate(1.35);
+}
+
+.brand-name {
+  font-family: var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.nav {
+  padding: 4px 16px;
+}
+
+.nav-section {
+  padding: 16px 20px 6px;
+  color: var(--text-4);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.nav-section-collapsible {
+  padding-right: 20px;
+}
+
+.nav-item {
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 620;
+  gap: 10px;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  background: #e6e6e4;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--text);
+  transform: none;
+}
+
+.nav-item.active::before {
+  display: none;
+}
+
+.nav-key,
+.nav-badge {
+  border: 0;
+  background: transparent;
+  color: var(--text-4);
+  padding: 0;
+}
+
+.skills-rail {
+  display: none;
+}
+
+.sidebar-footer {
+  border-top: 0;
+  padding: 14px 16px;
+}
+
+.avatar {
+  background: transparent;
+  color: var(--accent);
+  box-shadow: none;
+}
+
+.who {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.who small {
+  color: var(--text-3);
+}
+
+.page {
+  gap: 0;
+  background: #ffffff;
+}
+
+.topbar {
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: #ffffff;
+  box-shadow: none;
+  min-height: 56px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout {
+  display: block;
+  min-height: 100vh;
+  height: 100vh;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-side {
+  display: none;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-main {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll {
+  padding: 56px clamp(36px, 7vw, 112px) 180px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .thread-header,
+.app[data-screen-label="Cyrene · chat"] .archive-banner {
+  display: none;
+}
+
+.chat-welcome {
+  width: min(660px, 100%);
+  margin-top: 8px;
+}
+
+.chat-welcome h1 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 58px;
+  color: var(--text);
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 720;
+  letter-spacing: 0;
+}
+
+.welcome-mark {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  background: center / contain no-repeat url("logo-mark.png");
+}
+
+.welcome-card {
+  width: min(510px, 100%);
+  padding: 12px;
+  border-radius: 8px;
+  background: #f2f2f0;
+  color: var(--text);
+}
+
+.welcome-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.welcome-tabs,
+.welcome-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 14px;
+  font-weight: 640;
+}
+
+.welcome-tabs span,
+.welcome-range span {
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+.welcome-tabs .active,
+.welcome-range .active {
+  background: #e5e5e2;
+  color: var(--text);
+}
+
+.welcome-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.welcome-metrics div {
+  min-height: 45px;
+  padding: 6px 7px;
+  border-radius: 5px;
+  background: #e2e2df;
+  overflow: hidden;
+}
+
+.welcome-metrics span {
+  display: block;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.welcome-metrics strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.1;
+  font-weight: 780;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.welcome-heatmap {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(22, 1fr);
+  gap: 4px;
+}
+
+.welcome-heatmap span {
+  aspect-ratio: 1;
+  border-radius: 3px;
+  background: #e2e2df;
+}
+
+.welcome-heatmap span.hot {
+  background: #80a8ee;
+}
+
+.welcome-heatmap span.high {
+  background: #2868d6;
+}
+
+.welcome-card p {
+  margin: 10px 0 2px;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer {
+  position: fixed;
+  left: 300px;
+  right: 0;
+  bottom: 0;
+  padding: 0 clamp(36px, 6vw, 84px) 26px;
+  background: linear-gradient(180deg, rgba(255,255,255,0), #ffffff 20%, #ffffff 100%);
+  z-index: 20;
+}
+
+.app.sidebar-collapsed[data-screen-label="Cyrene · chat"] .composer {
+  left: 72px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer-box {
+  min-height: 60px;
+  border-radius: 12px;
+  border-color: #d9d9d6;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(28,28,25,0.04), 0 0 0 1px rgba(28,28,25,0.02);
+  padding: 10px 12px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer textarea {
+  min-height: 28px;
+  color: var(--text);
+  font-size: 15.5px;
+  line-height: 1.45;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer textarea::placeholder {
+  color: #c1c1bd;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer-actions {
+  margin-top: 6px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer-actions .send {
+  border-radius: 8px;
+  background: #f2f2f0;
+  color: var(--text-2);
+  border: 1px solid #dededb;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer-actions .send:not(:disabled):hover {
+  background: #e8e8e5;
+  color: var(--text);
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer-hint {
+  padding: 0 8px;
+  color: #a38428;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chip {
+  border-radius: 7px;
+  background: #ffffff;
+  border-color: #d9d9d6;
+  color: var(--text-2);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+@media (max-width: 900px) {
+  .app {
+    padding: 0;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .chat-layout {
+    min-height: 100vh;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .chat-scroll {
+    padding: 34px 20px 190px;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .composer {
+    left: 0;
+    padding: 0 16px 18px;
+  }
+
+  .chat-welcome h1 {
+    margin-bottom: 36px;
+    font-size: 24px;
+  }
+
+  .welcome-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 html[data-text-size="large"] .btn { font-size: 15px; }
 html[data-text-size="large"] .seg-btn { font-size: 15px; padding: 12px 20px; }
 html[data-text-size="large"] .model-name { font-size: 15.5px; }
@@ -5650,4 +6116,2087 @@ html[data-text-size="large"] .setup-section h2 { font-size: 25px; }
     height: calc((100vh - 24px) - 160px);
     min-height: 320px;
   }
+}
+
+/* Requested alignment and sidebar behavior refinements */
+.app {
+  --r-s: 12px;
+  --r-m: 12px;
+  --r-l: 12px;
+  --r-xl: 12px;
+}
+
+.sidebar .nav-section {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sidebar .nav-item {
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.sidebar-brand-inline .brand-name {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sidebar-tools {
+  min-height: 48px;
+  padding: 12px 16px 8px;
+}
+
+.windowbar-btn {
+  border-radius: 8px;
+}
+
+.topbar,
+.chat-main,
+.chat-side,
+.dashboard-panel,
+.dashboard-hero-panel,
+.dashboard-side-panel,
+.settings-pane,
+.settings-nav,
+.sessions-main,
+.session-detail,
+.skills-side,
+.skill-detail,
+.card,
+.summary-tile,
+.stat-tile,
+.model-card,
+.composer-box,
+.input,
+.select {
+  border-radius: 12px;
+}
+
+.right-panel-button {
+  min-width: 38px;
+  width: 38px;
+  border-radius: 10px;
+}
+
+.right-panel-control {
+  position: static;
+}
+
+.chat-side-switcher {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  padding: 10px;
+  border-bottom: 1px solid #e6e6e3;
+  background: #fbfbfa;
+  flex-shrink: 0;
+}
+
+.chat-side-switcher button {
+  min-width: 0;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #73736d;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chat-side-switcher button:hover,
+.chat-side-switcher button.active {
+  background: #ececea;
+  color: #242421;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 12px;
+  height: auto;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout.right-collapsed {
+  grid-template-columns: 1fr 0;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-side {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  width: auto;
+  display: flex;
+  border: 1px solid #dededb;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(24,24,22,0.05);
+  backdrop-filter: none;
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout.right-collapsed .chat-side {
+  opacity: 0;
+  transform: translateX(18px);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout:not(.right-collapsed)::after {
+  display: none;
+}
+
+@media (max-width: 960px) {
+  .app[data-screen-label="Cyrene · chat"] .chat-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .chat-side {
+    min-height: auto;
+  }
+}
+
+/* Dark theme repair after shell refresh */
+html[data-theme="dark"] body {
+  background: #0c1015;
+}
+
+html[data-theme="dark"] .app {
+  --bg: #0d1117;
+  --bg-1: #131922;
+  --bg-2: #19212b;
+  --bg-3: #202a35;
+  --line: #252f3a;
+  --line-2: #33404d;
+  --text: #ebeff3;
+  --text-2: #b1bbc5;
+  --text-3: #798593;
+  --text-4: #596473;
+  --surface-1: #141b23;
+  --surface-2: #18212a;
+  --surface-3: #202a35;
+  --material-border: #2b3641;
+  --material-border-strong: #3a4653;
+  --canvas-bg: #0c1218;
+  --canvas-bg-soft: #10171f;
+  color: var(--text);
+  background: #0c1015;
+}
+
+html[data-theme="dark"] .sidebar {
+  --sidebar-text: #ebeff3;
+  --sidebar-muted: #b1bbc5;
+  --sidebar-faint: #798593;
+  --sidebar-hover: #19212b;
+  --sidebar-active: #202a35;
+  --sidebar-border: #2b3641;
+  border-color: #252f3a;
+  background: #10161d;
+  box-shadow: inset -1px 0 0 #252f3a;
+}
+
+html[data-theme="dark"] .sidebar-brand-inline .brand-name,
+html[data-theme="dark"] .sidebar .who,
+html[data-theme="dark"] .topbar-title b {
+  color: var(--text);
+}
+
+html[data-theme="dark"] .sidebar .avatar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .topbar-left,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .chat-side-switcher,
+html[data-theme="dark"] .dashboard-panel,
+html[data-theme="dark"] .dashboard-hero-panel,
+html[data-theme="dark"] .dashboard-side-panel,
+html[data-theme="dark"] .settings-pane,
+html[data-theme="dark"] .settings-nav,
+html[data-theme="dark"] .sessions-main,
+html[data-theme="dark"] .session-detail,
+html[data-theme="dark"] .skills-side,
+html[data-theme="dark"] .skill-detail,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .summary-tile,
+html[data-theme="dark"] .stat-tile,
+html[data-theme="dark"] .model-card,
+html[data-theme="dark"] .composer-box,
+html[data-theme="dark"] .chat-main,
+html[data-theme="dark"] .chat-side {
+  border-color: var(--line);
+  background: var(--bg-1);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.22);
+}
+
+html[data-theme="dark"] .page,
+html[data-theme="dark"] .dashboard-shell,
+html[data-theme="dark"] .memory-page,
+html[data-theme="dark"] .evolution-page,
+html[data-theme="dark"] .settings-layout,
+html[data-theme="dark"] .sessions-layout,
+html[data-theme="dark"] .skills-layout,
+html[data-theme="dark"] .canvas-wrap {
+  background: #0c1015;
+}
+
+html[data-theme="dark"] .topbar {
+  background: rgba(19,25,34,0.9);
+}
+
+html[data-theme="dark"] .topbar-left,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button {
+  background: #151d26;
+  color: var(--text-2);
+}
+
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .right-panel-button:hover,
+html[data-theme="dark"] .right-panel-button.active,
+html[data-theme="dark"] .chat-side-switcher button:hover,
+html[data-theme="dark"] .chat-side-switcher button.active {
+  background: #202a35;
+  color: var(--text);
+}
+
+html[data-theme="dark"] .welcome-card,
+html[data-theme="dark"] .welcome-metrics div,
+html[data-theme="dark"] .welcome-heatmap span,
+html[data-theme="dark"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chip {
+  background: var(--bg-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
+  background: linear-gradient(180deg, rgba(12,16,21,0), #0c1015 20%, #0c1015 100%);
+}
+
+/* True final precedence fixes. */
+.sidebar.collapsed .sidebar-tools {
+  display: flex;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+  display: inline-flex !important;
+  color: var(--accent);
+  background: var(--sidebar-active);
+  border-color: var(--sidebar-border);
+}
+
+.sidebar.collapsed .windowbar-btn:not(.sidebar-collapse-btn) {
+  display: none !important;
+}
+
+.settings-content,
+.settings-pane,
+.settings-block-head p,
+.settings-inline-copy small,
+.settings-channel-status-copy small,
+.settings-placeholder-card,
+.settings-about-hero p,
+.settings-about-card small,
+.settings-content .subtitle,
+.field .label,
+.input,
+.select,
+.btn,
+.seg-btn {
+  font-size: 16px;
+}
+
+.settings-block-head h3,
+.settings-collapse-head h3,
+.settings-channel-status-copy strong {
+  font-size: 17px;
+}
+
+html[data-text-size="large"] .settings-content,
+html[data-text-size="large"] .settings-pane,
+html[data-text-size="large"] .settings-content .subtitle,
+html[data-text-size="large"] .field .label,
+html[data-text-size="large"] .input,
+html[data-text-size="large"] .select,
+html[data-text-size="large"] .btn,
+html[data-text-size="large"] .seg-btn {
+  font-size: 18px;
+}
+
+/* Absolute final dark palette: neutral gray-black, no blue or white remnants. */
+html[data-theme="dark"] body,
+html[data-theme="dark"] .app,
+html[data-theme="dark"] .page,
+html[data-theme="dark"] .dashboard-shell,
+html[data-theme="dark"] .memory-page,
+html[data-theme="dark"] .evolution-page,
+html[data-theme="dark"] .settings-layout,
+html[data-theme="dark"] .sessions-layout,
+html[data-theme="dark"] .skills-layout,
+html[data-theme="dark"] .canvas-wrap {
+  background: #111111;
+  color: #eeeeee;
+}
+
+html[data-theme="dark"] .app {
+  --bg: #111111;
+  --bg-1: #181818;
+  --bg-2: #222222;
+  --bg-3: #2c2c2c;
+  --line: #333333;
+  --line-2: #444444;
+  --text: #eeeeee;
+  --text-2: #c7c7c7;
+  --text-3: #9a9a9a;
+  --text-4: #6f6f6f;
+  --surface-1: #181818;
+  --surface-2: #222222;
+  --surface-3: #2c2c2c;
+  --material-border: #333333;
+  --material-border-strong: #444444;
+  --canvas-bg: #111111;
+  --canvas-bg-soft: #181818;
+}
+
+html[data-theme="dark"] .sidebar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .topbar-left,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .chat-main,
+html[data-theme="dark"] .chat-side,
+html[data-theme="dark"] .dashboard-panel,
+html[data-theme="dark"] .dashboard-hero-panel,
+html[data-theme="dark"] .dashboard-side-panel,
+html[data-theme="dark"] .settings-pane,
+html[data-theme="dark"] .settings-nav,
+html[data-theme="dark"] .sessions-main,
+html[data-theme="dark"] .session-detail,
+html[data-theme="dark"] .skills-side,
+html[data-theme="dark"] .skill-detail,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .summary-tile,
+html[data-theme="dark"] .stat-tile,
+html[data-theme="dark"] .model-card,
+html[data-theme="dark"] .composer-box,
+html[data-theme="dark"] .runs-list,
+html[data-theme="dark"] .inspector,
+html[data-theme="dark"] .canvas-toolbar,
+html[data-theme="dark"] .canvas-legend,
+html[data-theme="dark"] .node,
+html[data-theme="dark"] .msg.agent .msg-body,
+html[data-theme="dark"] .msg.system .msg-body,
+html[data-theme="dark"] .msg.user .msg-body,
+html[data-theme="dark"] .input,
+html[data-theme="dark"] .select {
+  border-color: #333333;
+  background: #181818;
+  color: #eeeeee;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .sidebar {
+  --sidebar-text: #eeeeee;
+  --sidebar-muted: #c7c7c7;
+  --sidebar-faint: #8a8a8a;
+  --sidebar-hover: #222222;
+  --sidebar-active: #2c2c2c;
+  --sidebar-border: #333333;
+}
+
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chip,
+html[data-theme="dark"] .chip,
+html[data-theme="dark"] .chat-side-switcher,
+html[data-theme="dark"] .settings-nav .nav-item,
+html[data-theme="dark"] .seg,
+html[data-theme="dark"] .seg-btn,
+html[data-theme="dark"] .welcome-card,
+html[data-theme="dark"] .welcome-metrics div,
+html[data-theme="dark"] .welcome-heatmap span {
+  border-color: #333333;
+  background: #222222;
+  color: #c7c7c7;
+}
+
+html[data-theme="dark"] .settings-nav .nav-item.active,
+html[data-theme="dark"] .settings-nav .nav-item:hover,
+html[data-theme="dark"] .seg-btn.active,
+html[data-theme="dark"] .seg-btn:hover,
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .right-panel-button:hover,
+html[data-theme="dark"] .right-panel-button.active,
+html[data-theme="dark"] .chat-side-switcher button:hover,
+html[data-theme="dark"] .chat-side-switcher button.active {
+  background: #2c2c2c;
+  color: #eeeeee;
+  border-color: #444444;
+}
+
+html[data-theme="dark"] .composer textarea,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea {
+  color: #eeeeee;
+  background: transparent;
+}
+
+html[data-theme="dark"] .composer textarea::placeholder,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea::placeholder {
+  color: #6f6f6f;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
+  background: linear-gradient(180deg, rgba(17,17,17,0), #111111 20%, #111111 100%);
+}
+
+/* Settings navigation typography must follow the global text-size setting. */
+.settings-nav .nav-section {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.settings-nav .nav-item {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+html[data-text-size="large"] .settings-nav .nav-section {
+  font-size: 14px;
+}
+
+html[data-text-size="large"] .settings-nav .nav-item {
+  font-size: 16px;
+}
+
+/* Absolute final dark palette: neutral gray-black, no blue or white remnants. */
+html[data-theme="dark"] body,
+html[data-theme="dark"] .app,
+html[data-theme="dark"] .page,
+html[data-theme="dark"] .dashboard-shell,
+html[data-theme="dark"] .memory-page,
+html[data-theme="dark"] .evolution-page,
+html[data-theme="dark"] .settings-layout,
+html[data-theme="dark"] .sessions-layout,
+html[data-theme="dark"] .skills-layout,
+html[data-theme="dark"] .canvas-wrap {
+  background: #111111;
+  color: #eeeeee;
+}
+
+html[data-theme="dark"] .app {
+  --bg: #111111;
+  --bg-1: #181818;
+  --bg-2: #222222;
+  --bg-3: #2c2c2c;
+  --line: #333333;
+  --line-2: #444444;
+  --text: #eeeeee;
+  --text-2: #c7c7c7;
+  --text-3: #9a9a9a;
+  --text-4: #6f6f6f;
+  --surface-1: #181818;
+  --surface-2: #222222;
+  --surface-3: #2c2c2c;
+  --material-border: #333333;
+  --material-border-strong: #444444;
+  --canvas-bg: #111111;
+  --canvas-bg-soft: #181818;
+}
+
+html[data-theme="dark"] .sidebar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .chat-main,
+html[data-theme="dark"] .chat-side,
+html[data-theme="dark"] .dashboard-panel,
+html[data-theme="dark"] .dashboard-hero-panel,
+html[data-theme="dark"] .dashboard-side-panel,
+html[data-theme="dark"] .settings-pane,
+html[data-theme="dark"] .settings-nav,
+html[data-theme="dark"] .sessions-main,
+html[data-theme="dark"] .session-detail,
+html[data-theme="dark"] .skills-side,
+html[data-theme="dark"] .skill-detail,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .summary-tile,
+html[data-theme="dark"] .stat-tile,
+html[data-theme="dark"] .model-card,
+html[data-theme="dark"] .composer-box,
+html[data-theme="dark"] .runs-list,
+html[data-theme="dark"] .inspector,
+html[data-theme="dark"] .canvas-toolbar,
+html[data-theme="dark"] .canvas-legend,
+html[data-theme="dark"] .node,
+html[data-theme="dark"] .msg.agent .msg-body,
+html[data-theme="dark"] .msg.system .msg-body,
+html[data-theme="dark"] .msg.user .msg-body,
+html[data-theme="dark"] .input,
+html[data-theme="dark"] .select {
+  border-color: #333333;
+  background: #181818;
+  color: #eeeeee;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .sidebar {
+  --sidebar-text: #eeeeee;
+  --sidebar-muted: #c7c7c7;
+  --sidebar-faint: #8a8a8a;
+  --sidebar-hover: #222222;
+  --sidebar-active: #2c2c2c;
+  --sidebar-border: #333333;
+}
+
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chip,
+html[data-theme="dark"] .chip,
+html[data-theme="dark"] .chat-side-switcher,
+html[data-theme="dark"] .settings-nav .nav-item,
+html[data-theme="dark"] .seg,
+html[data-theme="dark"] .seg-btn,
+html[data-theme="dark"] .welcome-card,
+html[data-theme="dark"] .welcome-metrics div,
+html[data-theme="dark"] .welcome-heatmap span {
+  border-color: #333333;
+  background: #222222;
+  color: #c7c7c7;
+}
+
+html[data-theme="dark"] .settings-nav .nav-item.active,
+html[data-theme="dark"] .settings-nav .nav-item:hover,
+html[data-theme="dark"] .seg-btn.active,
+html[data-theme="dark"] .seg-btn:hover,
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .right-panel-button:hover,
+html[data-theme="dark"] .right-panel-button.active,
+html[data-theme="dark"] .chat-side-switcher button:hover,
+html[data-theme="dark"] .chat-side-switcher button.active {
+  background: #2c2c2c;
+  color: #eeeeee;
+  border-color: #444444;
+}
+
+html[data-theme="dark"] .composer textarea,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea {
+  color: #eeeeee;
+  background: transparent;
+}
+
+html[data-theme="dark"] .composer textarea::placeholder,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea::placeholder {
+  color: #6f6f6f;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
+  background: linear-gradient(180deg, rgba(17,17,17,0), #111111 20%, #111111 100%);
+}
+
+/* Neutral gray-black dark mode, with no white chat/settings surfaces. */
+html[data-theme="dark"] body,
+html[data-theme="dark"] .app,
+html[data-theme="dark"] .page,
+html[data-theme="dark"] .dashboard-shell,
+html[data-theme="dark"] .memory-page,
+html[data-theme="dark"] .evolution-page,
+html[data-theme="dark"] .settings-layout,
+html[data-theme="dark"] .sessions-layout,
+html[data-theme="dark"] .skills-layout,
+html[data-theme="dark"] .canvas-wrap {
+  background: #111111;
+  color: #eeeeee;
+}
+
+html[data-theme="dark"] .app {
+  --bg: #111111;
+  --bg-1: #181818;
+  --bg-2: #222222;
+  --bg-3: #2c2c2c;
+  --line: #333333;
+  --line-2: #444444;
+  --text: #eeeeee;
+  --text-2: #c7c7c7;
+  --text-3: #9a9a9a;
+  --text-4: #6f6f6f;
+  --surface-1: #181818;
+  --surface-2: #222222;
+  --surface-3: #2c2c2c;
+  --material-border: #333333;
+  --material-border-strong: #444444;
+  --canvas-bg: #111111;
+  --canvas-bg-soft: #181818;
+}
+
+html[data-theme="dark"] .sidebar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .chat-main,
+html[data-theme="dark"] .chat-side,
+html[data-theme="dark"] .dashboard-panel,
+html[data-theme="dark"] .dashboard-hero-panel,
+html[data-theme="dark"] .dashboard-side-panel,
+html[data-theme="dark"] .settings-pane,
+html[data-theme="dark"] .settings-nav,
+html[data-theme="dark"] .sessions-main,
+html[data-theme="dark"] .session-detail,
+html[data-theme="dark"] .skills-side,
+html[data-theme="dark"] .skill-detail,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .summary-tile,
+html[data-theme="dark"] .stat-tile,
+html[data-theme="dark"] .model-card,
+html[data-theme="dark"] .composer-box,
+html[data-theme="dark"] .runs-list,
+html[data-theme="dark"] .inspector,
+html[data-theme="dark"] .canvas-toolbar,
+html[data-theme="dark"] .canvas-legend,
+html[data-theme="dark"] .node,
+html[data-theme="dark"] .msg.agent .msg-body,
+html[data-theme="dark"] .msg.system .msg-body,
+html[data-theme="dark"] .msg.user .msg-body,
+html[data-theme="dark"] .input,
+html[data-theme="dark"] .select {
+  border-color: #333333;
+  background: #181818;
+  color: #eeeeee;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .sidebar {
+  --sidebar-text: #eeeeee;
+  --sidebar-muted: #c7c7c7;
+  --sidebar-faint: #8a8a8a;
+  --sidebar-hover: #222222;
+  --sidebar-active: #2c2c2c;
+  --sidebar-border: #333333;
+}
+
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chip,
+html[data-theme="dark"] .chip,
+html[data-theme="dark"] .chat-side-switcher,
+html[data-theme="dark"] .settings-nav .nav-item,
+html[data-theme="dark"] .seg,
+html[data-theme="dark"] .seg-btn,
+html[data-theme="dark"] .welcome-card,
+html[data-theme="dark"] .welcome-metrics div,
+html[data-theme="dark"] .welcome-heatmap span {
+  border-color: #333333;
+  background: #222222;
+  color: #c7c7c7;
+}
+
+html[data-theme="dark"] .settings-nav .nav-item.active,
+html[data-theme="dark"] .settings-nav .nav-item:hover,
+html[data-theme="dark"] .seg-btn.active,
+html[data-theme="dark"] .seg-btn:hover,
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .right-panel-button:hover,
+html[data-theme="dark"] .right-panel-button.active,
+html[data-theme="dark"] .chat-side-switcher button:hover,
+html[data-theme="dark"] .chat-side-switcher button.active {
+  background: #2c2c2c;
+  color: #eeeeee;
+  border-color: #444444;
+}
+
+html[data-theme="dark"] .composer textarea,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea {
+  color: #eeeeee;
+  background: transparent;
+}
+
+html[data-theme="dark"] .composer textarea::placeholder,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea::placeholder {
+  color: #6f6f6f;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
+  background: linear-gradient(180deg, rgba(17,17,17,0), #111111 20%, #111111 100%);
+}
+
+/* End-of-file precedence fixes. */
+.sidebar.collapsed .sidebar-tools {
+  display: flex;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+  display: inline-flex !important;
+  color: var(--accent);
+  background: var(--sidebar-active);
+  border-color: var(--sidebar-border);
+}
+
+.sidebar.collapsed .windowbar-btn:not(.sidebar-collapse-btn) {
+  display: none !important;
+}
+
+.settings-content,
+.settings-pane,
+.settings-block-head p,
+.settings-inline-copy small,
+.settings-channel-status-copy small,
+.settings-placeholder-card,
+.settings-about-hero p,
+.settings-about-card small,
+.settings-content .subtitle,
+.field .label,
+.input,
+.select,
+.btn,
+.seg-btn {
+  font-size: 16px;
+}
+
+.settings-block-head h3,
+.settings-collapse-head h3,
+.settings-channel-status-copy strong {
+  font-size: 17px;
+}
+
+html[data-text-size="large"] .settings-content,
+html[data-text-size="large"] .settings-pane,
+html[data-text-size="large"] .settings-content .subtitle,
+html[data-text-size="large"] .field .label,
+html[data-text-size="large"] .input,
+html[data-text-size="large"] .select,
+html[data-text-size="large"] .btn,
+html[data-text-size="large"] .seg-btn {
+  font-size: 18px;
+}
+
+/* Latest shell adjustments: fixed collapsed rail and integrated topbar. */
+.app.sidebar-collapsed {
+  grid-template-columns: 78px 1fr;
+}
+
+.sidebar.collapsed {
+  display: flex;
+  width: auto;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.sidebar.collapsed .sidebar-tools {
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar.collapsed .sidebar-brand-inline {
+  display: none;
+}
+
+.sidebar.collapsed .sidebar-tool-spacer {
+  display: none;
+}
+
+.sidebar.collapsed .windowbar-btn {
+  display: inline-flex;
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+  color: var(--accent);
+  background: var(--sidebar-active);
+  border-color: var(--sidebar-border);
+}
+
+.topbar {
+  min-height: 48px;
+  margin: 0;
+  padding: 6px 2px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.topbar-title {
+  padding-left: 2px;
+}
+
+.topbar-right {
+  gap: 8px;
+}
+
+.topbar .statlight,
+.topbar .iconbtn,
+.topbar .theme-toggle-btn,
+.right-panel-button {
+  background: var(--bg-2);
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout {
+  grid-template-columns: minmax(0, 1fr) 320px;
+  align-items: stretch;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-side {
+  top: auto;
+  align-self: stretch;
+  min-height: 0;
+  max-height: none;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll {
+  padding-top: 28px;
+}
+
+html[data-theme="dark"] .topbar {
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button {
+  background: var(--bg-2);
+  border-color: var(--line);
+}
+
+/* Give the left rail card breathing room so its shadow and radius are not clipped. */
+.app {
+  padding: 10px 0 10px 10px;
+  gap: 10px;
+}
+
+.page {
+  padding: 0 14px 0 0;
+}
+
+.sidebar {
+  border-left: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-radius: 12px;
+  margin: 0;
+  min-height: 0;
+}
+
+@media (max-width: 960px) {
+  .app {
+    padding: 8px;
+    gap: 0;
+  }
+
+  .page {
+    padding: 0;
+  }
+}
+
+/* Final precedence fixes for collapsed sidebar and Settings typography. */
+.sidebar.collapsed .sidebar-tools {
+  display: flex;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+  display: inline-flex !important;
+  color: var(--accent);
+  background: var(--sidebar-active);
+  border-color: var(--sidebar-border);
+}
+
+.sidebar.collapsed .windowbar-btn:not(.sidebar-collapse-btn) {
+  display: none !important;
+}
+
+.settings-content,
+.settings-pane,
+.settings-block-head p,
+.settings-inline-copy small,
+.settings-channel-status-copy small,
+.settings-placeholder-card,
+.settings-about-hero p,
+.settings-about-card small {
+  font-size: 16px;
+}
+
+.settings-content .subtitle,
+.field .label,
+.input,
+.select,
+.btn,
+.seg-btn {
+  font-size: 16px;
+}
+
+.settings-block-head h3,
+.settings-collapse-head h3,
+.settings-channel-status-copy strong {
+  font-size: 17px;
+}
+
+.settings-inline-label,
+.settings-mini-field span,
+.settings-model-line span,
+.settings-about-card span {
+  font-size: 12px;
+}
+
+html[data-text-size="large"] .settings-content,
+html[data-text-size="large"] .settings-pane,
+html[data-text-size="large"] .settings-content .subtitle,
+html[data-text-size="large"] .field .label,
+html[data-text-size="large"] .input,
+html[data-text-size="large"] .select,
+html[data-text-size="large"] .btn,
+html[data-text-size="large"] .seg-btn {
+  font-size: 18px;
+}
+
+/* Unified global topbar */
+.app[data-screen-label] .topbar,
+.app[data-screen-label="Cyrene · chat"] .topbar {
+  display: flex;
+}
+
+.topbar {
+  min-height: 60px;
+  padding: 10px 18px 10px 14px;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid rgba(32,32,29,0.08);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,250,248,0.92));
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.86) inset,
+    0 10px 26px rgba(24,24,22,0.04);
+  backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.topbar-left {
+  gap: 8px;
+  padding: 3px;
+  border: 1px solid #e3e3df;
+  border-radius: 12px;
+  background: #f6f6f4;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+}
+
+.topbar .iconbtn {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #696964;
+  box-shadow: none;
+}
+
+.topbar .iconbtn:hover,
+.topbar .iconbtn:not(.disabled):focus-visible {
+  background: #ffffff;
+  color: #222220;
+  box-shadow: 0 1px 4px rgba(24,24,22,0.1), inset 0 0 0 1px #d9d9d6;
+}
+
+.topbar .iconbtn.disabled {
+  opacity: 0.36;
+}
+
+.topbar-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  color: #7c7b76;
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 720;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-title b {
+  color: #242421;
+  font-weight: 780;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-right {
+  gap: 9px;
+}
+
+.topbar .statlight {
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #e5e5e1;
+  border-radius: 10px;
+  background: #fafaf9;
+  color: #6d6d68;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.topbar .theme-toggle-btn {
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid #dededb;
+  border-radius: 10px;
+  background: #f7f7f5;
+  color: #3d3d39;
+  box-shadow: 0 1px 3px rgba(24,24,22,0.06);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.topbar .theme-toggle-btn:hover {
+  background: #ffffff;
+  border-color: #d2d2ce;
+  color: #222220;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout {
+  min-height: 0;
+  height: auto;
+  flex: 1;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-main {
+  height: auto;
+  min-height: 0;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll {
+  padding-top: 44px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer {
+  bottom: 0;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-side {
+  top: 76px;
+}
+
+@media (max-width: 960px) {
+  .topbar {
+    min-height: 58px;
+    padding: 9px 12px;
+  }
+
+  .topbar-title {
+    flex: 1;
+  }
+
+  .topbar-right {
+    width: auto;
+  }
+
+  .topbar .statlight {
+    display: none;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .chat-scroll {
+    padding-top: 28px;
+  }
+}
+
+/* Final shell refinements */
+.sidebar-tools {
+  height: auto;
+  min-height: 52px;
+  padding: 14px 16px 8px;
+  gap: 8px;
+}
+
+.sidebar-brand-inline {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sidebar-brand-inline .brand-mark {
+  width: 24px;
+  height: 24px;
+}
+
+.sidebar-brand-inline .brand-name {
+  color: #3a3a37;
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar.collapsed .sidebar-brand-inline .brand-name,
+.sidebar.collapsed .sidebar-tool-spacer,
+.sidebar.collapsed .windowbar-btn {
+  display: none;
+}
+
+.page {
+  padding: 12px 14px 0;
+}
+
+.topbar {
+  min-height: 54px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(32,32,29,0.1);
+  border-radius: 16px;
+  background: rgba(255,255,255,0.88);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.92) inset,
+    0 14px 34px rgba(24,24,22,0.08);
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout {
+  min-height: 0;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll {
+  padding-top: 32px;
+}
+
+.right-panel-control {
+  position: relative;
+  display: inline-flex;
+}
+
+.right-panel-button {
+  height: 38px;
+  min-width: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid #dededb;
+  border-radius: 12px;
+  background: #f1f1ef;
+  color: #333330;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(24,24,22,0.05);
+}
+
+.right-panel-button:hover,
+.right-panel-button.active {
+  background: #e7e7e4;
+  border-color: #d5d5d1;
+}
+
+@media (max-width: 960px) {
+  .page {
+    padding: 8px 8px 0;
+  }
+
+  .topbar {
+    border-radius: 14px;
+  }
+
+}
+
+@media (max-width: 960px) {
+  .app[data-screen-label="Cyrene · chat"] {
+    padding: 0;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .chat-scroll {
+    padding: 34px 20px 190px;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .composer {
+    left: 0;
+    padding: 0 16px 18px;
+  }
+}
+
+/* ============================================================
+   Project-wide shell application
+   ============================================================ */
+.app {
+  grid-template-columns: 312px 1fr;
+  background: #ffffff;
+}
+
+.app.sidebar-collapsed {
+  grid-template-columns: 78px 1fr;
+}
+
+.sidebar {
+  --sidebar-text: #2f2f2d;
+  --sidebar-muted: #5d5d59;
+  --sidebar-faint: #9a9994;
+  --sidebar-hover: #eeeeec;
+  --sidebar-active: #e3e3e1;
+  --sidebar-border: #dededb;
+  color: var(--sidebar-text);
+  border: 1px solid #e6e6e3;
+  border-left: 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-radius: 0 12px 12px 0;
+  background: #fbfbfa;
+  box-shadow: 10px 0 28px rgba(24,24,22,0.04);
+}
+
+.sidebar-windowbar,
+.sidebar-tools {
+  height: 48px;
+  padding: 0 18px;
+}
+
+.sidebar-tools {
+  height: 46px;
+  padding: 10px 18px 4px;
+  justify-content: flex-start;
+}
+
+.windowbar-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sidebar-muted);
+  cursor: pointer;
+}
+
+.windowbar-btn:hover {
+  color: var(--sidebar-text);
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-border);
+}
+
+.sidebar-brand {
+  padding: 10px 22px 12px;
+}
+
+.brand-name {
+  color: var(--sidebar-muted);
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.sidebar .nav {
+  padding: 5px 16px;
+}
+
+.sidebar .nav-section {
+  color: var(--sidebar-faint);
+  padding: 18px 22px 8px;
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.sidebar .nav-section-link,
+.sidebar .nav-section-chevron {
+  color: var(--sidebar-muted);
+}
+
+.sidebar .nav-item {
+  min-height: 38px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  color: var(--sidebar-muted);
+  font-size: 16px;
+  font-weight: 720;
+}
+
+.sidebar .nav-item span,
+.sidebar .nav-item small {
+  color: inherit !important;
+}
+
+.sidebar .nav-item:hover,
+.sidebar .nav-item.active {
+  color: var(--sidebar-text);
+  background: var(--sidebar-active);
+  box-shadow: none;
+}
+
+.sidebar .nav-key,
+.sidebar .nav-badge {
+  color: var(--sidebar-faint) !important;
+  font-size: 12px;
+}
+
+.sidebar .sa-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.06);
+}
+
+.sidebar-footer {
+  padding: 16px 18px 20px;
+  color: var(--sidebar-text);
+}
+
+.sidebar .avatar {
+  background: #ffffff;
+  color: var(--accent);
+  border: 1px solid #e1e1de;
+}
+
+.sidebar .who {
+  color: var(--sidebar-text);
+  font-size: 15px;
+}
+
+.sidebar .who small {
+  color: var(--sidebar-muted);
+}
+
+.topbar {
+  min-height: 58px;
+  padding: 10px 18px;
+  border-bottom: 1px solid #e6e6e3;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 1px 0 rgba(24,24,22,0.02);
+  backdrop-filter: blur(16px) saturate(1.08);
+}
+
+.topbar-title {
+  font-family: var(--sans);
+  letter-spacing: 0;
+  color: #72726d;
+  font-size: 15px;
+  font-weight: 720;
+}
+
+.topbar-title b {
+  color: #232321;
+  font-weight: 780;
+}
+
+.topbar .iconbtn,
+.topbar .theme-toggle-btn {
+  border-color: #dededb;
+  background: #f8f8f7;
+  color: #4a4a47;
+  box-shadow: 0 1px 2px rgba(24,24,22,0.04);
+}
+
+.topbar .iconbtn:hover,
+.topbar .theme-toggle-btn:hover {
+  background: #efefed;
+  color: #222220;
+  border-color: #d1d1cd;
+}
+
+.page {
+  background: #ffffff;
+}
+
+.dashboard-shell,
+.memory-page,
+.evolution-page,
+.settings-layout,
+.sessions-layout,
+.skills-layout {
+  background: #ffffff;
+}
+
+.dashboard-panel,
+.dashboard-hero-panel,
+.dashboard-side-panel,
+.settings-pane,
+.settings-nav,
+.sessions-main,
+.session-detail,
+.skills-side,
+.skill-detail,
+.card,
+.summary-tile,
+.stat-tile,
+.model-card {
+  border-color: #e3e3df;
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(24,24,22,0.05);
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-side {
+  position: fixed;
+  top: 64px;
+  right: 18px;
+  bottom: 24px;
+  z-index: 42;
+  width: min(360px, calc(100vw - 42px));
+  display: flex;
+  border: 1px solid #dededb;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 24px 70px rgba(24,24,22,0.16);
+  backdrop-filter: blur(18px) saturate(1.08);
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout.right-collapsed .chat-side {
+  display: flex;
+  opacity: 0;
+  transform: translateX(28px);
+  pointer-events: none;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout:not(.right-collapsed)::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 41;
+  background: rgba(24,24,22,0.08);
+  pointer-events: none;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer {
+  left: 312px;
+}
+
+.app.sidebar-collapsed[data-screen-label="Cyrene · chat"] .composer {
+  left: 78px;
+}
+
+@media (max-width: 960px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .composer {
+    left: 0;
+  }
+
+  .app[data-screen-label="Cyrene · chat"] .chat-side {
+    top: 58px;
+    right: 12px;
+    bottom: 16px;
+  }
+}
+
+/* Final dark-mode precedence: keep this after shell overrides. */
+html[data-theme="dark"] body,
+html[data-theme="dark"] .app,
+html[data-theme="dark"] .page,
+html[data-theme="dark"] .dashboard-shell,
+html[data-theme="dark"] .memory-page,
+html[data-theme="dark"] .evolution-page,
+html[data-theme="dark"] .settings-layout,
+html[data-theme="dark"] .sessions-layout,
+html[data-theme="dark"] .skills-layout {
+  background: #0c1015;
+  color: #ebeff3;
+}
+
+html[data-theme="dark"] .app {
+  --bg: #0d1117;
+  --bg-1: #131922;
+  --bg-2: #19212b;
+  --bg-3: #202a35;
+  --line: #252f3a;
+  --line-2: #33404d;
+  --text: #ebeff3;
+  --text-2: #b1bbc5;
+  --text-3: #798593;
+  --text-4: #596473;
+  --surface-1: #141b23;
+  --surface-2: #18212a;
+  --surface-3: #202a35;
+  --material-border: #2b3641;
+  --material-border-strong: #3a4653;
+  --canvas-bg: #0c1218;
+  --canvas-bg-soft: #10171f;
+}
+
+html[data-theme="dark"] .sidebar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .topbar-left,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .chat-main,
+html[data-theme="dark"] .chat-side,
+html[data-theme="dark"] .dashboard-panel,
+html[data-theme="dark"] .dashboard-hero-panel,
+html[data-theme="dark"] .dashboard-side-panel,
+html[data-theme="dark"] .settings-pane,
+html[data-theme="dark"] .settings-nav,
+html[data-theme="dark"] .sessions-main,
+html[data-theme="dark"] .session-detail,
+html[data-theme="dark"] .skills-side,
+html[data-theme="dark"] .skill-detail,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .summary-tile,
+html[data-theme="dark"] .stat-tile,
+html[data-theme="dark"] .model-card,
+html[data-theme="dark"] .composer-box,
+html[data-theme="dark"] .runs-list,
+html[data-theme="dark"] .inspector,
+html[data-theme="dark"] .canvas-toolbar,
+html[data-theme="dark"] .canvas-legend,
+html[data-theme="dark"] .node {
+  border-color: #252f3a;
+  background: #131922;
+  color: #ebeff3;
+}
+
+html[data-theme="dark"] .sidebar {
+  --sidebar-text: #ebeff3;
+  --sidebar-muted: #b1bbc5;
+  --sidebar-faint: #798593;
+  --sidebar-hover: #19212b;
+  --sidebar-active: #202a35;
+  --sidebar-border: #2b3641;
+}
+
+html[data-theme="dark"] .topbar-title,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .sidebar-brand-inline .brand-name,
+html[data-theme="dark"] .right-panel-button {
+  color: #b1bbc5;
+}
+
+html[data-theme="dark"] .topbar-title b,
+html[data-theme="dark"] .sidebar .who,
+html[data-theme="dark"] .node-title,
+html[data-theme="dark"] .insp-title {
+  color: #ebeff3;
+}
+
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .right-panel-button:hover,
+html[data-theme="dark"] .right-panel-button.active,
+html[data-theme="dark"] .chat-side-switcher button:hover,
+html[data-theme="dark"] .chat-side-switcher button.active,
+html[data-theme="dark"] .run-item:hover,
+html[data-theme="dark"] .run-item.active {
+  background: #202a35;
+  color: #ebeff3;
+}
+
+html[data-theme="dark"] .canvas-wrap {
+  background-color: #0c1015;
+}
+
+html[data-theme="dark"] .chat-side-switcher,
+html[data-theme="dark"] .welcome-card,
+html[data-theme="dark"] .welcome-metrics div,
+html[data-theme="dark"] .welcome-heatmap span,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chip,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send {
+  background: #19212b;
+  border-color: #252f3a;
+  color: #ebeff3;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
+  background: linear-gradient(180deg, rgba(12,16,21,0), #0c1015 20%, #0c1015 100%);
+}
+
+/* True final precedence fixes. */
+.sidebar.collapsed .sidebar-tools {
+  display: flex;
+  justify-content: center;
+  padding-inline: 0;
+}
+
+.sidebar.collapsed .sidebar-collapse-btn {
+  display: inline-flex !important;
+  color: var(--accent);
+  background: var(--sidebar-active);
+  border-color: var(--sidebar-border);
+}
+
+.sidebar.collapsed .windowbar-btn:not(.sidebar-collapse-btn) {
+  display: none !important;
+}
+
+.settings-content,
+.settings-pane,
+.settings-block-head p,
+.settings-inline-copy small,
+.settings-channel-status-copy small,
+.settings-placeholder-card,
+.settings-about-hero p,
+.settings-about-card small,
+.settings-content .subtitle,
+.field .label,
+.input,
+.select,
+.btn,
+.seg-btn {
+  font-size: 16px;
+}
+
+.settings-block-head h3,
+.settings-collapse-head h3,
+.settings-channel-status-copy strong {
+  font-size: 17px;
+}
+
+html[data-text-size="large"] .settings-content,
+html[data-text-size="large"] .settings-pane,
+html[data-text-size="large"] .settings-content .subtitle,
+html[data-text-size="large"] .field .label,
+html[data-text-size="large"] .input,
+html[data-text-size="large"] .select,
+html[data-text-size="large"] .btn,
+html[data-text-size="large"] .seg-btn {
+  font-size: 18px;
+}
+
+/* True final dark-mode override: gray-black surfaces after legacy dark blocks. */
+html[data-theme="dark"] body,
+html[data-theme="dark"] .app,
+html[data-theme="dark"] .page,
+html[data-theme="dark"] .dashboard-shell,
+html[data-theme="dark"] .memory-page,
+html[data-theme="dark"] .evolution-page,
+html[data-theme="dark"] .settings-layout,
+html[data-theme="dark"] .sessions-layout,
+html[data-theme="dark"] .skills-layout,
+html[data-theme="dark"] .canvas-wrap {
+  background: #111111;
+  color: #eeeeee;
+}
+
+html[data-theme="dark"] .app {
+  --bg: #111111;
+  --bg-1: #181818;
+  --bg-2: #222222;
+  --bg-3: #2c2c2c;
+  --line: #333333;
+  --line-2: #444444;
+  --text: #eeeeee;
+  --text-2: #c7c7c7;
+  --text-3: #9a9a9a;
+  --text-4: #6f6f6f;
+  --surface-1: #181818;
+  --surface-2: #222222;
+  --surface-3: #2c2c2c;
+  --material-border: #333333;
+  --material-border-strong: #444444;
+  --canvas-bg: #111111;
+  --canvas-bg-soft: #181818;
+}
+
+html[data-theme="dark"] .sidebar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .topbar-left,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .chat-main,
+html[data-theme="dark"] .chat-side,
+html[data-theme="dark"] .dashboard-panel,
+html[data-theme="dark"] .dashboard-hero-panel,
+html[data-theme="dark"] .dashboard-side-panel,
+html[data-theme="dark"] .settings-pane,
+html[data-theme="dark"] .settings-nav,
+html[data-theme="dark"] .sessions-main,
+html[data-theme="dark"] .session-detail,
+html[data-theme="dark"] .skills-side,
+html[data-theme="dark"] .skill-detail,
+html[data-theme="dark"] .card,
+html[data-theme="dark"] .summary-tile,
+html[data-theme="dark"] .stat-tile,
+html[data-theme="dark"] .model-card,
+html[data-theme="dark"] .composer-box,
+html[data-theme="dark"] .runs-list,
+html[data-theme="dark"] .inspector,
+html[data-theme="dark"] .canvas-toolbar,
+html[data-theme="dark"] .canvas-legend,
+html[data-theme="dark"] .node,
+html[data-theme="dark"] .msg.agent .msg-body,
+html[data-theme="dark"] .msg.system .msg-body,
+html[data-theme="dark"] .msg.user .msg-body,
+html[data-theme="dark"] .input,
+html[data-theme="dark"] .select {
+  border-color: #333333;
+  background: #181818;
+  color: #eeeeee;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .sidebar {
+  --sidebar-text: #eeeeee;
+  --sidebar-muted: #c7c7c7;
+  --sidebar-faint: #8a8a8a;
+  --sidebar-hover: #222222;
+  --sidebar-active: #2c2c2c;
+  --sidebar-border: #333333;
+}
+
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .right-panel-button,
+html[data-theme="dark"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chip,
+html[data-theme="dark"] .chip,
+html[data-theme="dark"] .chat-side-switcher,
+html[data-theme="dark"] .settings-nav .nav-item,
+html[data-theme="dark"] .seg,
+html[data-theme="dark"] .seg-btn,
+html[data-theme="dark"] .welcome-card,
+html[data-theme="dark"] .welcome-metrics div,
+html[data-theme="dark"] .welcome-heatmap span {
+  border-color: #333333;
+  background: #222222;
+  color: #c7c7c7;
+}
+
+html[data-theme="dark"] .settings-nav .nav-item.active,
+html[data-theme="dark"] .settings-nav .nav-item:hover,
+html[data-theme="dark"] .seg-btn.active,
+html[data-theme="dark"] .seg-btn:hover,
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .right-panel-button:hover,
+html[data-theme="dark"] .right-panel-button.active,
+html[data-theme="dark"] .chat-side-switcher button:hover,
+html[data-theme="dark"] .chat-side-switcher button.active {
+  background: #2c2c2c;
+  color: #eeeeee;
+  border-color: #444444;
+}
+
+html[data-theme="dark"] .composer textarea,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea {
+  color: #eeeeee;
+  background: transparent;
+}
+
+html[data-theme="dark"] .composer textarea::placeholder,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea::placeholder {
+  color: #6f6f6f;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
+  background: linear-gradient(180deg, rgba(17,17,17,0), #111111 20%, #111111 100%);
+}
+
+/* Settings navigation typography must follow the global text-size setting. */
+.settings-nav .nav-section {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.settings-nav .nav-item {
+  min-height: 34px;
+  padding: 7px 12px;
+  font-size: 16px;
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+html[data-text-size="large"] .settings-nav .nav-section {
+  font-size: 15px;
+}
+
+html[data-text-size="large"] .settings-nav .nav-item {
+  font-size: 18px;
+}
+
+/* Final settings-nav size parity with the main sidebar. */
+.settings-nav .nav-section {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.settings-nav .nav-item {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 14px;
+  font-weight: 620;
+  line-height: 1.35;
+}
+
+html[data-text-size="large"] .settings-nav .nav-section {
+  font-size: 14px;
+}
+
+html[data-text-size="large"] .settings-nav .nav-item {
+  font-size: 16px;
+}
+
+/* Final sidebar card framing and empty skills state. */
+.app {
+  padding: 18px 18px 18px 20px;
+  gap: 16px;
+}
+
+.sidebar {
+  border: 1px solid #e3e3df;
+  border-radius: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.92) inset,
+    0 16px 34px rgba(24,24,22,0.08);
+}
+
+.sidebar.collapsed {
+  border-radius: 12px;
+}
+
+.skills-rail-empty {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px dashed var(--sidebar-border, var(--line));
+  border-radius: 9px;
+  color: var(--sidebar-faint, var(--text-4));
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--sidebar-hover, var(--bg-2)) 58%, transparent);
+}
+
+.skills-rail-empty:hover {
+  color: var(--sidebar-muted, var(--text-3));
+  border-color: var(--sidebar-muted, var(--line-2));
+  background: var(--sidebar-hover, var(--bg-2));
+}
+
+html[data-theme="dark"] .sidebar {
+  border-color: #333333;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 16px 34px rgba(0,0,0,0.28);
+}
+
+@media (max-width: 960px) {
+  .app {
+    padding: 10px;
+    gap: 10px;
+  }
+}
+
+/* Final shell alignment: topbar and sidebar share the same top edge. */
+.app {
+  padding: 10px 12px 10px 10px;
+  gap: 12px;
+}
+
+.page {
+  padding: 0;
+}
+
+.topbar {
+  margin: 0;
+}
+
+@media (max-width: 960px) {
+  .app {
+    padding: 8px;
+    gap: 8px;
+  }
+}
+
+/* Final dark chat fix: no white canvas or composer in dark mode. */
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"],
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .page,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chat-layout,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chat-main,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chat-scroll {
+  background: #111111;
+  color: #eeeeee;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chat-layout:not(.right-collapsed)::after {
+  background: #181818;
+  border-color: #333333;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar {
+  background: #181818;
+  border-color: #333333;
+  color: #eeeeee;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar-left,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .right-panel-button {
+  background: #222222;
+  border-color: #333333;
+  color: #c7c7c7;
+  box-shadow: none;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .right-panel-button:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .right-panel-button.active {
+  background: #2c2c2c;
+  border-color: #444444;
+  color: #eeeeee;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
+  background: linear-gradient(180deg, rgba(17,17,17,0), #111111 20%, #111111 100%);
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-box {
+  background: #181818;
+  border-color: #333333;
+  color: #eeeeee;
+  box-shadow: 0 14px 36px rgba(0,0,0,0.32);
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea {
+  background: transparent;
+  color: #eeeeee;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer textarea::placeholder {
+  color: #8a8a8a;
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .context-chip,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-chip,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send {
+  background: #222222;
+  border-color: #333333;
+  color: #eeeeee;
+}
+
+/* Final sidebar item containment: long session titles must not push cards outside. */
+.sidebar .nav {
+  overflow: hidden;
+}
+
+.sidebar .nav-item {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.sidebar .nav-item > span {
+  min-width: 0;
+}
+
+.sidebar .nav-item > span:not(:first-child):not(.nav-key):not(.nav-badge) {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar .nav-item .nav-key,
+.sidebar .nav-item .nav-badge,
+.sidebar .nav-item .sa-dot {
+  flex: 0 0 auto;
+}
+
+/* Final fixes for settings typography and recent-session pill clipping. */
+.settings-layout .settings-nav .nav-section {
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  line-height: 1.35 !important;
+}
+
+.settings-layout .settings-nav .nav-item {
+  min-height: 32px !important;
+  padding: 6px 10px !important;
+  font-size: 14px !important;
+  font-weight: 620 !important;
+  line-height: 1.35 !important;
+}
+
+html[data-text-size="large"] .settings-layout .settings-nav .nav-section {
+  font-size: 13px !important;
+}
+
+html[data-text-size="large"] .settings-layout .settings-nav .nav-item {
+  font-size: 14px !important;
+}
+
+.sidebar .recent-session-list {
+  padding-left: 16px !important;
+  padding-right: 16px !important;
+  overflow: visible;
+}
+
+.sidebar .recent-session-item {
+  width: auto;
+  max-width: none;
+  min-width: 0;
+  margin: 0;
+  display: flex;
+  box-sizing: border-box;
+}
+
+.sidebar .recent-session-item > span:nth-child(2) {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  display: block;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.sidebar .recent-session-item.active::before {
+  display: none;
 }

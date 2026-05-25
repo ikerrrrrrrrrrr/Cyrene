@@ -579,7 +579,7 @@ function resetChatRuntime(options) {
 
 window.resetChatRuntime = resetChatRuntime;
 
-function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = false }) {
+function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = false, rightSidebarView = "overview", setRightSidebarView }) {
   useDataVersion(); // re-render when DATA refreshes
   const { t, lang } = useI18n();
 
@@ -1452,8 +1452,39 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             </div>
           )}
           {renderedMessages.length === 0 && (
-            <div style={{ padding: "40px 0", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }}>
-              {t("chat.noMessages", { name: DATA.assistantName })}
+            <div className="chat-welcome">
+              <h1><span className="welcome-mark"></span>What&apos;s up next?</h1>
+              <div className="welcome-card">
+                <div className="welcome-card-head">
+                  <div className="welcome-tabs">
+                    <span className="active">Overview</span>
+                    <span>Models</span>
+                  </div>
+                  <div className="welcome-range">
+                    <span className="active">All</span>
+                    <span>30d</span>
+                    <span>7d</span>
+                  </div>
+                </div>
+                <div className="welcome-metrics">
+                  <div><span>Sessions</span><strong>{DATA.sessions.length || 1}</strong></div>
+                  <div><span>Messages</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_messages) || renderedMessages.length)}</strong></div>
+                  <div><span>Total tokens</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_tokens) || 0)}</strong></div>
+                  <div><span>Active days</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.active_days) || "—"}</strong></div>
+                  <div><span>Current streak</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.current_streak) || "—"}</strong></div>
+                  <div><span>Longest streak</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.longest_streak) || "—"}</strong></div>
+                  <div><span>Peak hour</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.peak_hour) || "—"}</strong></div>
+                  <div><span>Favorite model</span><strong>{session.model || "—"}</strong></div>
+                </div>
+                <div className="welcome-heatmap" aria-hidden="true">
+                  {Array.from({ length: 154 }).map(function (_, index) {
+                    var hot = index > 122 && (index % 7 > 2 || index > 145);
+                    var high = index > 146 || index === 137;
+                    return <span key={index} className={hot ? (high ? "hot high" : "hot") : ""}></span>;
+                  })}
+                </div>
+                <p>You&apos;ve used Cyrene to turn sessions into working context.</p>
+              </div>
             </div>
           )}
           {renderedMessageEntries.map((entry) => (
@@ -1817,6 +1848,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             .catch(function () {});
         }}
         onOpenCCModal={function (info) { setCcModal(info); }}
+        view={rightSidebarView}
+        onViewChange={setRightSidebarView}
       />
     </div>
   );
@@ -2016,12 +2049,35 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, view = "overview", onViewChange }) {
   const { t } = useI18n();
+  const viewOptions = [
+    { id: "overview", label: "Overview" },
+    { id: "agents", label: "Agents" },
+    { id: "shells", label: "Shells" },
+    { id: "all", label: "All" },
+  ];
+  const showShells = view === "all" || view === "shells";
+  const showAgents = view === "all" || view === "agents";
+  const showSummary = view === "all" || view === "overview";
   return (
     <div className="chat-side">
+      <div className="chat-side-switcher">
+        {viewOptions.map(function (item) {
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={view === item.id ? "active" : ""}
+              onClick={function () { onViewChange && onViewChange(item.id); }}
+            >
+              {item.label}
+            </button>
+          );
+        })}
+      </div>
 
-      <div className="side-section" style={{ maxHeight: "40%", overflowY: "auto" }}>
+      {showShells && <div className="side-section" style={{ maxHeight: "40%", overflowY: "auto" }}>
         <div className="side-head">
           {t("chat.activeShells")}
           <span className="count">{session.shells.length}</span>
@@ -2030,9 +2086,9 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
         )}
         {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} />)}
-      </div>
+      </div>}
 
-      <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
+      {showAgents && <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
         <div className="side-head">
           {t("chat.subagents")}
           <span className="count">{subagents.length}</span>
@@ -2041,9 +2097,9 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
         )}
         {subagents.map((s) => <SubagentMini key={s.id} sa={s} />)}
-      </div>
+      </div>}
 
-      <div className="side-section" style={{ borderBottom: 0 }}>
+      {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
         <div className="side-head">{t("chat.runSummary")}</div>
         <div className="kv" style={{ rowGap: 6 }}>
           <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
@@ -2053,7 +2109,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
           <span className="k">{t("chat.tokens")}</span><span className="v">{session.summary.tokens}</span>
           <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

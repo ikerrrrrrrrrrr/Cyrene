@@ -283,6 +283,7 @@ function App() {
   const [selectedSessionId, setSelectedSessionId] = useStateApp(readStoredSessionId);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-left-sidebar-collapsed", false); });
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-right-sidebar-collapsed", false); });
+  const [rightSidebarView, setRightSidebarView] = useStateApp("overview");
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   const activeSession = useMemoApp(function () {
@@ -400,6 +401,7 @@ function App() {
         selectedSessionId={activeSession ? activeSession.id : null}
         onSelectSession={selectSession}
         collapsed={leftSidebarCollapsed}
+        onToggleCollapsed={function () { setLeftSidebarCollapsed(function (value) { return !value; }); }}
       />
       <div className="page">
         <Topbar
@@ -418,12 +420,17 @@ function App() {
           canCollapseRightSidebar={canCollapseRightSidebar}
         />
         {page === "dashboard" && <DashboardPage />}
-        {page === "chat"     && <ChatPage selectedSessionId={activeSession ? activeSession.id : null} onSelectSession={selectSession} rightSidebarCollapsed={rightSidebarCollapsed} />}
-        {page === "agents"   && <AgentsPage orientation={t.orientation} selectedSessionId={activeSession ? activeSession.id : null} rightSidebarCollapsed={rightSidebarCollapsed} />}
-        {page === "sessions" && <SessionsPage
+        {page === "chat"     && <ChatPage
                                   selectedSessionId={activeSession ? activeSession.id : null}
                                   onSelectSession={selectSession}
                                   rightSidebarCollapsed={rightSidebarCollapsed}
+                                  rightSidebarView={rightSidebarView}
+                                  setRightSidebarView={setRightSidebarView} />}
+        {page === "agents"   && <AgentsPage orientation={t.orientation} selectedSessionId={activeSession ? activeSession.id : null} rightSidebarCollapsed={false} />}
+        {page === "sessions" && <SessionsPage
+                                  selectedSessionId={activeSession ? activeSession.id : null}
+                                  onSelectSession={selectSession}
+                                  rightSidebarCollapsed={false}
                                   onOpenAgents={(sessionId) => {
                                     selectSession(sessionId);
                                     setPage("agents");
@@ -444,7 +451,7 @@ function App() {
   );
 }
 
-function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed }) {
+function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed, onToggleCollapsed }) {
   useDataVersion();
   const { t } = useI18n();
   const [skillsOpen, setSkillsOpen] = useStateApp(true);
@@ -462,9 +469,24 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed 
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
     <div className={"sidebar" + (collapsed ? " collapsed" : "")}>
-      <div className="sidebar-brand">
-        <div className="brand-mark"></div>
-        <div className="brand-name">{brandName}</div>
+      <div className="sidebar-tools">
+        <div className="sidebar-brand-inline" title={brandName}>
+          <div className="brand-mark"></div>
+          <div className="brand-name">{brandName}</div>
+        </div>
+        <span className="sidebar-tool-spacer"></span>
+        <button className="windowbar-btn" type="button" title={t("topbar.search")} onClick={() => setPage("sessions")}>
+          <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <circle cx="8" cy="8" r="4.2" />
+            <path d="M11.2 11.2 15 15" />
+          </svg>
+        </button>
+        <button className="windowbar-btn sidebar-collapse-btn" type="button" title={collapsed ? t("topbar.expandLeft") : t("topbar.collapseLeft")} onClick={onToggleCollapsed}>
+          <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <rect x="3" y="3" width="12" height="12" rx="2.5" />
+            <path d="M7 3v12" />
+          </svg>
+        </button>
       </div>
 
       <div className="nav-section">{t("nav.workspace")}</div>
@@ -473,7 +495,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed 
           <div key={it.id}
                className={"nav-item " + (page === it.id ? "active" : "")}
                onClick={() => setPage(it.id)}>
-            <span style={{ color: "var(--text-4)", fontFamily: "var(--mono)", width: 14, textAlign: "center" }}>
+            <span style={{ color: "currentColor", fontFamily: "var(--mono)", width: 14, textAlign: "center" }}>
               {it.icon}
             </span>
             <span>{it.label}</span>
@@ -514,10 +536,10 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed 
               {t("nav.newSession")}
             </span>
           </div>
-          <div className="nav" style={{ paddingTop: 0 }}>
-            {DATA.sessions.slice(0, 4).map((r) => (
+          <div className="nav recent-session-list" style={{ paddingTop: 0 }}>
+            {DATA.sessions.slice(0, 24).map((r) => (
               <div key={r.id}
-                   className={"nav-item " + (r.id === activeRecentSessionId ? "active" : "")}
+                   className={"nav-item recent-session-item " + (r.id === activeRecentSessionId ? "active" : "")}
                    onClick={function () {
                             onSelectSession && onSelectSession(r.id);
                           }}
@@ -525,7 +547,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed 
                 <span className={"sa-dot " + r.status} style={{ marginTop: 0, width: 6, height: 6, flexShrink: 0 }}></span>
                 <span style={{
                   overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  fontSize: 14, color: "var(--text-2)"
+                  fontSize: 14, color: "inherit"
                 }}>{r.title}</span>
               </div>
             ))}
@@ -575,8 +597,8 @@ function SkillsRail({ onOpenPage }) {
           </div>
         ))}
         {skills.length === 0 && (
-          <div className="skill-item off" onClick={onOpenPage}>
-            <span className="skill-name">{skT("skills.empty")}</span>
+          <div className="skills-rail-empty" onClick={onOpenPage}>
+            <span>{skT("skills.empty")}</span>
           </div>
         )}
       </div>
@@ -609,17 +631,8 @@ function Topbar({
     page === "memory" ? <>{t("topbar.memory")}<span className="crumb-sep">/</span><b>{t("topbar.pipeline")}</b></> :
     page === "evolution" ? <>{t("topbar.evolution")}<span className="crumb-sep">/</span><b>evolve</b></> :
     <>{t("topbar.settings")}<span className="crumb-sep">/</span><b>{t("topbar.workspace")}</b></>;
-
   return (
     <div className="topbar">
-      <div className="topbar-left">
-        <button className="iconbtn" title={leftSidebarCollapsed ? t("topbar.expandLeft") : t("topbar.collapseLeft")} onClick={onToggleLeftSidebar}>
-          <span className="collapse-glyph">{leftSidebarCollapsed ? "»" : "«"}</span>
-        </button>
-        <button className={"iconbtn" + (canCollapseRightSidebar ? "" : " disabled")} title={rightSidebarCollapsed ? t("topbar.expandRight") : t("topbar.collapseRight")} onClick={onToggleRightSidebar} disabled={!canCollapseRightSidebar}>
-          <span className="collapse-glyph">{rightSidebarCollapsed ? "«" : "»"}</span>
-        </button>
-      </div>
       <span className="topbar-title">{title}</span>
       <div className="topbar-right">
         <span className="statlight">
@@ -631,6 +644,22 @@ function Topbar({
           </span>
         )}
         <span style={{ width: 1, height: 18, background: "var(--line)", margin: "0 4px" }}></span>
+        {page === "chat" && (
+          <span className="right-panel-control">
+            <button
+              className={"right-panel-button" + (!rightSidebarCollapsed ? " active" : "")}
+              type="button"
+              title={rightSidebarCollapsed ? t("topbar.expandRight") : t("topbar.collapseRight")}
+              aria-expanded={!rightSidebarCollapsed}
+              onClick={onToggleRightSidebar}
+            >
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <rect x="3" y="4" width="14" height="12" rx="2.5" />
+                <path d="M12 4v12" />
+              </svg>
+            </button>
+          </span>
+        )}
         <button className="theme-toggle-btn" title={theme === "dark" ? t("topbar.switchToLight") : t("topbar.switchToDark")}
                 onClick={onToggleTheme}>
           <span className="theme-toggle-icon">{theme === "system" ? "🖥" : theme === "dark" ? "☀" : "☾"}</span>
