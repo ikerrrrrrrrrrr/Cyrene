@@ -715,17 +715,22 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
 
         {section === "channels" ? (
           <div className="settings-pane">
-            <h2>{t("settings.channels")}</h2>
-            <p className="subtitle">{t("settings.channelsSubtitle")}</p>
+            <div className="settings-block-head" style={{ marginBottom: 12 }}>
+              <h3 style={{ margin: 0 }}>{t("settings.channels")}</h3>
+            </div>
 
-            <div className="settings-subpane">
-              <div className="settings-block-head">
-                <div>
+            <div className="settings-subpane" style={{ margin: 0, padding: 0, border: "none" }}>
+              <div className="settings-block-head" style={{ marginBottom: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.4 }}>
+                    <path d="M21.5 2.5L2.5 9.5L9.5 13.5" />
+                    <path d="M21.5 2.5L14.5 21.5L9.5 13.5" />
+                  </svg>
                   <h3>{t("settings.telegram")}</h3>
                 </div>
               </div>
 
-              <div className="field">
+              <div className="field" style={{ marginTop: 10 }}>
                 <div className="label">{t("settings.telegramToken")}<small>{t("settings.telegramTokenHint")}</small></div>
                 <div className="settings-field-stack">
                   <input
@@ -734,11 +739,11 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                     value={telegramToken}
                     onChange={(e) => setTelegramToken(e.target.value)}
                     placeholder={t("settings.placeholderOptional")}
-                    style={{ maxWidth: 420 }}
+                    style={{ maxWidth: 400 }}
                   />
                   <div className="settings-actions settings-actions--inline">
                     <button className="btn" onClick={saveTelegramToken}>{t("settings.saveNotification")}</button>
-                    {telegramTokenSaved ? <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{telegramTokenSaved}</span> : null}
+                    {telegramTokenSaved ? <span className="settings-saved-msg">{telegramTokenSaved}</span> : null}
                   </div>
                 </div>
               </div>

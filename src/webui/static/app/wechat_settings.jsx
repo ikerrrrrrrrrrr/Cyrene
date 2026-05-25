@@ -109,11 +109,16 @@ function WeChatPanel() {
   // ── Render ──────────────────────────────────────────────
 
   return (
-    <div className="settings-subpane">
-      <div className="settings-block-head">
-        <div>
+    <div className="settings-subpane" style={{ border: "none", marginTop: 0, paddingTop: 0 }}>
+      <div className="settings-block-head" style={{ marginBottom: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.4 }}>
+            <path d="M17 12.5C17 16.09 14.09 19 10.5 19C9.41 19 8.39 18.81 7.46 18.48L4 20L5.52 16.54C5.19 15.61 5 14.59 5 13.5C5 9.91 7.91 7 11.5 7C12.59 7 13.61 7.19 14.54 7.52" />
+            <path d="M19 9.5C19 12.54 17.04 15.12 14.27 16.21L15.27 18.5L13 17.27C11.83 17.68 10.56 17.92 9.24 17.96" />
+            <path d="M10 10.5C10 10.78 9.78 11 9.5 11C9.22 11 9 10.78 9 10.5C9 10.22 9.22 10 9.5 10C9.78 10 10 10.22 10 10.5Z" />
+            <path d="M14 10.5C14 10.78 13.78 11 13.5 11C13.22 11 13 10.78 13 10.5C13 10.22 13.22 10 13.5 10C13.78 10 14 10.22 14 10.5Z" />
+          </svg>
           <h3>微信</h3>
-          <p>连接微信后，Agent 的回复会自动发送到微信，无需重启服务器。</p>
         </div>
         {running ? (
           <span className="settings-rank-chip wechat-chip--running">运行中</span>

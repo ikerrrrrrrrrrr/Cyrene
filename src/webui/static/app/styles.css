@@ -28,6 +28,11 @@
   color: var(--text-3);
   font-size: 13px;
 }
+.settings-saved-msg {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
 .wechat-modal-close {
   position: absolute;
   top: 8px;
