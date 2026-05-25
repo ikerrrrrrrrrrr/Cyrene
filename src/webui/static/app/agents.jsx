@@ -102,7 +102,7 @@ function buildAgentRounds(session) {
   return rounds;
 }
 
-function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
+function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSidebarCollapsed = false }) {
   const dv = useDataVersion();
   const { t } = useI18n();
   const activeSession = useMemo(() => {
@@ -462,7 +462,7 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId }) {
   }, [edgeData, visibleNodeIds]);
 
   return (
-    <div className="agents-layout">
+    <div className={"agents-layout" + (rightSidebarCollapsed ? " right-collapsed" : "")}>
       <RoundsList rounds={rounds} selected={selectedRound} onSelect={setSelectedRound} />
 
       <div className="canvas-wrap" ref={wrapRef} onWheel={onWheel}>

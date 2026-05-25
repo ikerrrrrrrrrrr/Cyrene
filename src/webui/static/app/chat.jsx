@@ -579,7 +579,7 @@ function resetChatRuntime(options) {
 
 window.resetChatRuntime = resetChatRuntime;
 
-function ChatPage({ selectedSessionId, onSelectSession }) {
+function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = false }) {
   useDataVersion(); // re-render when DATA refreshes
   const { t, lang } = useI18n();
 
@@ -1405,7 +1405,7 @@ function ChatPage({ selectedSessionId, onSelectSession }) {
   var hasAddable = addableContexts.length > 0 || liveRounds.length > 0;
 
   return (
-    <div className="chat-layout">
+    <div className={"chat-layout" + (rightSidebarCollapsed ? " right-collapsed" : "")}>
       <div className="chat-main">
         {ccModal ? (
           <window.CCTerminalPanel

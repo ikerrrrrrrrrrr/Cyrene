@@ -36,6 +36,16 @@ function readStoredSessionId() {
   }
 }
 
+function readStoredBool(key, fallback) {
+  try {
+    var raw = localStorage.getItem(key);
+    if (raw == null) return fallback;
+    return raw === "1";
+  } catch (e) {
+    return fallback;
+  }
+}
+
 function SetupWizard({ theme, onToggleTheme }) {
   useDataVersion();
   const { t } = useI18n();
@@ -271,6 +281,8 @@ function App() {
   const { lang } = useI18n();
   const [page, setPage] = useStateApp(readStoredUiPage);
   const [selectedSessionId, setSelectedSessionId] = useStateApp(readStoredSessionId);
+  const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-left-sidebar-collapsed", false); });
+  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-right-sidebar-collapsed", false); });
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   const activeSession = useMemoApp(function () {
@@ -347,6 +359,18 @@ function App() {
   }, [selectedSessionId]);
 
   useEffectApp(function () {
+    try {
+      localStorage.setItem("cyrene-left-sidebar-collapsed", leftSidebarCollapsed ? "1" : "0");
+    } catch (e) {}
+  }, [leftSidebarCollapsed]);
+
+  useEffectApp(function () {
+    try {
+      localStorage.setItem("cyrene-right-sidebar-collapsed", rightSidebarCollapsed ? "1" : "0");
+    } catch (e) {}
+  }, [rightSidebarCollapsed]);
+
+  useEffectApp(function () {
     if (selectedSessionId && !DATA.sessions.some(function (session) { return session.id === selectedSessionId; })) {
       setSelectedSessionId(null);
     }
@@ -362,18 +386,20 @@ function App() {
   }, [activeSession]);
 
   const needsOnboarding = !!(DATA.onboarding && DATA.onboarding.needsOnboarding);
+  const canCollapseRightSidebar = page === "chat" || page === "agents" || page === "sessions";
 
   if (needsOnboarding) {
     return <SetupWizard theme={t.theme} onToggleTheme={toggleTheme} />;
   }
 
   return (
-    <div className="app" data-screen-label={"Cyrene · " + page}>
+    <div className={"app" + (leftSidebarCollapsed ? " sidebar-collapsed" : "")} data-screen-label={"Cyrene · " + page}>
       <Sidebar
         page={page}
         setPage={setPage}
         selectedSessionId={activeSession ? activeSession.id : null}
         onSelectSession={selectSession}
+        collapsed={leftSidebarCollapsed}
       />
       <div className="page">
         <Topbar
@@ -382,13 +408,22 @@ function App() {
           onToggleTheme={toggleTheme}
           activeSession={activeSession}
           setPage={setPage}
+          leftSidebarCollapsed={leftSidebarCollapsed}
+          onToggleLeftSidebar={function () { setLeftSidebarCollapsed(function (value) { return !value; }); }}
+          rightSidebarCollapsed={rightSidebarCollapsed}
+          onToggleRightSidebar={function () {
+            if (!canCollapseRightSidebar) return;
+            setRightSidebarCollapsed(function (value) { return !value; });
+          }}
+          canCollapseRightSidebar={canCollapseRightSidebar}
         />
         {page === "dashboard" && <DashboardPage />}
-        {page === "chat"     && <ChatPage selectedSessionId={activeSession ? activeSession.id : null} onSelectSession={selectSession} />}
-        {page === "agents"   && <AgentsPage orientation={t.orientation} selectedSessionId={activeSession ? activeSession.id : null} />}
+        {page === "chat"     && <ChatPage selectedSessionId={activeSession ? activeSession.id : null} onSelectSession={selectSession} rightSidebarCollapsed={rightSidebarCollapsed} />}
+        {page === "agents"   && <AgentsPage orientation={t.orientation} selectedSessionId={activeSession ? activeSession.id : null} rightSidebarCollapsed={rightSidebarCollapsed} />}
         {page === "sessions" && <SessionsPage
                                   selectedSessionId={activeSession ? activeSession.id : null}
                                   onSelectSession={selectSession}
+                                  rightSidebarCollapsed={rightSidebarCollapsed}
                                   onOpenAgents={(sessionId) => {
                                     selectSession(sessionId);
                                     setPage("agents");
@@ -409,7 +444,7 @@ function App() {
   );
 }
 
-function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
+function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed }) {
   useDataVersion();
   const { t } = useI18n();
   const [skillsOpen, setSkillsOpen] = useStateApp(true);
@@ -426,11 +461,10 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
-    <div className="sidebar">
+    <div className={"sidebar" + (collapsed ? " collapsed" : "")}>
       <div className="sidebar-brand">
         <div className="brand-mark"></div>
         <div className="brand-name">{brandName}</div>
-        <div className="brand-version">{DATA.appVersion || "—"}</div>
       </div>
 
       <div className="nav-section">{t("nav.workspace")}</div>
@@ -449,51 +483,55 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession }) {
         ))}
       </div>
 
-      <div className="nav-section nav-section-collapsible"
-           onClick={() => setSkillsOpen(!skillsOpen)}>
-        <span className="nav-section-chevron">{skillsOpen ? "▾" : "▸"}</span>
-        <span>Skills</span>
-        <span className="nav-section-link"
-              onClick={(e) => { e.stopPropagation(); setPage("evolution"); }}>
-          {t("nav.manage")}
-        </span>
-      </div>
-      {skillsOpen && <SkillsRail onOpenPage={() => setPage("evolution")} />}
-
-      <div className="nav-section nav-section-collapsible" style={{ cursor: "default" }}>
-        <span>{t("nav.recentSessions")}</span>
-        <span className="nav-section-link"
-              title={t("chat.newSessionTitle")}
-              onClick={async (e) => {
-                e.stopPropagation();
-                if (!confirm(t("chat.confirmNewSession"))) return;
-                try {
-                  if (window.resetChatRuntime) window.resetChatRuntime({ abort: true });
-                  const r = await fetch("/api/sessions", { method: "POST" });
-                  if (!r.ok) throw new Error("HTTP " + r.status);
-                  const data = await r.json();
-                  if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
-                } catch (err) { alert("Failed: " + err.message); }
-              }}>
-          {t("nav.newSession")}
-        </span>
-      </div>
-      <div className="nav" style={{ paddingTop: 0 }}>
-        {DATA.sessions.slice(0, 4).map((r) => (
-          <div key={r.id}
-               className={"nav-item " + (r.id === activeRecentSessionId ? "active" : "")}
-               onClick={function () {
-                        onSelectSession && onSelectSession(r.id);
-                      }}
-               title={r.title}>
-            <span className={"sa-dot " + r.status} style={{ marginTop: 0, width: 6, height: 6, flexShrink: 0 }}></span>
-            <span style={{
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              fontSize: 14, color: "var(--text-2)"
-            }}>{r.title}</span>
+      {!collapsed && (
+        <>
+          <div className="nav-section nav-section-collapsible"
+               onClick={() => setSkillsOpen(!skillsOpen)}>
+            <span className="nav-section-chevron">{skillsOpen ? "▾" : "▸"}</span>
+            <span>Skills</span>
+            <span className="nav-section-link"
+                  onClick={(e) => { e.stopPropagation(); setPage("evolution"); }}>
+              {t("nav.manage")}
+            </span>
           </div>
-        ))}
-      </div>
+          {skillsOpen && <SkillsRail onOpenPage={() => setPage("evolution")} />}
+
+          <div className="nav-section nav-section-collapsible" style={{ cursor: "default" }}>
+            <span>{t("nav.recentSessions")}</span>
+            <span className="nav-section-link"
+                  title={t("chat.newSessionTitle")}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (!confirm(t("chat.confirmNewSession"))) return;
+                    try {
+                      if (window.resetChatRuntime) window.resetChatRuntime({ abort: true });
+                      const r = await fetch("/api/sessions", { method: "POST" });
+                      if (!r.ok) throw new Error("HTTP " + r.status);
+                      const data = await r.json();
+                      if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
+                    } catch (err) { alert("Failed: " + err.message); }
+                  }}>
+              {t("nav.newSession")}
+            </span>
+          </div>
+          <div className="nav" style={{ paddingTop: 0 }}>
+            {DATA.sessions.slice(0, 4).map((r) => (
+              <div key={r.id}
+                   className={"nav-item " + (r.id === activeRecentSessionId ? "active" : "")}
+                   onClick={function () {
+                            onSelectSession && onSelectSession(r.id);
+                          }}
+                   title={r.title}>
+                <span className={"sa-dot " + r.status} style={{ marginTop: 0, width: 6, height: 6, flexShrink: 0 }}></span>
+                <span style={{
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  fontSize: 14, color: "var(--text-2)"
+                }}>{r.title}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <div className="sidebar-footer">
         <div className="avatar">{DATA.user.initials}</div>
@@ -546,7 +584,18 @@ function SkillsRail({ onOpenPage }) {
   );
 }
 
-function Topbar({ page, theme, onToggleTheme, activeSession, setPage }) {
+function Topbar({
+  page,
+  theme,
+  onToggleTheme,
+  activeSession,
+  setPage,
+  leftSidebarCollapsed,
+  onToggleLeftSidebar,
+  rightSidebarCollapsed,
+  onToggleRightSidebar,
+  canCollapseRightSidebar,
+}) {
   useDataVersion();
   const { t } = useI18n();
   const session = activeSession || { title: "—", subagents: [] };
@@ -563,6 +612,14 @@ function Topbar({ page, theme, onToggleTheme, activeSession, setPage }) {
 
   return (
     <div className="topbar">
+      <div className="topbar-left">
+        <button className="iconbtn" title={leftSidebarCollapsed ? t("topbar.expandLeft") : t("topbar.collapseLeft")} onClick={onToggleLeftSidebar}>
+          <span className="collapse-glyph">{leftSidebarCollapsed ? "»" : "«"}</span>
+        </button>
+        <button className={"iconbtn" + (canCollapseRightSidebar ? "" : " disabled")} title={rightSidebarCollapsed ? t("topbar.expandRight") : t("topbar.collapseRight")} onClick={onToggleRightSidebar} disabled={!canCollapseRightSidebar}>
+          <span className="collapse-glyph">{rightSidebarCollapsed ? "«" : "»"}</span>
+        </button>
+      </div>
       <span className="topbar-title">{title}</span>
       <div className="topbar-right">
         <span className="statlight">

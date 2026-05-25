@@ -855,6 +855,7 @@ async def init(data_dir: Path, workspace_dir: Path) -> None:
     _DB_FILE = DB_PATH
     _ensure_tables()
     _seed_core_vocabulary()
+    await _refresh_generated_skill_names_with_llm()
     _INIT_DONE = True
 
 
@@ -2273,21 +2274,143 @@ def _derive_parameter_templates(turn_ids: list[str]) -> tuple[list[dict[str, Any
     return steps, list(schema.values())
 
 
-def _skill_name_from_pattern(pattern_id: str, prototype: dict[str, Any]) -> str:
-    intent = prototype.get("intent") or {}
-    obj = prototype.get("object") or {}
-    return _safe_slug(
-        "_".join(
-            part for part in [
-                intent.get("type"),
-                intent.get("subtype"),
-                obj.get("type"),
-                obj.get("subtype"),
-                pattern_id[-4:],
-            ] if part
-        ),
-        default=f"skill_{pattern_id[-4:]}",
-    )
+def _sanitize_skill_name(name: str) -> str:
+    text = _normalize_whitespace(name)
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" .,:;|-_")
+    if not text:
+        return "学习技能"
+    if len(text) > 24:
+        text = text[:24].rstrip(" .,:;|-_")
+    return text or "学习技能"
+
+
+def _sanitize_skill_description(description: str) -> str:
+    text = _normalize_whitespace(description)
+    text = re.sub(r"[\r\n\t]+", " ", text).strip()
+    if len(text) > 120:
+        text = text[:120].rstrip(" .,:;|-_")
+    return text or "从重复行为中学到的自动技能。"
+
+
+def _looks_like_generated_skill_name(name: str) -> bool:
+    text = str(name or "").strip()
+    if not text:
+        return True
+    if re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+){2,}(?:_[0-9]{4})?", text):
+        return True
+    return text.startswith("skill_")
+
+
+def _unique_skill_name(conn: sqlite3.Connection, preferred_name: str, *, skill_id: str = "") -> str:
+    base = str(preferred_name or "").strip() or "学习技能"
+    candidate = base
+    counter = 2
+    while True:
+        if skill_id:
+            row = conn.execute(
+                "SELECT skill_id FROM learned_skills WHERE name = ? AND skill_id != ?",
+                (candidate, skill_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT skill_id FROM learned_skills WHERE name = ?",
+                (candidate,),
+            ).fetchone()
+        if row is None:
+            return candidate
+        candidate = f"{base} {counter}"
+        counter += 1
+
+
+async def _generate_skill_identity_with_llm(
+    *,
+    pattern_id: str,
+    prototype: dict[str, Any],
+    turn_examples: list[dict[str, Any]],
+    skill_type: str,
+    current_name: str = "",
+    current_description: str = "",
+) -> tuple[str, str]:
+    example_messages = [
+        _truncate_text(str(turn.get("user_message") or ""), 120)
+        for turn in turn_examples
+        if str(turn.get("user_message") or "").strip()
+    ][:5]
+    payload = {
+        "pattern_id": pattern_id,
+        "skill_type": skill_type,
+        "prototype": prototype,
+        "example_requests": example_messages,
+        "current_name": current_name,
+        "current_description": current_description,
+    }
+    prompt = f"""You are naming a learned automation skill for end users.
+
+Return JSON with:
+- name: a short user-facing skill name in Chinese, ideally 4-12 characters, natural and concrete.
+- description: one short Chinese sentence describing what this skill can do for the user.
+
+Requirements:
+- Do not output internal taxonomy labels, snake_case, tool names, URLs, IDs, random numbers, or implementation details.
+- Do not use generic filler like "技能", "任务", "自动化流程" unless absolutely necessary.
+- Prefer what the user would recognize as the task itself.
+- If there are concrete entities in the examples, you may use them when they make the skill clearer.
+- Keep the name concise and natural.
+
+Context JSON:
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+"""
+    result = await _call_llm_json(prompt, caller="skill_namer")
+    proposed_name = _sanitize_skill_name(str(result.get("name") or ""))
+    proposed_description = _sanitize_skill_description(str(result.get("description") or ""))
+    return proposed_name, proposed_description
+
+
+async def _refresh_generated_skill_names_with_llm() -> None:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT skill_id, name, description, pattern_id, skill_type, trigger_json FROM learned_skills ORDER BY created_at ASC"
+        ).fetchall()
+        existing = conn.execute("SELECT skill_id, name FROM learned_skills ORDER BY created_at ASC").fetchall()
+    updates: list[tuple[str, str, str]] = []
+    seen_names = {str(row["name"] or "").strip() for row in existing if str(row["name"] or "").strip()}
+    for row in rows:
+        current_name = str(row["name"] or "")
+        if not _looks_like_generated_skill_name(current_name):
+            continue
+        trigger = _json_loads(row["trigger_json"], {})
+        prototype = (trigger or {}).get("base_fingerprint") or {}
+        if not prototype:
+            continue
+        turn_examples = _fetch_turn_rows(_member_turn_ids(str(row["pattern_id"] or "")))
+        proposed_name, proposed_description = await _generate_skill_identity_with_llm(
+            pattern_id=str(row["pattern_id"] or ""),
+            prototype=prototype,
+            turn_examples=turn_examples,
+            skill_type=str(row["skill_type"] or "draft"),
+            current_name=current_name,
+            current_description=str(row["description"] or ""),
+        )
+        unique_name = proposed_name
+        suffix = 2
+        while unique_name in seen_names - {current_name}:
+            unique_name = f"{proposed_name} {suffix}"
+            suffix += 1
+        seen_names.discard(current_name)
+        seen_names.add(unique_name)
+        if unique_name != current_name or proposed_description != str(row["description"] or ""):
+            updates.append((unique_name, proposed_description, str(row["skill_id"] or "")))
+    if not updates:
+        return
+    with _conn() as conn:
+        now = _now_iso()
+        for name, description, skill_id in updates:
+            conn.execute(
+                "UPDATE learned_skills SET name = ?, description = ?, updated_at = ? WHERE skill_id = ?",
+                (name, description, now, skill_id),
+            )
+        conn.commit()
 
 
 def _skill_trigger_from_prototype(prototype: dict[str, Any], turn_examples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2303,7 +2426,7 @@ def _skill_trigger_from_prototype(prototype: dict[str, Any], turn_examples: list
     }
 
 
-def _skill_definition_from_pattern(pattern_id: str, skill_type: str) -> dict[str, Any]:
+async def _skill_definition_from_pattern(pattern_id: str, skill_type: str) -> dict[str, Any]:
     turn_ids = _member_turn_ids(pattern_id)
     turn_examples = _fetch_turn_rows(turn_ids)
     with _conn() as conn:
@@ -2328,12 +2451,18 @@ def _skill_definition_from_pattern(pattern_id: str, skill_type: str) -> dict[str
             for slot in prototype.get("parameter_slots") or []
         ]
     trigger = _skill_trigger_from_prototype(prototype, turn_examples)
-    description = str(row["description"] if row else "") or _pattern_description(prototype)
-    name = _skill_name_from_pattern(pattern_id, prototype)
+    fallback_description = str(row["description"] if row else "") or _pattern_description(prototype)
+    name, description = await _generate_skill_identity_with_llm(
+        pattern_id=pattern_id,
+        prototype=prototype,
+        turn_examples=turn_examples,
+        skill_type=skill_type,
+        current_description=fallback_description,
+    )
     status = "draft" if skill_type == "draft" else "shadow"
     return {
         "name": name,
-        "description": description,
+        "description": description or fallback_description,
         "status": status,
         "skill_type": skill_type,
         "risk_level": "none",
@@ -2464,7 +2593,7 @@ def _insert_replay_tests(conn: sqlite3.Connection, skill_id: str, turn_ids: list
     return created_ids
 
 
-def _create_skill(pattern_id: str) -> str | None:
+async def _create_skill(pattern_id: str) -> str | None:
     with _conn() as conn:
         pattern_row = conn.execute(
             "SELECT statistics_json FROM behavior_patterns WHERE pattern_id = ?",
@@ -2481,7 +2610,8 @@ def _create_skill(pattern_id: str) -> str | None:
         ).fetchone()
         if existing is not None:
             return str(existing["skill_id"])
-        definition = _skill_definition_from_pattern(pattern_id, "draft")
+        definition = await _skill_definition_from_pattern(pattern_id, "draft")
+        definition["name"] = _unique_skill_name(conn, str(definition.get("name") or "学习技能"))
         skill_id = _new_id("learned_skill")
         now = _now_iso()
         replay_ids = _insert_replay_tests(conn, skill_id, definition["created_from"]["turn_list"], definition["trigger"])
@@ -2552,7 +2682,7 @@ def _target_skill_type(stats: dict[str, Any], prototype: dict[str, Any]) -> str:
     return "draft"
 
 
-def _update_skill_to_type(skill_id: str, target_type: str, reason: str) -> None:
+async def _update_skill_to_type(skill_id: str, target_type: str, reason: str) -> None:
     with _conn() as conn:
         row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
         if row is None:
@@ -2563,7 +2693,7 @@ def _update_skill_to_type(skill_id: str, target_type: str, reason: str) -> None:
             return
         next_version = int(row["current_version"]) + 1
         pattern_id = current["pattern_id"]
-        definition = _skill_definition_from_pattern(pattern_id, target_type)
+        definition = await _skill_definition_from_pattern(pattern_id, target_type)
         definition["status"] = "shadow"
         definition["tests"] = current["tests"]
         persisted = {
@@ -4061,7 +4191,7 @@ async def _maybe_create_or_update_skill(pattern_id: str) -> None:
     effective = float(stats.get("effective_count") or 0.0)
     if effective < 2:
         return
-    skill_id = str(skill_row["skill_id"]) if skill_row is not None else _create_skill(pattern_id)
+    skill_id = str(skill_row["skill_id"]) if skill_row is not None else await _create_skill(pattern_id)
     if not skill_id:
         return
     target_type = _target_skill_type(stats, prototype)
@@ -4069,7 +4199,7 @@ async def _maybe_create_or_update_skill(pattern_id: str) -> None:
     if skill is None:
         return
     if _SKILL_TYPE_ORDER.get(target_type, 0) > _SKILL_TYPE_ORDER.get(skill["skill_type"], 0):
-        _update_skill_to_type(skill_id, target_type, f"Promoted to {target_type} based on stronger pattern evidence.")
+        await _update_skill_to_type(skill_id, target_type, f"Promoted to {target_type} based on stronger pattern evidence.")
         replay_result = await _run_replay_tests(skill_id)
         if replay_result["total"] and replay_result["pass_rate"] < 0.50:
             refreshed = get_learned_skill(skill_id)

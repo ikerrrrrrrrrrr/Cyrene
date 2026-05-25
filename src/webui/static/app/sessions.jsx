@@ -1,7 +1,7 @@
 // Sessions page — overview of every run
 const { useState: useStateSes } = React;
 
-function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
+function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents, rightSidebarCollapsed = false }) {
   useDataVersion();
   const { t } = useI18n();
   const [filter, setFilter] = useStateSes("all"); // all | running | done | err
@@ -50,7 +50,7 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents }) {
   };
 
   return (
-    <div className="sessions-layout">
+    <div className={"sessions-layout" + (rightSidebarCollapsed ? " right-collapsed" : "")}>
       <div className="sessions-main">
         <div className="sessions-summary">
           <SummaryTile label={t("sessions.total")} value={totals.all} />

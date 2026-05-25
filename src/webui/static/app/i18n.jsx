@@ -147,6 +147,10 @@ const TRANSLATIONS = {
     "topbar.switchToLight": "Switch to light",
     "topbar.switchToDark": "Switch to dark",
     "topbar.pause": "Pause",
+    "topbar.collapseLeft": "Collapse left sidebar",
+    "topbar.expandLeft": "Expand left sidebar",
+    "topbar.collapseRight": "Collapse right sidebar",
+    "topbar.expandRight": "Expand right sidebar",
 
     // ── Dashboard ────────────────────────────────────────────────────────
     "dashboard.kicker": "Personal dashboard",
@@ -933,6 +937,10 @@ const TRANSLATIONS = {
     "topbar.switchToLight": "切换到亮色模式",
     "topbar.switchToDark": "切换到暗色模式",
     "topbar.pause": "暂停",
+    "topbar.collapseLeft": "收起左侧边栏",
+    "topbar.expandLeft": "展开左侧边栏",
+    "topbar.collapseRight": "收起右侧边栏",
+    "topbar.expandRight": "展开右侧边栏",
 
     // ── 仪表盘 ───────────────────────────────────────────────────────────
     "dashboard.kicker": "个人仪表盘",
