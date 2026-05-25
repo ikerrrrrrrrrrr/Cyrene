@@ -65,6 +65,15 @@ function formatElapsedMs(ms) {
   return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
 }
 
+function tokensDisplay(raw, t) {
+  if (!raw || raw === "—") return raw || "—";
+  // "X in / Y out / Z total" → translate labels
+  return raw
+    .replace(/\b(in)\b/g, t("chat.tokenIn"))
+    .replace(/\b(out)\b/g, t("chat.tokenOut"))
+    .replace(/\b(total)\b/g, t("chat.tokenTotal"));
+}
+
 function syncTextareaHeight(textarea) {
   if (!textarea) return;
   textarea.style.height = "auto";
@@ -2185,10 +2194,10 @@ function ToolCard({ tool }) {
 function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, view = "overview", onViewChange }) {
   const { t } = useI18n();
   const viewOptions = [
-    { id: "overview", label: "Overview" },
-    { id: "agents", label: "Agents" },
-    { id: "shells", label: "Shells" },
-    { id: "all", label: "All" },
+    { id: "overview", label: t("chat.side.overview") },
+    { id: "agents", label: t("chat.side.agents") },
+    { id: "shells", label: t("chat.side.shells") },
+    { id: "all", label: t("chat.side.all") },
   ];
   const showShells = view === "all" || view === "shells";
   const showAgents = view === "all" || view === "agents";
@@ -2239,7 +2248,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
           <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
           <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
           <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
-          <span className="k">{t("chat.tokens")}</span><span className="v">{session.summary.tokens}</span>
+          <span className="k">{t("chat.tokens")}</span><span className="v">{tokensDisplay(session.summary.tokens, t)}</span>
           <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
         </div>
       </div>}

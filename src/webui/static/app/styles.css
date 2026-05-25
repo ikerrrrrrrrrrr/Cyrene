@@ -465,6 +465,12 @@ button { font-family: inherit; }
 .skills-rail {
   padding: 0 8px 6px;
 }
+
+/* Ensure sidebar nav sections don't compress, except the scrollable recent-session-list */
+.sidebar .nav:not(.recent-session-list),
+.sidebar .skills-rail {
+  flex-shrink: 0;
+}
 .skills-meta {
   display: flex;
   align-items: center;
@@ -1728,7 +1734,7 @@ html[data-theme="light"] .msg.user .msg-body {
 
 /* pending question */
 .question-panel {
-  margin: 16px 10% 0;
+  margin: 16px 10% 130px;
   border: 1px solid rgba(133, 189, 168, 0.28);
   border-radius: var(--r-l);
   background:
@@ -5632,6 +5638,7 @@ body {
   background: #f7f7f5;
   box-shadow: 10px 0 30px rgba(28, 28, 25, 0.04);
   backdrop-filter: none;
+  overflow-y: hidden;
 }
 
 .sidebar::before,
@@ -5654,6 +5661,7 @@ body {
   justify-content: flex-start;
   height: 46px;
   padding: 10px 16px 4px;
+  flex-shrink: 0;
 }
 
 .sidebar-tool-spacer {
@@ -5701,6 +5709,14 @@ body {
   padding: 4px 16px;
 }
 
+/* Recent sessions: pushed to bottom above footer, scrollable */
+.nav.recent-session-list {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  flex: none;
+}
+
 .nav-section {
   padding: 16px 20px 6px;
   color: var(--text-4);
@@ -5709,6 +5725,7 @@ body {
   font-weight: 650;
   letter-spacing: 0;
   text-transform: none;
+  flex-shrink: 0;
 }
 
 .nav-section-collapsible {
@@ -6248,7 +6265,7 @@ html[data-text-size="large"] .setup-section h2 { font-size: 25px; }
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #73736d;
+  color: var(--text-3);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -6277,9 +6294,9 @@ html[data-text-size="large"] .setup-section h2 { font-size: 25px; }
   z-index: auto;
   width: auto;
   display: flex;
-  border: 1px solid #dededb;
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: #ffffff;
+  background: var(--bg-1);
   box-shadow: 0 10px 30px rgba(24,24,22,0.05);
   backdrop-filter: none;
   transform: translateX(0);
@@ -7529,7 +7546,7 @@ html[data-text-size="large"] .seg-btn {
 }
 
 .sidebar-footer {
-  padding: 16px 18px 20px;
+  padding: 8px 16px;
   color: var(--sidebar-text);
 }
 
@@ -7624,9 +7641,9 @@ html[data-text-size="large"] .seg-btn {
   z-index: 42;
   width: min(360px, calc(100vw - 42px));
   display: flex;
-  border: 1px solid #dededb;
+  border: 1px solid var(--line);
   border-radius: 14px;
-  background: rgba(255,255,255,0.96);
+  background: var(--bg-1);
   box-shadow: 0 24px 70px rgba(24,24,22,0.16);
   backdrop-filter: blur(18px) saturate(1.08);
   transform: translateX(0);
@@ -8027,6 +8044,13 @@ html[data-text-size="large"] .settings-nav .nav-item {
   font-size: 16px;
 }
 
+/* Push recent sessions section to bottom with separator */
+.sidebar .nav-section:has(+ .recent-session-list) {
+  margin-top: auto;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
 /* Final sidebar card framing and empty skills state. */
 .app {
   padding: 18px 18px 18px 20px;
@@ -8037,7 +8061,7 @@ html[data-text-size="large"] .settings-nav .nav-item {
   border: 1px solid #e3e3df;
   border-radius: 12px;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: hidden;
   box-shadow:
     0 1px 0 rgba(255,255,255,0.92) inset,
     0 16px 34px rgba(24,24,22,0.08);
@@ -8263,9 +8287,9 @@ html[data-density="compact"] .settings-content .subtitle {
 }
 
 .sidebar .recent-session-list {
-  padding-left: 16px !important;
-  padding-right: 12px !important;
-  overflow: hidden;
+  padding: 0 12px 8px 16px !important;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--line);
 }
 
 .sidebar .recent-session-item {
@@ -8312,6 +8336,10 @@ body {
   background: var(--canvas-bg) !important;
 }
 
+html[data-theme="dark"] body {
+  background: #121212 !important;
+}
+
 .sidebar {
   background: var(--bg-1) !important;
   backdrop-filter: none !important;
@@ -8319,4 +8347,38 @@ body {
 
 .topbar {
   backdrop-filter: none !important;
+}
+
+html[data-theme="dark"] .settings-about-hero {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--accent) 18%, transparent), transparent 34%),
+    linear-gradient(145deg, var(--bg-1), color-mix(in srgb, #222 88%, var(--accent) 12%));
+}
+
+/* Unify seg-btn.active with .btn.primary accent colors across all themes */
+.seg-btn.active {
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface-1));
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--line));
+}
+
+html[data-theme="dark"] .seg-btn.active {
+  background: color-mix(in srgb, var(--accent) 28%, var(--surface-2));
+  color: var(--accent-text);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+}
+
+.hint {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+html[data-text-size="large"] .hint {
+  font-size: 15px;
+}
+
+/* Force equal padding and no auto margin on sidebar footer */
+.sidebar-footer {
+  padding: 8px 16px !important;
+  margin-top: 0 !important;
 }

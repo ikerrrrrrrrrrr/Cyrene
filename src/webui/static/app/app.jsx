@@ -517,16 +517,20 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
 
       {!collapsed && (
         <>
-          <div className="nav-section nav-section-collapsible"
-               onClick={() => setSkillsOpen(!skillsOpen)}>
-            <span className="nav-section-chevron">{skillsOpen ? "▾" : "▸"}</span>
-            <span>Skills</span>
-            <span className="nav-section-link"
-                  onClick={(e) => { e.stopPropagation(); setPage("evolution"); }}>
-              {t("nav.manage")}
-            </span>
-          </div>
-          {skillsOpen && <SkillsRail onOpenPage={() => setPage("evolution")} />}
+          {(DATA.skills || []).length > 0 && (
+            <>
+              <div className="nav-section nav-section-collapsible"
+                   onClick={() => setSkillsOpen(!skillsOpen)}>
+                <span className="nav-section-chevron">{skillsOpen ? "▾" : "▸"}</span>
+                <span>Skills</span>
+                <span className="nav-section-link"
+                      onClick={(e) => { e.stopPropagation(); setPage("evolution"); }}>
+                  {t("nav.manage")}
+                </span>
+              </div>
+              {skillsOpen && <SkillsRail onOpenPage={() => setPage("evolution")} />}
+            </>
+          )}
 
           <div className="nav-section nav-section-collapsible" style={{ cursor: "default" }}>
             <span>{t("nav.recentSessions")}</span>
@@ -547,7 +551,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
             </span>
           </div>
           <div className="nav recent-session-list" style={{ paddingTop: 0 }}>
-            {DATA.sessions.slice(0, 24).map((r) => (
+            {DATA.sessions.slice(0, 4).map((r) => (
               <div key={r.id}
                    className={"nav-item recent-session-item " + (r.id === activeRecentSessionId ? "active" : "")}
                    onClick={function () {

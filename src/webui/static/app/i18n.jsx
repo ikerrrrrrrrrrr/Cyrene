@@ -321,6 +321,9 @@ const TRANSLATIONS = {
     "chat.toolCalls": "tool calls",
     "chat.tokens": "tokens",
     "chat.spend": "spend",
+    "chat.tokenIn": "in",
+    "chat.tokenOut": "out",
+    "chat.tokenTotal": "total",
     "chat.independentShell": "independent shell",
     "chat.confirmNewSession": "Start a new session? The current conversation will be compressed into short-term memory.",
     "chat.failedToCreate": "Failed to create session",
@@ -373,6 +376,12 @@ const TRANSLATIONS = {
     "chat.commandClaudeCode": "Claude Code",
     "chat.commandClaudeCodeDesc": "Launch Claude Code and direct your task to it.",
     "chat.claudeCodePlaceholder": "What should Claude Code do? (or leave empty to just launch)",
+
+    // ── Chat sidebar views ──────────────────────────────────────────────
+    "chat.side.overview": "Overview",
+    "chat.side.agents": "Agents",
+    "chat.side.shells": "Shells",
+    "chat.side.all": "All",
 
     // ── Agents Page ──────────────────────────────────────────────────────
     "agents.rounds": "Rounds",
@@ -1180,6 +1189,9 @@ const TRANSLATIONS = {
     "chat.toolCalls": "工具调用",
     "chat.tokens": "token",
     "chat.spend": "花费",
+    "chat.tokenIn": "入",
+    "chat.tokenOut": "出",
+    "chat.tokenTotal": "合计",
     "chat.independentShell": "独立 Shell",
     "chat.confirmNewSession": "启动新会话？当前对话将被压缩为短期记忆。",
     "chat.failedToCreate": "创建会话失败",
@@ -1232,6 +1244,12 @@ const TRANSLATIONS = {
     "chat.commandClaudeCode": "Claude Code",
     "chat.commandClaudeCodeDesc": "启动 Claude Code 并把任务交给它执行。",
     "chat.claudeCodePlaceholder": "要 Claude Code 做什么？（留空则仅启动）",
+
+    // ── 右侧边栏视图 ────────────────────────────────────────────────────
+    "chat.side.overview": "概览",
+    "chat.side.agents": "代理",
+    "chat.side.shells": "Shell",
+    "chat.side.all": "全部",
 
     // ── 代理流程页 ──────────────────────────────────────────────────────
     "agents.rounds": "轮次",
