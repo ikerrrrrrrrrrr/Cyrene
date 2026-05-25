@@ -273,7 +273,7 @@ button { font-family: inherit; }
    ============================================================ */
 .app {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 220px 1fr;
   height: 100vh;
   padding: 12px;
   gap: 12px;
@@ -7372,7 +7372,7 @@ html[data-text-size="large"] .seg-btn {
    Project-wide shell application
    ============================================================ */
 .app {
-  grid-template-columns: 312px 1fr;
+  grid-template-columns: 220px 1fr;
   background: #ffffff;
 }
 
@@ -7465,6 +7465,7 @@ html[data-text-size="large"] .seg-btn {
   color: var(--sidebar-muted);
   font-size: 16px;
   font-weight: 720;
+  margin-bottom: 3px;
 }
 
 .sidebar .nav-item span,
@@ -7477,7 +7478,6 @@ html[data-text-size="large"] .seg-btn {
   color: var(--sidebar-text);
   background: var(--sidebar-active);
   box-shadow: none;
-  transform: none;
 }
 
 .sidebar .nav-key,
@@ -8146,6 +8146,7 @@ html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actio
   min-width: 0;
   box-sizing: border-box;
   overflow: hidden;
+  margin-bottom: 3px !important;
 }
 
 .sidebar .nav-item > span {
@@ -8187,10 +8188,7 @@ html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actio
   font-size: 16px !important;
   font-weight: 620 !important;
   line-height: 1.35 !important;
-}
-
-.settings-layout .settings-nav .nav-item:hover {
-  transform: none !important;
+  margin-bottom: 2px !important;
 }
 
 html[data-text-size="large"] .settings-layout .settings-nav .nav-section {
@@ -8207,6 +8205,7 @@ html[data-density="compact"] .settings-layout .settings-nav {
 html[data-density="compact"] .settings-layout .settings-nav .nav-item {
   min-height: 28px !important;
   padding: 4px 8px !important;
+  margin-bottom: 1px !important;
 }
 html[data-density="compact"] .settings-layout .settings-nav .nav-section {
   min-height: 0 !important;
@@ -8237,6 +8236,7 @@ html[data-density="compact"] .settings-content .subtitle {
   max-width: 100% !important;
   min-width: 0;
   margin: 0;
+  padding: 6px 10px !important;
   display: flex;
   box-sizing: border-box;
   position: relative;
