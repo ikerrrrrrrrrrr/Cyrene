@@ -1466,8 +1466,18 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                   try {
                     var r = await fetch("/api/backup/export", {method:"POST"});
                     var d = await r.json();
-                    if (d.ok) { setBackupMsg(t("settings.backupExported",{n:d.entries.length,size:formatBytes(d.size)})); loadBackups(); }
-                    else throw new Error(d.error);
+                    if (d.ok) {
+                      setBackupMsg(t("settings.backupExported",{n:d.entries.length,size:formatBytes(d.size)}));
+                      loadBackups();
+                      // Trigger browser download so the user can save to any location
+                      var name = d.path.split("/").pop() || "cyrene_backup.zip";
+                      var a = document.createElement("a");
+                      a.href = "/api/backup/download/" + encodeURIComponent(name);
+                      a.download = name;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                    } else throw new Error(d.error);
                   } catch(e) { setBackupMsg(t("settings.failed")+": "+e.message); }
                 }}>{t("settings.backupExportBtn")}</button>
                 <button className="btn" onClick={async function () {

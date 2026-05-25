@@ -41,15 +41,23 @@ def ensure_backup_dir() -> Path:
     return _BACKUP_DIR
 
 
-async def export_backup(*, include_db: bool = True) -> dict[str, Any]:
+async def export_backup(*, include_db: bool = True, target_path: str | Path | None = None) -> dict[str, Any]:
     """Export all agent state into a timestamped zip file.
+
+    Args:
+        include_db: Whether to include the SQLite database.
+        target_path: Where to save the zip. If None, saves to the default backups directory.
 
     Returns::
         {"ok": True, "path": "/path/to/backup.zip", "size": 12345, "entries": [...]}
     """
-    ensure_backup_dir()
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = _BACKUP_DIR / f"cyrene_backup_{timestamp}.zip"
+    if target_path:
+        backup_path = Path(target_path)
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        ensure_backup_dir()
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = _BACKUP_DIR / f"cyrene_backup_{timestamp}.zip"
 
     entries: list[dict[str, Any]] = []
     try:
