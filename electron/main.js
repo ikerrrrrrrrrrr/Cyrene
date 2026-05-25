@@ -1,15 +1,78 @@
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('child_process');
-const http = require('http');
 
 const isDev = process.env.ELECTRON_DEV === '1';
 const isWindows = process.platform === 'win32';
+const supportsLoginItem = process.platform === 'darwin' || process.platform === 'win32';
 
 let mainWindow = null;
 let pythonProcess = null;
 let pendingPortResolve = null;
 let isShuttingDown = false;
+let isQuitting = false;
+let launchHidden = process.argv.includes('--hidden');
+
+const DEFAULT_DESKTOP_SETTINGS = Object.freeze({
+  launchAtLogin: false,
+  runInBackground: false,
+});
+
+function getDesktopSettingsPath() {
+  return path.join(app.getPath('userData'), 'desktop_settings.json');
+}
+
+function readDesktopSettings() {
+  try {
+    const raw = fs.readFileSync(getDesktopSettingsPath(), 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      launchAtLogin: parsed.launchAtLogin === true,
+      runInBackground: parsed.runInBackground === true,
+    };
+  } catch (_) {
+    return { ...DEFAULT_DESKTOP_SETTINGS };
+  }
+}
+
+function writeDesktopSettings(settings) {
+  const payload = {
+    launchAtLogin: settings.launchAtLogin === true,
+    runInBackground: settings.runInBackground === true,
+  };
+  fs.mkdirSync(path.dirname(getDesktopSettingsPath()), { recursive: true });
+  fs.writeFileSync(getDesktopSettingsPath(), JSON.stringify(payload, null, 2), 'utf8');
+}
+
+function applyLaunchAtLogin(enabled) {
+  if (!supportsLoginItem) return false;
+  app.setLoginItemSettings({
+    openAtLogin: enabled === true,
+    openAsHidden: enabled === true,
+    args: enabled === true ? ['--hidden'] : [],
+  });
+  return true;
+}
+
+function getDesktopSettings() {
+  const stored = readDesktopSettings();
+  return {
+    ...stored,
+    supportsLaunchAtLogin: supportsLoginItem,
+    platform: process.platform,
+  };
+}
+
+function saveDesktopSettings(updates) {
+  const next = {
+    ...readDesktopSettings(),
+    ...updates,
+  };
+  writeDesktopSettings(next);
+  applyLaunchAtLogin(next.launchAtLogin);
+  return getDesktopSettings();
+}
 
 // ---------------------------------------------------------------------------
 // Python child process management
@@ -39,6 +102,7 @@ function getPythonArgs() {
 }
 
 function spawnPython() {
+  if (pythonProcess) return;
   const binaryPath = getPythonBinaryPath();
   const args = getPythonArgs();
   const cwd = isDev ? path.join(__dirname, '..') : undefined;
@@ -170,6 +234,12 @@ function waitForPort(timeoutMs = 30000) {
 // ---------------------------------------------------------------------------
 
 async function createMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+
   let port;
   try {
     port = await waitForPort();
@@ -205,10 +275,18 @@ async function createMainWindow() {
   });
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
+    if (!launchHidden) {
+      mainWindow.show();
+    }
   });
 
-  mainWindow.on('close', () => {
+  mainWindow.on('close', (event) => {
+    const desktopSettings = readDesktopSettings();
+    if (desktopSettings.runInBackground && !isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+      return;
+    }
     killPython();
   });
 
@@ -230,15 +308,25 @@ if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    launchHidden = false;
     if (mainWindow) {
+      if (!mainWindow.isVisible()) mainWindow.show();
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+    } else {
+      spawnPython();
+      createMainWindow();
     }
   });
 
   app.whenReady().then(() => {
+    applyLaunchAtLogin(readDesktopSettings().launchAtLogin);
+    ipcMain.handle('desktop-settings:get', () => getDesktopSettings());
+    ipcMain.handle('desktop-settings:update', (_event, updates) => saveDesktopSettings(updates || {}));
     spawnPython();
-    createMainWindow();
+    if (!launchHidden) {
+      createMainWindow();
+    }
   });
 
   app.on('window-all-closed', () => {
@@ -249,14 +337,19 @@ if (!gotSingleInstanceLock) {
   });
 
   app.on('before-quit', () => {
+    isQuitting = true;
     killPython();
   });
 
   app.on('activate', () => {
     // macOS: re-create window when dock icon is clicked and no windows exist
+    launchHidden = false;
     if (mainWindow === null) {
       spawnPython();
       createMainWindow();
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
     }
   });
 }

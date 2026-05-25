@@ -207,6 +207,13 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [agentsSaved, setAgentsSaved] = useStateSet("");
   const [resetDataStatus, setResetDataStatus] = useStateSet("");
   const [resettingData, setResettingData] = useStateSet(false);
+  const [desktopSettings, setDesktopSettings] = useStateSet({
+    launchAtLogin: false,
+    runInBackground: false,
+    supportsLaunchAtLogin: false,
+    platform: "",
+  });
+  const [desktopSettingsSaved, setDesktopSettingsSaved] = useStateSet("");
 
   function toggleKey(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
 
@@ -243,6 +250,11 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       setMcpServers(data.servers || []);
       setMcpConfigs(data.configs || []);
     }).catch(() => {});
+    if (window.cyrene && typeof window.cyrene.getDesktopSettings === "function") {
+      window.cyrene.getDesktopSettings().then((data) => {
+        if (data) setDesktopSettings(data);
+      }).catch(() => {});
+    }
   }, []);
 
   async function saveSoul() {
@@ -418,6 +430,19 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     }
   }
 
+  async function saveDesktopPreferences(updates) {
+    if (!window.cyrene || typeof window.cyrene.updateDesktopSettings !== "function") return;
+    setDesktopSettingsSaved(t("settings.saving"));
+    try {
+      const next = await window.cyrene.updateDesktopSettings(updates);
+      setDesktopSettings(next || desktopSettings);
+      setDesktopSettingsSaved(t("settings.saved"));
+      setTimeout(() => setDesktopSettingsSaved(""), 1500);
+    } catch (e) {
+      setDesktopSettingsSaved(t("settings.error"));
+    }
+  }
+
   function toggleTool(name) {
     setToolList(toolList.map(function(tl) {
       return tl.name === name ? { ...tl, enabled: !tl.enabled } : tl;
@@ -476,6 +501,36 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
           <div className="settings-pane">
             <h2>{t("settings.general")}</h2>
             <p className="subtitle">{t("settings.generalSubtitle")}</p>
+            {window.cyrene ? (
+              <>
+                <div className="field">
+                  <div className="label">{t("settings.launchAtLogin")}<small>{t("settings.launchAtLoginHint")}</small></div>
+                  <div
+                    className={"toggle " + (desktopSettings.launchAtLogin ? "on" : "") + (!desktopSettings.supportsLaunchAtLogin ? " disabled" : "")}
+                    onClick={() => {
+                      if (!desktopSettings.supportsLaunchAtLogin) return;
+                      saveDesktopPreferences({ launchAtLogin: !desktopSettings.launchAtLogin });
+                    }}
+                    style={!desktopSettings.supportsLaunchAtLogin ? { opacity: 0.45, cursor: "not-allowed" } : {}}
+                  ></div>
+                </div>
+                {!desktopSettings.supportsLaunchAtLogin ? (
+                  <div className="hint" style={{ marginTop: "-6px", marginBottom: "10px" }}>
+                    {t("settings.launchAtLoginUnsupported")}
+                  </div>
+                ) : null}
+                <div className="field">
+                  <div className="label">{t("settings.runInBackground")}<small>{t("settings.runInBackgroundHint")}</small></div>
+                  <div
+                    className={"toggle " + (desktopSettings.runInBackground ? "on" : "")}
+                    onClick={() => saveDesktopPreferences({ runInBackground: !desktopSettings.runInBackground })}
+                  ></div>
+                </div>
+                <div className="settings-actions">
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{desktopSettingsSaved}</span>
+                </div>
+              </>
+            ) : null}
             <div className="field">
               <div className="label">{t("settings.assistantName")}<small>{t("settings.assistantNameHint")}</small></div>
               <input className="input" value={config.assistant_name} readOnly />
