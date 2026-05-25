@@ -931,7 +931,8 @@ button { font-family: inherit; }
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 58%, transparent);
   transition: background 120ms, border-color 120ms, color 120ms, transform 120ms, box-shadow 120ms;
 }
-.iconbtn:hover {
+.iconbtn:hover,
+.iconbtn.active {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--surface-highlight) 24%, transparent), transparent),
     color-mix(in srgb, var(--glass-fill-strong) 78%, var(--accent) 22%);
@@ -1344,50 +1345,67 @@ button { font-family: inherit; }
 .dashboard-heatmap {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  position: relative;
 }
 .dashboard-heatmap-days,
 .dashboard-heatmap-row {
   display: grid;
-  grid-template-columns: 52px repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
   align-items: center;
+  min-width: max-content;
 }
 .dashboard-heatmap-day {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
   align-items: center;
   justify-content: center;
   min-width: 0;
   text-align: center;
+  padding-bottom: 2px;
 }
 .dashboard-heatmap-day strong,
 .dashboard-heatmap-time {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-4);
 }
 .dashboard-heatmap-day small {
   color: var(--text-3);
-  font-size: 10px;
+  font-size: 10.5px;
+  line-height: 1.1;
 }
 .dashboard-heatmap-body {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 .dashboard-heatmap-time {
   text-align: left;
   white-space: nowrap;
+  padding-right: 8px;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface-1);
 }
 .dashboard-heat-cell {
-  min-height: 22px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
-  background: var(--accent);
+  height: 24px;
+  min-width: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(94, 197, 158, 0.16);
+  background: rgba(94, 197, 158, 0.1);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  transition: transform 120ms ease, border-color 120ms ease, filter 120ms ease;
+}
+.dashboard-heat-cell:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.18);
 }
 .type-chip {
   display: inline-flex;
@@ -6461,6 +6479,7 @@ html[data-theme="dark"] .right-panel-button {
 }
 
 html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
 html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
 html[data-theme="dark"] .right-panel-button:hover,
 html[data-theme="dark"] .right-panel-button.active,
@@ -6646,6 +6665,7 @@ html[data-theme="dark"] .settings-nav .nav-item:hover,
 html[data-theme="dark"] .seg-btn.active,
 html[data-theme="dark"] .seg-btn:hover,
 html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
 html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
 html[data-theme="dark"] .right-panel-button:hover,
 html[data-theme="dark"] .right-panel-button.active,
@@ -6801,6 +6821,7 @@ html[data-theme="dark"] .settings-nav .nav-item:hover,
 html[data-theme="dark"] .seg-btn.active,
 html[data-theme="dark"] .seg-btn:hover,
 html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
 html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
 html[data-theme="dark"] .right-panel-button:hover,
 html[data-theme="dark"] .right-panel-button.active,
@@ -6933,6 +6954,7 @@ html[data-theme="dark"] .settings-nav .nav-item:hover,
 html[data-theme="dark"] .seg-btn.active,
 html[data-theme="dark"] .seg-btn:hover,
 html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
 html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
 html[data-theme="dark"] .right-panel-button:hover,
 html[data-theme="dark"] .right-panel-button.active,
@@ -7633,6 +7655,7 @@ html[data-text-size="large"] .seg-btn {
 }
 
 .topbar .iconbtn:hover,
+.topbar .iconbtn.active,
 .topbar .theme-toggle-btn:hover {
   background: #efefed;
   color: #222220;
@@ -7825,6 +7848,7 @@ html[data-theme="dark"] .insp-title {
 }
 
 html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
 html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
 html[data-theme="dark"] .right-panel-button:hover,
 html[data-theme="dark"] .right-panel-button.active,
@@ -8015,6 +8039,7 @@ html[data-theme="dark"] .settings-nav .nav-item:hover,
 html[data-theme="dark"] .seg-btn.active,
 html[data-theme="dark"] .seg-btn:hover,
 html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
 html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
 html[data-theme="dark"] .right-panel-button:hover,
 html[data-theme="dark"] .right-panel-button.active,
@@ -8202,9 +8227,8 @@ html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .right-panel-bu
 }
 
 html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn.active,
 html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-toggle-btn:hover,
-html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .right-panel-button:hover,
-html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .right-panel-button.active {
   background: #2c2c2c;
   border-color: #444444;
   color: #eeeeee;
@@ -8457,6 +8481,10 @@ html[data-theme="dark"] .welcome-range .active {
 .app[data-screen-label="Cyrene · chat"] .chat-layout.right-collapsed {
   --chat-content-max: 1040px;
   --chat-column-pad: clamp(36px, 5vw, 84px);
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout:not(.right-collapsed) {
+  --chat-column-pad: clamp(20px, 3vw, 44px);
 }
 
 .app.sidebar-collapsed[data-screen-label="Cyrene · chat"] {

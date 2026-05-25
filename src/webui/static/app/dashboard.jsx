@@ -148,6 +148,12 @@ function DashboardEmotionChart({ series }) {
     return { x, y, item };
   });
   const line = coords.length ? "M " + coords.map((p) => `${p.x} ${p.y}`).join(" L ") : "";
+  const maxDateLabels = 6;
+  const labelStep = Math.max(1, Math.ceil((coords.length - 1) / Math.max(1, maxDateLabels - 1)));
+  function shouldShowDateLabel(index) {
+    if (coords.length <= maxDateLabels) return true;
+    return index === 0 || index === coords.length - 1 || index % labelStep === 0;
+  }
   return (
     <div className="dashboard-emotion-chart">
       <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
@@ -157,12 +163,14 @@ function DashboardEmotionChart({ series }) {
           return <line key={ratio} x1={padX} y1={y} x2={w - padX} y2={y} className="dashboard-grid-line" />;
         })}
         {line ? <path d={line} className="dashboard-line emotion" /> : null}
-        {coords.map((point) => (
+        {coords.map((point, index) => (
           <g key={point.item.date}>
             <circle cx={point.x} cy={point.y} r="4" className="dashboard-point emotion" />
-            <text x={point.x} y={h - 2} textAnchor="middle" className="dashboard-axis-label">
-              {formatRelativeDateLabel(point.item.date)}
-            </text>
+            {shouldShowDateLabel(index) && (
+              <text x={point.x} y={h - 2} textAnchor="middle" className="dashboard-axis-label">
+                {formatRelativeDateLabel(point.item.date)}
+              </text>
+            )}
           </g>
         ))}
       </svg>
@@ -221,9 +229,12 @@ function DashboardHeatmap({ data }) {
   const days = Array.isArray(data && data.days) ? data.days : [];
   const rows = Array.isArray(data && data.rows) ? data.rows : [];
   const max = rows.reduce((value, row) => Math.max(value, ...(row.values || [0])), 1);
+  const gridStyle = {
+    gridTemplateColumns: "64px repeat(" + Math.max(days.length, 1) + ", minmax(24px, 1fr))",
+  };
   return (
     <div className="dashboard-heatmap">
-      <div className="dashboard-heatmap-days">
+      <div className="dashboard-heatmap-days" style={gridStyle}>
         <span></span>
         {days.map((day) => (
           <span key={day} className="dashboard-heatmap-day">
@@ -234,16 +245,20 @@ function DashboardHeatmap({ data }) {
       </div>
       <div className="dashboard-heatmap-body">
         {rows.map((row) => (
-          <div key={row.label} className="dashboard-heatmap-row">
+          <div key={row.label} className="dashboard-heatmap-row" style={gridStyle}>
             <span className="dashboard-heatmap-time">{row.label}</span>
             {(row.values || []).map((value, index) => {
               const ratio = max ? value / max : 0;
+              const alpha = 0.1 + ratio * 0.78;
               return (
                 <div
                   key={row.label + ":" + days[index]}
                   className="dashboard-heat-cell"
                   title={(days[index] || "") + " " + row.label + " · " + value}
-                  style={{ opacity: 0.12 + ratio * 0.88 }}
+                  style={{
+                    backgroundColor: "rgba(94, 197, 158, " + alpha.toFixed(2) + ")",
+                    borderColor: ratio > 0 ? "rgba(94, 197, 158, 0.52)" : "rgba(94, 197, 158, 0.12)",
+                  }}
                 ></div>
               );
             })}
