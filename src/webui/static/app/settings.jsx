@@ -1,6 +1,19 @@
 // Settings page
 const { useState: useStateSet, useEffect } = React;
-const VALID_SETTINGS_SECTIONS = new Set(["general", "models", "agents", "tools", "search", "mcp", "keys", "appearance", "danger"]);
+
+const REPO_URL = "https://github.com/ikerrrrrrrrrrr/Cyrene";
+const REPO_ISSUES_URL = REPO_URL + "/issues/new";
+const DEFAULT_MODEL_BASE_URL = "https://api.deepseek.com/v1";
+const VALID_SETTINGS_SECTIONS = new Set([
+  "general",
+  "channels",
+  "models",
+  "agents",
+  "appearance",
+  "capabilities",
+  "data",
+  "about",
+]);
 
 function readStoredSettingsSection() {
   try {
@@ -11,7 +24,42 @@ function readStoredSettingsSection() {
   }
 }
 
-function UpdateSection() {
+function readStoredDesktopNotificationsEnabled() {
+  try {
+    return localStorage.getItem("cyrene-desktop-notifications") === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
+function createEmptyModelCandidate() {
+  return {
+    id: "candidate-" + Date.now() + "-" + Math.random().toString(16).slice(2, 6),
+    name: "",
+    model: "",
+    desc: "",
+    ctx: "",
+    price: "",
+    api_key: "",
+    base_url: DEFAULT_MODEL_BASE_URL,
+  };
+}
+
+function normalizeModelCandidate(raw, index, fallbackBaseUrl, fallbackApiKey) {
+  const modelIdentifier = String(raw && (raw.model || raw.name || raw.id) || "").trim();
+  return {
+    id: String(raw && raw.id || ("candidate-" + (index + 1))).trim() || ("candidate-" + (index + 1)),
+    name: modelIdentifier,
+    model: modelIdentifier,
+    desc: String(raw && raw.desc || "").trim(),
+    ctx: String(raw && raw.ctx || "").trim(),
+    price: String(raw && raw.price || "").trim(),
+    api_key: String(raw && raw.api_key || fallbackApiKey || "").trim(),
+    base_url: String(raw && raw.base_url || fallbackBaseUrl || DEFAULT_MODEL_BASE_URL).trim() || DEFAULT_MODEL_BASE_URL,
+  };
+}
+
+function UpdateSection({ compact }) {
   const { t } = useI18n();
   const [checking, setChecking] = useStateSet(false);
   const [info, setInfo] = useStateSet(null);
@@ -58,7 +106,9 @@ function UpdateSection() {
       const data = await res.json();
       setProgress(data);
       return data.done;
-    } catch (e) { return true; }
+    } catch (e) {
+      return true;
+    }
   };
 
   useEffect(() => {
@@ -76,11 +126,10 @@ function UpdateSection() {
     try {
       await fetch("/api/update/restart", { method: "POST" });
     } catch (e) {
-      // 进程退出，请求会失败
+      // Process exit can race the request.
     }
   };
 
-  // 首次加载时自动检查
   useEffect(() => { checkUpdate(); }, []);
 
   const fmtSize = (bytes) => {
@@ -90,10 +139,10 @@ function UpdateSection() {
   };
 
   const currentVersionLabel = info && info.current_version
-    ? `v${info.current_version}`
+    ? "v" + info.current_version
     : (DATA.appVersion || "—");
   const latestVersionLabel = info && info.latest_version
-    ? `v${info.latest_version}`
+    ? "v" + info.latest_version
     : "";
 
   const primaryAction = (() => {
@@ -106,7 +155,7 @@ function UpdateSection() {
     }
     if (downloading) {
       return {
-        label: `${t("settings.updateDownloading")} ${fmtSize(progress.downloaded)} / ${fmtSize(progress.total)}`,
+        label: t("settings.updateDownloading") + " " + fmtSize(progress.downloaded) + " / " + fmtSize(progress.total),
         onClick: null,
         disabled: true,
       };
@@ -126,47 +175,62 @@ function UpdateSection() {
   })();
 
   return (
-    <div className="field" style={{ flexDirection: "column", alignItems: "flex-start", gap: "8px" }}>
-      <div className="label">
-        {t("settings.updates")}
-        <small>
-          {info
-            ? currentVersionLabel + (info.update_available ? ` → ${latestVersionLabel} ${t("settings.updateAvailable")}` : ` (${t("settings.upToDate")})`)
-            : t("settings.updateChecking")}
-        </small>
+    <div className={compact ? "settings-update-card" : "settings-subpane"}>
+      <div className={compact ? "settings-update-stack" : "field"} style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+        {compact ? (
+          <div className="settings-update-compact-head">
+            <strong>{info && info.update_available ? t("settings.updateToVersion", { version: latestVersionLabel }) : t("settings.checkForUpdates")}</strong>
+            <small>
+              {info
+                ? (info.update_available ? t("settings.updateAvailable") : t("settings.upToDate"))
+                : t("settings.updateChecking")}
+            </small>
+          </div>
+        ) : (
+          <div className="label">
+            {t("settings.updates")}
+            <small>
+              {info
+                ? currentVersionLabel + (info.update_available ? (" → " + latestVersionLabel + " " + t("settings.updateAvailable")) : (" (" + t("settings.upToDate") + ")"))
+                : t("settings.updateChecking")}
+            </small>
+          </div>
+        )}
+
+        {error ? <div className="hint" style={{ color: "var(--red)" }}>{error}</div> : null}
+
+        <button className="btn" disabled={primaryAction.disabled} onClick={primaryAction.onClick || undefined}>
+          {primaryAction.label}
+        </button>
+
+        {downloading && progress.total > 0 ? (
+          <div className="progress-bar" style={{ width: "100%", height: 4, background: "var(--border)", borderRadius: 2 }}>
+            <div
+              style={{
+                width: Math.round((progress.downloaded / progress.total) * 100) + "%",
+                height: "100%",
+                background: "var(--accent)",
+                borderRadius: 2,
+                transition: "width 0.3s",
+              }}
+            />
+          </div>
+        ) : null}
+
+        {downloaded ? (
+          <span className="hint" style={{ color: "var(--green)" }}>{t("settings.updateDownloaded")}</span>
+        ) : null}
+
+        {info && info.update_available && !downloading && !downloaded ? (
+          <span className="hint">
+            {t("settings.updateAsset", { name: info.asset_name, size: fmtSize(info.asset_size) })}
+          </span>
+        ) : null}
+
+        {info && !info.update_available ? (
+          <span className="hint">{t("settings.updateLatest")}</span>
+        ) : null}
       </div>
-
-      {error && <div className="hint" style={{ color: "var(--red)" }}>{error}</div>}
-
-      <button className="btn" disabled={primaryAction.disabled} onClick={primaryAction.onClick || undefined}>
-        {primaryAction.label}
-      </button>
-
-      {downloading && progress.total > 0 && (
-        <div className="progress-bar" style={{ width: "100%", height: "4px", background: "var(--border)", borderRadius: "2px" }}>
-          <div style={{
-            width: Math.round((progress.downloaded / progress.total) * 100) + "%",
-            height: "100%",
-            background: "var(--accent)",
-            borderRadius: "2px",
-            transition: "width 0.3s",
-          }} />
-        </div>
-      )}
-
-      {downloaded && (
-        <span className="hint" style={{ color: "var(--green)" }}>{t("settings.updateDownloaded")}</span>
-      )}
-
-      {info && info.update_available && !downloading && !downloaded && (
-        <span className="hint">
-          {t("settings.updateAsset", { name: info.asset_name, size: fmtSize(info.asset_size) })}
-        </span>
-      )}
-
-      {info && !info.update_available && (
-        <span className="hint">{t("settings.updateLatest")}</span>
-      )}
     </div>
   );
 }
@@ -176,27 +240,29 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const { t, lang, setLang } = useI18n();
   const [section, setSection] = useStateSet(readStoredSettingsSection);
   const [config, setConfig] = useStateSet({
-    model: "—", base_url: "—", assistant_name: "—",
-    soul_path: "—", workspace_dir: "—", soul_content: "",
+    model: "—",
+    base_url: "—",
+    assistant_name: "—",
+    base_dir: "—",
+    data_dir: "—",
+    soul_path: "—",
+    workspace_dir: "—",
+    soul_content: "",
+    search_mode: "builtin",
+    search_external_url: "",
+    spawn_policy: "conservative",
   });
   const [soulDraft, setSoulDraft] = useStateSet("");
   const [soulStatus, setSoulStatus] = useStateSet("");
-  const [toggles, setToggles] = useStateSet({
-    sandboxedShell: true,
-    networkAllowlist: false,
-    redactSecrets: true,
+  const [capabilityToggles, setCapabilityToggles] = useStateSet({
     streamThinking: true,
-    desktopNotif: false,
+    redactSecrets: true,
   });
   const [searchMode, setSearchMode] = useStateSet("builtin");
   const [searchExternalUrl, setSearchExternalUrl] = useStateSet("");
   const [searchSaved, setSearchSaved] = useStateSet("");
-  const [keys, setKeys] = useStateSet({});
-  const [keysSaved, setKeysSaved] = useStateSet("");
   const [models, setModels] = useStateSet([]);
-  const [activeModel, setActiveModel] = useStateSet("");
-  const [baseUrl, setBaseUrl] = useStateSet("");
-  const [newModel, setNewModel] = useStateSet({ name: "", desc: "", ctx: "", price: "" });
+  const [newModel, setNewModel] = useStateSet(createEmptyModelCandidate());
   const [modelsSaved, setModelsSaved] = useStateSet("");
   const [toolList, setToolList] = useStateSet([]);
   const [toolsSaved, setToolsSaved] = useStateSet("");
@@ -214,146 +280,51 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     platform: "",
   });
   const [desktopSettingsSaved, setDesktopSettingsSaved] = useStateSet("");
+  const [telegramToken, setTelegramToken] = useStateSet("");
+  const [telegramTokenSaved, setTelegramTokenSaved] = useStateSet("");
+  const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useStateSet(readStoredDesktopNotificationsEnabled);
+  const [desktopNotificationStatus, setDesktopNotificationStatus] = useStateSet("");
+  const [toolsExpanded, setToolsExpanded] = useStateSet(false);
 
-  function toggleKey(k) { setToggles({ ...toggles, [k]: !toggles[k] }); }
-
-  React.useEffect(() => {
-    try {
-      localStorage.setItem("cyrene-settings-section", section);
-    } catch (e) {}
-  }, [section]);
-
-  React.useEffect(() => {
-    fetch("/api/settings/config").then((r) => r.json()).then((c) => {
-      setConfig(c);
-      setSoulDraft(c.soul_content || "");
-      if (c.search_mode) setSearchMode(c.search_mode);
-      if (c.search_external_url !== undefined) setSearchExternalUrl(c.search_external_url);
-    }).catch(() => {});
-    fetch("/api/settings/keys").then((r) => r.json()).then((data) => {
-      const map = {};
-      (data.keys || []).forEach((k) => { map[k.key] = k.value || ""; });
-      setKeys(map);
-    }).catch(() => {});
-    fetch("/api/settings/models").then((r) => r.json()).then((data) => {
-      setModels(data.models || []);
-      setActiveModel(data.active || "");
-      setBaseUrl(data.base_url || "");
-      if (data.active_model_name) {
-        setKeys(function(prev) { return { ...prev, OPENAI_MODEL: data.active_model_name }; });
-      }
-    }).catch(() => {});
-    fetch("/api/settings/tools").then((r) => r.json()).then((data) => {
-      setToolList(data.tools || []);
-    }).catch(() => {});
-    fetch("/api/settings/mcp").then((r) => r.json()).then((data) => {
-      setMcpServers(data.servers || []);
-      setMcpConfigs(data.configs || []);
-    }).catch(() => {});
-    if (window.cyrene && typeof window.cyrene.getDesktopSettings === "function") {
-      window.cyrene.getDesktopSettings().then((data) => {
-        if (data) setDesktopSettings(data);
-      }).catch(() => {});
-    }
-  }, []);
-
-  async function saveSoul() {
-    setSoulStatus(t("settings.saving"));
-    try {
-      const r = await fetch("/api/settings/soul", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: soulDraft }),
-      });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      setSoulStatus(t("settings.saved"));
-      setTimeout(() => setSoulStatus(""), 1500);
-    } catch (e) {
-      setSoulStatus(t("settings.error") + ": " + e.message);
-    }
+  function toggleCapability(key) {
+    setCapabilityToggles({ ...capabilityToggles, [key]: !capabilityToggles[key] });
   }
 
-  async function saveSearch() {
-    setSearchSaved(t("settings.saving"));
-    try {
-      const r = await fetch("/api/settings/search", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ search_mode: searchMode, search_external_url: searchExternalUrl }),
-      });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      setSearchSaved(t("settings.saved"));
-      setTimeout(() => setSearchSaved(""), 1500);
-    } catch (e) {
-      setSearchSaved(t("settings.error") + ": " + e.message);
-    }
+  function updateModel(id, field, value) {
+    setModels(models.map(function (model) {
+      return model.id === id
+        ? { ...model, [field]: value, name: field === "model" ? value : model.name }
+        : model;
+    }));
   }
 
-  async function saveKeys() {
-    setKeysSaved(t("settings.saving"));
-    try {
-      const r = await fetch("/api/settings/keys", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(keys),
-      });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
-      setKeysSaved(t("settings.saved") + " " + (data.updated || []).join(", "));
-      setTimeout(() => setKeysSaved(""), 2500);
-    } catch (e) {
-      setKeysSaved(t("settings.error") + ": " + e.message);
-    }
-  }
-
-  async function saveModels() {
-    setModelsSaved(t("settings.saving"));
-    try {
-      const r = await fetch("/api/settings/models", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models: models, selected: activeModel, base_url: baseUrl }),
-      });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
-      if (data.active) setActiveModel(data.active);
-      if (data.active_model_name) {
-        setKeys(function(prev) { return { ...prev, OPENAI_MODEL: data.active_model_name }; });
-        setConfig(function(prev) { return { ...prev, model: data.active_model_name, base_url: data.base_url || prev.base_url }; });
-      }
-      setModelsSaved(t("settings.saved"));
-      setTimeout(() => setModelsSaved(""), 1500);
-    } catch (e) {
-      setModelsSaved(t("settings.error") + ": " + e.message);
-    }
-  }
-
-  function selectModel(id) {
-    setActiveModel(id);
-    setModels(models.map(function(m) { return { ...m, _active: m.id === id }; }));
-  }
-
-  function addModel() {
-    var name = (newModel.name || "").trim();
-    if (!name) return;
-    var id = name.toLowerCase().replace(/\s+/g, "-");
-    var added = { id: id, name: name, desc: newModel.desc || "", ctx: newModel.ctx || "—", price: newModel.price || "—" };
-    setModels(models.concat(added));
-    setActiveModel(id);
-    setNewModel({ name: "", desc: "", ctx: "", price: "" });
+  function moveModel(id, direction) {
+    const index = models.findIndex(function (model) { return model.id === id; });
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= models.length) return;
+    const next = models.slice();
+    const current = next[index];
+    next[index] = next[target];
+    next[target] = current;
+    setModels(next);
   }
 
   function deleteModel(id) {
     if (models.length <= 1) return;
-    var next = models.filter(function(m) { return m.id !== id; });
-    setModels(next);
-    if (activeModel === id) setActiveModel(next[0] ? next[0].id : "");
+    setModels(models.filter(function (model) { return model.id !== id; }));
+  }
+
+  function addModel() {
+    const candidate = normalizeModelCandidate(newModel, models.length, "", "");
+    if (!candidate.model) return;
+    setModels(models.concat(candidate));
+    setNewModel(createEmptyModelCandidate());
   }
 
   function addMcpServer() {
-    var name = (newMcpServer.name || "").trim();
+    const name = (newMcpServer.name || "").trim();
     if (!name) return;
-    var server = {
+    const server = {
       name: name,
       transport: newMcpServer.transport || "stdio",
       command: newMcpServer.command || "",
@@ -366,47 +337,145 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   }
 
   function removeMcpServer(name) {
-    setMcpConfigs(mcpConfigs.filter(function(s) { return s.name !== name; }));
+    setMcpConfigs(mcpConfigs.filter(function (server) { return server.name !== name; }));
   }
 
   function toggleMcpServer(name) {
-    setMcpConfigs(mcpConfigs.map(function(s) {
-      return s.name === name ? { ...s, enabled: !s.enabled } : s;
+    setMcpConfigs(mcpConfigs.map(function (server) {
+      return server.name === name ? { ...server, enabled: !server.enabled } : server;
     }));
   }
 
-  async function saveMcpServers() {
-    setMcpSaved(t("settings.saving"));
+  function toggleTool(name) {
+    setToolList(toolList.map(function (tool) {
+      return tool.name === name ? { ...tool, enabled: !tool.enabled } : tool;
+    }));
+  }
+
+  useEffect(() => {
     try {
-      const r = await fetch("/api/settings/mcp", {
+      localStorage.setItem("cyrene-settings-section", section);
+    } catch (e) {}
+  }, [section]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cyrene-desktop-notifications", desktopNotificationsEnabled ? "1" : "0");
+    } catch (e) {}
+  }, [desktopNotificationsEnabled]);
+
+  useEffect(() => {
+    fetch("/api/settings/config").then((r) => r.json()).then((payload) => {
+      setConfig(payload);
+      setSoulDraft(payload.soul_content || "");
+      if (payload.search_mode) setSearchMode(payload.search_mode);
+      if (payload.search_external_url !== undefined) setSearchExternalUrl(payload.search_external_url);
+    }).catch(() => {});
+    fetch("/api/settings/models").then((r) => r.json()).then((payload) => {
+      const fallbackApiKey = "";
+      const normalized = (payload.primary_candidates || payload.models || []).map(function (model, index) {
+        return normalizeModelCandidate(model, index, payload.base_url || DEFAULT_MODEL_BASE_URL, fallbackApiKey);
+      });
+      setModels(normalized.length ? normalized : [normalizeModelCandidate({}, 0, payload.base_url || DEFAULT_MODEL_BASE_URL, "")]);
+    }).catch(() => {});
+    fetch("/api/settings/tools").then((r) => r.json()).then((payload) => {
+      setToolList(payload.tools || []);
+    }).catch(() => {});
+    fetch("/api/settings/mcp").then((r) => r.json()).then((payload) => {
+      setMcpServers(payload.servers || []);
+      setMcpConfigs(payload.configs || []);
+    }).catch(() => {});
+    fetch("/api/settings/keys").then((r) => r.json()).then((payload) => {
+      const tokenMeta = (payload.keys || []).find(function (item) { return item.key === "TELEGRAM_BOT_TOKEN"; });
+      setTelegramToken(tokenMeta && tokenMeta.value ? tokenMeta.value : "");
+    }).catch(() => {});
+    if (window.cyrene && typeof window.cyrene.getDesktopSettings === "function") {
+      window.cyrene.getDesktopSettings().then((payload) => {
+        if (payload) setDesktopSettings(payload);
+      }).catch(() => {});
+    }
+  }, []);
+
+  async function saveSoul() {
+    setSoulStatus(t("settings.saving"));
+    try {
+      const response = await fetch("/api/settings/soul", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ servers: mcpConfigs }),
+        body: JSON.stringify({ content: soulDraft }),
       });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      setMcpSaved(t("settings.saved"));
-      // Refresh status
-      fetch("/api/settings/mcp").then(function(resp) { return resp.json(); }).then(function(data) {
-        setMcpServers(data.servers || []);
-        setMcpConfigs(data.configs || []);
-      }).catch(function() {});
-      setTimeout(function() { setMcpSaved(""); }, 1500);
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      setSoulStatus(t("settings.saved"));
+      setTimeout(() => setSoulStatus(""), 1500);
     } catch (e) {
-      setMcpSaved(t("settings.error") + ": " + e.message);
+      setSoulStatus(t("settings.error") + ": " + e.message);
+    }
+  }
+
+  async function saveSearch() {
+    setSearchSaved(t("settings.saving"));
+    try {
+      const response = await fetch("/api/settings/search", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ search_mode: searchMode, search_external_url: searchExternalUrl }),
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      setSearchSaved(t("settings.saved"));
+      setTimeout(() => setSearchSaved(""), 1500);
+    } catch (e) {
+      setSearchSaved(t("settings.error") + ": " + e.message);
+    }
+  }
+
+  async function saveModels() {
+    const normalized = models
+      .map(function (model, index) {
+        return normalizeModelCandidate(model, index, config.base_url || DEFAULT_MODEL_BASE_URL, "");
+      })
+      .filter(function (model) { return model.model; });
+    if (!normalized.length) {
+      setModelsSaved(t("settings.modelCandidateRequired"));
+      return;
+    }
+    setModelsSaved(t("settings.saving"));
+    try {
+      const response = await fetch("/api/settings/models", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models: normalized }),
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const payload = await response.json();
+      const nextModels = (payload.primary_candidates || payload.models || normalized).map(function (model, index) {
+        return normalizeModelCandidate(model, index, payload.base_url || DEFAULT_MODEL_BASE_URL, "");
+      });
+      setModels(nextModels);
+      setConfig(function (previous) {
+        return {
+          ...previous,
+          model: payload.active_model_name || previous.model,
+          base_url: payload.base_url || previous.base_url,
+        };
+      });
+      setModelsSaved(t("settings.saved"));
+      setTimeout(() => setModelsSaved(""), 1500);
+    } catch (e) {
+      setModelsSaved(t("settings.error") + ": " + e.message);
     }
   }
 
   async function saveTools() {
     setToolsSaved(t("settings.saving"));
     try {
-      var map = {};
-      toolList.forEach(function(tl) { map[tl.name] = tl.enabled; });
-      const r = await fetch("/api/settings/tools", {
+      const map = {};
+      toolList.forEach(function (tool) { map[tool.name] = tool.enabled; });
+      const response = await fetch("/api/settings/tools", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tools: map }),
       });
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!response.ok) throw new Error("HTTP " + response.status);
       setToolsSaved(t("settings.saved"));
       setTimeout(() => setToolsSaved(""), 1500);
     } catch (e) {
@@ -417,12 +486,12 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   async function saveAgents() {
     setAgentsSaved(t("settings.saving"));
     try {
-      const r = await fetch("/api/settings/config", {
+      const response = await fetch("/api/settings/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ spawn_policy: config.spawn_policy || "conservative" }),
       });
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      if (!response.ok) throw new Error("HTTP " + response.status);
       setAgentsSaved(t("settings.saved"));
       setTimeout(() => setAgentsSaved(""), 1500);
     } catch (e) {
@@ -443,10 +512,80 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     }
   }
 
-  function toggleTool(name) {
-    setToolList(toolList.map(function(tl) {
-      return tl.name === name ? { ...tl, enabled: !tl.enabled } : tl;
-    }));
+  async function saveTelegramToken() {
+    if (!telegramToken || telegramToken.startsWith("••")) {
+      setTelegramTokenSaved(t("settings.noChanges"));
+      setTimeout(() => setTelegramTokenSaved(""), 1500);
+      return;
+    }
+    setTelegramTokenSaved(t("settings.saving"));
+    try {
+      const response = await fetch("/api/settings/keys", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ TELEGRAM_BOT_TOKEN: telegramToken }),
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      setTelegramTokenSaved(t("settings.saved"));
+      setTimeout(() => setTelegramTokenSaved(""), 1500);
+    } catch (e) {
+      setTelegramTokenSaved(t("settings.error") + ": " + e.message);
+    }
+  }
+
+  async function saveMcpServers() {
+    setMcpSaved(t("settings.saving"));
+    try {
+      const response = await fetch("/api/settings/mcp", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ servers: mcpConfigs }),
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      setMcpSaved(t("settings.saved"));
+      fetch("/api/settings/mcp").then((r) => r.json()).then((payload) => {
+        setMcpServers(payload.servers || []);
+        setMcpConfigs(payload.configs || []);
+      }).catch(() => {});
+      setTimeout(() => setMcpSaved(""), 1500);
+    } catch (e) {
+      setMcpSaved(t("settings.error") + ": " + e.message);
+    }
+  }
+
+  async function toggleDesktopNotifications() {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setDesktopNotificationStatus(t("settings.notificationsUnsupported"));
+      return;
+    }
+    if (desktopNotificationsEnabled) {
+      setDesktopNotificationsEnabled(false);
+      setDesktopNotificationStatus(t("settings.notificationsDisabled"));
+      setTimeout(() => setDesktopNotificationStatus(""), 1500);
+      return;
+    }
+    if (Notification.permission === "granted") {
+      setDesktopNotificationsEnabled(true);
+      setDesktopNotificationStatus(t("settings.notificationsEnabled"));
+      setTimeout(() => setDesktopNotificationStatus(""), 1500);
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setDesktopNotificationStatus(t("settings.notificationsDenied"));
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") {
+        setDesktopNotificationsEnabled(true);
+        setDesktopNotificationStatus(t("settings.notificationsEnabled"));
+      } else {
+        setDesktopNotificationStatus(t("settings.notificationsDenied"));
+      }
+      setTimeout(() => setDesktopNotificationStatus(""), 1500);
+    } catch (e) {
+      setDesktopNotificationStatus(t("settings.notificationsUnsupported"));
+    }
   }
 
   async function clearSession() {
@@ -462,12 +601,12 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     setResetDataStatus(t("settings.resettingData"));
     try {
       const response = await fetch("/api/settings/reset-data", { method: "POST" });
-      const payload = await response.json().catch(function() { return {}; });
+      const payload = await response.json().catch(function () { return {}; });
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || ("HTTP " + response.status));
       }
       try {
-        Object.keys(localStorage).forEach(function(key) {
+        Object.keys(localStorage).forEach(function (key) {
           if (key.indexOf("cyrene-") === 0) localStorage.removeItem(key);
         });
       } catch (e) {}
@@ -478,67 +617,329 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     }
   }
 
+  function openExternal(url) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  const sections = [
+    { id: "general", label: t("section.general") },
+    { id: "channels", label: t("section.channels") },
+    { id: "models", label: t("section.models") },
+    { id: "agents", label: t("section.agents") },
+    { id: "appearance", label: t("section.appearance") },
+    { id: "capabilities", label: t("section.capabilities") },
+    { id: "data", label: t("section.data") },
+    { id: "about", label: t("section.about") },
+  ];
+  const desktopIntegrationAvailable = !!(window.cyrene && typeof window.cyrene.updateDesktopSettings === "function");
+
   return (
     <div className="settings-layout">
       <div className="settings-nav">
         <div className="nav-section">{t("nav.settings")}</div>
-        {DATA.settings.sections.map((s) => {
-          const labelKey = "section." + s.id;
-          const translated = t(labelKey);
-          const label = translated === labelKey ? s.label : translated;
+        {sections.map(function (item) {
           return (
-            <div key={s.id}
-                 className={"nav-item " + (section === s.id ? "active" : "")}
-                 onClick={() => setSection(s.id)}>
-              {label}
+            <div
+              key={item.id}
+              className={"nav-item " + (section === item.id ? "active" : "")}
+              onClick={() => setSection(item.id)}
+            >
+              {item.label}
             </div>
           );
         })}
       </div>
 
       <div className="settings-content">
-        {section === "general" && (
+        {section === "general" ? (
           <div className="settings-pane">
             <h2>{t("settings.general")}</h2>
             <p className="subtitle">{t("settings.generalSubtitle")}</p>
-            {window.cyrene ? (
-              <>
-                <div className="field">
-                  <div className="label">{t("settings.launchAtLogin")}<small>{t("settings.launchAtLoginHint")}</small></div>
+
+            <div className="settings-simple-list">
+              <div className="field field--compact">
+                <div className="label">{t("settings.launchAtLogin")}<small>{t("settings.launchAtLoginHint")}</small></div>
+                <div className="settings-control-stack">
                   <div
-                    className={"toggle " + (desktopSettings.launchAtLogin ? "on" : "") + (!desktopSettings.supportsLaunchAtLogin ? " disabled" : "")}
+                    className={"toggle " + (desktopSettings.launchAtLogin ? "on" : "") + ((!desktopIntegrationAvailable || !desktopSettings.supportsLaunchAtLogin) ? " disabled" : "")}
                     onClick={() => {
-                      if (!desktopSettings.supportsLaunchAtLogin) return;
+                      if (!desktopIntegrationAvailable || !desktopSettings.supportsLaunchAtLogin) return;
                       saveDesktopPreferences({ launchAtLogin: !desktopSettings.launchAtLogin });
                     }}
-                    style={!desktopSettings.supportsLaunchAtLogin ? { opacity: 0.45, cursor: "not-allowed" } : {}}
+                    style={(!desktopIntegrationAvailable || !desktopSettings.supportsLaunchAtLogin) ? { opacity: 0.45, cursor: "not-allowed" } : {}}
                   ></div>
+                  {!desktopIntegrationAvailable ? (
+                    <span className="hint">{t("settings.desktopOnlySettingHint")}</span>
+                  ) : (!desktopSettings.supportsLaunchAtLogin ? (
+                    <span className="hint">{t("settings.launchAtLoginUnsupported")}</span>
+                  ) : null)}
                 </div>
-                {!desktopSettings.supportsLaunchAtLogin ? (
-                  <div className="hint" style={{ marginTop: "-6px", marginBottom: "10px" }}>
-                    {t("settings.launchAtLoginUnsupported")}
-                  </div>
-                ) : null}
-                <div className="field">
-                  <div className="label">{t("settings.runInBackground")}<small>{t("settings.runInBackgroundHint")}</small></div>
+              </div>
+
+              <div className="field field--compact">
+                <div className="label">{t("settings.runInBackground")}<small>{t("settings.runInBackgroundHint")}</small></div>
+                <div className="settings-control-stack">
                   <div
-                    className={"toggle " + (desktopSettings.runInBackground ? "on" : "")}
-                    onClick={() => saveDesktopPreferences({ runInBackground: !desktopSettings.runInBackground })}
+                    className={"toggle " + (desktopSettings.runInBackground ? "on" : "") + (!desktopIntegrationAvailable ? " disabled" : "")}
+                    onClick={() => {
+                      if (!desktopIntegrationAvailable) return;
+                      saveDesktopPreferences({ runInBackground: !desktopSettings.runInBackground });
+                    }}
+                    style={!desktopIntegrationAvailable ? { opacity: 0.45, cursor: "not-allowed" } : {}}
                   ></div>
                 </div>
-                <div className="settings-actions">
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{desktopSettingsSaved}</span>
+              </div>
+
+              <div className="field field--compact">
+                <div className="label">{t("settings.desktopNotifications")}<small>{t("settings.desktopNotificationsHint")}</small></div>
+                <div className="settings-control-stack">
+                  <div className={"toggle " + (desktopNotificationsEnabled ? "on" : "")} onClick={toggleDesktopNotifications}></div>
+                  {desktopNotificationStatus ? <span className="hint">{desktopNotificationStatus}</span> : null}
                 </div>
-              </>
-            ) : null}
-            <div className="field">
-              <div className="label">{t("settings.assistantName")}<small>{t("settings.assistantNameHint")}</small></div>
-              <input className="input" value={config.assistant_name} readOnly />
+              </div>
+
+              <div className="field field--compact">
+                <div className="label">{t("settings.language")}<small>{t("settings.languageHint")}</small></div>
+                <div className="seg">
+                  <button className={"seg-btn " + (lang === "en" ? "active" : "")} onClick={() => setLang("en")}>English</button>
+                  <button className={"seg-btn " + (lang === "zh" ? "active" : "")} onClick={() => setLang("zh")}>中文</button>
+                </div>
+              </div>
             </div>
-            <div className="field">
-              <div className="label">{t("settings.workspaceDir")}<small>{t("settings.workspaceDirHint")}</small></div>
-              <input className="input mono" value={config.workspace_dir} readOnly />
+
+            <div className="settings-actions">
+              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{desktopSettingsSaved}</span>
             </div>
+          </div>
+        ) : null}
+
+        {section === "channels" ? (
+          <div className="settings-pane">
+            <h2>{t("settings.channels")}</h2>
+            <p className="subtitle">{t("settings.channelsSubtitle")}</p>
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.telegram")}</h3>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="label">{t("settings.telegramToken")}<small>{t("settings.telegramTokenHint")}</small></div>
+                <div className="settings-field-stack">
+                  <input
+                    className="input mono"
+                    type="password"
+                    value={telegramToken}
+                    onChange={(e) => setTelegramToken(e.target.value)}
+                    placeholder={t("settings.placeholderOptional")}
+                    style={{ maxWidth: 420 }}
+                  />
+                  <div className="settings-actions settings-actions--inline">
+                    <button className="btn" onClick={saveTelegramToken}>{t("settings.saveNotification")}</button>
+                    {telegramTokenSaved ? <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{telegramTokenSaved}</span> : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {section === "models" ? (
+          <div className="settings-pane">
+            <h2>{t("settings.models")}</h2>
+            <p className="subtitle">{t("settings.modelsSubtitle")}</p>
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.primaryModelSlot")}</h3>
+                </div>
+                <span className="settings-rank-chip">{t("settings.primaryModelRuntimeHint")}</span>
+              </div>
+
+              {models[0] ? (
+                <div className="settings-primary-model-card">
+                  <div className="settings-card-head">
+                    <div>
+                      <div className="model-name">{t("settings.primaryCandidateLive")}</div>
+                      <div className="model-desc">{t("settings.primaryCandidateLiveHint")}</div>
+                    </div>
+                  </div>
+
+                  <div className="settings-model-lines">
+                    <div className="settings-model-line">
+                      <span>{t("settings.modelIdentifierLabel")}</span>
+                      <input
+                        className="input mono"
+                        value={models[0].model}
+                        onChange={(e) => updateModel(models[0].id, "model", e.target.value)}
+                        placeholder={t("settings.placeholderModelIdentifier")}
+                      />
+                    </div>
+                    <div className="settings-model-line">
+                      <span>{t("settings.apiKey")}</span>
+                      <input
+                        className="input mono"
+                        type="password"
+                        value={models[0].api_key}
+                        onChange={(e) => updateModel(models[0].id, "api_key", e.target.value)}
+                        placeholder="sk-..."
+                      />
+                    </div>
+                    <div className="settings-model-line">
+                      <span>{t("settings.baseUrlLabel")}</span>
+                      <input
+                        className="input mono"
+                        value={models[0].base_url}
+                        onChange={(e) => updateModel(models[0].id, "base_url", e.target.value)}
+                        placeholder="https://api.deepseek.com/v1"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-form-grid settings-form-grid--meta">
+                    <div className="settings-mini-field">
+                      <span>{t("settings.descriptionLabel")}</span>
+                      <input
+                        className="input mono"
+                        value={models[0].desc}
+                        onChange={(e) => updateModel(models[0].id, "desc", e.target.value)}
+                        placeholder={t("settings.placeholderDesc")}
+                      />
+                    </div>
+                    <div className="settings-mini-field">
+                      <span>{t("settings.contextLabel")}</span>
+                      <input
+                        className="input mono"
+                        value={models[0].ctx}
+                        onChange={(e) => updateModel(models[0].id, "ctx", e.target.value)}
+                        placeholder={t("settings.placeholderCtx")}
+                      />
+                    </div>
+                    <div className="settings-mini-field">
+                      <span>{t("settings.priceLabel")}</span>
+                      <input
+                        className="input mono"
+                        value={models[0].price}
+                        onChange={(e) => updateModel(models[0].id, "price", e.target.value)}
+                        placeholder={t("settings.placeholderPrice")}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="settings-subpane settings-subpane--spaced">
+                <div className="settings-block-head">
+                  <div>
+                    <h3>{t("settings.fallbackCandidates")}</h3>
+                  </div>
+                  <button className="btn" onClick={addModel}>{t("settings.addFallbackCandidate")}</button>
+                </div>
+
+                <div className="settings-fallback-list">
+                  {(models.length > 1 ? models.slice(1) : [newModel]).map(function (model, index) {
+                    const order = index + 1;
+                    const isDraft = models.length <= 1;
+                    return (
+                      <div key={model.id || "draft-fallback"} className={"settings-fallback-row" + (isDraft ? " is-draft" : "")}>
+                        <div className="settings-fallback-head">
+                          <div>
+                            <div className="model-name">{t("settings.primaryCandidateFallback", { n: order })}</div>
+                          </div>
+                          {isDraft ? null : (
+                          <div className="settings-card-actions">
+                            <button className="iconbtn" title={t("settings.moveUp")} onClick={() => moveModel(model.id, -1)}>
+                              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M10 15 V5" />
+                                <path d="M6 9 L10 5 L14 9" />
+                              </svg>
+                            </button>
+                            <button className="iconbtn" title={t("settings.moveDown")} onClick={() => moveModel(model.id, 1)} disabled={models.findIndex(function (item) { return item.id === model.id; }) === models.length - 1}>
+                              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M10 5 V15" />
+                                <path d="M6 11 L10 15 L14 11" />
+                              </svg>
+                            </button>
+                            <button className="iconbtn" title={t("settings.deleteModel", { name: model.model || model.id })} onClick={() => deleteModel(model.id)}>
+                              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                                <path d="M5 5 L15 15 M15 5 L5 15" />
+                              </svg>
+                            </button>
+                          </div>
+                          )}
+                        </div>
+
+                        <div className="settings-form-grid settings-form-grid--compact">
+                          <div className="settings-mini-field">
+                            <span>{t("settings.modelIdentifierLabel")}</span>
+                            <input className="input mono" value={model.model} onChange={(e) => isDraft ? setNewModel({ ...newModel, model: e.target.value, name: e.target.value }) : updateModel(model.id, "model", e.target.value)} placeholder={t("settings.placeholderModelIdentifier")} />
+                          </div>
+                          <div className="settings-mini-field">
+                            <span>{t("settings.apiKey")}</span>
+                            <input className="input mono" type="password" value={model.api_key} onChange={(e) => isDraft ? setNewModel({ ...newModel, api_key: e.target.value }) : updateModel(model.id, "api_key", e.target.value)} placeholder="sk-..." />
+                          </div>
+                          <div className="settings-mini-field">
+                            <span>{t("settings.baseUrlLabel")}</span>
+                            <input className="input mono" value={model.base_url} onChange={(e) => isDraft ? setNewModel({ ...newModel, base_url: e.target.value }) : updateModel(model.id, "base_url", e.target.value)} placeholder="https://api.deepseek.com/v1" />
+                          </div>
+                        </div>
+
+                        <div className="settings-form-grid settings-form-grid--meta settings-form-grid--compact">
+                          <div className="settings-mini-field">
+                            <span>{t("settings.descriptionLabel")}</span>
+                            <input className="input mono" value={model.desc} onChange={(e) => isDraft ? setNewModel({ ...newModel, desc: e.target.value }) : updateModel(model.id, "desc", e.target.value)} placeholder={t("settings.placeholderDesc")} />
+                          </div>
+                          <div className="settings-mini-field">
+                            <span>{t("settings.contextLabel")}</span>
+                            <input className="input mono" value={model.ctx} onChange={(e) => isDraft ? setNewModel({ ...newModel, ctx: e.target.value }) : updateModel(model.id, "ctx", e.target.value)} placeholder={t("settings.placeholderCtx")} />
+                          </div>
+                          <div className="settings-mini-field">
+                            <span>{t("settings.priceLabel")}</span>
+                            <input className="input mono" value={model.price} onChange={(e) => isDraft ? setNewModel({ ...newModel, price: e.target.value }) : updateModel(model.id, "price", e.target.value)} placeholder={t("settings.placeholderPrice")} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="settings-actions">
+                <button className="btn primary" onClick={saveModels}>{t("settings.saveApply")}</button>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{modelsSaved}</span>
+              </div>
+            </div>
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.secondaryModelSlot")}</h3>
+                  <p>{t("settings.placeholderSlotHint")}</p>
+                </div>
+              </div>
+              <div className="settings-placeholder-card">{t("settings.secondaryModelPlaceholder")}</div>
+            </div>
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.visionModelSlot")}</h3>
+                  <p>{t("settings.placeholderSlotHint")}</p>
+                </div>
+              </div>
+              <div className="settings-placeholder-card">{t("settings.visionModelPlaceholder")}</div>
+            </div>
+          </div>
+        ) : null}
+
+        {section === "agents" ? (
+          <div className="settings-pane">
+            <h2>{t("settings.agents")}</h2>
+            <p className="subtitle">{t("settings.agentsSubtitle")}</p>
+
             <div className="field" style={{ display: "block" }}>
               <div className="label" style={{ marginBottom: 8 }}>
                 {t("settings.soulMd")}<small>{t("settings.soulMdHint")}</small>
@@ -551,90 +952,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
               />
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
                 <button className="btn primary" onClick={saveSoul}>{t("settings.saveSoul")}</button>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
-                  {soulStatus || config.soul_path}
-                </span>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{soulStatus || config.soul_path}</span>
               </div>
             </div>
-            <div className="field">
-              <div className="label">{t("settings.streamReasoning")}<small>{t("settings.streamReasoningHint")}</small></div>
-              <div className={"toggle " + (toggles.streamThinking ? "on" : "")} onClick={() => toggleKey("streamThinking")}></div>
-            </div>
-          </div>
-        )}
 
-        {section === "models" && (
-          <div className="settings-pane">
-            <h2>{t("settings.models")}</h2>
-            <p className="subtitle">{t("settings.modelsSubtitle")}</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {models.map(function(m) {
-                var isActive = m.id === activeModel;
-                return (
-                  <div key={m.id}
-                       className={"model-card" + (isActive ? " active" : "")}
-                       onClick={function() { selectModel(m.id); }}
-                       style={{ cursor: "pointer" }}>
-                    <div className="model-radio" style={isActive ? { background: "var(--accent)", borderColor: "var(--accent)" } : {}}></div>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="model-name">{m.name}</div>
-                      <div className="model-desc">{m.desc}</div>
-                    </div>
-                    <div className="model-meta">
-                      <div>{m.ctx}</div>
-                      <div style={{ color: "var(--text-3)" }}>{m.price} <span style={{ color: "var(--text-4)" }}>/ M tok</span></div>
-                    </div>
-                    <button className="iconbtn"
-                            title={t("settings.deleteModel", { name: m.name })}
-                            onClick={function(e) { e.stopPropagation(); deleteModel(m.id); }}
-                            style={{ marginLeft: 8, color: "var(--text-4)", opacity: models.length <= 1 ? 0.3 : 1 }}
-                            disabled={models.length <= 1}>
-                      <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-                        <path d="M5 5 L15 15 M15 5 L5 15" />
-                      </svg>
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="field" style={{ marginTop: 8 }}>
-              <div className="label">{t("settings.apiEndpoint")}<small>{t("settings.apiEndpointHint")}</small></div>
-              <input className="input mono" value={baseUrl}
-                     onChange={function(e) { setBaseUrl(e.target.value); }}
-                     placeholder="https://api.deepseek.com/v1" style={{ maxWidth: 480 }} />
-            </div>
-            <div className="settings-actions">
-              <button className="btn primary" onClick={saveModels}>{t("settings.saveApply")}</button>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{modelsSaved}</span>
-            </div>
-            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>{t("settings.addModel")}</h3>
-            <div className="inline-form-grid">
-              <input className="input mono" placeholder={t("settings.placeholderName")} value={newModel.name}
-                     onChange={function(e) { setNewModel({ ...newModel, name: e.target.value }); }}
-                     style={{ maxWidth: 180 }} />
-              <input className="input mono" placeholder={t("settings.placeholderDesc")} value={newModel.desc}
-                     onChange={function(e) { setNewModel({ ...newModel, desc: e.target.value }); }}
-                     style={{ maxWidth: 200 }} />
-              <input className="input mono" placeholder={t("settings.placeholderCtx")} value={newModel.ctx}
-                     onChange={function(e) { setNewModel({ ...newModel, ctx: e.target.value }); }}
-                     style={{ maxWidth: 80 }} />
-              <input className="input mono" placeholder={t("settings.placeholderPrice")} value={newModel.price}
-                     onChange={function(e) { setNewModel({ ...newModel, price: e.target.value }); }}
-                     style={{ maxWidth: 100 }} />
-              <button className="btn" onClick={addModel}>{t("settings.add")}</button>
-            </div>
-          </div>
-        )}
-
-        {section === "agents" && (
-          <div className="settings-pane">
-            <h2>{t("settings.agents")}</h2>
-            <p className="subtitle">{t("settings.agentsSubtitle")}</p>
             <div className="field">
               <div className="label">{t("settings.spawnPolicy")}<small>{t("settings.spawnPolicyHint")}</small></div>
               <select
                 className="select"
-                style={{ maxWidth: 240 }}
+                style={{ maxWidth: 320 }}
                 value={config.spawn_policy || "conservative"}
                 onChange={(e) => setConfig({ ...config, spawn_policy: e.target.value })}
               >
@@ -643,222 +969,33 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 <option value="off">{t("settings.off")}</option>
               </select>
             </div>
+
+            <div className="field">
+              <div className="label">{t("settings.streamReasoning")}<small>{t("settings.streamReasoningHint")}</small></div>
+              <div className={"toggle " + (capabilityToggles.streamThinking ? "on" : "")} onClick={() => toggleCapability("streamThinking")}></div>
+            </div>
+
             <div className="settings-actions">
               <button className="btn primary" onClick={saveAgents}>{t("settings.saveApply")}</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{agentsSaved}</span>
             </div>
           </div>
-        )}
+        ) : null}
 
-        {section === "tools" && (
-          <div className="settings-pane">
-            <h2>{t("settings.tools")}</h2>
-            <p className="subtitle">{t("settings.toolsSubtitle")}</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {toolList.map(function(tl) {
-                return (
-                  <div className="field" key={tl.name}>
-                    <div className="label">
-                      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent)" }}>{tl.name}</span>
-                      <small>{function(k){var v=t(k);return v===k?tl.desc:v;}("tool.desc."+tl.name)}</small>
-                    </div>
-                    <div className={"toggle " + (tl.enabled ? "on" : "")}
-                         onClick={function() { toggleTool(tl.name); }}></div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="settings-actions">
-              <button className="btn primary" onClick={saveTools}>{t("settings.saveTools")}</button>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{toolsSaved}</span>
-            </div>
-          </div>
-        )}
-
-        {section === "search" && (
-          <div className="settings-pane">
-            <h2>{t("settings.webSearch")}</h2>
-            <p className="subtitle">{t("settings.webSearchSubtitle")}</p>
-            <div className="field">
-              <div className="label">{t("settings.searchBackend")}<small>{t("settings.searchBackendHint")}</small></div>
-              <div className="seg">
-                <button
-                  className={"seg-btn " + (searchMode === "builtin" ? "active" : "")}
-                  onClick={() => setSearchMode("builtin")}>
-                  {t("settings.builtin")}
-                </button>
-                <button
-                  className={"seg-btn " + (searchMode === "external" ? "active" : "")}
-                  onClick={() => setSearchMode("external")}>
-                  {t("settings.external")}
-                </button>
-                <button
-                  className={"seg-btn " + (searchMode === "fallback" ? "active" : "")}
-                  onClick={() => setSearchMode("fallback")}>
-                  {t("settings.fallbackOnly")}
-                </button>
-              </div>
-            </div>
-            {searchMode === "external" && (
-              <div className="field">
-                <div className="label">{t("settings.externalUrl")}<small>{t("settings.externalUrlHint")}</small></div>
-                <input
-                  className="input mono"
-                  value={searchExternalUrl}
-                  onChange={(e) => setSearchExternalUrl(e.target.value)}
-                  placeholder="http://localhost:8888"
-                  style={{ maxWidth: 400 }}
-                />
-              </div>
-            )}
-            {searchMode === "builtin" && (
-              <div className="field">
-                <div className="label">{t("settings.builtinStatus")}<small>{t("settings.builtinStatusHint", { port: config.search_port || "8888" })}</small></div>
-                <input className="input mono" value={t("settings.autoStarted")} readOnly style={{ maxWidth: 420 }} />
-              </div>
-            )}
-            {searchMode === "fallback" && (
-              <div className="field">
-                <div className="label">{t("settings.fallbackEngines")}<small>{t("settings.fallbackEnginesHint")}</small></div>
-                <input className="input mono" value={t("settings.fallbackDesc")} readOnly style={{ maxWidth: 420 }} />
-              </div>
-            )}
-            <div className="settings-actions">
-              <button className="btn primary" onClick={saveSearch}>{t("settings.saveSearch")}</button>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{searchSaved}</span>
-            </div>
-          </div>
-        )}
-
-        {section === "mcp" && (
-          <div className="settings-pane">
-            <h2>{t("settings.mcpServers")}</h2>
-            <p className="subtitle">{t("settings.mcpSubtitle")}</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {mcpConfigs.map(function(s) {
-                var live = mcpServers.find(function(ls) { return ls.name === s.name; });
-                var statusText = live ? live.status : "disconnected";
-                var toolCount = live ? live.tool_count : 0;
-                return (
-                  <div key={s.name} className="model-card" style={{ flexWrap: "wrap" }}>
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div className="model-name">
-                        {s.name}
-                        <span style={{ fontSize: 10, marginLeft: 6, color: "var(--text-4)" }}>
-                          ({s.transport})
-                        </span>
-                      </div>
-                      <div className="model-desc">
-                        {s.transport === "stdio" ? s.command + " " + (s.args || []).join(" ") : s.url}
-                      </div>
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 11, color: statusText === "connected" ? "var(--green)" : "var(--text-4)" }}>
-                        {t("settings." + statusText)}{toolCount > 0 ? " · " + t("settings.toolsCount", { n: toolCount }) : ""}
-                      </span>
-                      <div className={"toggle " + (s.enabled !== false ? "on" : "")}
-                           onClick={function() { toggleMcpServer(s.name); }}></div>
-                      <button className="iconbtn" title={t("settings.removeMcpServer", { name: s.name })}
-                              onClick={function() { removeMcpServer(s.name); }}
-                              style={{ color: "var(--text-4)" }}>
-                        <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
-                          <path d="M5 5 L15 15 M15 5 L5 15" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="settings-actions">
-              <button className="btn primary" onClick={saveMcpServers}>{t("settings.saveRestartMcp")}</button>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>{mcpSaved}</span>
-            </div>
-            <h3 style={{ marginTop: 16, marginBottom: 8, fontSize: 13 }}>{t("settings.addMcpServer")}</h3>
-            <div className="inline-form-grid">
-              <input className="input mono" placeholder={t("settings.placeholderName")} value={newMcpServer.name}
-                     onChange={function(e) { setNewMcpServer({ ...newMcpServer, name: e.target.value }); }}
-                     style={{ maxWidth: 140 }} />
-              <select className="select" style={{ maxWidth: 100 }} value={newMcpServer.transport}
-                      onChange={function(e) { setNewMcpServer({ ...newMcpServer, transport: e.target.value }); }}>
-                <option value="stdio">stdio</option>
-                <option value="sse">SSE</option>
-              </select>
-              {newMcpServer.transport === "stdio" ? (
-                <>
-                  <input className="input mono" placeholder={t("settings.placeholderCommand")} value={newMcpServer.command}
-                         onChange={function(e) { setNewMcpServer({ ...newMcpServer, command: e.target.value }); }}
-                         style={{ maxWidth: 140 }} />
-                  <input className="input mono" placeholder={t("settings.placeholderArgs")} value={newMcpServer.args}
-                         onChange={function(e) { setNewMcpServer({ ...newMcpServer, args: e.target.value }); }}
-                         style={{ maxWidth: 240 }} />
-                </>
-              ) : (
-                <input className="input mono" placeholder={t("settings.placeholderMcpUrl")} value={newMcpServer.url}
-                       onChange={function(e) { setNewMcpServer({ ...newMcpServer, url: e.target.value }); }}
-                       style={{ maxWidth: 360 }} />
-              )}
-              <button className="btn" onClick={addMcpServer}>{t("settings.add")}</button>
-            </div>
-          </div>
-        )}
-
-        {section === "keys" && (
-          <div className="settings-pane">
-            <h2>{t("settings.apiKeys")}</h2>
-            <p className="subtitle">{t("settings.apiKeysSubtitle")}</p>
-            <div className="field">
-              <div className="label">{t("settings.llmEndpoint")}<small>{t("settings.llmEndpointHint")}</small></div>
-              <input className="input mono" value={keys.OPENAI_BASE_URL || config.base_url || ""}
-                     onChange={(e) => setKeys({ ...keys, OPENAI_BASE_URL: e.target.value })}
-                     placeholder="https://api.deepseek.com/v1" style={{ maxWidth: 480 }} />
-            </div>
-            <div className="field">
-              <div className="label">{t("settings.modelName")}<small>{t("settings.modelNameHint")}</small></div>
-              <input className="input mono" value={keys.OPENAI_MODEL || config.model || ""}
-                     onChange={(e) => setKeys({ ...keys, OPENAI_MODEL: e.target.value })}
-                     placeholder={t("settings.placeholderModel")} style={{ maxWidth: 320 }} />
-            </div>
-            <div className="field">
-              <div className="label">{t("settings.apiKey")}<small>{t("settings.apiKeyHint")}</small></div>
-              <input className="input mono" type="password"
-                     value={keys.OPENAI_API_KEY || ""}
-                     onChange={(e) => setKeys({ ...keys, OPENAI_API_KEY: e.target.value })}
-                     placeholder="sk-…" style={{ maxWidth: 480 }} />
-            </div>
-            <div className="field">
-              <div className="label">{t("settings.telegramToken")}<small>{t("settings.telegramTokenHint")}</small></div>
-              <input className="input mono" type="password"
-                     value={keys.TELEGRAM_BOT_TOKEN || ""}
-                     onChange={(e) => setKeys({ ...keys, TELEGRAM_BOT_TOKEN: e.target.value })}
-                     placeholder={t("settings.placeholderOptional")} style={{ maxWidth: 480 }} />
-            </div>
-            <div className="settings-actions">
-              <button className="btn primary" onClick={saveKeys}>{t("settings.saveApiKeys")}</button>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{keysSaved}</span>
-            </div>
-            <div className="field" style={{ marginTop: 16 }}>
-              <div className="label">{t("settings.redactSecrets")}<small>{t("settings.redactSecretsHint")}</small></div>
-              <div className={"toggle " + (toggles.redactSecrets ? "on" : "")} onClick={() => toggleKey("redactSecrets")}></div>
-            </div>
-          </div>
-        )}
-
-        {section === "appearance" && (
+        {section === "appearance" ? (
           <div className="settings-pane">
             <h2>{t("settings.appearance")}</h2>
             <p className="subtitle">{t("settings.appearanceSubtitle")}</p>
+
             <div className="field">
               <div className="label">{t("settings.theme")}<small>{t("settings.themeHint")}</small></div>
               <div className="seg">
-                <button className={"seg-btn " + (tweaks && tweaks.theme === "system" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("theme", "system")}>{t("settings.system")}</button>
-                <button className={"seg-btn " + (tweaks && tweaks.theme === "light" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("theme", "light")}>{t("settings.light")}</button>
-                <button className={"seg-btn " + (tweaks && tweaks.theme === "dark" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("theme", "dark")}>{t("settings.dark")}</button>
+                <button className={"seg-btn " + (tweaks && tweaks.theme === "system" ? "active" : "")} onClick={() => setTweak && setTweak("theme", "system")}>{t("settings.system")}</button>
+                <button className={"seg-btn " + (tweaks && tweaks.theme === "light" ? "active" : "")} onClick={() => setTweak && setTweak("theme", "light")}>{t("settings.light")}</button>
+                <button className={"seg-btn " + (tweaks && tweaks.theme === "dark" ? "active" : "")} onClick={() => setTweak && setTweak("theme", "dark")}>{t("settings.dark")}</button>
               </div>
             </div>
+
             <div className="field">
               <div className="label">{t("settings.themeColor")}<small>{t("settings.themeColorHint", { theme: actualTheme || t("settings.system") })}</small></div>
               <div className="appearance-swatches">
@@ -875,43 +1012,31 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 ))}
               </div>
             </div>
+
             <div className="field">
               <div className="label">{t("settings.textSize")}<small>{t("settings.textSizeHint")}</small></div>
               <div className="seg">
-                <button className={"seg-btn " + (tweaks && tweaks.textSize === "default" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("textSize", "default")}>
+                <button className={"seg-btn " + (tweaks && tweaks.textSize === "default" ? "active" : "")} onClick={() => setTweak && setTweak("textSize", "default")}>
                   <span style={{ fontSize: 11 }}>A</span> {t("settings.default")}
                 </button>
-                <button className={"seg-btn " + (tweaks && tweaks.textSize === "large" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("textSize", "large")}>
+                <button className={"seg-btn " + (tweaks && tweaks.textSize === "large" ? "active" : "")} onClick={() => setTweak && setTweak("textSize", "large")}>
                   <span style={{ fontSize: 15 }}>A</span> {t("settings.large")}
                 </button>
               </div>
             </div>
+
             <div className="field">
               <div className="label">{t("settings.density")}<small>{t("settings.densityHint")}</small></div>
               <div className="seg">
-                <button className={"seg-btn " + (tweaks && tweaks.density === "cozy" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("density", "cozy")}>{t("settings.cozy")}</button>
-                <button className={"seg-btn " + (tweaks && tweaks.density === "compact" ? "active" : "")}
-                        onClick={() => setTweak && setTweak("density", "compact")}>{t("settings.compact")}</button>
+                <button className={"seg-btn " + (tweaks && tweaks.density === "cozy" ? "active" : "")} onClick={() => setTweak && setTweak("density", "cozy")}>{t("settings.cozy")}</button>
+                <button className={"seg-btn " + (tweaks && tweaks.density === "compact" ? "active" : "")} onClick={() => setTweak && setTweak("density", "compact")}>{t("settings.compact")}</button>
               </div>
             </div>
-            <div className="field">
-              <div className="label">{t("settings.language")}<small>{t("settings.languageHint")}</small></div>
-              <div className="seg">
-                <button className={"seg-btn " + (lang === "en" ? "active" : "")}
-                        onClick={() => setLang("en")}>English</button>
-                <button className={"seg-btn " + (lang === "zh" ? "active" : "")}
-                        onClick={() => setLang("zh")}>中文</button>
-              </div>
-            </div>
+
             <div className="field">
               <div className="label">{t("settings.flowchartOrientation")}<small>{t("settings.flowchartOrientationHint")}</small></div>
               <div className="seg">
-                <button
-                  className={"seg-btn " + (tweaks && tweaks.orientation === "horizontal" ? "active" : "")}
-                  onClick={() => setTweak && setTweak("orientation", "horizontal")}>
+                <button className={"seg-btn " + (tweaks && tweaks.orientation === "horizontal" ? "active" : "")} onClick={() => setTweak && setTweak("orientation", "horizontal")}>
                   <svg width="22" height="14" viewBox="0 0 22 14" fill="none" stroke="currentColor" strokeWidth="1.4">
                     <rect x="1" y="4" width="5" height="6" rx="1" />
                     <rect x="9" y="4" width="5" height="6" rx="1" />
@@ -920,9 +1045,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                   </svg>
                   {t("settings.horizontal")}
                 </button>
-                <button
-                  className={"seg-btn " + (tweaks && tweaks.orientation === "vertical" ? "active" : "")}
-                  onClick={() => setTweak && setTweak("orientation", "vertical")}>
+                <button className={"seg-btn " + (tweaks && tweaks.orientation === "vertical" ? "active" : "")} onClick={() => setTweak && setTweak("orientation", "vertical")}>
                   <svg width="14" height="22" viewBox="0 0 14 22" fill="none" stroke="currentColor" strokeWidth="1.4">
                     <rect x="4" y="1" width="6" height="5" rx="1" />
                     <rect x="4" y="9" width="6" height="5" rx="1" />
@@ -933,50 +1056,268 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 </button>
               </div>
             </div>
+
             <div className="field">
               <div className="label">{t("settings.canvasLegend")}<small>{t("settings.canvasLegendHint")}</small></div>
-              <div className={"toggle " + (tweaks && tweaks.showLegend ? "on" : "")}
-                   onClick={() => setTweak && setTweak("showLegend", !(tweaks && tweaks.showLegend))}></div>
+              <div className={"toggle " + (tweaks && tweaks.showLegend ? "on" : "")} onClick={() => setTweak && setTweak("showLegend", !(tweaks && tweaks.showLegend))}></div>
             </div>
+
             <div className="field">
               <div className="label">{t("settings.pulseAnimation")}<small>{t("settings.pulseAnimationHint")}</small></div>
-              <div className={"toggle " + (tweaks && tweaks.animatePulse ? "on" : "")}
-                   onClick={() => setTweak && setTweak("animatePulse", !(tweaks && tweaks.animatePulse))}></div>
+              <div className={"toggle " + (tweaks && tweaks.animatePulse ? "on" : "")} onClick={() => setTweak && setTweak("animatePulse", !(tweaks && tweaks.animatePulse))}></div>
             </div>
           </div>
-        )}
+        ) : null}
 
-        {section === "danger" && (
-          <div className="settings-pane danger-pane">
-            <h2>{t("settings.dangerZone")}</h2>
-            <p className="subtitle">{t("settings.dangerSubtitle")}</p>
-            <UpdateSection />
+        {section === "capabilities" ? (
+          <div className="settings-pane">
+            <h2>{t("settings.capabilities")}</h2>
+            <p className="subtitle">{t("settings.capabilitiesSubtitle")}</p>
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.capabilityToggles")}</h3>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="label">{t("settings.redactSecrets")}<small>{t("settings.redactSecretsHint")}</small></div>
+                <div className={"toggle " + (capabilityToggles.redactSecrets ? "on" : "")} onClick={() => toggleCapability("redactSecrets")}></div>
+              </div>
+            </div>
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.webSearch")}</h3>
+                  <p>{t("settings.webSearchSubtitle")}</p>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="label">{t("settings.searchBackend")}<small>{t("settings.searchBackendHint")}</small></div>
+                <div className="seg">
+                  <button className={"seg-btn " + (searchMode === "builtin" ? "active" : "")} onClick={() => setSearchMode("builtin")}>{t("settings.builtin")}</button>
+                  <button className={"seg-btn " + (searchMode === "external" ? "active" : "")} onClick={() => setSearchMode("external")}>{t("settings.external")}</button>
+                  <button className={"seg-btn " + (searchMode === "fallback" ? "active" : "")} onClick={() => setSearchMode("fallback")}>{t("settings.fallbackOnly")}</button>
+                </div>
+              </div>
+
+              {searchMode === "external" ? (
+                <div className="field">
+                  <div className="label">{t("settings.externalUrl")}<small>{t("settings.externalUrlHint")}</small></div>
+                  <input className="input mono" value={searchExternalUrl} onChange={(e) => setSearchExternalUrl(e.target.value)} placeholder="http://localhost:8888" style={{ maxWidth: 420 }} />
+                </div>
+              ) : null}
+
+              {searchMode === "builtin" ? (
+                <div className="field">
+                  <div className="label">{t("settings.builtinStatus")}<small>{t("settings.builtinStatusHint", { port: config.search_port || "8888" })}</small></div>
+                  <input className="input mono" value={t("settings.autoStarted")} readOnly style={{ maxWidth: 420 }} />
+                </div>
+              ) : null}
+
+              {searchMode === "fallback" ? (
+                <div className="field">
+                  <div className="label">{t("settings.fallbackEngines")}<small>{t("settings.fallbackEnginesHint")}</small></div>
+                  <input className="input mono" value={t("settings.fallbackDesc")} readOnly style={{ maxWidth: 420 }} />
+                </div>
+              ) : null}
+
+              <div className="settings-actions">
+                <button className="btn primary" onClick={saveSearch}>{t("settings.saveSearch")}</button>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{searchSaved}</span>
+              </div>
+            </div>
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.mcpServers")}</h3>
+                  <p>{t("settings.mcpSubtitle")}</p>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {mcpConfigs.map(function (server) {
+                  const live = mcpServers.find(function (item) { return item.name === server.name; });
+                  const statusText = live ? live.status : "disconnected";
+                  const toolCount = live ? live.tool_count : 0;
+                  return (
+                    <div key={server.name} className="model-card" style={{ flexWrap: "wrap" }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div className="model-name">
+                          {server.name}
+                          <span style={{ fontSize: 10, marginLeft: 6, color: "var(--text-4)" }}>({server.transport})</span>
+                        </div>
+                        <div className="model-desc">
+                          {server.transport === "stdio" ? server.command + " " + (server.args || []).join(" ") : server.url}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 11, color: statusText === "connected" ? "var(--green)" : "var(--text-4)" }}>
+                          {t("settings." + statusText)}{toolCount > 0 ? " · " + t("settings.toolsCount", { n: toolCount }) : ""}
+                        </span>
+                        <div className={"toggle " + (server.enabled !== false ? "on" : "")} onClick={() => toggleMcpServer(server.name)}></div>
+                        <button className="iconbtn" title={t("settings.removeMcpServer", { name: server.name })} onClick={() => removeMcpServer(server.name)} style={{ color: "var(--text-4)" }}>
+                          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                            <path d="M5 5 L15 15 M15 5 L5 15" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="settings-actions">
+                <button className="btn primary" onClick={saveMcpServers}>{t("settings.saveRestartMcp")}</button>
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{mcpSaved}</span>
+              </div>
+
+              <div className="settings-inline-form settings-inline-form--block">
+                <input className="input mono" placeholder={t("settings.placeholderName")} value={newMcpServer.name} onChange={(e) => setNewMcpServer({ ...newMcpServer, name: e.target.value })} />
+                <select className="select" value={newMcpServer.transport} onChange={(e) => setNewMcpServer({ ...newMcpServer, transport: e.target.value })}>
+                  <option value="stdio">stdio</option>
+                  <option value="sse">SSE</option>
+                </select>
+                {newMcpServer.transport === "stdio" ? (
+                  <>
+                    <input className="input mono" placeholder={t("settings.placeholderCommand")} value={newMcpServer.command} onChange={(e) => setNewMcpServer({ ...newMcpServer, command: e.target.value })} />
+                    <input className="input mono" placeholder={t("settings.placeholderArgs")} value={newMcpServer.args} onChange={(e) => setNewMcpServer({ ...newMcpServer, args: e.target.value })} />
+                  </>
+                ) : (
+                  <input className="input mono" placeholder={t("settings.placeholderMcpUrl")} value={newMcpServer.url} onChange={(e) => setNewMcpServer({ ...newMcpServer, url: e.target.value })} />
+                )}
+                <button className="btn" onClick={addMcpServer}>{t("settings.add")}</button>
+              </div>
+            </div>
+
+            <div className="settings-subpane">
+              <button className="settings-collapse-head" onClick={() => setToolsExpanded(!toolsExpanded)}>
+                <div>
+                  <h3>{t("settings.tools")}</h3>
+                </div>
+                <div className="settings-collapse-meta">
+                  <span className="settings-collapse-label">{toolsExpanded ? t("settings.collapseTools") : t("settings.expandTools", { count: toolList.length })}</span>
+                  <span className={"settings-collapse-icon" + (toolsExpanded ? " open" : "")}>⌄</span>
+                </div>
+              </button>
+
+              {toolsExpanded ? (
+                <>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {toolList.map(function (tool) {
+                      return (
+                        <div className="field" key={tool.name}>
+                          <div className="label">
+                            <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--accent)" }}>{tool.name}</span>
+                            <small>{function (key) { const translated = t(key); return translated === key ? tool.desc : translated; }("tool.desc." + tool.name)}</small>
+                          </div>
+                          <div className={"toggle " + (tool.enabled ? "on" : "")} onClick={() => toggleTool(tool.name)}></div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="settings-actions">
+                    <button className="btn primary" onClick={saveTools}>{t("settings.saveTools")}</button>
+                    <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{toolsSaved}</span>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {section === "data" ? (
+          <div className="settings-pane">
+            <h2>{t("settings.data")}</h2>
+            <p className="subtitle">{t("settings.dataSubtitle")}</p>
+
             <div className="field">
               <div className="label">{t("settings.clearSession")}<small>{t("settings.clearSessionHint")}</small></div>
               <button className="btn danger" onClick={clearSession}>{t("settings.clearSessionBtn")}</button>
             </div>
+
             <div className="field">
               <div className="label">{t("settings.resetAppData")}<small>{t("settings.resetAppDataHint")}</small></div>
               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                 <button className="btn danger" onClick={resetAppData} disabled={resettingData}>
                   {resettingData ? t("settings.resettingData") : t("settings.resetAppDataBtn")}
                 </button>
-                {resetDataStatus ? (
-                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
-                    {resetDataStatus}
-                  </span>
-                ) : null}
+                {resetDataStatus ? <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{resetDataStatus}</span> : null}
               </div>
             </div>
-            <div className="field">
-              <div className="label">{t("settings.soulPath")}<small>{t("settings.soulPathHint")}</small></div>
-              <input className="input mono" value={config.soul_path} readOnly />
+
+            <div className="settings-subpane">
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.pathInfo")}</h3>
+                  <p>{t("settings.pathInfoHint")}</p>
+                </div>
+              </div>
+
+              <div className="field">
+                <div className="label">{t("settings.baseDir")}<small>{t("settings.baseDirHint")}</small></div>
+                <input className="input mono" value={config.base_dir} readOnly />
+              </div>
+
+              <div className="field">
+                <div className="label">{t("settings.dataDir")}<small>{t("settings.dataDirHint")}</small></div>
+                <input className="input mono" value={config.data_dir} readOnly />
+              </div>
+
+              <div className="field">
+                <div className="label">{t("settings.workspaceDir")}<small>{t("settings.workspaceDirHint")}</small></div>
+                <input className="input mono" value={config.workspace_dir} readOnly />
+              </div>
+
+              <div className="field">
+                <div className="label">{t("settings.soulPath")}<small>{t("settings.soulPathHint")}</small></div>
+                <input className="input mono" value={config.soul_path} readOnly />
+              </div>
             </div>
           </div>
-        )}
+        ) : null}
+
+        {section === "about" ? (
+          <div className="settings-pane">
+            <h2>{t("settings.about")}</h2>
+            <p className="subtitle">{t("settings.aboutSubtitle")}</p>
+
+            <div className="settings-about-hero">
+              <div>
+                <div className="settings-about-eyebrow">Cyrene</div>
+                <h3>{t("settings.aboutHeroTitle")}</h3>
+                <p>{t("settings.aboutHeroCopy")}</p>
+              </div>
+              <div className="settings-about-actions">
+                <button className="btn" onClick={() => openExternal(REPO_URL)}>{t("settings.openGithub")}</button>
+                <button className="btn primary" onClick={() => openExternal(REPO_ISSUES_URL)}>{t("settings.reportIssue")}</button>
+              </div>
+            </div>
+
+            <div className="settings-about-grid">
+              <div className="settings-about-card">
+                <span>{t("settings.projectName")}</span>
+                <strong>Cyrene</strong>
+                <small>{t("settings.projectNameHint")}</small>
+              </div>
+              <div className="settings-about-card">
+                <span>{t("settings.version")}</span>
+                <strong>{DATA.appVersion || "—"}</strong>
+                <small>{t("settings.versionHint")}</small>
+              </div>
+              <div className="settings-about-card">
+                <span>{t("settings.updates")}</span>
+                <UpdateSection compact />
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
 }
-
-window.SettingsPage = SettingsPage;

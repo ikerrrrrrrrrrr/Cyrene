@@ -1497,19 +1497,62 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/settings/models")
     async def api_get_models():
         from cyrene.settings_store import get_models
-        models = get_models()
+        from cyrene.config import OPENAI_API_KEY, DEFAULT_OPENAI_BASE_URL, read_env_file
+
+        raw_models = get_models()
         active_model_name, base_url = _live_llm_config()
+        env_keys = read_env_file()
+        active_api_key = str(env_keys.get("OPENAI_API_KEY") or OPENAI_API_KEY or "").strip()
+        normalized: list[dict[str, Any]] = []
+        for index, model in enumerate(raw_models or []):
+            model_identifier = str(
+                model.get("model")
+                or model.get("name")
+                or model.get("id")
+                or ""
+            ).strip()
+            if not model_identifier:
+                continue
+            normalized.append(
+                {
+                    "id": str(model.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
+                    "name": str(model.get("name") or model_identifier).strip() or model_identifier,
+                    "model": model_identifier,
+                    "desc": str(model.get("desc") or "").strip(),
+                    "ctx": str(model.get("ctx") or "").strip(),
+                    "price": str(model.get("price") or "").strip(),
+                    "api_key": str(model.get("api_key") or active_api_key).strip(),
+                    "base_url": str(model.get("base_url") or base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                }
+            )
+
+        if not normalized:
+            normalized = [
+                {
+                    "id": "candidate-1",
+                    "name": active_model_name or "deepseek-v4-flash",
+                    "model": active_model_name or "deepseek-v4-flash",
+                    "desc": "",
+                    "ctx": "",
+                    "price": "",
+                    "api_key": active_api_key,
+                    "base_url": base_url or DEFAULT_OPENAI_BASE_URL,
+                }
+            ]
+
         active_model_id = next(
             (
                 str(model.get("id") or "").strip()
-                for model in models
-                if str(model.get("name") or "").strip() == active_model_name
+                for model in normalized
+                if str(model.get("model") or "").strip() == active_model_name
+                or str(model.get("name") or "").strip() == active_model_name
                 or str(model.get("id") or "").strip() == active_model_name
             ),
-            active_model_name,
+            str(normalized[0].get("id") or "candidate-1"),
         )
         return {
-            "models": models,
+            "models": normalized,
+            "primary_candidates": normalized,
             "active": active_model_id,
             "active_model_name": active_model_name,
             "base_url": base_url,
@@ -1518,35 +1561,54 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.put("/api/settings/models")
     async def api_update_models(request: Request):
         from cyrene.settings_store import save_models
-        from cyrene.config import write_env_keys
+        from cyrene.config import DEFAULT_OPENAI_BASE_URL, write_env_keys
         body = await request.json()
-        models = body.get("models")
-        selected = body.get("selected")
-        base_url = (body.get("base_url") or "").strip()
-        if not isinstance(models, list) or len(models) == 0:
+        raw_models = body.get("models")
+        if not isinstance(raw_models, list) or len(raw_models) == 0:
             return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
-        save_models(models)
-        selected_model_name = next(
-            (
-                str(model.get("name") or "").strip()
-                for model in models
-                if str(model.get("id") or "").strip() == str(selected or "").strip()
-            ),
-            str(selected or "").strip(),
+
+        normalized: list[dict[str, Any]] = []
+        for index, model in enumerate(raw_models):
+            model_identifier = str(
+                model.get("model")
+                or model.get("name")
+                or model.get("id")
+                or ""
+            ).strip()
+            if not model_identifier:
+                continue
+            normalized.append(
+                {
+                    "id": str(model.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
+                    "name": model_identifier,
+                    "model": model_identifier,
+                    "desc": str(model.get("desc") or "").strip(),
+                    "ctx": str(model.get("ctx") or "").strip(),
+                    "price": str(model.get("price") or "").strip(),
+                    "api_key": str(model.get("api_key") or "").strip(),
+                    "base_url": str(model.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                }
+            )
+
+        if not normalized:
+            return JSONResponse({"error": "models must contain at least one valid model"}, status_code=400)
+
+        save_models(normalized)
+        primary = normalized[0]
+        write_env_keys(
+            {
+                "OPENAI_MODEL": str(primary.get("model") or "").strip(),
+                "OPENAI_BASE_URL": str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                "OPENAI_API_KEY": str(primary.get("api_key") or "").strip(),
+            }
         )
-        updates = {}
-        if selected_model_name:
-            updates["OPENAI_MODEL"] = selected_model_name
-        if base_url:
-            updates["OPENAI_BASE_URL"] = base_url
-        if updates:
-            write_env_keys(updates)
         return {
             "ok": True,
-            "models": models,
-            "active": str(selected or "").strip(),
-            "active_model_name": selected_model_name,
-            "base_url": base_url,
+            "models": normalized,
+            "primary_candidates": normalized,
+            "active": str(primary.get("id") or "candidate-1"),
+            "active_model_name": str(primary.get("model") or "").strip(),
+            "base_url": str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
         }
 
     @router.get("/api/settings/tools")
@@ -3529,14 +3591,13 @@ def _build_settings_meta() -> dict:
     return {
         "sections": [
             {"id": "general", "label": "General"},
+            {"id": "channels", "label": "Channels"},
             {"id": "models", "label": "Models"},
             {"id": "agents", "label": "Agents"},
-            {"id": "tools", "label": "Tools"},
-            {"id": "search", "label": "Search"},
-            {"id": "mcp", "label": "MCP Servers"},
-            {"id": "keys", "label": "API keys"},
             {"id": "appearance", "label": "Appearance"},
-            {"id": "danger", "label": "Danger zone"},
+            {"id": "capabilities", "label": "Capabilities"},
+            {"id": "data", "label": "Data"},
+            {"id": "about", "label": "About"},
         ],
     }
 
