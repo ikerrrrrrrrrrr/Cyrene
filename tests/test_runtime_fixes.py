@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 
@@ -222,6 +224,223 @@ async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_promp
     assert seen["include_short_term"] is False
     assert seen["history"][0]["content"].startswith("[Restored context]")
     assert "stable trait" in seen["system_prompt"]
+
+
+async def test_call_llm_falls_back_to_next_model_candidate(monkeypatch):
+    from cyrene import agent
+
+    attempts: list[tuple[str, str]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict[str, Any], request: httpx.Request):
+            self.status_code = status_code
+            self._payload = payload
+            self.request = request
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("upstream failure", request=self.request, response=httpx.Response(self.status_code, request=self.request))
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, endpoint, json=None, headers=None):
+            attempts.append((str(json.get("model") or ""), endpoint))
+            request = httpx.Request("POST", endpoint)
+            if json.get("model") == "primary-model":
+                return FakeResponse(503, {}, request)
+            return FakeResponse(
+                200,
+                {
+                    "choices": [{"message": {"role": "assistant", "content": "fallback ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+                request,
+            )
+
+    monkeypatch.setattr(
+        agent,
+        "get_models",
+        lambda: [
+            {"id": "candidate-1", "model": "primary-model", "base_url": "https://primary.example/v1", "api_key": "primary-key"},
+            {"id": "candidate-2", "model": "fallback-model", "base_url": "https://fallback.example/v1", "api_key": "fallback-key"},
+        ],
+    )
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setattr(agent, "_publish_runtime_event", AsyncMock())
+
+    message = await agent._call_llm([{"role": "user", "content": "hello"}], tools=None, max_tokens=32)
+
+    assert message["content"] == "fallback ok"
+    assert attempts == [
+        ("primary-model", "https://primary.example/v1/chat/completions"),
+        ("fallback-model", "https://fallback.example/v1/chat/completions"),
+    ]
+
+
+async def test_call_llm_stream_falls_back_to_next_model_candidate(monkeypatch):
+    from cyrene import agent
+
+    attempts: list[tuple[str, str]] = []
+    emitted: list[dict[str, Any]] = []
+
+    class FakeStreamResponse:
+        def __init__(self, status_code: int, lines: list[str], request: httpx.Request):
+            self.status_code = status_code
+            self._lines = lines
+            self.request = request
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("upstream failure", request=self.request, response=httpx.Response(self.status_code, request=self.request))
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, endpoint, json=None, headers=None):
+            attempts.append((str(json.get("model") or ""), endpoint))
+            request = httpx.Request(method, endpoint)
+            if json.get("model") == "primary-model":
+                return FakeStreamResponse(503, [], request)
+            return FakeStreamResponse(
+                200,
+                [
+                    'data: {"choices":[{"delta":{"content":"hello "}}]}',
+                    'data: {"choices":[{"delta":{"content":"world"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}',
+                    "data: [DONE]",
+                ],
+                request,
+            )
+
+    monkeypatch.setattr(
+        agent,
+        "get_models",
+        lambda: [
+            {"id": "candidate-1", "model": "primary-model", "base_url": "https://primary.example/v1", "api_key": "primary-key"},
+            {"id": "candidate-2", "model": "fallback-model", "base_url": "https://fallback.example/v1", "api_key": "fallback-key"},
+        ],
+    )
+    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setattr(agent, "_publish_runtime_event", AsyncMock())
+    monkeypatch.setattr(agent, "_emit_reply_stream_event", AsyncMock(side_effect=lambda event: emitted.append(event)))
+
+    message = await agent._call_llm_stream([{"role": "user", "content": "hello"}], max_tokens=32)
+
+    assert message["content"] == "hello world"
+    assert attempts == [
+        ("primary-model", "https://primary.example/v1/chat/completions"),
+        ("fallback-model", "https://fallback.example/v1/chat/completions"),
+    ]
+    assert emitted[0]["type"] == "reply_start"
+    assert emitted[-1]["type"] == "reply_done"
+
+
+async def test_run_vision_chat_uses_vision_candidates_after_primary_failure(monkeypatch):
+    from cyrene import attachments
+
+    attempts: list[tuple[str, str]] = []
+
+    class FakeResponse:
+        def __init__(self, status_code: int, payload: dict[str, Any], request: httpx.Request):
+            self.status_code = status_code
+            self._payload = payload
+            self.request = request
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            if self.status_code < 400:
+                return
+            raise httpx.HTTPStatusError("vision unsupported", request=self.request, response=httpx.Response(self.status_code, request=self.request))
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, endpoint, json=None, headers=None):
+            attempts.append((str(json.get("model") or ""), endpoint))
+            request = httpx.Request("POST", endpoint)
+            if json.get("model") == "primary-model":
+                return FakeResponse(400, {}, request)
+            return FakeResponse(
+                200,
+                {"choices": [{"message": {"content": "vision fallback ok"}}]},
+                request,
+            )
+
+    monkeypatch.setattr(
+        attachments,
+        "get_models",
+        lambda: [{"id": "candidate-1", "model": "primary-model", "base_url": "https://primary.example/v1", "api_key": "primary-key"}],
+    )
+    monkeypatch.setattr(
+        attachments,
+        "get_vision_models",
+        lambda: [{"id": "vision-1", "model": "vision-model", "base_url": "https://vision.example/v1", "api_key": "vision-key"}],
+    )
+    monkeypatch.setattr(attachments.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+
+    payload = await attachments.run_vision_chat(
+        [{"type": "text", "text": "describe"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}],
+        content_prompt="describe",
+    )
+
+    assert payload["vision_text"] == "vision fallback ok"
+    assert payload["vision_model"] == "vision-model"
+    assert attempts == [
+        ("primary-model", "https://primary.example/v1/chat/completions"),
+        ("vision-model", "https://vision.example/v1/chat/completions"),
+    ]
+
+
+async def test_chat_with_uploaded_images_falls_back_to_vision_model(monkeypatch, tmp_path):
+    from webui import routes
+
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"fake-image")
+
+    request = httpx.Request("POST", "https://primary.example/v1/chat/completions")
+    response = httpx.Response(400, request=request)
+
+    async def fake_call_llm(messages, tools=None, max_tokens=None):
+        raise httpx.HTTPStatusError("image unsupported", request=request, response=response)
+
+    async def fake_run_vision_chat(content, content_prompt=""):
+        return {"vision_text": "vision route ok"}
+
+    monkeypatch.setattr(routes, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(routes, "run_vision_chat", fake_run_vision_chat)
+    monkeypatch.setattr(routes, "format_httpx_error", lambda exc: "image unsupported")
+
+    result = await routes._chat_with_uploaded_images(
+        "",
+        [{"path": str(image_path), "content_type": "image/png"}],
+    )
+
+    assert result == "vision route ok"
 
 
 async def test_save_session_messages_emits_session_update(tmp_path, monkeypatch):

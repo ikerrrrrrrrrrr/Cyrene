@@ -30,6 +30,7 @@ from cyrene.attachments import (
     attachment_kind_from_meta,
     build_public_attachment_payload,
     model_supports_multimodal,
+    run_vision_chat,
 )
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
@@ -400,7 +401,8 @@ async def _chat_with_uploaded_images(message: str, attachments: list[dict[str, A
     except httpx.HTTPError as exc:
         detail = format_httpx_error(exc).lower()
         if any(token in detail for token in ("image", "vision", "multimodal", "unsupported", "invalid content")):
-            return "Current model does not support image understanding. Switch to a vision-capable model to analyze uploaded images."
+            result = await run_vision_chat(content, content_prompt=prompt)
+            return str(result.get("vision_text") or "").strip() or "The vision fallback model returned no usable image analysis."
         raise
     response_text = str((response.get("content") if isinstance(response.get("content"), str) else "") or "").strip()
     if response_text:
@@ -1496,35 +1498,41 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/api/settings/models")
     async def api_get_models():
-        from cyrene.settings_store import get_models
+        from cyrene.settings_store import get_models, get_vision_models
         from cyrene.config import OPENAI_API_KEY, DEFAULT_OPENAI_BASE_URL, read_env_file
 
+        def _normalize_candidates(raw_items: list[dict[str, Any]] | None, fallback_api_key: str, fallback_base_url: str) -> list[dict[str, Any]]:
+            normalized_items: list[dict[str, Any]] = []
+            for index, model in enumerate(raw_items or []):
+                model_identifier = str(
+                    model.get("model")
+                    or model.get("name")
+                    or model.get("id")
+                    or ""
+                ).strip()
+                if not model_identifier:
+                    continue
+                normalized_items.append(
+                    {
+                        "id": str(model.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
+                        "name": str(model.get("name") or model_identifier).strip() or model_identifier,
+                        "model": model_identifier,
+                        "desc": str(model.get("desc") or "").strip(),
+                        "ctx": str(model.get("ctx") or "").strip(),
+                        "price": str(model.get("price") or "").strip(),
+                        "api_key": str(model.get("api_key") or fallback_api_key).strip(),
+                        "base_url": str(model.get("base_url") or fallback_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                    }
+                )
+            return normalized_items
+
         raw_models = get_models()
+        raw_vision_models = get_vision_models()
         active_model_name, base_url = _live_llm_config()
         env_keys = read_env_file()
         active_api_key = str(env_keys.get("OPENAI_API_KEY") or OPENAI_API_KEY or "").strip()
-        normalized: list[dict[str, Any]] = []
-        for index, model in enumerate(raw_models or []):
-            model_identifier = str(
-                model.get("model")
-                or model.get("name")
-                or model.get("id")
-                or ""
-            ).strip()
-            if not model_identifier:
-                continue
-            normalized.append(
-                {
-                    "id": str(model.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
-                    "name": str(model.get("name") or model_identifier).strip() or model_identifier,
-                    "model": model_identifier,
-                    "desc": str(model.get("desc") or "").strip(),
-                    "ctx": str(model.get("ctx") or "").strip(),
-                    "price": str(model.get("price") or "").strip(),
-                    "api_key": str(model.get("api_key") or active_api_key).strip(),
-                    "base_url": str(model.get("base_url") or base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
-                }
-            )
+        normalized = _normalize_candidates(raw_models, active_api_key, base_url)
+        normalized_vision = _normalize_candidates(raw_vision_models, active_api_key, base_url)
 
         if not normalized:
             normalized = [
@@ -1537,6 +1545,19 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                     "price": "",
                     "api_key": active_api_key,
                     "base_url": base_url or DEFAULT_OPENAI_BASE_URL,
+                }
+            ]
+        if not normalized_vision:
+            normalized_vision = [
+                {
+                    "id": "vision-candidate-1",
+                    "name": normalized[0]["model"],
+                    "model": normalized[0]["model"],
+                    "desc": "",
+                    "ctx": "",
+                    "price": "",
+                    "api_key": normalized[0]["api_key"],
+                    "base_url": normalized[0]["base_url"],
                 }
             ]
 
@@ -1553,6 +1574,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         return {
             "models": normalized,
             "primary_candidates": normalized,
+            "vision_models": normalized_vision,
+            "vision_candidates": normalized_vision,
             "active": active_model_id,
             "active_model_name": active_model_name,
             "base_url": base_url,
@@ -1560,40 +1583,52 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.put("/api/settings/models")
     async def api_update_models(request: Request):
-        from cyrene.settings_store import save_models
+        from cyrene.settings_store import save_models, save_vision_models
         from cyrene.config import DEFAULT_OPENAI_BASE_URL, write_env_keys
         body = await request.json()
         raw_models = body.get("models")
+        raw_vision_models = body.get("vision_models")
         if not isinstance(raw_models, list) or len(raw_models) == 0:
             return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
+        if raw_vision_models is not None and (not isinstance(raw_vision_models, list) or len(raw_vision_models) == 0):
+            return JSONResponse({"error": "vision_models must be a non-empty list"}, status_code=400)
 
-        normalized: list[dict[str, Any]] = []
-        for index, model in enumerate(raw_models):
-            model_identifier = str(
-                model.get("model")
-                or model.get("name")
-                or model.get("id")
-                or ""
-            ).strip()
-            if not model_identifier:
-                continue
-            normalized.append(
-                {
-                    "id": str(model.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
-                    "name": model_identifier,
-                    "model": model_identifier,
-                    "desc": str(model.get("desc") or "").strip(),
-                    "ctx": str(model.get("ctx") or "").strip(),
-                    "price": str(model.get("price") or "").strip(),
-                    "api_key": str(model.get("api_key") or "").strip(),
-                    "base_url": str(model.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
-                }
-            )
+        def _normalize_candidates(raw_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            normalized_items: list[dict[str, Any]] = []
+            for index, model in enumerate(raw_items):
+                model_identifier = str(
+                    model.get("model")
+                    or model.get("name")
+                    or model.get("id")
+                    or ""
+                ).strip()
+                if not model_identifier:
+                    continue
+                normalized_items.append(
+                    {
+                        "id": str(model.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
+                        "name": model_identifier,
+                        "model": model_identifier,
+                        "desc": str(model.get("desc") or "").strip(),
+                        "ctx": str(model.get("ctx") or "").strip(),
+                        "price": str(model.get("price") or "").strip(),
+                        "api_key": str(model.get("api_key") or "").strip(),
+                        "base_url": str(model.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                    }
+                )
+            return normalized_items
+
+        normalized = _normalize_candidates(raw_models)
+        normalized_vision = _normalize_candidates(raw_vision_models if isinstance(raw_vision_models, list) else [])
 
         if not normalized:
             return JSONResponse({"error": "models must contain at least one valid model"}, status_code=400)
+        if raw_vision_models is not None and not normalized_vision:
+            return JSONResponse({"error": "vision_models must contain at least one valid model"}, status_code=400)
 
         save_models(normalized)
+        if raw_vision_models is not None:
+            save_vision_models(normalized_vision)
         primary = normalized[0]
         write_env_keys(
             {
@@ -1606,6 +1641,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "ok": True,
             "models": normalized,
             "primary_candidates": normalized,
+            "vision_models": normalized_vision if raw_vision_models is not None else None,
+            "vision_candidates": normalized_vision if raw_vision_models is not None else None,
             "active": str(primary.get("id") or "candidate-1"),
             "active_model_name": str(primary.get("model") or "").strip(),
             "base_url": str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,

@@ -267,6 +267,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [searchSaved, setSearchSaved] = useStateSet("");
   const [models, setModels] = useStateSet([]);
   const [newModel, setNewModel] = useStateSet(createEmptyModelCandidate());
+  const [visionModels, setVisionModels] = useStateSet([]);
+  const [newVisionModel, setNewVisionModel] = useStateSet(createEmptyModelCandidate());
   const [modelsSaved, setModelsSaved] = useStateSet("");
   const [toolList, setToolList] = useStateSet([]);
   const [toolsSaved, setToolsSaved] = useStateSet("");
@@ -382,7 +384,11 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       const normalized = (payload.primary_candidates || payload.models || []).map(function (model, index) {
         return normalizeModelCandidate(model, index, payload.base_url || DEFAULT_MODEL_BASE_URL, fallbackApiKey);
       });
+      const normalizedVision = (payload.vision_candidates || payload.vision_models || []).map(function (model, index) {
+        return normalizeModelCandidate(model, index, payload.base_url || DEFAULT_MODEL_BASE_URL, fallbackApiKey);
+      });
       setModels(normalized.length ? normalized : [normalizeModelCandidate({}, 0, payload.base_url || DEFAULT_MODEL_BASE_URL, "")]);
+      setVisionModels(normalizedVision.length ? normalizedVision : [normalizeModelCandidate({}, 0, payload.base_url || DEFAULT_MODEL_BASE_URL, "")]);
     }).catch(() => {});
     fetch("/api/settings/tools").then((r) => r.json()).then((payload) => {
       setToolList(payload.tools || []);
@@ -440,7 +446,16 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         return normalizeModelCandidate(model, index, config.base_url || DEFAULT_MODEL_BASE_URL, "");
       })
       .filter(function (model) { return model.model; });
+    const normalizedVision = visionModels
+      .map(function (model, index) {
+        return normalizeModelCandidate(model, index, config.base_url || DEFAULT_MODEL_BASE_URL, "");
+      })
+      .filter(function (model) { return model.model; });
     if (!normalized.length) {
+      setModelsSaved(t("settings.modelCandidateRequired"));
+      return;
+    }
+    if (!normalizedVision.length) {
       setModelsSaved(t("settings.modelCandidateRequired"));
       return;
     }
@@ -449,14 +464,18 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       const response = await fetch("/api/settings/models", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models: normalized }),
+        body: JSON.stringify({ models: normalized, vision_models: normalizedVision }),
       });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const payload = await response.json();
       const nextModels = (payload.primary_candidates || payload.models || normalized).map(function (model, index) {
         return normalizeModelCandidate(model, index, payload.base_url || DEFAULT_MODEL_BASE_URL, "");
       });
+      const nextVisionModels = (payload.vision_candidates || payload.vision_models || normalizedVision).map(function (model, index) {
+        return normalizeModelCandidate(model, index, payload.base_url || DEFAULT_MODEL_BASE_URL, "");
+      });
       setModels(nextModels);
+      setVisionModels(nextVisionModels);
       setConfig(function (previous) {
         return {
           ...previous,
@@ -469,6 +488,37 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     } catch (e) {
       setModelsSaved(t("settings.error") + ": " + e.message);
     }
+  }
+
+  function updateVisionModel(id, field, value) {
+    setVisionModels(visionModels.map(function (model) {
+      return model.id === id
+        ? { ...model, [field]: value, name: field === "model" ? value : model.name }
+        : model;
+    }));
+  }
+
+  function moveVisionModel(id, direction) {
+    const index = visionModels.findIndex(function (model) { return model.id === id; });
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= visionModels.length) return;
+    const next = visionModels.slice();
+    const current = next[index];
+    next[index] = next[target];
+    next[target] = current;
+    setVisionModels(next);
+  }
+
+  function deleteVisionModel(id) {
+    if (visionModels.length <= 1) return;
+    setVisionModels(visionModels.filter(function (model) { return model.id !== id; }));
+  }
+
+  function addVisionModel() {
+    const candidate = normalizeModelCandidate(newVisionModel, visionModels.length, "", "");
+    if (!candidate.model) return;
+    setVisionModels(visionModels.concat(candidate));
+    setNewVisionModel(createEmptyModelCandidate());
   }
 
   async function saveTools() {
@@ -866,9 +916,9 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 </div>
 
                 <div className="settings-fallback-list">
-                  {(models.length > 1 ? models.slice(1) : [newModel]).map(function (model, index) {
+                  {models.slice(1).concat([newModel]).map(function (model, index) {
                     const order = index + 1;
-                    const isDraft = models.length <= 1;
+                    const isDraft = index === models.slice(1).length;
                     return (
                       <div key={model.id || "draft-fallback"} className={"settings-fallback-row" + (isDraft ? " is-draft" : "")}>
                         <div className="settings-fallback-head">
@@ -953,10 +1003,88 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
               <div className="settings-block-head">
                 <div>
                   <h3>{t("settings.visionModelSlot")}</h3>
-                  <p>{t("settings.placeholderSlotHint")}</p>
+                  <p>{t("settings.primaryCandidateLiveHint")}</p>
                 </div>
               </div>
-              <div className="settings-placeholder-card">{t("settings.visionModelPlaceholder")}</div>
+
+              {visionModels[0] ? (
+                <div className="settings-primary-model-card">
+                  <div className="settings-card-head">
+                    <div>
+                      <div className="model-name">{t("settings.primaryCandidateLive")}</div>
+                      <div className="model-desc">{t("settings.primaryCandidateLiveHint")}</div>
+                    </div>
+                  </div>
+
+                  <div className="settings-model-lines">
+                    <div className="settings-model-line">
+                      <span>{t("settings.modelIdentifierLabel")}</span>
+                      <input className="input mono" value={visionModels[0].model} onChange={(e) => updateVisionModel(visionModels[0].id, "model", e.target.value)} placeholder={t("settings.placeholderModelIdentifier")} />
+                    </div>
+                    <div className="settings-model-line">
+                      <span>{t("settings.apiKey")}</span>
+                      <input className="input mono" type="password" value={visionModels[0].api_key} onChange={(e) => updateVisionModel(visionModels[0].id, "api_key", e.target.value)} placeholder="sk-..." />
+                    </div>
+                    <div className="settings-model-line">
+                      <span>{t("settings.baseUrlLabel")}</span>
+                      <input className="input mono" value={visionModels[0].base_url} onChange={(e) => updateVisionModel(visionModels[0].id, "base_url", e.target.value)} placeholder="https://api.deepseek.com/v1" />
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="settings-subpane settings-subpane--spaced">
+                <div className="settings-block-head">
+                  <div>
+                    <h3>{t("settings.fallbackCandidates")}</h3>
+                  </div>
+                  <button className="btn" onClick={addVisionModel}>{t("settings.addFallbackCandidate")}</button>
+                </div>
+
+                <div className="settings-fallback-list">
+                  {visionModels.slice(1).concat([newVisionModel]).map(function (model, index) {
+                    const order = index + 1;
+                    const isDraft = index === visionModels.slice(1).length;
+                    return (
+                      <div key={model.id || "draft-vision-fallback"} className={"settings-fallback-row" + (isDraft ? " is-draft" : "")}>
+                        <div className="settings-fallback-head">
+                          <div>
+                            <div className="model-name">{t("settings.primaryCandidateFallback", { n: order })}</div>
+                          </div>
+                          {isDraft ? null : (
+                          <div className="settings-card-actions">
+                            <button className="iconbtn" title={t("settings.moveUp")} onClick={() => moveVisionModel(model.id, -1)}>
+                              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15 V5" /><path d="M6 9 L10 5 L14 9" /></svg>
+                            </button>
+                            <button className="iconbtn" title={t("settings.moveDown")} onClick={() => moveVisionModel(model.id, 1)} disabled={visionModels.findIndex(function (item) { return item.id === model.id; }) === visionModels.length - 1}>
+                              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M10 5 V15" /><path d="M6 11 L10 15 L14 11" /></svg>
+                            </button>
+                            <button className="iconbtn" title={t("settings.deleteModel", { name: model.model || model.id })} onClick={() => deleteVisionModel(model.id)}>
+                              <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><path d="M5 5 L15 15 M15 5 L5 15" /></svg>
+                            </button>
+                          </div>
+                          )}
+                        </div>
+
+                        <div className="settings-form-grid settings-form-grid--compact">
+                          <div className="settings-mini-field">
+                            <span>{t("settings.modelIdentifierLabel")}</span>
+                            <input className="input mono" value={model.model} onChange={(e) => isDraft ? setNewVisionModel({ ...newVisionModel, model: e.target.value, name: e.target.value }) : updateVisionModel(model.id, "model", e.target.value)} placeholder={t("settings.placeholderModelIdentifier")} />
+                          </div>
+                          <div className="settings-mini-field">
+                            <span>{t("settings.apiKey")}</span>
+                            <input className="input mono" type="password" value={model.api_key} onChange={(e) => isDraft ? setNewVisionModel({ ...newVisionModel, api_key: e.target.value }) : updateVisionModel(model.id, "api_key", e.target.value)} placeholder="sk-..." />
+                          </div>
+                          <div className="settings-mini-field">
+                            <span>{t("settings.baseUrlLabel")}</span>
+                            <input className="input mono" value={model.base_url} onChange={(e) => isDraft ? setNewVisionModel({ ...newVisionModel, base_url: e.target.value }) : updateVisionModel(model.id, "base_url", e.target.value)} placeholder="https://api.deepseek.com/v1" />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           </div>
         ) : null}

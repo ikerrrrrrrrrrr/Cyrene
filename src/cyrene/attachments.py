@@ -11,8 +11,9 @@ import httpx
 from PIL import Image
 from pypdf import PdfReader
 
-from cyrene.config import DATA_DIR
+from cyrene.config import DATA_DIR, DEFAULT_OPENAI_BASE_URL
 from cyrene.llm import _truncate
+from cyrene.settings_store import get_models, get_vision_models
 
 UPLOADS_DIR = DATA_DIR / "webui_uploads"
 EXPORTS_DIR = DATA_DIR / "webui_exports"
@@ -75,6 +76,76 @@ def model_supports_multimodal(model: str | None = None) -> bool:
     if not model_name:
         return False
     return any(hint in model_name for hint in _MULTIMODAL_MODEL_HINTS)
+
+
+def _normalized_llm_endpoints(base_url: str) -> list[str]:
+    normalized_base = str(base_url or DEFAULT_OPENAI_BASE_URL).strip().rstrip("/") or DEFAULT_OPENAI_BASE_URL
+    endpoints = [f"{normalized_base}/chat/completions"]
+    if not normalized_base.endswith("/v1"):
+        endpoints.append(f"{normalized_base}/v1/chat/completions")
+    return list(dict.fromkeys(endpoints))
+
+
+def _normalized_candidate(raw: dict[str, Any], index: int, fallback_base_url: str, fallback_api_key: str) -> dict[str, Any] | None:
+    model = str(raw.get("model") or raw.get("name") or raw.get("id") or "").strip()
+    if not model:
+        return None
+    base_url = str(raw.get("base_url") or fallback_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
+    api_key = str(raw.get("api_key") or fallback_api_key or "").strip()
+    return {
+        "id": str(raw.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "endpoints": _normalized_llm_endpoints(base_url),
+    }
+
+
+def resolve_vision_candidates(include_primary_fallback: bool = True) -> list[dict[str, Any]]:
+    active_model = str(os.environ.get("OPENAI_MODEL", "deepseek-chat") or "").strip() or "deepseek-chat"
+    active_base_url = str(os.environ.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL) or "").strip() or DEFAULT_OPENAI_BASE_URL
+    active_api_key = str(os.environ.get("OPENAI_API_KEY", "") or "").strip()
+
+    candidates: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    if include_primary_fallback:
+        for index, raw in enumerate(get_models() or []):
+            candidate = _normalized_candidate(raw, index, active_base_url, active_api_key)
+            if not candidate:
+                continue
+            key = (candidate["model"], candidate["base_url"], candidate["api_key"])
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+
+    for index, raw in enumerate(get_vision_models() or []):
+        candidate = _normalized_candidate(raw, index, active_base_url, active_api_key)
+        if not candidate:
+            continue
+        key = (candidate["model"], candidate["base_url"], candidate["api_key"])
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+
+    if not candidates:
+        candidates.append(
+            {
+                "id": "runtime-active",
+                "model": active_model,
+                "base_url": active_base_url,
+                "api_key": active_api_key,
+                "endpoints": _normalized_llm_endpoints(active_base_url),
+            }
+        )
+    return candidates
+
+
+def _looks_like_vision_capability_error(exc: Exception) -> bool:
+    detail = str(exc).lower()
+    return any(token in detail for token in ("image", "vision", "multimodal", "unsupported", "invalid content", "input_image"))
 
 
 def _safe_attachment_name(filename: str) -> str:
@@ -216,60 +287,60 @@ def _image_metadata(path: Path) -> dict[str, Any]:
 
 
 async def _vision_analysis(path: Path, prompt: str = "") -> dict[str, Any]:
-    model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-    api_key = os.environ.get("OPENAI_API_KEY", "")
     mime_type = mimetypes.guess_type(str(path))[0] or "image/png"
     image_b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-    endpoints = [f"{base_url}/chat/completions"]
-    if not base_url.endswith("/v1"):
-        endpoints.append(f"{base_url}/v1/chat/completions")
     content_prompt = prompt.strip() or "Describe this image in detail and extract any visible text."
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": content_prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
-                ],
-            }
-        ],
-        "max_tokens": 1200,
-    }
-    if "deepseek" in model.lower():
-        payload["thinking"] = {"type": "disabled"}
-    headers = {"Content-Type": "application/json"}
-    if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
-        headers["Authorization"] = f"Bearer {api_key}"
+    content = [
+        {"type": "text", "text": content_prompt},
+        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}},
+    ]
+    return await run_vision_chat(content, content_prompt=content_prompt)
+
+
+async def run_vision_chat(content: list[dict[str, Any]], content_prompt: str = "") -> dict[str, Any]:
+    candidates = resolve_vision_candidates(include_primary_fallback=True)
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         last_error: Exception | None = None
-        for endpoint in list(dict.fromkeys(endpoints)):
-            try:
-                response = await client.post(endpoint, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
-                message = ((data.get("choices") or [{}])[0].get("message") or {})
-                content = message.get("content")
-                if isinstance(content, str):
-                    vision_text = content.strip()
-                elif isinstance(content, list):
-                    parts = []
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "text":
-                            parts.append(str(item.get("text") or ""))
-                    vision_text = "".join(parts).strip()
-                else:
-                    vision_text = ""
-                return {
-                    "vision_model": model,
-                    "vision_prompt": content_prompt,
-                    "vision_text": _truncate(vision_text, 12000),
-                }
-            except Exception as exc:
-                last_error = exc
+        for candidate in candidates:
+            model = str(candidate.get("model") or "").strip()
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": content}],
+                "max_tokens": 1200,
+            }
+            if "deepseek" in model.lower():
+                payload["thinking"] = {"type": "disabled"}
+            headers = {"Content-Type": "application/json"}
+            api_key = str(candidate.get("api_key") or "").strip()
+            if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
+                headers["Authorization"] = f"Bearer {api_key}"
+            for endpoint in list(candidate.get("endpoints") or []):
+                try:
+                    response = await client.post(endpoint, json=payload, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    message = ((data.get("choices") or [{}])[0].get("message") or {})
+                    response_content = message.get("content")
+                    if isinstance(response_content, str):
+                        vision_text = response_content.strip()
+                    elif isinstance(response_content, list):
+                        parts = []
+                        for item in response_content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                parts.append(str(item.get("text") or ""))
+                        vision_text = "".join(parts).strip()
+                    else:
+                        vision_text = ""
+                    return {
+                        "vision_model": model,
+                        "vision_prompt": content_prompt,
+                        "vision_text": _truncate(vision_text, 12000),
+                    }
+                except Exception as exc:
+                    last_error = exc
+                    if _looks_like_vision_capability_error(exc):
+                        break
         if last_error is not None:
             raise last_error
     return {}
@@ -293,9 +364,11 @@ async def analyze_attachment(path_str: str, prompt: str = "", force_refresh: boo
         payload["kind"] = "image"
         payload["image_meta"] = _image_metadata(path)
         payload["multimodal_model"] = model_supports_multimodal()
-        if payload["multimodal_model"]:
+        try:
             payload.update(await _vision_analysis(path, prompt=prompt))
-        else:
+        except Exception:
+            if payload["multimodal_model"]:
+                raise
             payload["note"] = "Current model does not appear to support vision input."
     else:
         payload["kind"] = "file"

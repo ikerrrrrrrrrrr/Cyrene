@@ -23,6 +23,11 @@ _DEFAULT_MODELS = [
      "ctx": "200k", "price": "$3.00 / $15.00"},
 ]
 
+_DEFAULT_VISION_MODELS = [
+    {"id": "vision-1", "name": "gpt-4.1-mini", "desc": "Vision fallback default",
+     "ctx": "128k", "price": "medium"},
+]
+
 _DEFAULT_ENABLED_TOOLS = {
     "Read": True,
     "Write": True,
@@ -63,6 +68,7 @@ _DEFAULTS: dict = {
     "spawn_policy": "conservative",
     "write_permission_mode": "workspace_only",
     "models": _DEFAULT_MODELS,
+    "vision_models": _DEFAULT_VISION_MODELS,
     "enabled_tools": _DEFAULT_ENABLED_TOOLS,
 }
 
@@ -140,6 +146,16 @@ def get_models() -> list[dict]:
 def save_models(models: list[dict]) -> None:
     """Replace the entire models list."""
     set_("models", models)
+
+
+def get_vision_models() -> list[dict]:
+    """Return the user-managed vision model list."""
+    return _load().get("vision_models", _DEFAULT_VISION_MODELS)
+
+
+def save_vision_models(models: list[dict]) -> None:
+    """Replace the entire vision models list."""
+    set_("vision_models", models)
 
 
 # ---------------------------------------------------------------------------
