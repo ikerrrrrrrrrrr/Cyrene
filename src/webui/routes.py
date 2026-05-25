@@ -32,6 +32,7 @@ from cyrene.attachments import (
     model_supports_multimodal,
     run_vision_chat,
 )
+from cyrene.config import _strip_wrapping_quotes
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
     _append_session_message,
@@ -896,6 +897,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_cc_status():
         return get_cc_status(_CC_PROJECT_DIR)
 
+    @router.get("/api/status")
+    async def api_status():
+        return await _build_status()
+
     async def _build_cc_learning_snapshot() -> dict[str, Any]:
         status = get_cc_status(_CC_PROJECT_DIR)
         latest_jsonl = str(status.get("latest_jsonl") or "").strip()
@@ -1520,7 +1525,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                         "desc": str(model.get("desc") or "").strip(),
                         "ctx": str(model.get("ctx") or "").strip(),
                         "price": str(model.get("price") or "").strip(),
-                        "api_key": str(model.get("api_key") or fallback_api_key).strip(),
+                        "api_key": _strip_wrapping_quotes(str(model.get("api_key") or fallback_api_key).strip()),
                         "base_url": str(model.get("base_url") or fallback_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
                     }
                 )
@@ -1530,7 +1535,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         raw_vision_models = get_vision_models()
         active_model_name, base_url = _live_llm_config()
         env_keys = read_env_file()
-        active_api_key = str(env_keys.get("OPENAI_API_KEY") or OPENAI_API_KEY or "").strip()
+        active_api_key = _strip_wrapping_quotes(str(env_keys.get("OPENAI_API_KEY") or OPENAI_API_KEY or "").strip())
         normalized = _normalize_candidates(raw_models, active_api_key, base_url)
         normalized_vision = _normalize_candidates(raw_vision_models, active_api_key, base_url)
 
@@ -1612,7 +1617,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                         "desc": str(model.get("desc") or "").strip(),
                         "ctx": str(model.get("ctx") or "").strip(),
                         "price": str(model.get("price") or "").strip(),
-                        "api_key": str(model.get("api_key") or "").strip(),
+                        "api_key": _strip_wrapping_quotes(str(model.get("api_key") or "").strip()),
                         "base_url": str(model.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
                     }
                 )
@@ -1634,7 +1639,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             {
                 "OPENAI_MODEL": str(primary.get("model") or "").strip(),
                 "OPENAI_BASE_URL": str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
-                "OPENAI_API_KEY": str(primary.get("api_key") or "").strip(),
+                "OPENAI_API_KEY": _strip_wrapping_quotes(str(primary.get("api_key") or "").strip()),
             }
         )
         return {

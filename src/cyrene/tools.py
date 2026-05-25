@@ -392,6 +392,12 @@ async def _tool_send_wechat_file(args: dict[str, Any], bot: Any, chat_id: int, _
 
     name = str(args.get("name", "") or "").strip() or path.name
     text = str(args.get("text", "") or "").strip()
+    dedupe_key = f"{path.resolve()}|{name}|{text}"
+
+    if notify_state is not None:
+        sent_wechat_files = notify_state.setdefault("sent_wechat_files", set())
+        if dedupe_key in sent_wechat_files:
+            return f"Skipped duplicate WeChat file send: {name}"
 
     # Send via WeChat if the bot supports it
     send_file_fn = getattr(bot, "send_file", None)
@@ -422,6 +428,8 @@ async def _tool_send_wechat_file(args: dict[str, Any], bot: Any, chat_id: int, _
         logger.exception("Failed to write WebUI notification for WeChat file send")
 
     if notify_state is not None:
+        sent_wechat_files = notify_state.setdefault("sent_wechat_files", set())
+        sent_wechat_files.add(dedupe_key)
         notify_state["sent"] = True
     return f"File sent via WeChat: {name}"
 

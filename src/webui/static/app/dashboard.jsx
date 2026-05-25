@@ -83,6 +83,12 @@ function DashboardTokenChart({ timeline }) {
   const promptArea = promptCoords.length
     ? `M ${promptCoords[0].x} ${h - padBottom} L ${promptCoords.map((p) => `${p.x} ${p.yPrompt}`).join(" L ")} L ${promptCoords[promptCoords.length - 1].x} ${h - padBottom} Z`
     : "";
+  const maxDateLabels = 6;
+  const labelStep = Math.max(1, Math.ceil((promptCoords.length - 1) / Math.max(1, maxDateLabels - 1)));
+  function shouldShowDateLabel(index) {
+    if (promptCoords.length <= maxDateLabels) return true;
+    return index === 0 || index === promptCoords.length - 1 || index % labelStep === 0;
+  }
 
   return (
     <div className="dashboard-token-chart">
@@ -101,7 +107,7 @@ function DashboardTokenChart({ timeline }) {
           {stackedLine ? <path d={stackedLine} className="dashboard-line completion" /> : null}
           {promptLine ? <path d={promptLine} className="dashboard-line prompt" /> : null}
         </svg>
-        {promptCoords.map((point) => (
+        {promptCoords.map((point, index) => (
           <div key={point.item.date} className="dashboard-token-overlay">
             <span
               className="dashboard-point completion"
@@ -111,12 +117,14 @@ function DashboardTokenChart({ timeline }) {
               className="dashboard-point prompt"
               style={{ left: `${(point.x / w) * 100}%`, top: `${(point.yPrompt / h) * 100}%` }}
             ></span>
-            <span
-              className="dashboard-axis-label dashboard-axis-label-token"
-              style={{ left: `${(point.x / w) * 100}%`, top: `${((h - 18) / h) * 100}%` }}
-            >
-              {formatRelativeDateLabel(point.item.date)}
-            </span>
+            {shouldShowDateLabel(index) && (
+              <span
+                className="dashboard-axis-label dashboard-axis-label-token"
+                style={{ left: `${(point.x / w) * 100}%`, top: `${((h - 18) / h) * 100}%` }}
+              >
+                {formatRelativeDateLabel(point.item.date)}
+              </span>
+            )}
           </div>
         ))}
       </div>

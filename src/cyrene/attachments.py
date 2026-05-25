@@ -11,7 +11,7 @@ import httpx
 from PIL import Image
 from pypdf import PdfReader
 
-from cyrene.config import DATA_DIR, DEFAULT_OPENAI_BASE_URL
+from cyrene.config import DATA_DIR, DEFAULT_OPENAI_BASE_URL, _strip_wrapping_quotes
 from cyrene.llm import _truncate
 from cyrene.settings_store import get_models, get_vision_models
 
@@ -91,7 +91,7 @@ def _normalized_candidate(raw: dict[str, Any], index: int, fallback_base_url: st
     if not model:
         return None
     base_url = str(raw.get("base_url") or fallback_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
-    api_key = str(raw.get("api_key") or fallback_api_key or "").strip()
+    api_key = _strip_wrapping_quotes(str(raw.get("api_key") or fallback_api_key or "").strip())
     return {
         "id": str(raw.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
         "model": model,
@@ -104,7 +104,7 @@ def _normalized_candidate(raw: dict[str, Any], index: int, fallback_base_url: st
 def resolve_vision_candidates(include_primary_fallback: bool = True) -> list[dict[str, Any]]:
     active_model = str(os.environ.get("OPENAI_MODEL", "deepseek-chat") or "").strip() or "deepseek-chat"
     active_base_url = str(os.environ.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL) or "").strip() or DEFAULT_OPENAI_BASE_URL
-    active_api_key = str(os.environ.get("OPENAI_API_KEY", "") or "").strip()
+    active_api_key = _strip_wrapping_quotes(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
 
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()

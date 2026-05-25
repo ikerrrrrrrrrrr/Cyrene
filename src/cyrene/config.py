@@ -5,6 +5,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _strip_wrapping_quotes(value: str | None) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1].strip()
+    return text
+
+
 def _bundle_contents_dir() -> Path | None:
     """Return ``.../MyApp.app/Contents`` when running from a macOS app bundle."""
     exe = Path(sys.executable).resolve()
@@ -75,9 +82,9 @@ WECHAT_OWNER_ID = os.getenv("WECHAT_OWNER_ID", "")
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_OPENAI_MODEL = "deepseek-v4-flash"
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL)
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+OPENAI_API_KEY = _strip_wrapping_quotes(os.getenv("OPENAI_API_KEY", ""))
+OPENAI_BASE_URL = _strip_wrapping_quotes(os.getenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL))
+OPENAI_MODEL = _strip_wrapping_quotes(os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL))
 # 禁止使用 pro 型号（消耗太快）
 if "pro" in OPENAI_MODEL.lower():
     import logging
@@ -157,7 +164,7 @@ def read_env_file() -> dict[str, str]:
         key, _, val = line.partition("=")
         key = key.strip()
         if key in _EDITABLE_KEYS:
-            result[key] = val.strip()
+            result[key] = _strip_wrapping_quotes(val)
     return result
 
 
@@ -170,11 +177,12 @@ def write_env_keys(updates: dict[str, str]) -> bool:
     for key, value in updates.items():
         if key not in _EDITABLE_KEYS:
             continue
-        dotenv_set_key(str(_ENV_PATH), key, value)
-        os.environ[key] = value
+        clean_value = _strip_wrapping_quotes(value)
+        dotenv_set_key(str(_ENV_PATH), key, clean_value)
+        os.environ[key] = clean_value
 
     # 更新模块级 globals（让 LLM / bot 调用即时生效，无需重启）
-    _apply_env_updates(updates)
+    _apply_env_updates({key: _strip_wrapping_quotes(value) for key, value in updates.items()})
     return True
 
 

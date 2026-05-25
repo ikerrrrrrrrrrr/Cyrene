@@ -687,24 +687,25 @@ function Inspector({ node, edge, flow, nodeMap, onSelectNode }) {
 }
 
 function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
+  const { t } = useI18n();
   if (node.kind === "main") {
     return (
       <>
         <div className="insp-section">
-          <div className="insp-label">system prompt</div>
+          <div className="insp-label">{t("agents.systemPrompt")}</div>
           <div className="code-block">{d.systemPrompt}</div>
         </div>
         <div className="insp-section">
-          <div className="insp-label">reasoning</div>
+          <div className="insp-label">{t("agents.reasoning")}</div>
           <div className="code-block" style={{ color: "var(--text-2)" }}>{d.reasoning}</div>
         </div>
         <div className="insp-section">
-          <div className="insp-label">model</div>
+          <div className="insp-label">{t("agents.model")}</div>
           <div className="kv">
-            <span className="k">model</span><span className="v">{d.model}</span>
-            <span className="k">temp</span><span className="v">{d.temp}</span>
-            <span className="k">tokens in</span><span className="v">{d.tokensIn}</span>
-            <span className="k">tokens out</span><span className="v">{d.tokensOut}</span>
+            <span className="k">{t("agents.model")}</span><span className="v">{d.model}</span>
+            <span className="k">{t("agents.temp")}</span><span className="v">{d.temp}</span>
+            <span className="k">{t("agents.tokensIn")}</span><span className="v">{d.tokensIn}</span>
+            <span className="k">{t("agents.tokensOut")}</span><span className="v">{d.tokensOut}</span>
           </div>
         </div>
         <CommsSection nodeId={node.id} flow={flow} nodeMap={nodeMap} onSelectNode={onSelectNode} />
@@ -715,22 +716,22 @@ function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
     return (
       <>
         <div className="insp-section">
-          <div className="insp-label">task</div>
+          <div className="insp-label">{t("agents.task")}</div>
           <div className="insp-val" style={{ color: "var(--text)" }}>{d.task}</div>
         </div>
         <div className="insp-section">
-          <div className="insp-label">lineage</div>
+          <div className="insp-label">{t("agents.lineage")}</div>
           <div className="kv">
-            <span className="k">spawned by</span><span className="v">{d.parent}</span>
-            <span className="k">spawned at</span><span className="v">{d.spawnedAt || "—"}</span>
-            <span className="k">model</span><span className="v">{d.model || "—"}</span>
-            <span className="k">tokens in</span><span className="v">{d.tokensIn ?? "—"}</span>
-            <span className="k">tokens out</span><span className="v">{d.tokensOut ?? "—"}</span>
+            <span className="k">{t("agents.spawnedBy")}</span><span className="v">{d.parent}</span>
+            <span className="k">{t("agents.spawnedAt")}</span><span className="v">{d.spawnedAt || "—"}</span>
+            <span className="k">{t("agents.model")}</span><span className="v">{d.model || "—"}</span>
+            <span className="k">{t("agents.tokensIn")}</span><span className="v">{d.tokensIn ?? "—"}</span>
+            <span className="k">{t("agents.tokensOut")}</span><span className="v">{d.tokensOut ?? "—"}</span>
           </div>
         </div>
         <CommsSection nodeId={node.id} flow={flow} nodeMap={nodeMap} onSelectNode={onSelectNode} />
         <div className="insp-section">
-          <div className="insp-label">connected nodes</div>
+          <div className="insp-label">{t("agents.connectedNodes")}</div>
           <ConnectedList nodeId={node.id} flow={flow} nodeMap={nodeMap} />
         </div>
       </>
@@ -740,19 +741,19 @@ function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
     return (
       <>
         <div className="insp-section">
-          <div className="insp-label">tool</div>
+          <div className="insp-label">{t("agents.tool")}</div>
           <div className="insp-val" style={{ color: "var(--magenta)" }}>{d.name}</div>
         </div>
         <div className="insp-section">
-          <div className="insp-label">input</div>
+          <div className="insp-label">{t("agents.input")}</div>
           <pre className="code-block">{JSON.stringify(d.input, null, 2)}</pre>
         </div>
         <div className="insp-section">
-          <div className="insp-label">output</div>
+          <div className="insp-label">{t("agents.output")}</div>
           <div className="code-block">{d.output}</div>
         </div>
         <div className="insp-section">
-          <div className="insp-label">duration</div>
+          <div className="insp-label">{t("agents.duration")}</div>
           <div className="insp-val">{d.duration || "—"}</div>
         </div>
       </>
@@ -761,7 +762,7 @@ function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
   if (node.kind === "output") {
     return (
       <div className="insp-section">
-        <div className="insp-label">content</div>
+        <div className="insp-label">{t("agents.content")}</div>
         <div className="code-block" style={{ color: "var(--text)" }}>{d.content}</div>
       </div>
     );
@@ -770,13 +771,13 @@ function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
   return (
     <>
       <div className="insp-section">
-        <div className="insp-label">{d.role || "input"}</div>
+        <div className="insp-label">{d.role || t("agents.input")}</div>
         <div className="insp-val" style={{ color: "var(--text)" }}>{d.text}</div>
       </div>
       <div className="insp-section">
         <div className="kv">
-          <span className="k">tokens</span><span className="v">{d.tokens}</span>
-          <span className="k">at</span><span className="v">{d.time}</span>
+          <span className="k">{t("agents.tokensIn")}</span><span className="v">{d.tokens}</span>
+          <span className="k">{t("agents.sentAt")}</span><span className="v">{d.time}</span>
         </div>
       </div>
     </>
@@ -784,10 +785,11 @@ function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
 }
 
 function InspectorIO({ node, d }) {
+  const { t } = useI18n();
   return (
     <>
       <div className="insp-section">
-        <div className="insp-label">input</div>
+        <div className="insp-label">{t("agents.input")}</div>
         <pre className="code-block">{
           node.kind === "tool" ? JSON.stringify(d.input, null, 2) :
           node.kind === "main" ? d.systemPrompt :
@@ -797,7 +799,7 @@ function InspectorIO({ node, d }) {
         }</pre>
       </div>
       <div className="insp-section">
-        <div className="insp-label">output</div>
+        <div className="insp-label">{t("agents.output")}</div>
         <pre className="code-block">{
           node.kind === "tool" ? (d.output || "—") :
           node.kind === "main" ? d.reasoning :
@@ -834,13 +836,14 @@ function ConnectedList({ nodeId, flow, nodeMap }) {
 }
 
 function CommsSection({ nodeId, flow, nodeMap, onSelectNode }) {
+  const { t } = useI18n();
   const comms = flow.edges
     .map(function (e, i) { return { ...e, idx: i }; })
     .filter(function (e) { return e.kind === "comm" && e.message && (e.from === nodeId || e.to === nodeId); });
   if (comms.length === 0) return null;
   return (
     <div className="insp-section">
-      <div className="insp-label">communications · {comms.length}</div>
+      <div className="insp-label">{t("agents.communications")} · {comms.length}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {comms.map(function (e) {
           const outgoing = e.from === nodeId;
@@ -850,7 +853,7 @@ function CommsSection({ nodeId, flow, nodeMap, onSelectNode }) {
             <div key={e.idx} className="comm-card">
               <div className="comm-card-head">
                 <span className={"comm-dir " + (outgoing ? "out" : "in")}>
-                  {outgoing ? "out →" : "← in"}
+                  {outgoing ? t("agents.out") : t("agents.in")}
                 </span>
                 <span className="comm-partner"
                       onClick={function () { onSelectNode && onSelectNode(partnerId); }}
@@ -876,20 +879,20 @@ function EdgeInspector({ edge, nodeMap, onSelectNode }) {
   const from = nodeMap.get(edge.from);
   const to = nodeMap.get(edge.to);
   const kindLabel =
-    edge.kind === "comm" ? (t && t("agents.Communication") || "Communication") :
-    edge.kind === "active" ? (t && t("agents.ActiveEdge") || "Active edge") :
-    edge.kind === "dashed" ? (t && t("agents.PendingEdge") || "Pending edge") :
+    edge.kind === "comm" ? t("agents.Communication") :
+    edge.kind === "active" ? t("agents.ActiveEdge") :
+    edge.kind === "dashed" ? t("agents.PendingEdge") :
     "Edge";
   const weight = Number(edge.weight) || 1;
   const msgType = edge.message && edge.message.msg_type ? edge.message.msg_type : "chat";
   const priority = edge.message && edge.message.priority ? edge.message.priority : "normal";
   const typeLabel =
-    msgType === "progress" ? (t && t("agents.commTypeProgress") || "Progress") :
-    msgType === "question" ? (t && t("agents.commTypeQuestion") || "Question") :
-    msgType === "finding"  ? (t && t("agents.commTypeFinding")  || "Finding")  :
-    msgType === "result"   ? (t && t("agents.commTypeResult")   || "Result")   :
-    msgType === "ack"      ? (t && t("agents.commTypeAck")      || "Ack")      :
-    (t && t("agents.commTypeChat") || "Chat");
+    msgType === "progress" ? t("agents.commTypeProgress") :
+    msgType === "question" ? t("agents.commTypeQuestion") :
+    msgType === "finding"  ? t("agents.commTypeFinding")  :
+    msgType === "result"   ? t("agents.commTypeResult")   :
+    msgType === "ack"      ? t("agents.commTypeAck")      :
+    t("agents.commTypeChat");
 
   // Collect all messages on this edge
   const allMessages = Array.isArray(edge.messages) ? edge.messages : (

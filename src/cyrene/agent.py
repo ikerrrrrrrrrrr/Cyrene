@@ -12,7 +12,7 @@ import httpx
 
 from contextvars import ContextVar
 
-from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE, DEFAULT_OPENAI_BASE_URL
+from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE, DEFAULT_OPENAI_BASE_URL, _strip_wrapping_quotes
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
 from cyrene.skills_registry import build_skill_prompt_block
@@ -3436,7 +3436,7 @@ def _normalized_llm_endpoints(base_url: str) -> list[str]:
 def _resolve_llm_candidates() -> list[dict[str, Any]]:
     active_model = str(os.environ.get("OPENAI_MODEL", "deepseek-chat") or "").strip() or "deepseek-chat"
     active_base_url = str(os.environ.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL) or "").strip() or DEFAULT_OPENAI_BASE_URL
-    active_api_key = str(os.environ.get("OPENAI_API_KEY", "") or "").strip()
+    active_api_key = _strip_wrapping_quotes(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
 
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
@@ -3445,7 +3445,7 @@ def _resolve_llm_candidates() -> list[dict[str, Any]]:
         if not model:
             continue
         base_url = str(raw.get("base_url") or active_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
-        api_key = str(raw.get("api_key") or "").strip()
+        api_key = _strip_wrapping_quotes(str(raw.get("api_key") or active_api_key or "").strip())
         key = (model, base_url, api_key)
         if key in seen:
             continue

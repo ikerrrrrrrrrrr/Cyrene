@@ -8424,6 +8424,11 @@ html[data-theme="dark"] .welcome-range .active {
   --chat-scrollbar-center-comp: 5px;
 }
 
+.app[data-screen-label="Cyrene · chat"] .chat-layout.right-collapsed {
+  --chat-content-max: 1040px;
+  --chat-column-pad: clamp(36px, 5vw, 84px);
+}
+
 .app.sidebar-collapsed[data-screen-label="Cyrene · chat"] {
   --chat-left-offset: 100px;
 }
@@ -8443,7 +8448,6 @@ html[data-theme="dark"] .welcome-range .active {
 
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .thread-header,
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-banner,
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .chat-welcome,
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .msg {
   width: min(100%, var(--chat-content-max)) !important;
   max-width: var(--chat-content-max) !important;
@@ -8453,13 +8457,17 @@ html[data-theme="dark"] .welcome-range .active {
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .chat-welcome {
+  width: min(660px, 100%);
+  max-width: min(660px, 100%);
+  margin-left: calc(84px - var(--chat-column-pad) - var(--chat-scrollbar-center-comp));
+  margin-right: 0;
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-start;
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-welcome .welcome-card {
-  width: 100%;
+  width: min(510px, 100%);
   box-sizing: border-box;
 }
 

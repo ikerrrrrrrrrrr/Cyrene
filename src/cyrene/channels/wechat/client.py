@@ -89,6 +89,7 @@ class WeChatClient:
             "AuthorizationType": "ilink_bot_token",
             "X-WECHAT-UIN": base64.b64encode(str(uint32).encode()).decode(),
             "iLink-App-Id": "bot",
+            "iLink-App-ClientVersion": "1",
         }
 
     async def _post(self, endpoint: str, data: dict, timeout: int = 15) -> dict:
@@ -119,7 +120,7 @@ class WeChatClient:
 
     # ── Text messaging ──────────────────────────────────────────────────
 
-    async def send_message(self, chat_id: str, text: str) -> None:
+    async def send_message(self, chat_id: str, text: str) -> bool:
         """Send a text message to *chat_id* (a WeChat wxid)."""
         ctx = self._config.context_tokens.get(chat_id, "")
         try:
@@ -134,8 +135,10 @@ class WeChatClient:
                     "context_token": ctx,
                 },
             })
+            return True
         except WeChatAPIError:
             logger.exception("Failed to send text message to %s", chat_id)
+            return False
 
     # ── File / image sending (CDN upload + sendMessage) ────────────────
 
@@ -156,16 +159,20 @@ class WeChatClient:
             await self.send_message(chat_id, "文件过大（超过 50MB 限制）")
             return False
 
-        # Determine media type from extension
+        # `getuploadurl.media_type` differs from `sendmessage.item_list[*].type`:
+        # IMAGE=1, VIDEO=2, FILE=3, VOICE=4.
         ext = Path(filepath).suffix.lower()
-        media_type = 2 if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp") else 4
+        is_image = ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+        media_type = 1 if is_image else 3
 
         # Encrypt
         aes_key = secrets.token_bytes(16)
         enc_data = aes_128_ecb_encrypt(raw, aes_key)
         raw_md5 = hashlib.md5(raw).hexdigest()
-        aes_key_b64 = base64.b64encode(aes_key).decode()
-        filekey = f"cyrene_{uuid.uuid4().hex[:16]}_{filename}"
+        aes_key_hex = aes_key.hex()
+        image_aes_key_b64 = base64.b64encode(aes_key).decode()
+        file_aes_key_b64 = base64.b64encode(aes_key_hex.encode()).decode()
+        filekey = f"{uuid.uuid4().hex}{ext}"
 
         # Get pre-signed upload URL
         try:
@@ -176,7 +183,7 @@ class WeChatClient:
                 "rawsize": len(raw),
                 "rawfilemd5": raw_md5,
                 "filesize": len(enc_data),
-                "aeskey": aes_key_b64,
+                "aeskey": aes_key_hex,
                 "no_need_thumb": True,
             }, timeout=30)
         except Exception:
@@ -184,36 +191,74 @@ class WeChatClient:
             await self.send_message(chat_id, "文件上传失败，无法获取上传地址")
             return False
 
-        # Prepare CDN upload
-        upload_url = upload.get("upload_full_url") or upload.get("upload_param", {}).get("url", "")
-        put_headers = upload.get("upload_param", {}).get("headers", {})
-        if not upload_url:
-            await self.send_message(chat_id, "文件上传失败，未返回上传地址")
-            return False
+        # Log upload response for debugging
+        logger.info("getUploadUrl: upload_full_url=%s upload_param_type=%s upload_keys=%s",
+                    upload.get("upload_full_url", "")[:120],
+                    type(upload.get("upload_param")).__name__,
+                    list(upload.keys()))
 
-        # PUT encrypted data to CDN
+        # Prepare CDN upload
+        cdn_download_url = upload.get("upload_full_url", "")
+        raw_param = upload.get("upload_param")  # str = encrypt_query_param
+
+        # upload_param from getUploadUrl is the encrypted_query_param value
+        encrypt_query_param = raw_param if isinstance(raw_param, str) else str(raw_param or "")
+        # CDN upload endpoint: https://novac2c.cdn.weixin.qq.com/c2c/upload
+        cdn_upload_url = f"https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param={encrypt_query_param}&filekey={filekey}"
+        upload_method = "POST"
+        upload_headers = {"Content-Type": "application/octet-stream"}
+        logger.info("CDN upload url=%s method=%s filekey=%s", cdn_upload_url[:120], upload_method, filekey)
+
+        # Upload encrypted file to CDN (60s timeout, bypass proxy for CDN)
         try:
-            async with httpx.AsyncClient() as c:
-                r = await c.put(upload_url, content=enc_data, headers=put_headers)
+            timeout = httpx.Timeout(60.0, connect=30.0)
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                if upload_method == "POST":
+                    r = await c.post(cdn_upload_url, content=enc_data, headers=upload_headers)
+                else:
+                    r = await c.put(cdn_upload_url, content=enc_data, headers=upload_headers)
+                # Log response for debugging even on error
+                logger.debug("CDN upload response: status=%s headers=%s body=%s",
+                            r.status_code, dict(r.headers), r.text[:500])
+                logger.info("CDN upload response: status=%s headers=%s", r.status_code, dict(r.headers))
                 r.raise_for_status()
                 encrypt_query_param = r.headers.get("x-encrypted-param", "")
                 if not encrypt_query_param:
-                    encrypt_query_param = upload.get("encrypt_query_param", "")
+                    # Fallback: use the original upload_param from getUploadUrl
+                    encrypt_query_param = str(upload.get("upload_param", ""))
+                    logger.warning("CDN upload missing x-encrypted-param header, using upload_param fallback")
+        except httpx.HTTPStatusError:
+            logger.exception("CDN upload HTTP error for %s (status=%s url=%s response=%s)",
+                           filepath, r.status_code, cdn_upload_url[:80], r.text[:300])
+            await self.send_message(chat_id, "文件上传失败，CDN 上传出错")
+            return False
         except Exception:
-            logger.exception("CDN upload failed for %s", filepath)
+            logger.exception("CDN upload failed for %s (url=%s)", filepath, cdn_upload_url[:80])
             await self.send_message(chat_id, "文件上传失败，CDN 上传出错")
             return False
 
-        # Build the media reference
-        media = {"encrypt_query_param": encrypt_query_param, "aes_key": aes_key_b64}
+        if not cdn_download_url:
+            # Construct download URL from CDN base + encrypt_query_param
+            cdn_download_url = f"https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param={encrypt_query_param}"
+            logger.info("Constructed download URL from fallback: %s", cdn_download_url[:80])
 
-        if media_type == 2:
+        # Build the media reference
+        logger.info("Media reference: encrypt_query_param=%s cdn_download_url=%s",
+                     encrypt_query_param[:40] if encrypt_query_param else "(empty)",
+                     cdn_download_url[:80] if cdn_download_url else "(empty)")
+        media = {
+            "encrypt_query_param": encrypt_query_param,
+            "aes_key": image_aes_key_b64 if is_image else file_aes_key_b64,
+            "encrypt_type": 1,
+        }
+
+        if is_image:
             item = {
                 "type": 2,
                 "image_item": {
-                    "media": {**media, "encrypt_type": 1, "full_url": upload_url},
-                    "url": upload_url,
-                    "aeskey": aes_key.hex(),
+                    "media": {**media, "full_url": cdn_download_url},
+                    "url": cdn_download_url,
+                    "aeskey": aes_key_hex,
                     "file_name": filename,
                 },
             }
@@ -221,8 +266,7 @@ class WeChatClient:
             item = {
                 "type": 4,
                 "file_item": {
-                    "media": {**media, "encrypt_type": 0},
-                    "url": upload_url,
+                    "media": {**media, "full_url": cdn_download_url},
                     "file_name": filename,
                     "md5": raw_md5,
                     "len": str(len(raw)),
@@ -231,7 +275,7 @@ class WeChatClient:
 
         ctx = self._config.context_tokens.get(chat_id, "")
         try:
-            await self._post("sendmessage", {
+            send_resp = await self._post("sendmessage", {
                 "msg": {
                     "from_user_id": "",
                     "to_user_id": chat_id,
@@ -242,8 +286,16 @@ class WeChatClient:
                     "context_token": ctx,
                 },
             })
+            logger.info("sendMessage file item response: %s", send_resp)
         except Exception:
-            logger.exception("Failed to send file message to %s", chat_id)
+            logger.exception(
+                "Failed to send file message to %s (ctx_present=%s item_type=%s media_type=%s filename=%s)",
+                chat_id,
+                bool(ctx),
+                item.get("type"),
+                media_type,
+                filename,
+            )
             await self.send_message(chat_id, "文件发送失败")
             return False
 

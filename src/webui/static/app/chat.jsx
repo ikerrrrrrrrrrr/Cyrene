@@ -355,7 +355,7 @@ function buildAttachedRuntime(activeTraceDescriptor, liveElapsed, visibleLivePro
   if (watchingGuidance) {
     entries.push({
       icon: "↳",
-      text: "Target round: " + (activeGuideRoundTitle || (activeRequest && activeRequest.guideRoundId) || ""),
+      text: t("chat.targetRound") + ": " + (activeGuideRoundTitle || (activeRequest && activeRequest.guideRoundId) || ""),
     });
   }
   if (visibleLiveProgress.length === 0) {
@@ -1043,7 +1043,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             updateChatRuntime(function (state) {
               const queuedProgress = {
                 icon: "↳",
-                text: "Guidance accepted. Waiting for the current round to reach the main agent.",
+                text: t("chat.guidanceQueuedProgress"),
               };
               return {
                 pendingMessages: state.pendingMessages.map(function (msg) {
@@ -1340,8 +1340,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     releaseWatchedRequest(
       hasSelectedGuideRound
-        ? "The current run is continuing in the background while this guidance is sent."
-        : "The current run is continuing in the background while this new dialogue is sent.",
+        ? t("chat.runContinuingBgGuide")
+        : t("chat.runContinuingBg"),
       { retainMessages: true }
     );
     send();
@@ -1360,7 +1360,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     setSelectedGuideRoundId(requestMeta.guideRoundId || "");
     setSelectedGuideRoundTitle(requestMeta.guideRoundTitle || "");
     setContextPickerOpen(false);
-    setNotice("Stopped the current request. The last sent message was restored to the input box.");
+    setNotice(t("chat.stoppedRequest"));
     window.requestAnimationFrame(function () {
       syncTextareaHeight(taRef.current);
       if (taRef.current) taRef.current.focus();
@@ -1664,7 +1664,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                     {watchingGuidance && (
                       <div className="progress-entry">
                         <span className="progress-icon">↳</span>
-                        <span className="progress-text">Target round: {activeGuideRoundTitle || activeRequest.guideRoundId}</span>
+                        <span className="progress-text">{t("chat.targetRound")}: {activeGuideRoundTitle || activeRequest.guideRoundId}</span>
                       </div>
                     )}
                     {visibleLiveProgress.length === 0 && <div className="progress-entry"><span className="progress-icon">◎</span><span className="progress-text">{activeTraceDescriptor.empty}</span></div>}
@@ -1690,8 +1690,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         {!isLiveSession && (
           <div className="composer" style={{ textAlign: "center", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 11 }}>
             <div style={{ padding: "16px 0" }}>
-              This is an archived session — open the <a style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
-                  onClick={function () { onSelectSession && onSelectSession(null); }}>live session</a> to send messages.
+              {t("chat.archivedSessionMessage")}<a style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
+                  onClick={function () { onSelectSession && onSelectSession(null); }}>{t("chat.liveSessionLink")}</a>{t("chat.toSendMessages")}
             </div>
           </div>
         )}
@@ -1719,7 +1719,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               ))}
               {hasSelectedGuideRound && (
                 <span className="chip chip-guide">
-                  ↳ guide {currentGuideRoundTitle}
+                  {t("chat.guidanceChipPrefix")} {currentGuideRoundTitle}
                   <span className="x" onClick={function () { setSelectedGuideRoundId(""); setSelectedGuideRoundTitle(""); setContextPickerOpen(false); }}>×</span>
                 </span>
               )}
@@ -1737,7 +1737,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                   setContextPickerOpen(!contextPickerOpen);
                 }}
               >
-                + add context
+                + {t("chat.addContext")}
               </span>
             </div>
             {mentionedAgents.length > 0 && (
@@ -1758,7 +1758,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               <div className="context-picker">
                 {addableContexts.length > 0 && (
                   <div>
-                    <div className="context-picker-head">Context</div>
+                    <div className="context-picker-head">{t("chat.context")}</div>
                     {addableContexts.map(function (ctx) {
                       return (
                         <button
@@ -1772,7 +1772,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                     })}
                     {addableContexts.some(function (c) { return c.hasPicker; }) && (
                       <div style={{ borderTop: "1px solid var(--line)", paddingTop: 4, marginTop: 2 }}>
-                        <div className="context-picker-head" style={{ paddingLeft: 12 }}>workspace directories</div>
+                        <div className="context-picker-head" style={{ paddingLeft: 12 }}>{t("chat.workspaceDirectories")}</div>
                         {workspaceHistory.map(function (p) {
                           return (
                             <button
@@ -1787,14 +1787,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                           className="context-option"
                           style={{ paddingLeft: 20 }}
                           onClick={function () { pickWorkspaceDir(); }}
-                        >+ choose directory...</button>
+                        >{t("chat.chooseDirectory")}</button>
                       </div>
                     )}
                   </div>
                 )}
                 {liveRounds.length > 0 && (
                   <div>
-                    <div className="context-picker-head" style={{ marginTop: addableContexts.length > 0 ? 8 : 0 }}>Running rounds</div>
+                    <div className="context-picker-head" style={{ marginTop: addableContexts.length > 0 ? 8 : 0 }}>{t("chat.runningRounds")}</div>
                     {liveRounds.map(function (round) {
                       var isActive = selectedGuideRoundId === round.id;
                       return (
@@ -1811,8 +1811,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                           <span className="context-option-body">
                             <span className="context-option-title">{round.title}</span>
                             <span className="context-option-meta">
-                              {round.elapsed} · {round.runningSubagents}/{round.subagentCount} subagents
-                              {round.pendingGuidance ? " · " + round.pendingGuidance + " queued" : ""}
+                              {round.elapsed} · {round.runningSubagents}/{round.subagentCount} {t("chat.subagents")}
+                              {round.pendingGuidance ? " · " + round.pendingGuidance + " " + t("chat.queued") : ""}
                             </span>
                           </span>
                         </button>
@@ -1851,7 +1851,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                           />
                         </div>
                       )}
-                      {!isImage && <div className="composer-attachment-file" aria-label="uploaded file"></div>}
+                      {!isImage && <div className="composer-attachment-file" aria-label={t("chat.uploadedFile")}></div>}
                       <span className="x" onClick={function () { removeAttachment(index); }}>×</span>
                     </div>
                   );
