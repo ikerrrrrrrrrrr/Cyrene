@@ -721,6 +721,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const taRef = useRef(null);
   const scrollRef = useRef(null);
+  const composerRef = useRef(null);
   const fileInputRef = useRef(null);
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
@@ -759,9 +760,60 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     ? pendingQuestion.options.length
     : 0;
 
+  /* Always scroll to the bottom whenever messages change. */
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
+
+  /* Also scroll to bottom on mount (messages might render after data arrives). */
+  useEffect(function () {
+    var el = scrollRef.current;
+    if (!el) return;
+    function scrollDown() { el.scrollTop = el.scrollHeight; }
+    scrollDown();
+    /* Retry once after a frame in case content hasn't settled. */
+    requestAnimationFrame(function () { requestAnimationFrame(scrollDown); });
+  }, []);
+
+  /* Keep .chat-scroll bottom padding in sync with the fixed composer height,
+     so the last message is never hidden behind the composer. */
+  useEffect(function () {
+    var el = scrollRef.current;
+    var composer = composerRef.current;
+    if (!el || !composer) return;
+    function sync() { el.style.setProperty("--scroll-pb", composer.offsetHeight + "px"); }
+    sync();
+    var ro = new ResizeObserver(sync);
+    ro.observe(composer);
+    return function () { ro.disconnect(); };
+  }, []);
+
+  /* Keep the fixed composer bounded by the left sidebar and right chat-side panel
+     so it never overlaps either. */
+  useEffect(function () {
+    var leftSb = document.querySelector('.sidebar');
+    var app = document.querySelector('.app');
+    if (!leftSb || !app) return;
+    function align() {
+      var c = composerRef.current;
+      if (!c) return;
+      var l = leftSb.getBoundingClientRect().right;
+      if (l > 0) c.style.setProperty("left", l + "px", "important");
+      var rightSb = document.querySelector('.chat-side');
+      if (rightSb) c.style.setProperty("right", rightSb.getBoundingClientRect().width + "px", "important");
+    }
+    function tryAlign() {
+      if (composerRef.current) { align(); }
+      else { requestAnimationFrame(tryAlign); }
+    }
+    tryAlign();
+    var ro = new ResizeObserver(align);
+    ro.observe(leftSb);
+    var mo = new MutationObserver(align);
+    mo.observe(app, { attributes: true, attributeFilter: ["class"], subtree: true, childList: true });
+    window.addEventListener("resize", align);
+    return function () { ro.disconnect(); mo.disconnect(); window.removeEventListener("resize", align); };
+  }, []);
 
   useEffect(function () {
     let cancelled = false;
@@ -1556,7 +1608,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           />
         )}
         {isLiveSession && (
-        <div className="composer">
+        <div className="composer" ref={composerRef}>
           <div className="composer-box">
             <div className="composer-chips">
               {visibleChips.map((c, i) => (

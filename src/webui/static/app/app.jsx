@@ -1,14 +1,18 @@
 // Cyrene — app shell + page router
 const { useState: useStateApp, useEffect: useEffectApp, useMemo: useMemoApp } = React;
 
+function readStoredTweak(key, fallback) {
+  try { var v = localStorage.getItem("cyrene-tweak-" + key); return v !== null ? JSON.parse(v) : fallback; } catch(e) { return fallback; }
+}
+
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "theme": "system",
-  "accent": "#5ec59e",
-  "density": "cozy",
-  "textSize": "default",
-  "orientation": "horizontal",
-  "showLegend": true,
-  "animatePulse": true
+  "theme": readStoredTweak("theme", "system"),
+  "accent": readStoredTweak("accent", "#5ec59e"),
+  "density": readStoredTweak("density", "cozy"),
+  "textSize": readStoredTweak("textSize", "default"),
+  "orientation": readStoredTweak("orientation", "horizontal"),
+  "showLegend": readStoredTweak("showLegend", true),
+  "animatePulse": readStoredTweak("animatePulse", true)
 }/*EDITMODE-END*/;
 
 const ACCENT_PRESETS = {
@@ -308,6 +312,14 @@ function App() {
   }, [t.theme]);
 
   useEffectApp(function () {
+    localStorage.setItem("cyrene-tweak-theme", JSON.stringify(t.theme));
+    localStorage.setItem("cyrene-tweak-accent", JSON.stringify(t.accent));
+    localStorage.setItem("cyrene-tweak-density", JSON.stringify(t.density));
+    localStorage.setItem("cyrene-tweak-textSize", JSON.stringify(t.textSize));
+    localStorage.setItem("cyrene-tweak-orientation", JSON.stringify(t.orientation));
+    localStorage.setItem("cyrene-tweak-showLegend", JSON.stringify(t.showLegend));
+    localStorage.setItem("cyrene-tweak-animatePulse", JSON.stringify(t.animatePulse));
+    /* Legacy key kept for backward compat (read by index.html <script>). */
     localStorage.setItem("cyrene-theme-mode", t.theme);
     const applied = actualTheme;
     document.documentElement.dataset.theme = applied;
@@ -463,7 +475,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
     { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "3" },
     { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "4", badge: sessionCount > 0 ? String(sessionCount) : null },
     { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "5" },
-    { id: "evolution", label: t("nav.evolution"), icon: "⚡", key: "6" },
+    { id: "evolution", label: t("nav.evolution"), icon: "⟁", key: "6", cssClass: "evo-icon" },
     { id: "settings", label: t("nav.settings"), icon: "✱", key: "7" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
@@ -489,11 +501,10 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
         </button>
       </div>
 
-      <div className="nav-section">{t("nav.workspace")}</div>
       <div className="nav" style={{ paddingTop: 0 }}>
         {items.map((it) => (
           <div key={it.id}
-               className={"nav-item " + (page === it.id ? "active" : "")}
+               className={"nav-item" + (page === it.id ? " active" : "") + (it.cssClass ? " " + it.cssClass : "")}
                onClick={() => setPage(it.id)}>
             <span style={{ color: "currentColor", fontFamily: "var(--mono)", width: 14, textAlign: "center" }}>
               {it.icon}

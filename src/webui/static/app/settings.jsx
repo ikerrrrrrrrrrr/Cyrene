@@ -1,6 +1,10 @@
 // Settings page
 const { useState: useStateSet, useEffect } = React;
 
+function readStoredTweak(key, fallback) {
+  try { var v = localStorage.getItem("cyrene-tweak-" + key); return v !== null ? JSON.parse(v) : fallback; } catch(e) { return fallback; }
+}
+
 const REPO_URL = "https://github.com/ikerrrrrrrrrrr/Cyrene";
 const REPO_ISSUES_URL = REPO_URL + "/issues/new";
 const DEFAULT_MODEL_BASE_URL = "https://api.deepseek.com/v1";
@@ -255,8 +259,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [soulDraft, setSoulDraft] = useStateSet("");
   const [soulStatus, setSoulStatus] = useStateSet("");
   const [capabilityToggles, setCapabilityToggles] = useStateSet({
-    streamThinking: true,
-    redactSecrets: true,
+    streamThinking: readStoredTweak("cap-streamThinking", true),
+    redactSecrets: readStoredTweak("cap-redactSecrets", true),
   });
   const [searchMode, setSearchMode] = useStateSet("builtin");
   const [searchExternalUrl, setSearchExternalUrl] = useStateSet("");
@@ -287,7 +291,9 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [toolsExpanded, setToolsExpanded] = useStateSet(false);
 
   function toggleCapability(key) {
-    setCapabilityToggles({ ...capabilityToggles, [key]: !capabilityToggles[key] });
+    var next = !capabilityToggles[key];
+    setCapabilityToggles({ ...capabilityToggles, [key]: next });
+    localStorage.setItem("cyrene-tweak-cap-" + key, JSON.stringify(next));
   }
 
   function updateModel(id, field, value) {
