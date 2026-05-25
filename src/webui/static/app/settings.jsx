@@ -743,6 +743,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 </div>
               </div>
             </div>
+
+            <WeChatPanel />
           </div>
         ) : null}
 

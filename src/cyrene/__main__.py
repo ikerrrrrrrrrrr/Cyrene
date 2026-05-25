@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from cyrene.bot import setup_bot
+from cyrene.channels.telegram import setup_bot
 from cyrene.config import (
     ASSISTANT_NAME, DATA_DIR, DB_PATH, INBOX_DIR,
     SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,

@@ -40,6 +40,7 @@ class WebBot:
 
 
 def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
+    from cyrene.channels.wechat import setup_wechat as _setup_wechat
     from webui.routes import register_routes
 
     app = FastAPI(title="Cyrene")
@@ -51,6 +52,11 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
         return {"instance_id": str(app.state.instance_id or "")}
 
     register_routes(app, bot, db_path)
+
+    @app.on_event("startup")
+    async def _start_wechat() -> None:
+        await _setup_wechat(app, db_path)
+
     return app
 
 

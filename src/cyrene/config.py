@@ -67,6 +67,10 @@ load_dotenv(_ENV_PATH)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OWNER_ID = int(os.environ["OWNER_ID"]) if os.getenv("OWNER_ID") else None
 
+# === WeChat 配置 ===
+WECHAT_BOT_TOKEN = os.getenv("WECHAT_BOT_TOKEN", "")
+WECHAT_OWNER_ID = os.getenv("WECHAT_OWNER_ID", "")
+
 # === LLM 配置 ===
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_OPENAI_MODEL = "deepseek-v4-flash"
@@ -135,6 +139,7 @@ _EDITABLE_KEYS = {
     "OPENAI_BASE_URL":   {"label": "LLM Endpoint",  "masked": False},
     "OPENAI_MODEL":      {"label": "Model Name",    "masked": False},
     "TELEGRAM_BOT_TOKEN": {"label": "Telegram Token","masked": True},
+    "WECHAT_BOT_TOKEN":  {"label": "WeChat Token",  "masked": True},
 }
 
 
@@ -186,6 +191,10 @@ def _apply_env_updates(updates: dict[str, str]) -> None:
             _mod.OPENAI_MODEL = value
         elif key == "TELEGRAM_BOT_TOKEN":
             _mod.TELEGRAM_BOT_TOKEN = value
+        elif key == "WECHAT_BOT_TOKEN":
+            _mod.WECHAT_BOT_TOKEN = value
+        elif key == "WECHAT_OWNER_ID":
+            _mod.WECHAT_OWNER_ID = value
 
 
 def get_env_keys_meta() -> list[dict]:
