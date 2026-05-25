@@ -917,7 +917,7 @@ function EdgeInspector({ edge, nodeMap, onSelectNode }) {
       </div>
 
       <div className="insp-section">
-        <div className="insp-label">{t && t("agents.participants") || "participants"}</div>
+        <div className="insp-label">{t("agents.participants")}</div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", fontFamily: "var(--mono)", fontSize: 11.5, flexWrap: "wrap" }}>
           <span className="comm-partner"
                 onClick={function () { onSelectNode && onSelectNode(edge.from); }}
@@ -933,23 +933,23 @@ function EdgeInspector({ edge, nodeMap, onSelectNode }) {
         </div>
         <div className="comm-jump-links">
           <span className="comm-jump-link" onClick={function () { onSelectNode && onSelectNode(edge.from); }}>
-            ← {t && t("agents.commJumpSender") || "Jump to sender"}
+            ← {t("agents.commJumpSender")}
           </span>
           <span className="comm-jump-link" onClick={function () { onSelectNode && onSelectNode(edge.to); }}>
-            {t && t("agents.commJumpReceiver") || "Jump to receiver"} →
+            {t("agents.commJumpReceiver")} →
           </span>
         </div>
       </div>
 
       <div className="insp-section">
         <div className="kv">
-          <span className="k">{t && t("agents.commType") || "type"}</span>
+          <span className="k">{t("agents.commType")}</span>
           <span className="v" style={{ color: msgType === "finding" ? "var(--accent)" : msgType === "question" ? "var(--warn)" : "var(--text)" }}>{typeLabel}</span>
-          <span className="k">{t && t("agents.commWeight") || "weight"}</span>
-          <span className="v">{weight} {t && t("agents.commMessages") || "messages"}</span>
+          <span className="k">{t("agents.commWeight")}</span>
+          <span className="v">{weight} {t("agents.commMessages")}</span>
           {priority === "high" && (
             <>
-              <span className="k">{t && t("agents.commPriority") || "priority"}</span>
+              <span className="k">{t("agents.commPriority")}</span>
               <span className="v" style={{ color: "var(--warn)" }}>HIGH</span>
             </>
           )}
@@ -959,7 +959,7 @@ function EdgeInspector({ edge, nodeMap, onSelectNode }) {
       {allMessages.length === 0 && (
         <div className="insp-section">
           <div className="insp-val" style={{ color: "var(--text-3)" }}>
-            {t && t("agents.commNoMessages") || "No messages between these agents."}
+            {t("agents.commNoMessages")}
           </div>
         </div>
       )}
@@ -968,8 +968,8 @@ function EdgeInspector({ edge, nodeMap, onSelectNode }) {
         <div className="insp-section">
           <div className="insp-label">
             {allMessages.length === 1
-              ? (t && t("agents.message") || "message")
-              : (t && t("agents.commAllMessages") || "All messages") + " (" + allMessages.length + ")"}
+              ? t("agents.message")
+              : t("agents.commAllMessages") + " (" + allMessages.length + ")"}
           </div>
           <div className="comm-thread">
             {allMessages.map(function (msg, idx) {
@@ -980,7 +980,7 @@ function EdgeInspector({ edge, nodeMap, onSelectNode }) {
                 <div key={idx} className={clsCard}>
                   <div className="comm-card-head">
                     <span className={"comm-dir " + (msg.from === (from && from.title) ? "out" : "in")}>
-                      {msg.from === (from && from.title) ? (t && t("agents.out") || "out →") : (t && t("agents.in") || "← in")}
+                      {msg.from === (from && from.title) ? t("agents.out") : t("agents.in")}
                     </span>
                     <span className="comm-time">{msg.time}</span>
                   </div>
