@@ -159,7 +159,35 @@ function sessionsFingerprint(sessions) {
     var flow = s.flow || {};
     var nodes = Array.isArray(flow.nodes) ? flow.nodes.length : 0;
     var edges = Array.isArray(flow.edges) ? flow.edges.length : 0;
-    return s.id + "|" + (s.status || "") + "|" + nodes + "|" + edges;
+    var messages = s.chat && Array.isArray(s.chat.messages) ? s.chat.messages : [];
+    var lastMessage = messages.length ? messages[messages.length - 1] : null;
+    var lastMessageId = String(lastMessage && (lastMessage.messageId || lastMessage.id) || "");
+    var lastMessageBody = String(lastMessage && lastMessage.body || "").slice(0, 120);
+    var pendingQuestion = s.pendingQuestion || {};
+    var liveRounds = Array.isArray(s.liveRounds) ? s.liveRounds : [];
+    var liveRoundFingerprint = liveRounds.map(function (round) {
+      return [
+        round.id || "",
+        round.status || "",
+        round.pendingGuidance || 0,
+        round.runningSubagents || 0,
+        round.updatedAt || "",
+      ].join(":");
+    }).join(",");
+    return [
+      s.id || "",
+      s.status || "",
+      nodes,
+      edges,
+      s.preview || "",
+      s.currentRoundId || "",
+      messages.length,
+      lastMessageId,
+      lastMessageBody,
+      pendingQuestion.id || "",
+      pendingQuestion.text || "",
+      liveRoundFingerprint,
+    ].join("|");
   }).join(",");
 }
 

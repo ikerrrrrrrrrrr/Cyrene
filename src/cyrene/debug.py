@@ -158,6 +158,9 @@ async def publish_event(event: dict) -> None:
 
         if event.get("type") == "llm_call":
             await cy_db.record_runtime_usage(str(DB_PATH), str(event.get("timestamp") or ""), event.get("usage") or {})
+            model = str(event.get("model") or "").strip()
+            if model:
+                await cy_db.record_model_usage(str(DB_PATH), str(event.get("timestamp") or ""), model, event.get("usage") or {})
         elif event.get("type") == "tool_call":
             await cy_db.record_tool_call(str(DB_PATH), str(event.get("timestamp") or ""))
     except Exception:

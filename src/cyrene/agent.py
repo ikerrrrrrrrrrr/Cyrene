@@ -113,6 +113,7 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 - If the user wants Claude Code to perform a task, prefer `PromptClaudeCode` to optimize the prompt and ask for confirmation before sending it into Claude Code.
 - If it helps the user stay oriented during a long task, you may call `send_message` to post a brief in-progress update before the final answer. Use it sparingly and only when there is real new information.
 - Call `ask_user` proactively. Ask when: the request is ambiguous, a key detail is missing, multiple valid approaches exist and the choice matters, or you need confirmation before a high-stakes action. Guessing wrong costs more than asking. Use freeform text or add a short options list when structured choices help.
+- If you need to ask the user anything, you MUST use `ask_user`. Do not ask questions in a normal assistant text reply. Progress updates and final answers must be statements, not questions.
 - When a task is complete, call the `quit` tool.
 """
 
@@ -121,6 +122,7 @@ _PHASE1_DECISION_PROMPT = """Decision phase rules:
 - ALWAYS call `use_tools` when the user asks you to DO anything — file ops, search, web, code, shell, scheduling, data queries, sub-agents, etc.
 - Call `quit` ONLY when the request is pure conversation (opinions, greetings, conceptual explanations) AND you are completely sure no tool could improve the answer.
 - Call `ask_user` when the request is unclear, incomplete, or has multiple valid interpretations. Prefer asking over guessing — a quick question avoids wrong work. Common triggers: missing file paths, ambiguous scope, conflicting instructions, unclear preferences among reasonable alternatives.
+- If you need to ask the user anything at all, use `ask_user`. Never put a question to the user in plain assistant text.
 - When in doubt between answering directly or calling `use_tools`, call `use_tools`. It is always better to have tools available than to answer blindly.
 """
 
@@ -133,6 +135,7 @@ Rules:
 - If you wrote a deliverable file (via Write/Bash) that the user should receive, call `send_file` with the actual path of that file. The file must already exist — never fabricate a path. Do not merely mention the filename/path in chat.
 - Never emit a bare filename, bare path, or raw command line as your final answer unless the user explicitly requested literal output.
 - Call `ask_user` whenever you encounter ambiguity, missing information, or a decision point that affects the outcome. Ask early — don't wait until you're stuck. Stop and wait for the user's answer before continuing.
+- If you need to ask the user anything, you MUST use `ask_user`. Do not place questions in progress updates or the final text reply.
 - Return the RESULT of what you did, not a conversation.
 - Be concise in tool usage.
 - When done, call the `quit` tool.
@@ -953,7 +956,11 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
             existing_tail = current_messages[insert_at:] if insert_at < len(current_messages) else []
             effective_messages = [
                 *base_messages[:insert_at],
-                *_merge_message_sequence(existing_tail or base_messages[insert_at:], suffix),
+                # For anchored reinserts (guidance/question resumes), the new
+                # suffix belongs at the insertion point. Keep any concurrently
+                # persisted tail entries after it instead of letting them drift
+                # in front of the resumed round transcript.
+                *_merge_message_sequence(suffix, existing_tail or base_messages[insert_at:]),
             ]
         await _write_session_messages_locked(state, effective_messages)
 
@@ -2160,6 +2167,50 @@ def _guidance_ack_text() -> str:
     return "已接受引导。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。"
 
 
+async def _generate_guidance_ack(
+    guidance: str,
+    *,
+    round_title: str = "",
+    round_history: list[dict[str, Any]] | None = None,
+) -> str:
+    latest_assistant = next(
+        (
+            str(msg.get("content") or "").strip()
+            for msg in reversed(round_history or [])
+            if str(msg.get("role") or "").strip() == "assistant" and str(msg.get("content") or "").strip()
+        ),
+        "",
+    )
+    prompt_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are acknowledging new user guidance for an ongoing task.\n"
+                "Reply with exactly one short sentence.\n"
+                "Do not answer the task itself.\n"
+                "Do not mention queues, rounds, internal state, or implementation details.\n"
+                "Say that you understood the guidance and will adjust the current work accordingly.\n"
+                "Match the user's language."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Round title: {round_title or '—'}\n"
+                f"Latest assistant reply: {latest_assistant or '—'}\n"
+                f"New user guidance: {guidance}"
+            ),
+        },
+    ]
+    try:
+        response = await _call_llm(prompt_messages, tools=None, max_tokens=80)
+        ack_text = _assistant_text(response).strip()
+        return ack_text or _guidance_ack_text()
+    except Exception:
+        logger.warning("Failed to generate guidance acknowledgement via LLM", exc_info=True)
+        return _guidance_ack_text()
+
+
 def _schedule_session_label_refresh(current_user_message: str, round_id: str) -> None:
     async def _runner() -> None:
         try:
@@ -2337,12 +2388,13 @@ async def _insert_guidance_reply(
 async def _insert_guidance_ack(
     target_round_id: str,
     guidance_id: str,
+    content: str,
     round_title: str = "",
     client_request_id: str = "",
 ) -> None:
     assistant_entry: dict[str, Any] = {
         "role": "assistant",
-        "content": _guidance_ack_text(),
+        "content": content,
         "round_id": target_round_id,
         "guidance_ack_for_guidance_id": guidance_id,
     }
@@ -2664,10 +2716,16 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
     context = _guidance_round_context(target_round_id, guidance_id)
     live_round = next((live for live in get_live_rounds() if live.get("id") == target_round_id), None)
     round_title = context["round_title"] or str((live_round or {}).get("title") or "").strip() or target_round_id
+    ack_text = await _generate_guidance_ack(
+        content,
+        round_title=round_title,
+        round_history=context["round_history"],
+    )
     snapshot = await _sub_snapshot(round_id=target_round_id)
     await _insert_guidance_ack(
         target_round_id,
         guidance_id,
+        ack_text,
         round_title=round_title,
         client_request_id=context["client_request_id"],
     )
@@ -2747,6 +2805,7 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
         persist_insert_at=persist_context["persist_insert_at"],
         client_request_id=context["client_request_id"],
         persist_user_message=False,
+        assistant_message_meta={"in_reply_to_guidance_id": guidance_id},
     )
 
 
@@ -3441,6 +3500,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
                         debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
                     await _publish_runtime_event({
                         "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
+                        "model": _model,
                         "tools": [t.get("function", {}).get("name") for t in (tools or [])],
                         "messages": _sanitize_messages_for_llm(messages),
                         "response": msg,
@@ -3594,7 +3654,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
 # 轻量 tool：只有 use_tools + quit，用于第一阶段判断是否进重循环
 _LIGHT_TOOL_DEFS = [
     {"type": "function", "function": {"name": "use_tools", "description": "MANDATORY gateway to full tool access. Call this for ANY request that involves doing things — file ops, search, web, code, shell, scheduling, sub-agents, data, etc. This is the ONLY way to reach real tools. Skip ONLY for pure conversation (opinions, greetings, conceptual explanations). IMPORTANT: set task to the user's EXACT original message, do not rewrite it.", "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}}},
-    {"type": "function", "function": {"name": "ask_user", "description": "Ask the user a clarification question. Use this proactively whenever: the request is ambiguous, a critical detail is missing, multiple approaches exist and the choice matters, or you need confirmation before a destructive/irreversible action. Guessing is worse than asking. Use freeform text, or add a short options array when structured choices help. Do not combine with other tools in the same turn.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["text"]}}},
+    {"type": "function", "function": {"name": "ask_user", "description": "Ask the user a clarification question. Use this proactively whenever: the request is ambiguous, a critical detail is missing, multiple approaches exist and the choice matters, or you need confirmation before a destructive/irreversible action. Guessing is worse than asking. If you need to ask the user anything, use this tool instead of writing a question in assistant text. Use freeform text, or add a short options array when structured choices help. Do not combine with other tools in the same turn.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "options": {"type": "array", "items": {"type": "string"}}}, "required": ["text"]}}},
     {"type": "function", "function": {"name": "quit", "description": "Call this when the interaction is done.", "parameters": {"type": "object", "properties": {}}}},
 ]
 

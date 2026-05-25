@@ -61,6 +61,15 @@ CREATE TABLE IF NOT EXISTS daily_stats (
     activity_20_24 INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS daily_model_stats (
+    day TEXT NOT NULL,
+    model TEXT NOT NULL,
+    requests INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, model)
+);
+
 CREATE TABLE IF NOT EXISTS daily_topic_terms (
     day TEXT NOT NULL,
     term TEXT NOT NULL,
@@ -194,6 +203,46 @@ async def record_runtime_usage(db_path: str, timestamp: str, usage: dict | None 
             ),
         )
         await db.commit()
+
+
+async def record_model_usage(db_path: str, timestamp: str, model: str, usage: dict | None = None) -> None:
+    if not model:
+        return
+    day = _normalize_day(timestamp=timestamp)
+    model = model.strip()
+    usage = usage if isinstance(usage, dict) else {}
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO daily_model_stats (day, model) VALUES (?, ?)",
+            (day, model),
+        )
+        await db.execute(
+            """
+            UPDATE daily_model_stats
+            SET requests = requests + 1,
+                prompt_tokens = prompt_tokens + ?,
+                completion_tokens = completion_tokens + ?
+            WHERE day = ? AND model = ?
+            """,
+            (
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
+                day,
+                model,
+            ),
+        )
+        await db.commit()
+
+
+async def get_model_stats_range(db_path: str, day_from: str, day_to: str) -> list[dict]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT day, model, requests, prompt_tokens, completion_tokens FROM daily_model_stats WHERE day >= ? AND day <= ? ORDER BY day ASC, model ASC",
+            (day_from, day_to),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 async def record_tool_call(db_path: str, timestamp: str) -> None:

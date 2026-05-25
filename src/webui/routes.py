@@ -3396,7 +3396,8 @@ async def _build_dashboard(ui_tz=None) -> dict:
                 })
     archive_snippets = archive_snippets[:6]
 
-    day_from = (now_local - timedelta(days=6)).strftime("%Y-%m-%d")
+    hist_days = 27
+    day_from = (now_local - timedelta(days=hist_days)).strftime("%Y-%m-%d")
     day_to = today
     stats_rows = await cy_db.get_daily_stats_range(_db_path, day_from, day_to)
     stats_by_day = {
@@ -3404,11 +3405,12 @@ async def _build_dashboard(ui_tz=None) -> dict:
         for row in stats_rows
         if str(row.get("day") or "").strip()
     }
+    model_stats_rows = await cy_db.get_model_stats_range(_db_path, day_from, day_to)
     topic_rows = await cy_db.get_topic_counts_range(_db_path, day_from, day_to, limit=18)
     archive_day_count = await cy_db.count_stat_days(_db_path)
 
     emotion_days: dict[str, list[float]] = {}
-    for offset in range(6, -1, -1):
+    for offset in range(hist_days, -1, -1):
         day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
         emotion_days[day] = []
 
@@ -3425,7 +3427,7 @@ async def _build_dashboard(ui_tz=None) -> dict:
         })
 
     token_timeline: dict[str, dict[str, int]] = {}
-    for offset in range(6, -1, -1):
+    for offset in range(hist_days, -1, -1):
         day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
         row = stats_by_day.get(day) or {}
         token_timeline[day] = {
@@ -3436,7 +3438,7 @@ async def _build_dashboard(ui_tz=None) -> dict:
 
     heatmap_days = [
         (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
-        for offset in range(6, -1, -1)
+        for offset in range(hist_days, -1, -1)
     ]
     heatmap_row_defs = [
         ("00:00", 0, 4),
@@ -3494,6 +3496,11 @@ async def _build_dashboard(ui_tz=None) -> dict:
             "total_tokens": combined_usage.get("total_tokens"),
             "cache_hit_tokens": combined_usage.get("prompt_cache_hit_tokens"),
             "cache_miss_tokens": combined_usage.get("prompt_cache_miss_tokens"),
+            "total_messages": (session_usage.get("requests") or 0) + (subagent_usage.get("requests") or 0),
+            "active_days": sum(1 for row in stats_by_day.values() if int(row.get("llm_requests") or 0) > 0),
+            "current_streak": _calc_current_streak(stats_by_day, today),
+            "longest_streak": _calc_longest_streak(stats_by_day),
+            "peak_hour": _calc_peak_hour(stats_by_day),
             "timeline": [
                 {
                     "date": day,
@@ -3508,6 +3515,7 @@ async def _build_dashboard(ui_tz=None) -> dict:
         "recent_memories": recent_memories,
         "recent_archive": archive_snippets,
         "activity_heatmap": activity_heatmap,
+        "model_stats": model_stats_rows,
     }
 
 
@@ -3996,6 +4004,53 @@ def _calc_spend(usage: dict[str, int | None] | None) -> str:
     if cost < 0.01:
         return "<$0.01"
     return f"${cost:.2f}"
+
+
+def _calc_current_streak(stats_by_day: dict[str, dict], today: str) -> int:
+    streak = 0
+    for offset in range(366):
+        day = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=offset)).strftime("%Y-%m-%d")
+        row = stats_by_day.get(day)
+        if row and int(row.get("llm_requests") or 0) > 0:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _calc_longest_streak(stats_by_day: dict[str, dict]) -> int:
+    longest = 0
+    current = 0
+    for offset in range(365):
+        day = (datetime.now() - timedelta(days=offset)).strftime("%Y-%m-%d")
+        row = stats_by_day.get(day)
+        if row and int(row.get("llm_requests") or 0) > 0:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+_ACTIVITY_COLUMNS = [
+    ("activity_00_04", "00:00-04:00"),
+    ("activity_04_08", "04:00-08:00"),
+    ("activity_08_12", "08:00-12:00"),
+    ("activity_12_16", "12:00-16:00"),
+    ("activity_16_20", "16:00-20:00"),
+    ("activity_20_24", "20:00-24:00"),
+]
+
+
+def _calc_peak_hour(stats_by_day: dict[str, dict]) -> str:
+    totals: dict[str, int] = {}
+    for col, _label in _ACTIVITY_COLUMNS:
+        totals[col] = sum(int(row.get(col) or 0) for row in stats_by_day.values())
+    best_col = max(totals, key=totals.get) if any(totals.values()) else ""
+    for col, label in _ACTIVITY_COLUMNS:
+        if col == best_col:
+            return label
+    return "—"
 
 
 def _build_shells_from_messages(raw_msgs: list[dict]) -> list[dict]:

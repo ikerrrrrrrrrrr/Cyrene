@@ -979,6 +979,8 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
     from cyrene import inbox
     import cyrene.conversations as conversations
 
+    ack_text = "收到这条引导了，我会按新的方向继续这一轮。"
+
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
@@ -1028,12 +1030,14 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
         seen["persist_insert_at"] = persist_insert_at
         seen["client_request_id"] = client_request_id
         seen["persist_user_message"] = persist_user_message
+        seen["assistant_message_meta"] = assistant_message_meta
         return "guided reply"
 
     async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
         seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
 
     monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
+    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
@@ -1053,22 +1057,23 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
         "other round question",
         "other round reply",
         "please continue with logistics",
-        agent._guidance_ack_text(),
+        ack_text,
     ]
     assert seen["persist_insert_at"] == 6
     assert seen["client_request_id"] == "req_1"
     assert seen["persist_user_message"] is False
+    assert seen["assistant_message_meta"] == {"in_reply_to_guidance_id": item["id"]}
     assert seen["archived"][0] == "please continue with logistics"
     assert seen["archived"][2:] == ("session label", "round one", "round_1")
     assert saved[4]["content"] == "please continue with logistics"
     assert saved[4]["queued_guidance_id"] == item["id"]
-    assert saved[5]["content"] == agent._guidance_ack_text()
+    assert saved[5]["content"] == ack_text
     assert saved[5]["guidance_ack_for_guidance_id"] == item["id"]
     assert inbox.get_unread_count(agent._MAIN_INBOX_AGENT_ID) == 0
     assert any(
         event.get("type") == "guidance_acknowledged"
         and event.get("client_request_id") == "req_1"
-        and event.get("ack_text") == agent._guidance_ack_text()
+        and event.get("ack_text") == ack_text
         for event in events
     )
 
@@ -1111,10 +1116,13 @@ async def test_queue_round_guidance_persists_user_message_immediately(monkeypatc
 
 async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene import behavior_learning
     from cyrene import debug
     from cyrene import inbox
     from cyrene import subagent
     import cyrene.conversations as conversations
+
+    ack_text = "收到，我先把这一轮的结论按你这条要求展开。"
 
     await subagent.clear()
     await subagent.register("alice", "research topic", round_id="round_1")
@@ -1143,9 +1151,12 @@ async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeyp
         seen["wait"] = round_id
         return False, "[alice] task: research topic\nstatus: done\nresult:\nDetailed finding"
 
-    async def fake_synth(task, summary, round_title="", guidance="", round_history=None):
-        seen["synth"] = (task, summary, round_title, guidance, [m["content"] for m in (round_history or [])])
+    async def fake_summary_subagent(round_id, parent_task="", guidance="", round_history=None):
+        seen["synth"] = (parent_task, round_id, guidance, [m["content"] for m in (round_history or [])])
         return "expanded reply"
+
+    async def fake_flow_snapshot(_round_id):
+        return {}
 
     async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
         seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
@@ -1155,8 +1166,11 @@ async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeyp
 
     monkeypatch.setattr(agent, "_fan_out_guidance_to_subagents", fake_fan_out)
     monkeypatch.setattr(agent, "_wait_for_subagent_round", fake_wait)
-    monkeypatch.setattr(agent, "_synthesize_subagent_results", fake_synth)
+    monkeypatch.setattr(subagent, "run_summary_subagent", fake_summary_subagent)
+    monkeypatch.setattr(subagent, "build_flow_snapshot", fake_flow_snapshot)
     monkeypatch.setattr(agent, "_run_chat_agent", fail_run_chat_agent)
+    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
+    monkeypatch.setattr(behavior_learning, "try_route_and_execute_skill", AsyncMock(return_value=None))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
@@ -1168,11 +1182,12 @@ async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeyp
     assert item["target_round_id"] == "round_1"
     assert seen["fanout"] == ("round_1", "please expand section B")
     assert seen["wait"] == "round_1"
-    assert seen["synth"][0] == "please expand section B"
-    assert seen["synth"][2] == "round one"
+    assert seen["synth"][0] == "round one question"
+    assert seen["synth"][1] == "round_1"
+    assert seen["synth"][2] == "please expand section B"
     assert saved[-3]["content"] == "please expand section B"
     assert saved[-3]["queued_guidance_id"] == item["id"]
-    assert saved[-2]["content"] == agent._guidance_ack_text()
+    assert saved[-2]["content"] == ack_text
     assert saved[-2]["guidance_ack_for_guidance_id"] == item["id"]
     assert saved[-1]["content"] == "expanded reply"
     assert saved[-1]["client_request_id"] == "req_sub"
@@ -1181,7 +1196,7 @@ async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeyp
     assert any(
         event.get("type") == "guidance_acknowledged"
         and event.get("client_request_id") == "req_sub"
-        and event.get("ack_text") == agent._guidance_ack_text()
+        and event.get("ack_text") == ack_text
         for event in events
     )
     assert any(
@@ -1195,6 +1210,8 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
     from cyrene import debug
     from cyrene import inbox
     import cyrene.conversations as conversations
+
+    ack_text = "收到，我会按这个补充要求继续处理。"
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
@@ -1225,6 +1242,7 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
         seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
 
     monkeypatch.setattr(agent, "_run_chat_agent", boom_run_chat_agent)
+    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
@@ -1235,7 +1253,7 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
 
     assert saved[-3]["content"] == "please retry with details"
     assert saved[-3]["queued_guidance_id"] == item["id"]
-    assert saved[-2]["content"] == agent._guidance_ack_text()
+    assert saved[-2]["content"] == ack_text
     assert saved[-2]["guidance_ack_for_guidance_id"] == item["id"]
     assert saved[-1]["role"] == "assistant"
     assert "Guidance could not be applied because an internal error occurred" in saved[-1]["content"]
@@ -1246,7 +1264,7 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
     assert any(
         event.get("type") == "guidance_acknowledged"
         and event.get("client_request_id") == "req_fail"
-        and event.get("ack_text") == agent._guidance_ack_text()
+        and event.get("ack_text") == ack_text
         for event in events
     )
     assert any(
@@ -1257,9 +1275,12 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
 
 async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene import behavior_learning
     from cyrene import debug
     from cyrene import inbox
     import cyrene.conversations as conversations
+
+    ack_text = "明白，我按你的新要求重做这一轮的回复。"
 
     monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
@@ -1295,6 +1316,8 @@ async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(mon
         return None
 
     monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
+    monkeypatch.setattr(behavior_learning, "try_route_and_execute_skill", AsyncMock(return_value=None))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
@@ -1310,15 +1333,17 @@ async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(mon
     assert len(guided_users) == 1
     assert guided_users[0]["content"] == "please adjust the answer"
     assert guided_users[0]["queued_guidance_id"] == item["id"]
-    assert saved[ack_index]["content"] == agent._guidance_ack_text()
+    assert saved[ack_index]["content"] == ack_text
     assert ack_index == 3
     assert saved[reply_index]["content"] == "adjusted final reply"
     assert reply_index == 4
     assert saved[reply_index]["reasoning_content"] == "guided reasoning"
     assert saved[reply_index]["round_id"] == "round_1"
+    assert saved[reply_index]["in_reply_to_guidance_id"] == item["id"]
     assert any(
         event.get("type") == "guidance_acknowledged"
         and event.get("client_request_id") == "req_guided"
+        and event.get("ack_text") == ack_text
         for event in events
     )
     assert any(
@@ -1429,7 +1454,7 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, public_user_message=None, public_attachments=None, lang=""):
         round_id = agent._current_round_id.get()
         await agent._save_session_messages([
             *history,
@@ -1477,7 +1502,7 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
-    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, public_user_message=None, public_attachments=None, lang=""):
         await agent._append_session_message({
             "role": "user",
             "content": "queued guidance",

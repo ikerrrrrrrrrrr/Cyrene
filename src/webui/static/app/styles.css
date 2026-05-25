@@ -1734,7 +1734,7 @@ html[data-theme="light"] .msg.user .msg-body {
 
 /* pending question */
 .question-panel {
-  margin: 16px 10% 130px;
+  margin: 16px 10% 220px;
   border: 1px solid rgba(133, 189, 168, 0.28);
   border-radius: var(--r-l);
   background:
@@ -5838,7 +5838,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 0 0 58px;
+  margin: 0 0 24px;
   color: var(--text);
   font-size: 26px;
   line-height: 1.15;
@@ -5857,7 +5857,7 @@ body {
   width: min(510px, 100%);
   padding: 12px;
   border-radius: 8px;
-  background: #f2f2f0;
+  background: var(--bg-2);
   color: var(--text);
 }
 
@@ -5879,16 +5879,31 @@ body {
   font-weight: 640;
 }
 
-.welcome-tabs span,
-.welcome-range span {
+.welcome-tabs button,
+.welcome-range button {
   padding: 4px 10px;
   border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 620;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+
+.welcome-tabs button:hover,
+.welcome-range button:hover {
+  color: var(--text);
+  border-color: var(--text-4);
 }
 
 .welcome-tabs .active,
 .welcome-range .active {
-  background: #e5e5e2;
-  color: var(--text);
+  background: var(--accent);
+  color: var(--accent-text);
+  border-color: var(--accent);
 }
 
 .welcome-metrics {
@@ -5901,7 +5916,7 @@ body {
   min-height: 45px;
   padding: 6px 7px;
   border-radius: 5px;
-  background: #e2e2df;
+  background: var(--bg-3);
   overflow: hidden;
 }
 
@@ -5929,22 +5944,26 @@ body {
 .welcome-heatmap {
   margin-top: 8px;
   display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.welcome-heatmap--placeholder {
   grid-template-columns: repeat(22, 1fr);
-  gap: 4px;
 }
 
 .welcome-heatmap span {
   aspect-ratio: 1;
-  border-radius: 3px;
-  background: #e2e2df;
+  border-radius: 2px;
+  background: var(--bg-3);
 }
 
 .welcome-heatmap span.hot {
-  background: #80a8ee;
+  background: color-mix(in srgb, var(--accent) 34%, var(--bg-2));
 }
 
 .welcome-heatmap span.high {
-  background: #2868d6;
+  background: var(--accent);
 }
 
 .welcome-card p {
@@ -6041,7 +6060,7 @@ body {
   }
 
   .chat-welcome h1 {
-    margin-bottom: 36px;
+    margin-bottom: 20px;
     font-size: 24px;
   }
 
@@ -7674,6 +7693,11 @@ html[data-text-size="large"] .seg-btn {
   left: 78px;
 }
 
+/* 右侧边栏展开时，composer 宽度与 .chat-main 对齐，中轴与问问题面板一致 */
+.app[data-screen-label="Cyrene · chat"] .chat-layout:not(.right-collapsed) .composer {
+  right: 332px;
+}
+
 @media (max-width: 960px) {
   .app {
     grid-template-columns: 1fr;
@@ -8381,4 +8405,104 @@ html[data-text-size="large"] .hint {
 .sidebar-footer {
   padding: 8px 16px !important;
   margin-top: 0 !important;
+}
+
+html[data-theme="dark"] .welcome-tabs .active,
+html[data-theme="dark"] .welcome-range .active {
+  background: var(--surface-2) !important;
+  color: var(--text) !important;
+}
+
+/* Final chat centering: use the free space between the app sidebar and right panel. */
+.app[data-screen-label="Cyrene · chat"] {
+  --chat-left-offset: 282px;
+  --chat-right-panel-offset: 392px;
+  --chat-content-max: 860px;
+  --chat-question-max: 760px;
+  --chat-right-panel-width: 360px;
+  --chat-column-pad: clamp(36px, 7vw, 112px);
+  --chat-scrollbar-center-comp: 5px;
+}
+
+.app.sidebar-collapsed[data-screen-label="Cyrene · chat"] {
+  --chat-left-offset: 100px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-layout:not(.right-collapsed) {
+  grid-template-columns: minmax(0, 1fr) var(--chat-right-panel-width);
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-main {
+  position: relative;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll {
+  padding-left: calc(var(--chat-column-pad) + var(--chat-scrollbar-center-comp));
+  padding-right: calc(var(--chat-column-pad) - var(--chat-scrollbar-center-comp));
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .thread-header,
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-banner,
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .chat-welcome,
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .msg {
+  width: min(100%, var(--chat-content-max)) !important;
+  max-width: var(--chat-content-max) !important;
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .chat-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-welcome .welcome-card {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.app[data-screen-label="Cyrene · chat"] .msg-body,
+.app[data-screen-label="Cyrene · chat"] .msg-trace,
+.app[data-screen-label="Cyrene · chat"] .msg-attachments {
+  width: 100% !important;
+  box-sizing: border-box;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-main > .composer {
+  position: absolute;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0;
+  padding-left: var(--chat-column-pad);
+  padding-right: var(--chat-column-pad);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+.app[data-screen-label="Cyrene · chat"] .composer-box,
+.app[data-screen-label="Cyrene · chat"] .composer-hint {
+  width: min(100%, var(--chat-content-max));
+  box-sizing: border-box;
+}
+
+.app[data-screen-label="Cyrene · chat"] .question-panel {
+  width: min(calc(100% - (var(--chat-column-pad) * 2) - 48px), var(--chat-question-max));
+  max-width: calc(100% - 32px);
+  box-sizing: border-box;
+  margin: 16px auto 220px;
+}
+
+@media (max-width: 960px) {
+  .app[data-screen-label="Cyrene · chat"],
+  .app.sidebar-collapsed[data-screen-label="Cyrene · chat"] {
+    --chat-left-offset: 0px;
+    --chat-right-panel-offset: 0px;
+    --chat-content-max: 100%;
+    --chat-question-max: 100%;
+  }
+
 }

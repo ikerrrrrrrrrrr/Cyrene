@@ -340,19 +340,6 @@ function collectRetainedRuntimeAttachments(retainedMessages) {
   return attachments;
 }
 
-function guidanceAckMessage(guidanceId, body, insertAfterKey) {
-  const safeGuidanceId = String(guidanceId || "");
-  const text = String(body || window.t("chat.guidanceAcceptedBody"));
-  return {
-    id: "guidance_ack_" + (safeGuidanceId || Date.now()),
-    role: "agent",
-    time: new Date().toLocaleTimeString(),
-    body: text,
-    guidanceAckForGuidanceId: safeGuidanceId,
-    insertAfterKey: String(insertAfterKey || ""),
-  };
-}
-
 function isTraceOnlyAssistantMessage(msg) {
   return Boolean(
     msg
@@ -502,23 +489,7 @@ function ensureChatRuntimeSseSubscription() {
     const eventGuidanceId = String(event && event.guidance_id || "");
     const eventRequestId = String(event && event.client_request_id || "");
     if (event && event.type === "guidance_acknowledged" && eventRequestId && runtime.watchRequestId === eventRequestId) {
-      const queueAnchorKey = eventGuidanceId
-        ? "guide::" + eventGuidanceId
-        : (runtime.activeRequest && runtime.activeRequest.guideRequestId ? "guide::" + runtime.activeRequest.guideRequestId : "");
-      const queueTraceId = eventGuidanceId ? "guidance_queue_trace_" + eventGuidanceId : "";
-      const frozenQueueTrace = snapshotRuntimeTrace(runtime, {
-        insertAfterKey: queueAnchorKey,
-        traceId: queueTraceId || undefined,
-      });
-      const ackMsg = guidanceAckMessage(
-        eventGuidanceId,
-        event && event.ack_text,
-        frozenQueueTrace ? messageKey(frozenQueueTrace) : queueAnchorKey
-      );
       updateChatRuntime({
-        retainedMessages: runtime.retainedMessages
-          .concat(frozenQueueTrace ? [frozenQueueTrace] : [])
-          .concat([ackMsg]),
         startedAt: Date.now(),
         liveProgress: [],
         activeRequest: runtime.activeRequest
@@ -526,7 +497,7 @@ function ensureChatRuntimeSseSubscription() {
               ...runtime.activeRequest,
               guidanceAccepted: true,
               guidanceId: eventGuidanceId,
-              finalTraceAnchorKey: eventGuidanceId ? "guidance-ack::" + eventGuidanceId : messageKey(ackMsg),
+              finalTraceAnchorKey: eventGuidanceId ? "guidance-ack::" + eventGuidanceId : "",
             }
           : null,
       });
@@ -712,6 +683,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [slashIndex, setSlashIndex] = useState(-1);
   const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
   const [mentionedAgents, setMentionedAgents] = useState([]);
+  const [welcomeTab, setWelcomeTab] = useState("overview");
+  const [welcomeRange, setWelcomeRange] = useState("all");
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -781,19 +754,36 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     ? pendingQuestion.options.length
     : 0;
 
+  function scrollChatToBottom(settle) {
+    var el = scrollRef.current;
+    if (!el) return function () {};
+    var timers = [];
+    function scrollDown() {
+      var target = scrollRef.current;
+      if (target) target.scrollTop = target.scrollHeight;
+    }
+    scrollDown();
+    requestAnimationFrame(function () {
+      scrollDown();
+      requestAnimationFrame(scrollDown);
+    });
+    if (settle) {
+      timers.push(window.setTimeout(scrollDown, 80));
+      timers.push(window.setTimeout(scrollDown, 220));
+    }
+    return function () {
+      timers.forEach(function (timer) { window.clearTimeout(timer); });
+    };
+  }
+
   /* Always scroll to the bottom whenever messages change. */
   useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    return scrollChatToBottom(false);
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
   /* Also scroll to bottom on mount (messages might render after data arrives). */
   useEffect(function () {
-    var el = scrollRef.current;
-    if (!el) return;
-    function scrollDown() { el.scrollTop = el.scrollHeight; }
-    scrollDown();
-    /* Retry once after a frame in case content hasn't settled. */
-    requestAnimationFrame(function () { requestAnimationFrame(scrollDown); });
+    return scrollChatToBottom(true);
   }, []);
 
   /* Keep .chat-scroll bottom padding in sync with the fixed composer height,
@@ -807,46 +797,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var ro = new ResizeObserver(sync);
     ro.observe(composer);
     return function () { ro.disconnect(); };
-  }, []);
-
-  /* Keep the fixed composer bounded by the left sidebar and right chat-side panel
-     so it never overlaps either. */
-  useEffect(function () {
-    var leftSb = document.querySelector('.sidebar');
-    var app = document.querySelector('.app');
-    var chatLayout = document.querySelector('.chat-layout');
-    if (!leftSb || !app) return;
-    function align() {
-      var c = composerRef.current, rightSb, cl;
-      if (!c) return;
-      c.style.setProperty("left", leftSb.getBoundingClientRect().right + "px", "important");
-      cl = document.querySelector('.chat-layout');
-      rightSb = document.querySelector('.chat-side');
-      if (rightSb) {
-        if (cl && cl.classList.contains('right-collapsed')) {
-          c.style.setProperty("right", "0px", "important");
-        } else {
-          c.style.setProperty("right", rightSb.getBoundingClientRect().width + "px", "important");
-        }
-      }
-    }
-    function tryAlign() {
-      if (composerRef.current) { align(); }
-      else { requestAnimationFrame(tryAlign); }
-    }
-    tryAlign();
-    var leftRo = new ResizeObserver(align);
-    leftRo.observe(leftSb);
-    var mo = new MutationObserver(align);
-    mo.observe(app, { attributes: true, attributeFilter: ["class"], subtree: true, childList: true });
-    if (chatLayout) chatLayout.addEventListener("transitionend", align);
-    window.addEventListener("resize", align);
-    return function () {
-      leftRo.disconnect();
-      mo.disconnect();
-      if (chatLayout) chatLayout.removeEventListener("transitionend", align);
-      window.removeEventListener("resize", align);
-    };
   }, []);
 
   useEffect(function () {
@@ -1522,6 +1472,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       }])
     : messagesWithRetainedRuntime;
   const renderedMessageEntries = renderMessageEntries(renderedMessages);
+  const renderedMessageSignature = renderedMessages.map(function (msg) {
+    return [
+      messageKey(msg),
+      String(msg && msg.body || "").length,
+      msg && msg.streamingReply ? "streaming" : "done",
+      msg && msg.attachedRuntime ? String(msg.attachedRuntime.elapsed || "") : "",
+    ].join(":");
+  }).join("|");
+
+  useEffect(function () {
+    return scrollChatToBottom(!visibleSending);
+  }, [renderedMessageSignature, visibleSending]);
 
   async function newSession() {
     if (!confirm(t("chat.confirmNewSession"))) return;
@@ -1593,37 +1555,88 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           )}
           {renderedMessages.length === 0 && (
             <div className="chat-welcome">
-              <h1><span className="welcome-mark"></span>What&apos;s up next?</h1>
+              <h1><span className="welcome-mark"></span>{t("chat.welcomeTitle")}</h1>
               <div className="welcome-card">
                 <div className="welcome-card-head">
                   <div className="welcome-tabs">
-                    <span className="active">Overview</span>
-                    <span>Models</span>
+                    <button className={welcomeTab === "overview" ? "active" : ""} onClick={() => setWelcomeTab("overview")}>{t("chat.welcomeOverview")}</button>
+                    <button className={welcomeTab === "models" ? "active" : ""} onClick={() => setWelcomeTab("models")}>{t("chat.welcomeModels")}</button>
                   </div>
                   <div className="welcome-range">
-                    <span className="active">All</span>
-                    <span>30d</span>
-                    <span>7d</span>
+                    <button className={welcomeRange === "all" ? "active" : ""} onClick={() => setWelcomeRange("all")}>{t("chat.welcomeRangeAll")}</button>
+                    <button className={welcomeRange === "30d" ? "active" : ""} onClick={() => setWelcomeRange("30d")}>{t("chat.welcomeRange30d")}</button>
+                    <button className={welcomeRange === "7d" ? "active" : ""} onClick={() => setWelcomeRange("7d")}>{t("chat.welcomeRange7d")}</button>
                   </div>
                 </div>
-                <div className="welcome-metrics">
-                  <div><span>Sessions</span><strong>{DATA.sessions.length || 1}</strong></div>
-                  <div><span>Messages</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_messages) || renderedMessages.length)}</strong></div>
-                  <div><span>Total tokens</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_tokens) || 0)}</strong></div>
-                  <div><span>Active days</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.active_days) || "—"}</strong></div>
-                  <div><span>Current streak</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.current_streak) || "—"}</strong></div>
-                  <div><span>Longest streak</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.longest_streak) || "—"}</strong></div>
-                  <div><span>Peak hour</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.peak_hour) || "—"}</strong></div>
-                  <div><span>Favorite model</span><strong>{session.model || "—"}</strong></div>
-                </div>
-                <div className="welcome-heatmap" aria-hidden="true">
-                  {Array.from({ length: 154 }).map(function (_, index) {
-                    var hot = index > 122 && (index % 7 > 2 || index > 145);
-                    var high = index > 146 || index === 137;
-                    return <span key={index} className={hot ? (high ? "hot high" : "hot") : ""}></span>;
-                  })}
-                </div>
-                <p>You&apos;ve used Cyrene to turn sessions into working context.</p>
+                {welcomeTab === "overview" ? (
+                  <div>
+                    <div className="welcome-metrics">
+                      <div><span>{t("chat.welcomeSessions")}</span><strong>{DATA.sessions.length || 1}</strong></div>
+                      <div><span>{t("chat.welcomeMessages")}</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_messages) || renderedMessages.length)}</strong></div>
+                      <div><span>{t("chat.welcomeTotalTokens")}</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_tokens) || 0)}</strong></div>
+                      <div><span>{t("chat.welcomeActiveDays")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.active_days) || "—"}</strong></div>
+                      <div><span>{t("chat.welcomeCurrentStreak")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.current_streak) || "—"}</strong></div>
+                      <div><span>{t("chat.welcomeLongestStreak")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.longest_streak) || "—"}</strong></div>
+                      <div><span>{t("chat.welcomePeakHour")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.peak_hour) || "—"}</strong></div>
+                      <div><span>{t("chat.welcomeFavoriteModel")}</span><strong>{session.model || "—"}</strong></div>
+                    </div>
+                    {(DATA.dashboard && DATA.dashboard.activity_heatmap) ? (function(h) {
+                      var flat = h.rows.reduce(function(a, r) { return a.concat(r.values); }, []);
+                      var daySlice = welcomeRange === "7d" ? 7 : 28;
+                      var cellCount = daySlice * h.rows.length;
+                      var sliced = flat.slice(flat.length - cellCount);
+                      var slicedCols = daySlice <= 7 ? 7 : (daySlice <= 14 ? 14 : 24);
+                      var mx = sliced.reduce(function(a, v) { return v > a ? v : a; }, 1);
+                      return (
+                        <div className="welcome-heatmap" style={{ gridTemplateColumns: "repeat(" + slicedCols + ", 1fr)" }}>
+                          {sliced.map(function(v, i) {
+                            var ratio = v / mx;
+                            return <span key={i} style={{ backgroundColor: ratio > 0 ? "color-mix(in srgb, var(--accent) " + Math.round(20 + ratio * 60) + "%, var(--bg-2))" : "var(--bg-3)" }}></span>;
+                          })}
+                        </div>
+                      );
+                    })(DATA.dashboard.activity_heatmap) : (
+                      <div className="welcome-heatmap welcome-heatmap--placeholder">
+                        {Array.from({ length: 154 }).map(function (_, index) {
+                          var hot = index > 122 && (index % 7 > 2 || index > 145);
+                          var high = index > 146 || index === 137;
+                          return <span key={index} className={hot ? (high ? "hot high" : "hot") : ""}></span>;
+                        })}
+                      </div>
+                    )}
+                    <p>{t("chat.welcomeDescription")}</p>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="welcome-metrics" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 8 }}>
+                      <div><span>模型</span><strong>{session.model || "—"}</strong></div>
+                      <div><span>{t("chat.welcomeSessions")}</span><strong>{DATA.sessions.length || 1}</strong></div>
+                    </div>
+                    {DATA.dashboard && DATA.dashboard.model_stats && DATA.dashboard.model_stats.length ? (
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>历史模型使用</div>
+                        {DATA.dashboard.model_stats.reduce(function(acc, row) {
+                          var existing = acc.find(function(x) { return x.model === row.model; });
+                          if (existing) { existing.requests += row.requests || 0; } else { acc.push({ model: row.model, requests: row.requests || 0 }); }
+                          return acc;
+                        }, []).sort(function(a, b) { return b.requests - a.requests; }).map(function(m) {
+                          var total = DATA.dashboard.model_stats.reduce(function(s, r) { return s + (r.requests || 0); }, 0);
+                          var pct = total ? Math.round(m.requests / total * 100) : 0;
+                          return (
+                            <div key={m.model} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13 }}>
+                              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-2)" }}>{m.model}</span>
+                              <span style={{ color: "var(--text-3)", fontSize: 11, minWidth: 30, textAlign: "right" }}>{m.requests} 次</span>
+                              <span style={{ color: "var(--text-4)", fontSize: 11, minWidth: 30, textAlign: "right" }}>{pct}%</span>
+                              <div style={{ width: 60, height: 6, borderRadius: 3, background: "var(--bg-3)", overflow: "hidden" }}>
+                                <div style={{ width: pct + "%", height: "100%", background: "var(--accent)", borderRadius: 3 }}></div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </div>
             </div>
           )}

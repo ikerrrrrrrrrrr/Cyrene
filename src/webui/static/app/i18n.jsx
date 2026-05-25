@@ -377,6 +377,23 @@ const TRANSLATIONS = {
     "chat.commandClaudeCodeDesc": "Launch Claude Code and direct your task to it.",
     "chat.claudeCodePlaceholder": "What should Claude Code do? (or leave empty to just launch)",
 
+    // ── Chat welcome / start view ───────────────────────────────────────
+    "chat.welcomeTitle": "What's up next?",
+    "chat.welcomeOverview": "Overview",
+    "chat.welcomeModels": "Models",
+    "chat.welcomeRangeAll": "All",
+    "chat.welcomeRange30d": "30d",
+    "chat.welcomeRange7d": "7d",
+    "chat.welcomeSessions": "Sessions",
+    "chat.welcomeMessages": "Messages",
+    "chat.welcomeTotalTokens": "Total tokens",
+    "chat.welcomeActiveDays": "Active days",
+    "chat.welcomeCurrentStreak": "Current streak",
+    "chat.welcomeLongestStreak": "Longest streak",
+    "chat.welcomePeakHour": "Peak hour",
+    "chat.welcomeFavoriteModel": "Favorite model",
+    "chat.welcomeDescription": "You've used Cyrene to turn sessions into working context.",
+
     // ── Chat sidebar views ──────────────────────────────────────────────
     "chat.side.overview": "Overview",
     "chat.side.agents": "Agents",
@@ -1244,6 +1261,23 @@ const TRANSLATIONS = {
     "chat.commandClaudeCode": "Claude Code",
     "chat.commandClaudeCodeDesc": "启动 Claude Code 并把任务交给它执行。",
     "chat.claudeCodePlaceholder": "要 Claude Code 做什么？（留空则仅启动）",
+
+    // ── 聊天欢迎页 ───────────────────────────────────────────────────────
+    "chat.welcomeTitle": "接下来做什么？",
+    "chat.welcomeOverview": "概览",
+    "chat.welcomeModels": "模型",
+    "chat.welcomeRangeAll": "全部",
+    "chat.welcomeRange30d": "30天",
+    "chat.welcomeRange7d": "7天",
+    "chat.welcomeSessions": "会话数",
+    "chat.welcomeMessages": "消息数",
+    "chat.welcomeTotalTokens": "总 Token",
+    "chat.welcomeActiveDays": "活跃天数",
+    "chat.welcomeCurrentStreak": "当前连续",
+    "chat.welcomeLongestStreak": "最长连续",
+    "chat.welcomePeakHour": "高峰时段",
+    "chat.welcomeFavoriteModel": "常用模型",
+    "chat.welcomeDescription": "你已经在使用 Cyrene 把会话转化为有效的工作上下文。",
 
     // ── 右侧边栏视图 ────────────────────────────────────────────────────
     "chat.side.overview": "概览",

@@ -1153,7 +1153,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "ask_user",
-            "description": "Ask the user a clarification question and pause until they answer. Use this liberally — asking is better than assuming. Trigger when: the request is ambiguous, details are missing, multiple reasonable approaches exist, or you need sign-off before a risky action. Use freeform text for open questions, or add a short options array for structured choices. The UI always allows custom answers even with options.",
+            "description": "Ask the user a clarification question and pause until they answer. Use this liberally — asking is better than assuming. Trigger when: the request is ambiguous, details are missing, multiple reasonable approaches exist, or you need sign-off before a risky action. If you need to ask the user anything, use this tool instead of putting a question in assistant text. Use freeform text for open questions, or add a short options array for structured choices. The UI always allows custom answers even with options.",
             "parameters": {
                 "type": "object",
                 "properties": {
