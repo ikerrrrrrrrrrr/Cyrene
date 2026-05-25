@@ -1,6 +1,6 @@
 [project]
 name = "cyrene"
-version = "0.4.11"
+version = "0.4.12"
 description = "Cyrene AI Agent — self-evolving AI companion with SOUL.md memory"
 requires-python = ">=3.12"
 dependencies = [
