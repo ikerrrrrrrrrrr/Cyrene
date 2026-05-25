@@ -1124,6 +1124,16 @@ button { font-family: inherit; }
 }
 .dashboard-token-chart { overflow: visible; margin-bottom: 2px; min-height: 0; display: flex; flex-direction: column; }
 .dashboard-token-chart svg { flex: 1; height: auto; min-height: 0; }
+.dashboard-token-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.dashboard-token-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
 .dashboard-token-chart svg,
 .dashboard-emotion-chart svg {
   width: 100%;
@@ -1172,12 +1182,26 @@ button { font-family: inherit; }
 .dashboard-line.prompt { stroke: #6ea8ff; }
 .dashboard-line.completion { stroke: #69d0b1; }
 .dashboard-line.emotion { stroke: var(--accent); }
+.dashboard-token-stage .dashboard-point {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  border: 2px solid transparent;
+  background: var(--bg-1);
+}
+.dashboard-token-stage .dashboard-point.prompt { border-color: #6ea8ff; }
+.dashboard-token-stage .dashboard-point.completion { border-color: #69d0b1; }
 .dashboard-point {
   stroke-width: 2;
 }
-.dashboard-point.prompt { fill: var(--bg-1); stroke: #6ea8ff; }
-.dashboard-point.completion { fill: var(--bg-1); stroke: #69d0b1; }
 .dashboard-point.emotion { fill: var(--bg-1); stroke: var(--accent); }
+.dashboard-axis-label-token {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
 .dashboard-token-footer {
   margin-top: 14px;
   display: grid;
@@ -1973,7 +1997,8 @@ html[data-theme="light"] .msg.user .msg-body {
   font-size: 13px;
   transition: background 0.1s;
 }
-.slash-option:hover {
+.slash-option:hover,
+.slash-option.highlighted {
   background: var(--bg-3);
   color: var(--text-1);
 }
@@ -4260,10 +4285,10 @@ html[data-theme="light"] .canvas-wrap {
   font-size: 11px;
 }
 .settings-placeholder-card {
-  border: 1px dashed color-mix(in srgb, var(--line-2) 72%, var(--accent) 28%);
+  border: 1px dashed var(--line);
   border-radius: var(--r-xl);
   padding: 16px;
-  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  background: var(--surface-1);
   color: var(--text-3);
   font-size: 14px;
   line-height: 1.6;
@@ -4275,14 +4300,10 @@ html[data-theme="light"] .canvas-wrap {
   gap: 8px;
 }
 .settings-primary-model-card {
-  border: 1px solid color-mix(in srgb, var(--material-border) 82%, white 18%);
-  border-radius: calc(var(--r-xl) + 2px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
   padding: 16px;
-  background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--accent) 16%, transparent), transparent 38%),
-    linear-gradient(180deg, color-mix(in srgb, var(--surface-highlight) 18%, transparent), transparent 34%),
-    linear-gradient(160deg, color-mix(in srgb, var(--glass-fill) 92%, white 8%), var(--glass-fill-strong));
-  box-shadow: var(--material-inset), 0 18px 36px color-mix(in srgb, var(--surface-shadow-soft) 88%, transparent);
+  background: var(--surface-1);
 }
 .settings-model-lines {
   display: flex;
@@ -4310,7 +4331,7 @@ html[data-theme="light"] .canvas-wrap {
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
   padding: 10px 12px;
-  background: color-mix(in srgb, var(--bg-1) 92%, white 8%);
+  background: var(--surface-1);
 }
 .settings-fallback-row.is-draft {
   border-style: dashed;
@@ -4846,30 +4867,46 @@ html[data-theme="light"] .canvas-wrap {
 }
 
 .seg {
+  display: inline-flex;
+  align-items: center;
   width: fit-content;
   min-width: 0;
-  border-radius: 999px;
-  padding: 4px;
-  gap: 4px;
+  border-radius: var(--r-m);
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
 }
 
 .seg-btn {
-  border-right: 0;
-  border-radius: 999px;
+  border: 0;
+  border-radius: var(--r-m);
   justify-content: center;
   min-width: 0;
-  padding: 10px 16px;
+  padding: 4px 10px;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--text-3);
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background 100ms, color 100ms, box-shadow 100ms;
 }
 
 .seg-btn:hover {
   background: var(--control-bg-hover);
+  color: var(--text-2);
 }
 
 .seg-btn.active {
-  background: var(--control-bg-active);
+  background: var(--surface-1);
   color: var(--text);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04);
 }
 
 .topbar,
@@ -7581,9 +7618,9 @@ html[data-text-size="large"] .seg-btn {
 
 .app[data-screen-label="Cyrene · chat"] .chat-side {
   position: fixed;
-  top: 64px;
+  top: 78px;
   right: 18px;
-  bottom: 24px;
+  bottom: 10px;
   z-index: 42;
   width: min(360px, calc(100vw - 42px));
   display: flex;
@@ -8183,12 +8220,12 @@ html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actio
 }
 
 .settings-layout .settings-nav .nav-item {
-  min-height: 32px !important;
-  padding: 6px 10px !important;
+  min-height: 36px !important;
+  padding: 8px 12px !important;
   font-size: 16px !important;
   font-weight: 620 !important;
   line-height: 1.35 !important;
-  margin-bottom: 2px !important;
+  margin-bottom: 4px !important;
 }
 
 html[data-text-size="large"] .settings-layout .settings-nav .nav-section {
@@ -8203,9 +8240,9 @@ html[data-density="compact"] .settings-layout .settings-nav {
   padding: 4px 4px !important;
 }
 html[data-density="compact"] .settings-layout .settings-nav .nav-item {
-  min-height: 28px !important;
-  padding: 4px 8px !important;
-  margin-bottom: 1px !important;
+  min-height: 32px !important;
+  padding: 6px 10px !important;
+  margin-bottom: 2px !important;
 }
 html[data-density="compact"] .settings-layout .settings-nav .nav-section {
   min-height: 0 !important;
@@ -8255,4 +8292,31 @@ html[data-density="compact"] .settings-content .subtitle {
 
 .sidebar .recent-session-item.active::before {
   display: none;
+}
+
+/* Strip complex lighting effects — flat, clean surfaces. */
+:root {
+  --material-sheen: none;
+  --material-sheen-soft: none;
+  --material-inset: none;
+  --glass-veil: transparent;
+  --surface-gloss: none;
+  --surface-shadow-soft: rgba(0,0,0,0.04);
+  --surface-shadow-soft-flat: 0 2px 8px rgba(0,0,0,0.06);
+  --surface-shadow: rgba(0,0,0,0.06);
+  --surface-shadow-flat: 0 2px 8px rgba(0,0,0,0.06);
+  --surface-shadow-strong-flat: 0 4px 12px rgba(0,0,0,0.10);
+}
+
+body {
+  background: var(--canvas-bg) !important;
+}
+
+.sidebar {
+  background: var(--bg-1) !important;
+  backdrop-filter: none !important;
+}
+
+.topbar {
+  backdrop-filter: none !important;
 }

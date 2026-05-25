@@ -511,7 +511,6 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
             </span>
             <span>{it.label}</span>
             {it.badge && <span className="nav-badge">{it.badge}</span>}
-            {!it.badge && <span className="nav-key">⌘{it.key}</span>}
           </div>
         ))}
       </div>

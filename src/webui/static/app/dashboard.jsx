@@ -60,16 +60,19 @@ function DashboardTokenChart({ timeline }) {
   const h = 264;
   const padX = 34;
   const padTop = 20;
-  const padBottom = 34;
+  const padBottom = 40;
+  const plotHeight = h - padTop - padBottom;
   const maxValue = data.reduce((max, item) => Math.max(max, (item.prompt || 0) + (item.completion || 0)), 1);
-  const range = maxValue || 1;
+  const floorPadding = Math.max(maxValue * 0.08, 1);
+  const chartMax = maxValue + floorPadding * 0.18;
+  const chartRange = chartMax + floorPadding;
   const promptCoords = data.map((item, index) => {
     const x = padX + (index / Math.max(1, data.length - 1)) * (w - padX * 2);
     const prompt = item.prompt || 0;
     const completion = item.completion || 0;
     const stacked = prompt + completion;
-    const yStacked = h - padBottom - (stacked / range) * (h - padTop - padBottom);
-    const yPrompt = h - padBottom - (prompt / range) * (h - padTop - padBottom);
+    const yStacked = h - padBottom - ((stacked + floorPadding) / chartRange) * plotHeight;
+    const yPrompt = h - padBottom - ((prompt + floorPadding) / chartRange) * plotHeight;
     return { x, yStacked, yPrompt, item };
   });
   const stackedLine = promptCoords.length ? "M " + promptCoords.map((p) => `${p.x} ${p.yStacked}`).join(" L ") : "";
@@ -87,24 +90,36 @@ function DashboardTokenChart({ timeline }) {
         <span><i className="swatch prompt"></i>{t("dashboard.input")}</span>
         <span><i className="swatch completion"></i>{t("dashboard.output")}</span>
       </div>
-      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
-        {[0.25, 0.5, 0.75, 1].map((ratio) => {
-          const y = h - padBottom - ratio * (h - padTop - padBottom);
-          return <line key={ratio} x1={padX} y1={y} x2={w - padX} y2={y} className="dashboard-grid-line" />;
-        })}
-        {stackedArea ? <path d={stackedArea} className="dashboard-area completion" /> : null}
-        {promptArea ? <path d={promptArea} className="dashboard-area prompt" /> : null}
-        {stackedLine ? <path d={stackedLine} className="dashboard-line completion" /> : null}
-        {promptLine ? <path d={promptLine} className="dashboard-line prompt" /> : null}
+      <div className="dashboard-token-stage">
+        <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+          {[0.25, 0.5, 0.75, 1].map((ratio) => {
+            const y = h - padBottom - ratio * (h - padTop - padBottom);
+            return <line key={ratio} x1={padX} y1={y} x2={w - padX} y2={y} className="dashboard-grid-line" />;
+          })}
+          {stackedArea ? <path d={stackedArea} className="dashboard-area completion" /> : null}
+          {promptArea ? <path d={promptArea} className="dashboard-area prompt" /> : null}
+          {stackedLine ? <path d={stackedLine} className="dashboard-line completion" /> : null}
+          {promptLine ? <path d={promptLine} className="dashboard-line prompt" /> : null}
+        </svg>
         {promptCoords.map((point) => (
-          <g key={point.item.date}>
-            <circle cx={point.x} cy={point.yStacked} r="3.5" className="dashboard-point completion" />
-            <circle cx={point.x} cy={point.yPrompt} r="3.5" className="dashboard-point prompt" />
-
-          </g>
+          <div key={point.item.date} className="dashboard-token-overlay">
+            <span
+              className="dashboard-point completion"
+              style={{ left: `${(point.x / w) * 100}%`, top: `${(point.yStacked / h) * 100}%` }}
+            ></span>
+            <span
+              className="dashboard-point prompt"
+              style={{ left: `${(point.x / w) * 100}%`, top: `${(point.yPrompt / h) * 100}%` }}
+            ></span>
+            <span
+              className="dashboard-axis-label dashboard-axis-label-token"
+              style={{ left: `${(point.x / w) * 100}%`, top: `${((h - 18) / h) * 100}%` }}
+            >
+              {formatRelativeDateLabel(point.item.date)}
+            </span>
+          </div>
         ))}
-      </svg>
-      <div style={{display:"flex",justifyContent:"space-between",padding:"0 34px",marginTop:"-6px",fontFamily:"var(--mono)",fontSize:"10px",color:"var(--text-4)"}}>{promptCoords.map(function(p,i){return <span key={i}>{formatRelativeDateLabel(p.item.date)}</span>})}</div>
+      </div>
     </div>
   );
 }

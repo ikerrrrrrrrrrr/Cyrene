@@ -69,21 +69,21 @@ function MemoryPage() {
   const pipelineLayers = [
     {
       label: t("memory.contextWindow"),
-      desc: mem.context_window.messages + " / " + mem.context_window.max + " msgs",
+      desc: mem.context_window.messages + " / " + mem.context_window.max + t("memory.msgs"),
       icon: "◷",
       color: "var(--accent)",
       detail: t("memory.ctxDetail", {max: mem.context_window.max}),
     },
     {
       label: t("memory.shortTerm"),
-      desc: mem.short_term.total + " entries",
+      desc: mem.short_term.total + t("memory.entries"),
       icon: "▤",
       color: "#a896c4",
       detail: t("memory.stDesc"),
     },
     {
       label: t("memory.longTermSoul"),
-      desc: (mem.soul.sections || []).length + " sections",
+      desc: (mem.soul.sections || []).length + t("memory.sections"),
       icon: "✱",
       color: "#d4a373",
       detail: t("memory.soulDesc"),

@@ -48,11 +48,14 @@ function injectAttachmentLinks(text, attachments) {
 
 function traceSummary(msg) {
   const parts = [];
-  if (msg.thinking) parts.push("reasoning");
+  if (msg.thinking) parts.push(window.t ? window.t("chat.reasoning") : "reasoning");
   if (msg.tools && msg.tools.length) {
-    parts.push(msg.tools.length === 1 ? "1 tool call" : msg.tools.length + " tool calls");
+    var n = msg.tools.length;
+    var tc = window.t ? window.t("chat.toolCalls") : "tool calls";
+    parts.push(n + " " + tc);
   }
-  return parts.length ? "details · " + parts.join(" · ") : "details";
+  var label = window.t ? window.t("chat.details") : "details";
+  return parts.length ? label + " · " + parts.join(" · ") : label;
 }
 
 function formatElapsedMs(ms) {
@@ -697,6 +700,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [command, setCommand] = useState("");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(-1);
   const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
   const [mentionedAgents, setMentionedAgents] = useState([]);
 
@@ -709,6 +713,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     { id: "deep-compare",    icon: "🔄", label: t("chat.commandDeepCompare"),    desc: t("chat.commandDeepCompareDesc"),    placeholder: t("chat.deepComparePlaceholder") },
     { id: "claude-code",     icon: "💻", label: t("chat.commandClaudeCode"),     desc: t("chat.commandClaudeCodeDesc"),     placeholder: t("chat.claudeCodePlaceholder") },
   ];
+  var slashSearch = (draft.startsWith("/") && draft.length > 1) ? draft.slice(1).toLowerCase() : "";
+  var filteredCommands = slashSearch
+    ? ALL_COMMANDS.filter(function (cmd) {
+        return cmd.id.indexOf(slashSearch) !== -1
+            || cmd.label.toLowerCase().indexOf(slashSearch) !== -1
+            || cmd.desc.toLowerCase().indexOf(slashSearch) !== -1;
+      })
+    : ALL_COMMANDS;
   function findCommand(id) {
     for (var i = 0; i < ALL_COMMANDS.length; i++) {
       if (ALL_COMMANDS[i].id === id) return ALL_COMMANDS[i];
@@ -793,26 +805,39 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   useEffect(function () {
     var leftSb = document.querySelector('.sidebar');
     var app = document.querySelector('.app');
+    var chatLayout = document.querySelector('.chat-layout');
     if (!leftSb || !app) return;
     function align() {
-      var c = composerRef.current;
+      var c = composerRef.current, rightSb, cl;
       if (!c) return;
-      var l = leftSb.getBoundingClientRect().right;
-      if (l > 0) c.style.setProperty("left", l + "px", "important");
-      var rightSb = document.querySelector('.chat-side');
-      if (rightSb) c.style.setProperty("right", rightSb.getBoundingClientRect().width + "px", "important");
+      c.style.setProperty("left", leftSb.getBoundingClientRect().right + "px", "important");
+      cl = document.querySelector('.chat-layout');
+      rightSb = document.querySelector('.chat-side');
+      if (rightSb) {
+        if (cl && cl.classList.contains('right-collapsed')) {
+          c.style.setProperty("right", "0px", "important");
+        } else {
+          c.style.setProperty("right", rightSb.getBoundingClientRect().width + "px", "important");
+        }
+      }
     }
     function tryAlign() {
       if (composerRef.current) { align(); }
       else { requestAnimationFrame(tryAlign); }
     }
     tryAlign();
-    var ro = new ResizeObserver(align);
-    ro.observe(leftSb);
+    var leftRo = new ResizeObserver(align);
+    leftRo.observe(leftSb);
     var mo = new MutationObserver(align);
     mo.observe(app, { attributes: true, attributeFilter: ["class"], subtree: true, childList: true });
+    if (chatLayout) chatLayout.addEventListener("transitionend", align);
     window.addEventListener("resize", align);
-    return function () { ro.disconnect(); mo.disconnect(); window.removeEventListener("resize", align); };
+    return function () {
+      leftRo.disconnect();
+      mo.disconnect();
+      if (chatLayout) chatLayout.removeEventListener("transitionend", align);
+      window.removeEventListener("resize", align);
+    };
   }, []);
 
   useEffect(function () {
@@ -902,8 +927,37 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   }, [mentionMenuOpen]);
 
   function autosize(e) {
-    setDraft(e.target.value);
+    var val = e.target.value;
+    var prev = draft;
+    setDraft(val);
     syncTextareaHeight(taRef.current);
+    if (val.startsWith("/") && !slashMenuOpen) {
+      setSlashMenuOpen(true);
+      setSlashIndex(0);
+    } else if (slashMenuOpen && !val.startsWith("/")) {
+      setSlashMenuOpen(false);
+      setSlashIndex(-1);
+    } else if (slashMenuOpen && val.startsWith("/") && prev.slice(1) !== val.slice(1)) {
+      setSlashIndex(0);
+    }
+    var slashSpace = val.match(/^\/(\S+)\s+(.+)/);
+    if (slashSpace) {
+      var search = slashSpace[1].toLowerCase();
+      var rest = slashSpace[2];
+      var matched = ALL_COMMANDS.find(function (cmd) {
+        return cmd.id === search
+            || cmd.label.toLowerCase() === search
+            || cmd.id.indexOf(search) !== -1
+            || cmd.label.toLowerCase().indexOf(search) !== -1;
+      });
+      if (matched) {
+        setCommand(matched.id);
+        setDraft(rest);
+        setSlashMenuOpen(false);
+        setSlashIndex(-1);
+        e.target.value = rest;
+      }
+    }
   }
 
   function completeWatchedRequest(requestId) {
@@ -1360,6 +1414,31 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   }
 
   function onKey(e) {
+    if (slashMenuOpen) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex(function (prev) { return prev < filteredCommands.length - 1 ? prev + 1 : 0; });
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex(function (prev) { return prev > 0 ? prev - 1 : filteredCommands.length - 1; });
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && slashIndex >= 0 && slashIndex < filteredCommands.length) {
+        e.preventDefault();
+        setCommand(filteredCommands[slashIndex].id);
+        setSlashMenuOpen(false);
+        setSlashIndex(-1);
+        return;
+      }
+      if (e.key === "Escape") {
+        setSlashMenuOpen(false);
+        setSlashIndex(-1);
+        e.preventDefault();
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       send();
@@ -1777,24 +1856,26 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               </button>
               <span style={{ position: "relative" }}>
                 <button
-                  className={"iconbtn" + (command ? " active" : "")}
+                  className={"iconbtn" + (command || slashMenuOpen ? " active" : "")}
                   title={command && findCommand(command) ? findCommand(command).label + ": " + findCommand(command).desc : t("chat.slashCommand")}
                   onClick={function () { setSlashMenuOpen(!slashMenuOpen); }}
-                  style={command ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
+                  style={command || slashMenuOpen ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
                 >/</button>
-                {slashMenuOpen && (
+                {slashMenuOpen && filteredCommands.length > 0 && (
                   <div className="slash-menu">
                     <div className="slash-menu-head">{t("chat.commands")}</div>
-                    {ALL_COMMANDS.map(function (cmd) {
+                    {filteredCommands.map(function (cmd, idx) {
                       var active = command === cmd.id;
+                      var highlighted = slashIndex === idx;
                       return (
                         <button
                           key={cmd.id}
-                          className={"slash-option" + (active ? " active" : "")}
+                          className={"slash-option" + (active ? " active" : "") + (highlighted ? " highlighted" : "")}
                           onClick={function () {
                             setCommand(active ? "" : cmd.id);
                             setSlashMenuOpen(false);
                           }}
+                          onMouseEnter={function () { setSlashIndex(idx); }}
                         >
                           <span className="slash-option-icon">{cmd.icon}</span>
                           <span className="slash-option-body">
