@@ -715,41 +715,54 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
 
         {section === "channels" ? (
           <div className="settings-pane">
-            <div className="settings-block-head" style={{ marginBottom: 12 }}>
-              <h3 style={{ margin: 0 }}>{t("settings.channels")}</h3>
+            <div className="settings-block-head settings-block-head--channels">
+              <div>
+                <h3 style={{ margin: 0 }}>{t("settings.channels")}</h3>
+                <p>{t("settings.channelsSubtitle")}</p>
+              </div>
             </div>
 
-            <div className="settings-subpane" style={{ margin: 0, padding: 0, border: "none" }}>
-              <div className="settings-block-head" style={{ marginBottom: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.4 }}>
-                    <path d="M21.5 2.5L2.5 9.5L9.5 13.5" />
-                    <path d="M21.5 2.5L14.5 21.5L9.5 13.5" />
-                  </svg>
-                  <h3>{t("settings.telegram")}</h3>
+            <div className="settings-channel-grid">
+              <section className="settings-channel-card">
+                <div className="settings-block-head settings-channel-card__head">
+                  <div className="settings-channel-title">
+                    <span className="settings-channel-icon" aria-hidden="true">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.6 }}>
+                        <path d="M21.5 2.5L2.5 9.5L9.5 13.5" />
+                        <path d="M21.5 2.5L14.5 21.5L9.5 13.5" />
+                      </svg>
+                    </span>
+                    <div>
+                      <h3>{t("settings.telegram")}</h3>
+                      <p>{t("settings.telegramTokenHint")}</p>
+                    </div>
+                  </div>
                 </div>
-              </div>
 
-              <div className="field" style={{ marginTop: 10 }}>
-                <div className="label">{t("settings.telegramToken")}<small>{t("settings.telegramTokenHint")}</small></div>
-                <div className="settings-field-stack">
-                  <input
-                    className="input mono"
-                    type="password"
-                    value={telegramToken}
-                    onChange={(e) => setTelegramToken(e.target.value)}
-                    placeholder={t("settings.placeholderOptional")}
-                    style={{ maxWidth: 400 }}
-                  />
-                  <div className="settings-actions settings-actions--inline">
-                    <button className="btn" onClick={saveTelegramToken}>{t("settings.saveNotification")}</button>
+                <div className="settings-channel-card__body">
+                  <label className="settings-inline-label" htmlFor="telegram-token-input">
+                    {t("settings.telegramToken")}
+                  </label>
+                  <div className="settings-channel-input-row">
+                    <input
+                      id="telegram-token-input"
+                      className="input mono settings-channel-input"
+                      type="password"
+                      value={telegramToken}
+                      onChange={(e) => setTelegramToken(e.target.value)}
+                      placeholder={t("settings.placeholderOptional")}
+                    />
+                    <button className="btn primary" onClick={saveTelegramToken}>{t("settings.saveNotification")}</button>
+                  </div>
+                  <div className="settings-channel-meta">
+                    <span>{t("settings.placeholderOptional")}</span>
                     {telegramTokenSaved ? <span className="settings-saved-msg">{telegramTokenSaved}</span> : null}
                   </div>
                 </div>
-              </div>
-            </div>
+              </section>
 
-            <WeChatPanel />
+              <WeChatPanel />
+            </div>
           </div>
         ) : null}
 

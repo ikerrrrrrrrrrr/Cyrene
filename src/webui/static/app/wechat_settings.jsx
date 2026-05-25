@@ -109,16 +109,21 @@ function WeChatPanel() {
   // ── Render ──────────────────────────────────────────────
 
   return (
-    <div className="settings-subpane" style={{ border: "none", marginTop: 0, paddingTop: 0 }}>
-      <div className="settings-block-head" style={{ marginBottom: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.4 }}>
-            <path d="M17 12.5C17 16.09 14.09 19 10.5 19C9.41 19 8.39 18.81 7.46 18.48L4 20L5.52 16.54C5.19 15.61 5 14.59 5 13.5C5 9.91 7.91 7 11.5 7C12.59 7 13.61 7.19 14.54 7.52" />
-            <path d="M19 9.5C19 12.54 17.04 15.12 14.27 16.21L15.27 18.5L13 17.27C11.83 17.68 10.56 17.92 9.24 17.96" />
-            <path d="M10 10.5C10 10.78 9.78 11 9.5 11C9.22 11 9 10.78 9 10.5C9 10.22 9.22 10 9.5 10C9.78 10 10 10.22 10 10.5Z" />
-            <path d="M14 10.5C14 10.78 13.78 11 13.5 11C13.22 11 13 10.78 13 10.5C13 10.22 13.22 10 13.5 10C13.78 10 14 10.22 14 10.5Z" />
-          </svg>
-          <h3>微信</h3>
+    <section className="settings-channel-card settings-channel-card--wechat">
+      <div className="settings-block-head settings-channel-card__head">
+        <div className="settings-channel-title">
+          <span className="settings-channel-icon" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, opacity: 0.6 }}>
+              <path d="M17 12.5C17 16.09 14.09 19 10.5 19C9.41 19 8.39 18.81 7.46 18.48L4 20L5.52 16.54C5.19 15.61 5 14.59 5 13.5C5 9.91 7.91 7 11.5 7C12.59 7 13.61 7.19 14.54 7.52" />
+              <path d="M19 9.5C19 12.54 17.04 15.12 14.27 16.21L15.27 18.5L13 17.27C11.83 17.68 10.56 17.92 9.24 17.96" />
+              <path d="M10 10.5C10 10.78 9.78 11 9.5 11C9.22 11 9 10.78 9 10.5C9 10.22 9.22 10 9.5 10C9.78 10 10 10.22 10 10.5Z" />
+              <path d="M14 10.5C14 10.78 13.78 11 13.5 11C13.22 11 13 10.78 13 10.5C13 10.22 13.22 10 13.5 10C13.78 10 14 10.22 14 10.5Z" />
+            </svg>
+          </span>
+          <div>
+            <h3>微信</h3>
+            <p>通过扫码连接本地微信桥接，适合日常通知和消息投递。</p>
+          </div>
         </div>
         {running ? (
           <span className="settings-rank-chip wechat-chip--running">运行中</span>
@@ -127,42 +132,35 @@ function WeChatPanel() {
         ) : null}
       </div>
 
-      {/* Connected + running */}
-      {connected && running ? (
-        <div className="field">
-          <div className="label">已连接</div>
-          <div className="settings-field-stack">
-            <div className="wechat-wxid">{ownerWxid}</div>
-            <div className="settings-actions">
-              <button className="btn btn-danger" onClick={handleStop}>停止</button>
-            </div>
+      <div className="settings-channel-card__body">
+        <div className="settings-channel-status-row">
+          <div className="settings-channel-status-copy">
+            <span className="settings-inline-label">当前状态</span>
+            <strong>{connected ? (running ? "已连接并运行中" : "已连接，等待启动") : "未连接"}</strong>
+            <small>
+              {connected
+                ? (ownerWxid ? ownerWxid : "微信账号已授权，可以随时启动或停止桥接。")
+                : "首次使用需要扫码授权，连接成功后会自动拉起桥接进程。"}
+            </small>
+          </div>
+
+          <div className="settings-channel-actions">
+            {connected && running ? (
+              <button className="btn danger" onClick={handleStop}>停止</button>
+            ) : null}
+            {connected && !running ? (
+              <button className="btn primary" onClick={handleStart}>启动微信</button>
+            ) : null}
+            {!connected ? (
+              <button className="btn primary" onClick={startLogin}>扫描二维码连接</button>
+            ) : null}
           </div>
         </div>
-      ) : null}
 
-      {/* Connected but not running */}
-      {connected && !running ? (
-        <div className="field">
-          <div className="label">Token 已就绪，未启动</div>
-          <div className="settings-actions">
-            <button className="btn" onClick={handleStart}>启动微信</button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Not connected */}
-      {!connected ? (
-        <div className="field">
-          <div className="settings-actions">
-            <button className="btn" onClick={startLogin}>扫描二维码连接</button>
-          </div>
-        </div>
-      ) : null}
-
-      {/* Inline status (expired, error, etc.) */}
-      {qrStatus ? (
-        <div className="wechat-status">{qrStatus}</div>
-      ) : null}
+        {qrStatus ? (
+          <div className="wechat-status">{qrStatus}</div>
+        ) : null}
+      </div>
 
       {/* ── QR modal overlay ─────────────────────────── */}
       {qrCode ? (
@@ -179,7 +177,7 @@ function WeChatPanel() {
           </div>
         </div>
       ) : null}
-    </div>
+    </section>
   );
 }
 
