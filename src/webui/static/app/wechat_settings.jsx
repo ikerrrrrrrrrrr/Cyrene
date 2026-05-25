@@ -15,8 +15,6 @@ function WeChatPanel() {
   const [connected, setConnected] = useStateSet(false);
   const [running, setRunning] = useStateSet(false);
   const [ownerWxid, setOwnerWxid] = useStateSet("");
-
-  // QR modal state
   const [qrCode, setQrCode] = useStateSet(null);
   const [qrStatus, setQrStatus] = useStateSet("");
   const cancelRef = useRef(false);
@@ -95,13 +93,9 @@ function WeChatPanel() {
   // ── Manual start / stop ─────────────────────────────────
 
   async function handleStart() {
-    setQrStatus("正在启动...");
     try {
       const r = await fetch("/api/wechat/start", { method: "POST" });
-      const d = await r.json();
-      if (d.ok) {
-        await refreshStatus();
-      }
+      if ((await r.json()).ok) await refreshStatus();
     } catch (_) {}
   }
 
@@ -115,17 +109,16 @@ function WeChatPanel() {
   // ── Render ──────────────────────────────────────────────
 
   return (
-    <div className="settings-subpane" style={{ marginTop: 24 }}>
+    <div className="settings-subpane">
       <div className="settings-block-head">
         <div>
           <h3>微信</h3>
+          <p>连接微信后，Agent 的回复会自动发送到微信，无需重启服务器。</p>
         </div>
         {running ? (
-          <span className="settings-rank-chip" style={{ color: "var(--success, #22c55e)" }}>
-            运行中
-          </span>
+          <span className="settings-rank-chip wechat-chip--running">运行中</span>
         ) : connected ? (
-          <span className="settings-rank-chip">已停止</span>
+          <span className="settings-rank-chip wechat-chip--stopped">已停止</span>
         ) : null}
       </div>
 
@@ -133,13 +126,11 @@ function WeChatPanel() {
       {connected && running ? (
         <div className="field">
           <div className="label">已连接</div>
-          {ownerWxid ? (
-            <div className="settings-status" style={{ color: "var(--success, #22c55e)", marginTop: 4, fontFamily: "var(--mono)" }}>
-              {ownerWxid}
+          <div className="settings-field-stack">
+            <div className="wechat-wxid">{ownerWxid}</div>
+            <div className="settings-actions">
+              <button className="btn btn-danger" onClick={handleStop}>停止</button>
             </div>
-          ) : null}
-          <div style={{ marginTop: 8 }}>
-            <button className="btn btn-danger" onClick={handleStop}>停止</button>
           </div>
         </div>
       ) : null}
@@ -147,46 +138,41 @@ function WeChatPanel() {
       {/* Connected but not running */}
       {connected && !running ? (
         <div className="field">
-          <div className="label">Token 已就绪，但未启动</div>
-          <button className="btn" onClick={handleStart} style={{ marginTop: 8 }}>启动微信</button>
+          <div className="label">Token 已就绪，未启动</div>
+          <div className="settings-actions">
+            <button className="btn" onClick={handleStart}>启动微信</button>
+          </div>
         </div>
       ) : null}
 
       {/* Not connected */}
       {!connected ? (
         <div className="field">
-          <div className="label">连接微信后，Agent 的回复会自动发送到微信，无需重启服务器。</div>
-          <button className="btn" onClick={startLogin}>扫描二维码连接</button>
+          <div className="settings-actions">
+            <button className="btn" onClick={startLogin}>扫描二维码连接</button>
+          </div>
         </div>
       ) : null}
 
-      {/* ── QR code modal overlay ─────────────────────────── */}
+      {/* Inline status (expired, error, etc.) */}
+      {qrStatus ? (
+        <div className="wechat-status">{qrStatus}</div>
+      ) : null}
+
+      {/* ── QR modal overlay ─────────────────────────── */}
       {qrCode ? (
         <div style={QR_MODAL_STYLE} onClick={closeModal}>
           <div style={QR_MODAL_BOX_STYLE} onClick={(e) => e.stopPropagation()}>
             <button
               onClick={closeModal}
-              style={{
-                position: "absolute", top: 8, right: 12,
-                background: "none", border: "none",
-                fontSize: 22, cursor: "pointer",
-                color: "var(--text-2, #888)",
-                lineHeight: 1,
-              }}
+              className="wechat-modal-close"
               title="关闭"
-            >
-              ✕
-            </button>
+            >✕</button>
             <h4 style={{ margin: "0 0 16px" }}>扫描二维码连接微信</h4>
             <img src={qrCode} className="wechat-qr" alt="微信二维码" />
             <p style={{ marginTop: 16, color: "var(--text-2, #888)" }}>{qrStatus}</p>
           </div>
         </div>
-      ) : null}
-
-      {/* Inline status when not in modal (expired, etc.) */}
-      {!qrCode && qrStatus ? (
-        <div className="settings-status" style={{ marginTop: 8 }}>{qrStatus}</div>
       ) : null}
     </div>
   );

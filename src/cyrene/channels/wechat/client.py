@@ -139,11 +139,14 @@ class WeChatClient:
 
     # ── File / image sending (CDN upload + sendMessage) ────────────────
 
-    async def send_file(self, chat_id: str, filepath: str, filename: str = "") -> None:
+    async def send_file(self, chat_id: str, filepath: str, filename: str = "") -> bool:
         """Encrypt and upload a file to CDN, then send it as a WeChat message.
 
         Supports images (type 2) and arbitrary files (type 4).
         Falls back to a text notice on failure.
+
+        Returns ``True`` if the file was uploaded and sent successfully,
+        ``False`` if a fallback text notice was sent instead.
         """
         if not filename:
             filename = Path(filepath).name
@@ -151,7 +154,7 @@ class WeChatClient:
         raw = Path(filepath).read_bytes()
         if len(raw) > MAX_FILE_SIZE:
             await self.send_message(chat_id, "文件过大（超过 50MB 限制）")
-            return
+            return False
 
         # Determine media type from extension
         ext = Path(filepath).suffix.lower()
@@ -179,14 +182,14 @@ class WeChatClient:
         except Exception:
             logger.exception("getUploadUrl failed for %s", filepath)
             await self.send_message(chat_id, "文件上传失败，无法获取上传地址")
-            return
+            return False
 
         # Prepare CDN upload
         upload_url = upload.get("upload_full_url") or upload.get("upload_param", {}).get("url", "")
         put_headers = upload.get("upload_param", {}).get("headers", {})
         if not upload_url:
             await self.send_message(chat_id, "文件上传失败，未返回上传地址")
-            return
+            return False
 
         # PUT encrypted data to CDN
         try:
@@ -199,7 +202,7 @@ class WeChatClient:
         except Exception:
             logger.exception("CDN upload failed for %s", filepath)
             await self.send_message(chat_id, "文件上传失败，CDN 上传出错")
-            return
+            return False
 
         # Build the media reference
         media = {"encrypt_query_param": encrypt_query_param, "aes_key": aes_key_b64}
@@ -242,6 +245,9 @@ class WeChatClient:
         except Exception:
             logger.exception("Failed to send file message to %s", chat_id)
             await self.send_message(chat_id, "文件发送失败")
+            return False
+
+        return True
 
     async def send_image(self, chat_id: str, filepath: str) -> None:
         """Convenience: send an image file."""

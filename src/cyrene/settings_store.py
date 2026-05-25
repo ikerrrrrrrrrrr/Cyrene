@@ -45,6 +45,7 @@ _DEFAULT_ENABLED_TOOLS = {
     "cancel_task": True,
     "send_message": True,
     "send_file": True,
+    "send_wechat_file": True,
     "ask_user": True,
     "PromptClaudeCode": True,
     "send_telegram": False,

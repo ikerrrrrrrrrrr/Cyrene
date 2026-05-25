@@ -4,13 +4,43 @@
 
 /* Dark (default) — restrained slate with subtle green */
 
-/* WeChat QR code image */
+/* ── WeChat channel ───────────────────────────────────── */
 .wechat-qr {
   max-width: 280px;
   max-height: 280px;
   border: 1px solid var(--border);
   border-radius: 8px;
   margin: 12px 0;
+}
+.wechat-chip--stopped {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text-3);
+}
+.wechat-wxid {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--success, #22c55e);
+  margin-bottom: 4px;
+}
+.wechat-status {
+  margin-top: 8px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.wechat-modal-close {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: none;
+  border: none;
+  font-size: 22px;
+  cursor: pointer;
+  color: var(--text-2, #888);
+  line-height: 1;
+}
+.wechat-modal-close:hover {
+  color: var(--text);
 }
 :root, html[data-theme="dark"] {
   --bg:   #0d1117;

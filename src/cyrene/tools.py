@@ -59,6 +59,7 @@ _MAIN_ONLY_TOOLS = {
     "send_telegram",
     "send_message",
     "send_file",
+    "send_wechat_file",
     "ask_user",
     "spawn_subagent",
     "query_round",
@@ -362,6 +363,67 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
         "status": "sent",
         "attachment": attachment,
     })
+
+
+async def _tool_send_wechat_file(args: dict[str, Any], bot: Any, chat_id: int, _db_path: str, notify_state: dict[str, bool] | None) -> str:
+    """Send a file to the user via WeChat CDN.
+
+    Requires ``bot`` to be a ``WeChatClient`` (i.e. the agent is running
+    on the WeChat channel).
+    """
+    path_arg = str(args.get("path", "") or "").strip()
+    if not path_arg:
+        return "Error: 'path' is required."
+
+    from cyrene.agent import (
+        _current_agent_id,
+        _current_round_id,
+        _current_client_request_id,
+        _insert_intermediate_user_reply,
+        append_system_message,
+    )
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can send files via WeChat."
+
+    path = _resolve_exportable_path(path_arg)
+    if not path.exists() or not path.is_file():
+        return f"Error: file not found: {path}"
+
+    name = str(args.get("name", "") or "").strip() or path.name
+    text = str(args.get("text", "") or "").strip()
+
+    # Send via WeChat if the bot supports it
+    send_file_fn = getattr(bot, "send_file", None)
+    if send_file_fn is not None:
+        try:
+            ok = await send_file_fn(chat_id=str(chat_id), filepath=str(path), filename=name)
+            if not ok:
+                return "File too large or upload failed — a text notice was sent to WeChat instead."
+        except Exception as e:
+            logger.exception("send_wechat_file failed")
+            return f"Error sending file via WeChat: {e}"
+    else:
+        return "Error: current channel does not support WeChat file sending. Use send_file for WebUI attachments."
+
+    # Notify WebUI — best-effort, swallow errors so a failed notification
+    # never triggers an LLM retry of the WeChat send.
+    desc = f"[WeChat sent: {name}]"
+    if text:
+        desc += f" — {text}"
+    try:
+        round_id = str(_current_round_id.get() or "").strip()
+        if round_id:
+            client_request_id = str(_current_client_request_id.get() or "").strip()
+            await _insert_intermediate_user_reply(desc, round_id=round_id, client_request_id=client_request_id)
+        else:
+            await append_system_message(desc, message_meta={})
+    except Exception:
+        logger.exception("Failed to write WebUI notification for WeChat file send")
+
+    if notify_state is not None:
+        notify_state["sent"] = True
+    return f"File sent via WeChat: {name}"
 
 
 async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -1478,12 +1540,29 @@ TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_wechat_file",
+            "description": "Send a file you have CREATED to the user via WeChat. Only works when the current conversation is on the WeChat channel — files are encrypted with AES-128-ECB and uploaded to CDN. A delivery notice appears in the WebUI chat history.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative or absolute path to a file you created that actually exists."},
+                    "name": {"type": "string", "description": "Optional display filename shown in WeChat and WebUI."},
+                    "text": {"type": "string", "description": "Brief description shown alongside the file in WebUI."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
 ]
 
 
 # TOOL_HANDLERS without "quit" — agent.py adds it after import to avoid circular import.
 TOOL_HANDLERS: dict[str, Any] = {
     "send_telegram": _tool_send_message,
+    "send_wechat_file": _tool_send_wechat_file,
     "send_message": _tool_send_user_message,
     "send_message_to_user": _tool_send_message_to_user,
     "send_file": _tool_send_file,
