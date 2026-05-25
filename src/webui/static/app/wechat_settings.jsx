@@ -136,12 +136,10 @@ function WeChatPanel() {
         <div className="settings-channel-status-row">
           <div className="settings-channel-status-copy">
             <span className="settings-inline-label">当前状态</span>
-            <strong>{connected ? (running ? "已连接并运行中" : "已连接，等待启动") : "未连接"}</strong>
-            <small>
-              {connected
-                ? (ownerWxid ? ownerWxid : "微信账号已授权，可以随时启动或停止桥接。")
-                : "首次使用需要扫码授权，连接成功后会自动拉起桥接进程。"}
-            </small>
+            <div className="settings-channel-status-value">
+              <span className={"channel-status-dot " + (running ? "running" : (connected ? "stopped" : "off"))}></span>
+              <strong>{connected ? (running ? "已连接并运行中" : "已连接，等待启动") : "未连接"}</strong>
+            </div>
           </div>
 
           <div className="settings-channel-actions">

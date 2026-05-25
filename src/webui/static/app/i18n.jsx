@@ -830,6 +830,28 @@ const TRANSLATIONS = {
     "settings.confirmClearSession": "Clear the current conversation session?",
     "settings.sessionCleared": "Session cleared.",
 
+    // ── Settings / Backup ──────────────────────────────────────────────────
+    "settings.backup": "Backup & Restore",
+    "settings.backupSubtitle": "Export or restore all agent data — conversations, memory, settings, and task schedules.",
+    "settings.browserTools": "Browser automation tools",
+    "settings.browserToolsHint": "Enable browser_navigate, screenshot, click, and type agent tools. Requires httpx (built-in) for fetch, Playwright for interactive features.",
+    "settings.backupExportBtn": "Create backup",
+    "settings.backupRestoreBtn": "Restore latest backup",
+    "settings.backupExporting": "Creating backup…",
+    "settings.backupExported": "Backup created ({n} files, {size}).",
+    "settings.backupRestored": "Restored {n} files from backup.",
+    "settings.backupRestoreFailed": "Restore failed",
+    "settings.backupHistory": "Backup history",
+    "settings.backupHistoryHint": "Previous export archives are listed below.",
+    "settings.backupNoBackups": "No backups yet.",
+    "settings.backupDeleteConfirm": "Delete this backup?",
+    "settings.refresh": "refresh",
+    "settings.download": "download",
+    "settings.delete": "delete",
+
+    // ── Settings / Section labels ─────────────────────────────────────────
+    "section.backup": "Backup",
+
     // ── Settings / Placeholders ───────────────────────────────────────────
     "settings.placeholderName": "Name",
     "settings.placeholderDesc": "Description",
@@ -886,6 +908,11 @@ const TRANSLATIONS = {
     "tool.desc.query_round": "Inspect currently live rounds and their progress.",
     "tool.desc.CheckClaudeCode": "Check if Claude Code is currently running in a tmux session.",
     "tool.desc.StartClaudeCode": "Start Claude Code in a new tmux session.",
+    "tool.desc.browser_navigate": "Navigate to a URL and return the page content as readable text.",
+    "tool.desc.browser_screenshot": "Take a screenshot of a webpage (requires Playwright).",
+    "tool.desc.browser_click": "Click an element on the current page by CSS selector (requires Playwright).",
+    "tool.desc.browser_type": "Type text into an input on the current page (requires Playwright).",
+    "tool.desc.send_notification": "Send a desktop notification or webhook alert to the user.",
 
     // ── Search ────────────────────────────────────────────────────────────
     "search.placeholder": "Search conversations…",
@@ -1516,6 +1543,7 @@ const TRANSLATIONS = {
     "section.agents": "代理",
     "section.capabilities": "能力",
     "section.data": "数据",
+    "section.backup": "备份",
     "section.about": "关于",
     "section.tools": "工具",
     "section.search": "搜索",
@@ -1708,6 +1736,25 @@ const TRANSLATIONS = {
     "settings.confirmClearSession": "清除当前对话会话？",
     "settings.sessionCleared": "会话已清除。",
 
+    // ── 设置 / 备份 ──────────────────────────────────────────────────────
+    "settings.backup": "备份与恢复",
+    "settings.backupSubtitle": "导出或恢复所有 agent 数据——对话、记忆、设置、任务计划。",
+    "settings.browserTools": "浏览器自动化工具",
+    "settings.browserToolsHint": "启用 browser_navigate、screenshot、click、type 等代理工具。httpx 内置可用，交互功能需要 Playwright。",
+    "settings.backupExportBtn": "创建备份",
+    "settings.backupRestoreBtn": "恢复最新备份",
+    "settings.backupExporting": "正在创建备份…",
+    "settings.backupExported": "备份已创建（{n} 个文件，{size}）。",
+    "settings.backupRestored": "已从备份恢复 {n} 个文件。",
+    "settings.backupRestoreFailed": "恢复失败",
+    "settings.backupHistory": "备份历史",
+    "settings.backupHistoryHint": "之前的导出归档列在下方。",
+    "settings.backupNoBackups": "暂无备份。",
+    "settings.backupDeleteConfirm": "删除此备份？",
+    "settings.refresh": "刷新",
+    "settings.download": "下载",
+    "settings.delete": "删除",
+
     // ── 设置 / 占位符 ──────────────────────────────────────────────────
     "settings.placeholderName": "名称",
     "settings.placeholderDesc": "描述",
@@ -1764,6 +1811,11 @@ const TRANSLATIONS = {
     "tool.desc.query_round": "检查当前活动的轮次及其进度。",
     "tool.desc.CheckClaudeCode": "检查 Claude Code 是否正在 tmux 会话中运行。",
     "tool.desc.StartClaudeCode": "在新的 tmux 会话中启动 Claude Code。",
+    "tool.desc.browser_navigate": "导航到 URL 并以可读文本格式返回页面内容。",
+    "tool.desc.browser_screenshot": "截取网页截图（需要 Playwright）。",
+    "tool.desc.browser_click": "通过 CSS 选择器点击页面元素（需要 Playwright）。",
+    "tool.desc.browser_type": "在页面的输入框中输入文字（需要 Playwright）。",
+    "tool.desc.send_notification": "向用户发送桌面通知或 webhook 告警。",
 
     // ── 搜索 ──────────────────────────────────────────────────────────────
     "search.placeholder": "搜索全部对话…",

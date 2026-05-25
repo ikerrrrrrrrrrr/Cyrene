@@ -4145,8 +4145,6 @@ html[data-theme="light"] .canvas-wrap {
   color: var(--text-3);
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 .settings-channel-input-row {
   display: grid;
@@ -4183,6 +4181,25 @@ html[data-theme="light"] .canvas-wrap {
   font-size: 15px;
   line-height: 1.35;
 }
+.settings-channel-status-value {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--success, #22c55e) 24%, var(--line));
+  background: color-mix(in srgb, var(--success, #22c55e) 8%, transparent);
+}
+.channel-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.channel-status-dot.running { background: var(--success, #22c55e); }
+.channel-status-dot.stopped { background: var(--warn, #ff9f0a); }
+.channel-status-dot.off { background: var(--text-4); }
 .settings-channel-status-copy small {
   color: var(--text-3);
   font-size: 13px;
@@ -4301,8 +4318,8 @@ html[data-theme="light"] .canvas-wrap {
 }
 .settings-control-stack {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  flex-direction: row;
+  align-items: center;
   gap: 8px;
 }
 .settings-primary-model-card {
@@ -4854,11 +4871,12 @@ html[data-theme="light"] .canvas-wrap {
 }
 
 .toggle {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--surface-border-flat) 42%, transparent);
+  background: var(--bg-3);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--surface-border-flat) 75%, transparent);
 }
 
 .toggle::after {
-  background: var(--surface-1);
+  background: color-mix(in srgb, var(--surface-1), white 80%);
   box-shadow: 0 2px 8px color-mix(in srgb, black 20%, transparent);
 }
 

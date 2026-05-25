@@ -7,7 +7,7 @@ The DB is used for structured data that needs querying and stable aggregates.
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
@@ -82,6 +82,25 @@ CREATE TABLE IF NOT EXISTS analytics_backfills (
     source TEXT PRIMARY KEY,
     completed_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    model TEXT NOT NULL,
+    round_id TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL DEFAULT '',
+    caller TEXT NOT NULL DEFAULT 'main',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    estimated_cost REAL NOT NULL DEFAULT 0.0
+);
+CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage(created_at);
+CREATE INDEX IF NOT EXISTS idx_token_usage_model ON token_usage(model);
+CREATE INDEX IF NOT EXISTS idx_token_usage_round_id ON token_usage(round_id);
 """
 
 _TOPIC_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[a-z][a-z0-9_-]{2,}")
@@ -330,6 +349,149 @@ async def count_stat_days(db_path: str) -> int:
         cursor = await db.execute("SELECT COUNT(*) FROM daily_stats WHERE archive_entries > 0")
         row = await cursor.fetchone()
         return int(row[0] or 0) if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Token usage tracking
+# ---------------------------------------------------------------------------
+
+_PRICE_PER_1K: dict[str, tuple[float, float]] = {
+    "deepseek-chat": (0.00027, 0.00110),
+    "deepseek-v4-flash": (0.00027, 0.00110),
+    "deepseek-reasoner": (0.00055, 0.00219),
+    "gpt-4o": (0.00250, 0.01000),
+    "gpt-4o-mini": (0.00015, 0.00060),
+    "gpt-4.1": (0.00200, 0.00800),
+    "gpt-4.1-mini": (0.00040, 0.00160),
+    "gpt-4.1-nano": (0.00010, 0.00040),
+    "claude-sonnet-4-6": (0.00300, 0.01500),
+    "claude-sonnet-4-7": (0.00300, 0.01500),
+    "claude-haiku-4-5": (0.00080, 0.00400),
+    "gemini-2.0-flash": (0.00010, 0.00040),
+    "gemini-2.5-flash": (0.00015, 0.00060),
+}
+
+_DEFAULT_PRICE = (0.00100, 0.00200)  # fallback per-1k prompt/completion cost in USD
+
+
+def _estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    model_key = model.strip().lower()
+    # Partial match against known models
+    prices = _DEFAULT_PRICE
+    for known, p in _PRICE_PER_1K.items():
+        if known in model_key or model_key in known:
+            prices = p
+            break
+    prompt_cost = (prompt_tokens / 1000.0) * prices[0]
+    completion_cost = (completion_tokens / 1000.0) * prices[1]
+    return round(prompt_cost + completion_cost, 6)
+
+
+async def record_token_usage(
+    db_path: str,
+    *,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    cache_hit_tokens: int = 0,
+    cache_miss_tokens: int = 0,
+    duration_ms: int = 0,
+    round_id: str = "",
+    session_id: str = "",
+    caller: str = "main",
+) -> None:
+    cost = _estimate_cost(model, prompt_tokens, completion_tokens)
+    now = datetime.now(timezone.utc).isoformat()
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """INSERT INTO token_usage
+               (created_at, model, round_id, session_id, caller,
+                prompt_tokens, completion_tokens, total_tokens,
+                cache_hit_tokens, cache_miss_tokens, duration_ms, estimated_cost)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (now, model, round_id, session_id, caller,
+             prompt_tokens, completion_tokens, total_tokens,
+             cache_hit_tokens, cache_miss_tokens, duration_ms, cost),
+        )
+        await db.commit()
+
+
+async def get_token_usage_stats(
+    db_path: str,
+    *,
+    days: int = 7,
+    model: str = "",
+) -> dict:
+    """Return aggregated token usage stats.
+
+    Returns::
+        {"total": {"requests": N, "prompt_tokens": N, ...},
+         "by_model": [{"model": "...", "requests": N, ...}],
+         "by_day": [{"day": "...", "requests": N, ...}],
+         "total_cost": N}
+    """
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+
+        # Totals
+        cursor = await db.execute(
+            """SELECT COUNT(*) AS requests,
+                      COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                      COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                      COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                      COALESCE(SUM(cache_hit_tokens), 0) AS cache_hit_tokens,
+                      COALESCE(SUM(estimated_cost), 0) AS total_cost
+               FROM token_usage WHERE created_at >= ?""",
+            (since,),
+        )
+        total_row = await cursor.fetchone()
+
+        # By model
+        model_filter = " AND model = ?" if model else ""
+        model_params = (since, model) if model else (since,)
+        cursor = await db.execute(
+            f"""SELECT model,
+                       COUNT(*) AS requests,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                       COALESCE(AVG(duration_ms), 0) AS avg_duration_ms,
+                       COALESCE(SUM(estimated_cost), 0) AS cost
+                FROM token_usage WHERE created_at >= ?{model_filter}
+                GROUP BY model ORDER BY cost DESC""",
+            model_params,
+        )
+        by_model = [dict(r) for r in await cursor.fetchall()]
+
+        # By day
+        cursor = await db.execute(
+            f"""SELECT DATE(created_at) AS day,
+                       COUNT(*) AS requests,
+                       COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                       COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                       COALESCE(SUM(estimated_cost), 0) AS cost
+                FROM token_usage WHERE created_at >= ?{model_filter}
+                GROUP BY day ORDER BY day ASC""",
+            model_params,
+        )
+        by_day = [dict(r) for r in await cursor.fetchall()]
+
+    total = dict(total_row) if total_row else {}
+    return {
+        "total": {
+            "requests": total.get("requests", 0),
+            "prompt_tokens": total.get("prompt_tokens", 0),
+            "completion_tokens": total.get("completion_tokens", 0),
+            "total_tokens": total.get("total_tokens", 0),
+            "cache_hit_tokens": total.get("cache_hit_tokens", 0),
+            "total_cost": round(float(total.get("total_cost", 0)), 6),
+        },
+        "by_model": by_model,
+        "by_day": by_day,
+    }
 
 
 async def _backfill_runtime_logs(db_path: str) -> None:

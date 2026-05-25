@@ -279,6 +279,27 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [agentsSaved, setAgentsSaved] = useStateSet("");
   const [resetDataStatus, setResetDataStatus] = useStateSet("");
   const [resettingData, setResettingData] = useStateSet(false);
+  const [backupList, setBackupList] = useStateSet([]);
+  const [backupMsg, setBackupMsg] = useStateSet("");
+
+  function formatBytes(bytes) {
+    var n = Number(bytes || 0);
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+  function formatDate(iso) {
+    if (!iso) return "—";
+    try { return new Date(iso).toLocaleString(); } catch(e) { return iso; }
+  }
+  async function loadBackups() {
+    try {
+      var r = await fetch("/api/backup/list");
+      var d = await r.json();
+      if (d.ok) setBackupList(d.backups || []);
+    } catch (e) { setBackupMsg("Failed to load backups: " + e.message); }
+  }
+  useEffect(function () { loadBackups(); }, []);
   const [desktopSettings, setDesktopSettings] = useStateSet({
     launchAtLogin: false,
     runInBackground: false,
@@ -1228,17 +1249,9 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             <h2>{t("settings.capabilities")}</h2>
             <p className="subtitle">{t("settings.capabilitiesSubtitle")}</p>
 
-            <div className="settings-subpane">
-              <div className="settings-block-head">
-                <div>
-                  <h3>{t("settings.capabilityToggles")}</h3>
-                </div>
-              </div>
-
-              <div className="field">
-                <div className="label">{t("settings.redactSecrets")}<small>{t("settings.redactSecretsHint")}</small></div>
-                <div className={"toggle " + (capabilityToggles.redactSecrets ? "on" : "")} onClick={() => toggleCapability("redactSecrets")}></div>
-              </div>
+            <div className="field">
+              <div className="label">{t("settings.browserTools")}<small>{t("settings.browserToolsHint")}</small></div>
+              <div className={"toggle " + (capabilityToggles.browserTools !== false ? "on" : "")} onClick={() => toggleCapability("browserTools")}></div>
             </div>
 
             <div className="settings-subpane">
@@ -1391,6 +1404,11 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             <p className="subtitle">{t("settings.dataSubtitle")}</p>
 
             <div className="field">
+              <div className="label">{t("settings.redactSecrets")}<small>{t("settings.redactSecretsHint")}</small></div>
+              <div className={"toggle " + (capabilityToggles.redactSecrets ? "on" : "")} onClick={() => toggleCapability("redactSecrets")}></div>
+            </div>
+
+            <div className="field">
               <div className="label">{t("settings.clearSession")}<small>{t("settings.clearSessionHint")}</small></div>
               <button className="btn danger" onClick={clearSession}>{t("settings.clearSessionBtn")}</button>
             </div>
@@ -1432,6 +1450,58 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 <div className="label">{t("settings.soulPath")}<small>{t("settings.soulPathHint")}</small></div>
                 <input className="input mono" value={config.soul_path} readOnly />
               </div>
+            </div>
+
+            <div style={{ paddingTop: 16 }}>
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.backup")}</h3>
+                  <p>{t("settings.backupSubtitle")}</p>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                <button className="btn primary" onClick={async function () {
+                  setBackupMsg(t("settings.backupExporting"));
+                  try {
+                    var r = await fetch("/api/backup/export", {method:"POST"});
+                    var d = await r.json();
+                    if (d.ok) { setBackupMsg(t("settings.backupExported",{n:d.entries.length,size:formatBytes(d.size)})); loadBackups(); }
+                    else throw new Error(d.error);
+                  } catch(e) { setBackupMsg(t("settings.failed")+": "+e.message); }
+                }}>{t("settings.backupExportBtn")}</button>
+                <button className="btn" onClick={async function () {
+                  if (!backupList.length) { setBackupMsg(t("settings.backupNoBackups")); return; }
+                  var last = backupList[0];
+                  try {
+                    var r = await fetch("/api/backup/restore", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({path:last.path})});
+                    var d = await r.json();
+                    if (d.ok) setBackupMsg(t("settings.backupRestored",{n:d.restored.length}));
+                    else throw new Error(d.error);
+                  } catch(e) { setBackupMsg(t("settings.backupRestoreFailed")+": "+e.message); }
+                }}>{t("settings.backupRestoreBtn")}</button>
+              </div>
+
+              {backupMsg ? <div style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--text-3)",marginBottom:16}}>{backupMsg}</div> : null}
+
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span style={{fontSize:13,color:"var(--text-3)"}}>{t("settings.backupHistoryHint")}</span>
+                <button className="btn" style={{padding:"2px 10px",fontSize:11}} onClick={loadBackups}>{t("settings.refresh")}</button>
+              </div>
+
+              {backupList.length === 0 ? (
+                <div style={{padding:"12px 0",color:"var(--text-4)",fontSize:13}}>{t("settings.backupNoBackups")}</div>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {backupList.map(function(b){return <div key={b.name} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 10px",borderRadius:"var(--r-m)",border:"1px solid var(--surface-border-flat)"}}>
+                    <span style={{fontFamily:"var(--mono)",fontSize:12,flex:1,color:"var(--text-2)"}}>{b.name}</span>
+                    <span style={{fontFamily:"var(--mono)",fontSize:11,color:"var(--text-4)"}}>{formatBytes(b.size)}</span>
+                    <span style={{fontFamily:"var(--mono)",fontSize:10,color:"var(--text-4)"}}>{formatDate(b.modified)}</span>
+                    <a className="btn" href={"/api/backup/download/"+encodeURIComponent(b.name)} download style={{textDecoration:"none"}}>{t("settings.download")}</a>
+                    <button className="btn danger" style={{padding:"2px 8px",fontSize:12}} onClick={async function(){if(!confirm(t("settings.backupDeleteConfirm"))) return; await fetch("/api/backup/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:b.name})}); loadBackups();}}>{t("settings.delete")}</button>
+                  </div>})}
+                </div>
+              )}
             </div>
           </div>
         ) : null}

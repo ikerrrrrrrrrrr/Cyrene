@@ -269,6 +269,15 @@ function DashboardPage() {
   const archive = Array.isArray(dash.recent_archive) ? dash.recent_archive : [];
   const heatmap = dash.activity_heatmap || { days: [], rows: [] };
   const s = DATA.status || {};
+  const modelStats = Array.isArray(dash.model_stats) ? dash.model_stats : [];
+  var modelUsageEl = modelStats.length > 0 ? React.createElement("div", {className:"dashboard-model-usage", style:{marginTop:6,borderTop:"1px solid var(--line)",paddingTop:8}},
+    React.createElement("div", {style:{fontSize:10.5,color:"var(--text-4)",marginBottom:6,fontFamily:"var(--mono)",textTransform:"uppercase",letterSpacing:"0.04em"}}, "By model"),
+    modelStats.map(function(r,i){return React.createElement("div", {key:r.model||i, style:{display:"flex",alignItems:"center",gap:6,padding:"2px 0",fontSize:12}},
+      React.createElement("span", {style:{flex:1,fontFamily:"var(--mono)",fontSize:11,color:"var(--text-2)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}, r.model),
+      React.createElement("span", {style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--text-3)",minWidth:48,textAlign:"right"}}, r.requests),
+      React.createElement("span", {style:{fontFamily:"var(--mono)",fontSize:11,color:"var(--text-3)",minWidth:64,textAlign:"right"}}, (Number(r.prompt_tokens||0)+Number(r.completion_tokens||0)))
+    )})
+  ) : null;
 
   return (
     <div className="dashboard-shell">
@@ -351,6 +360,7 @@ function DashboardPage() {
             <div className="dashboard-stat-pair"><span>{t("dashboard.input")}</span><strong>{compactNumber(usage.prompt_tokens || 0)}</strong></div>
             <div className="dashboard-stat-pair"><span>{t("dashboard.output")}</span><strong>{compactNumber(usage.completion_tokens || 0)}</strong></div>
           </div>
+          {modelUsageEl}
         </div>
 
         <div className="dashboard-panel breakdown" style={{ gridArea: "breakdown" }}>

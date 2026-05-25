@@ -1116,6 +1116,79 @@ async def _tool_list_skills(_args: dict[str, Any], _bot: Any, _chat_id: int, _db
 # Tool definitions and dispatch
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# New tool handlers
+# ---------------------------------------------------------------------------
+
+
+async def _tool_browser_navigate(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.browser import navigate
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return "No URL provided."
+    result = await navigate(url, extract_text=True)
+    parts = [f"Title: {result.get('title', '—')}", f"URL: {result.get('url', url)}"]
+    if result.get("text"):
+        parts.append(result["text"])
+    if result.get("error"):
+        parts.append(f"Error: {result['error']}")
+    return "\n\n".join(parts)
+
+
+async def _tool_browser_screenshot(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.browser import screenshot
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return "No URL provided."
+    result = await screenshot(url)
+    if result.get("ok"):
+        return f"Screenshot saved to {result['path']}.\nTitle: {result.get('title', '—')}"
+    return f"Screenshot failed: {result.get('error', 'unknown error')}"
+
+
+async def _tool_browser_click(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.browser import click
+    selector = str(args.get("selector") or "").strip()
+    if not selector:
+        return "No CSS selector provided."
+    result = await click(selector)
+    if result.get("ok"):
+        return f"Clicked {selector}.\nURL: {result.get('url', '—')}\nTitle: {result.get('title', '—')}"
+    return f"Click failed: {result.get('error', 'unknown error')}"
+
+
+async def _tool_browser_type(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.browser import type_text
+    selector = str(args.get("selector") or "").strip()
+    text = str(args.get("text") or "").strip()
+    submit = bool(args.get("submit", False))
+    if not selector:
+        return "No CSS selector provided."
+    result = await type_text(selector, text, submit=submit)
+    if result.get("ok"):
+        return f"Typed into {selector}.\nURL: {result.get('url', '—')}\nTitle: {result.get('title', '—')}"
+    return f"Type failed: {result.get('error', 'unknown error')}"
+
+
+async def _tool_send_notification(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.notifications import notify
+    title = str(args.get("title") or "Cyrene").strip()
+    text = str(args.get("text") or "").strip()
+    channel = str(args.get("channel") or "auto").strip()
+    if not text:
+        return "No notification text provided."
+    result = await notify(title, text, channel=channel)
+    if result.get("ok"):
+        channels = list(result.get("channels", {}).keys())
+        return f"Notification sent via: {', '.join(channels)}"
+    errors = [f"{k}: {v.get('error', '?')}" for k, v in result.get("channels", {}).items() if not v.get("ok")]
+    return f"Notification failed: {'; '.join(errors)}"
+
+
+# ---------------------------------------------------------------------------
+# TOOL_DEFS
+# ---------------------------------------------------------------------------
+
 TOOL_DEFS = [
     {
         "type": "function",
@@ -1564,6 +1637,82 @@ TOOL_DEFS = [
             },
         },
     },
+    # ---- Browser tools ----
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "Fetch a web page and return its readable text content. Use for browsing documentation, news, or any public web page. Returns title, URL, and extracted text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The full URL to navigate to (e.g. https://example.com/page)"},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Take a screenshot of a web page. Requires Playwright to be installed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The full URL to screenshot."},
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "Click an element on the current page by CSS selector. Requires Playwright. Call browser_navigate first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the element to click (e.g. 'button.submit', '#login-btn', 'a[href=\"/page\"]')"},
+                },
+                "required": ["selector"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": "Type text into an input element on the current page. Requires Playwright. Call browser_navigate first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector for the input element."},
+                    "text": {"type": "string", "description": "The text to type."},
+                    "submit": {"type": "boolean", "description": "Press Enter after typing to submit the form."},
+                },
+                "required": ["selector", "text"],
+            },
+        },
+    },
+    # ---- Notification tool ----
+    {
+        "type": "function",
+        "function": {
+            "name": "send_notification",
+            "description": "Send a desktop or webhook notification. Use for alerts, reminders, or when you need the user's attention outside the chat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short notification title."},
+                    "text": {"type": "string", "description": "Notification body text."},
+                    "channel": {"type": "string", "description": "Delivery channel: 'auto' (try desktop then webhook), 'desktop', 'webhook', or 'sse'."},
+                },
+                "required": ["text"],
+            },
+        },
+    },
 ]
 
 
@@ -1604,6 +1753,12 @@ TOOL_HANDLERS: dict[str, Any] = {
     "InstallSkill": _tool_install_skill,
     "UninstallSkill": _tool_uninstall_skill,
     "ListSkills": _tool_list_skills,
+    # New tools
+    "browser_navigate": _tool_browser_navigate,
+    "browser_screenshot": _tool_browser_screenshot,
+    "browser_click": _tool_browser_click,
+    "browser_type": _tool_browser_type,
+    "send_notification": _tool_send_notification,
 }
 
 

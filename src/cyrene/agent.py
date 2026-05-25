@@ -12,7 +12,7 @@ import httpx
 
 from contextvars import ContextVar
 
-from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE, DEFAULT_OPENAI_BASE_URL, _strip_wrapping_quotes
+from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE, DB_PATH, DEFAULT_OPENAI_BASE_URL, _strip_wrapping_quotes
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
 from cyrene.skills_registry import build_skill_prompt_block
@@ -20,6 +20,7 @@ from cyrene.settings_store import get_models, get_spawn_policy
 from cyrene import debug
 from cyrene.attachments import build_public_attachment_payload, register_generated_attachment
 from cyrene.conversations import get_archived_round
+from cyrene.db import record_token_usage
 from cyrene.llm import _assistant_text, _truncate
 from cyrene.tools import get_active_tool_defs, TOOL_HANDLERS, _execute_tool
 from cyrene.subagent import (
@@ -51,6 +52,7 @@ _MAX_TOOL_ROUNDS = 16
 _pending_compressors: set[asyncio.Task] = set()
 _pending_label_refreshes: set[asyncio.Task] = set()
 _pending_interrupt_clearers: set[asyncio.Task] = set()
+_pending_token_tasks: set[asyncio.Task] = set()
 _main_inbox_worker: asyncio.Task | None = None
 _active_main_round_id = ""
 _active_main_round_prompt = ""
@@ -64,6 +66,12 @@ _deep_research_mode: ContextVar[bool] = ContextVar("_deep_research_mode", defaul
 _current_command: ContextVar[str] = ContextVar("_current_command", default="")
 _REPORT_REF_PREFIX = "[Deep research report]"
 _REPORT_REF_MAX_PREVIEW = 280
+
+
+def _bg_token_task(task: asyncio.Task) -> None:
+    """Track a background token-recording task to prevent premature GC."""
+    _pending_token_tasks.add(task)
+    task.add_done_callback(_pending_token_tasks.discard)
 
 
 def _init_session_epoch() -> None:
@@ -3561,6 +3569,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
                         msg["usage"] = _normalized_usage(data.get("usage"), messages, msg)
                         if debug.VERBOSE:
                             debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
+                        duration_ms = round((__import__("time").monotonic() - _t0) * 1000)
                         await _publish_runtime_event({
                             "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
                             "model": model,
@@ -3568,8 +3577,21 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
                             "messages": _sanitize_messages_for_llm(messages),
                             "response": msg,
                             "usage": msg.get("usage") or {},
-                            "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
+                            "duration_ms": duration_ms,
                         })
+                        # Record token usage (fire-and-forget with task tracking)
+                        _bg_token_task(asyncio.create_task(record_token_usage(
+                            str(DB_PATH),
+                            model=model,
+                            prompt_tokens=int(msg.get("usage", {}).get("prompt_tokens") or 0),
+                            completion_tokens=int(msg.get("usage", {}).get("completion_tokens") or 0),
+                            total_tokens=int(msg.get("usage", {}).get("total_tokens") or 0),
+                            cache_hit_tokens=int(msg.get("usage", {}).get("prompt_cache_hit_tokens") or 0),
+                            cache_miss_tokens=int(msg.get("usage", {}).get("prompt_cache_miss_tokens") or 0),
+                            duration_ms=duration_ms,
+                            round_id=_current_round_id.get(),
+                            caller=_caller_type.get(),
+                        )))
                         return msg
                     except (httpx.HTTPError, ValueError) as exc:
                         candidate_error = exc
@@ -3696,6 +3718,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
         msg["usage"] = _normalized_usage(usage, messages, msg)
         if debug.VERBOSE:
             debug.log_llm_call(_caller_type.get(), _phase, messages, None, msg, (__import__("time").monotonic() - _t0) * 1000)
+        duration_ms = round((__import__("time").monotonic() - _t0) * 1000)
         await _publish_runtime_event({
             "type": "llm_call",
             "caller": _caller_type.get(),
@@ -3705,8 +3728,20 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000)
             "response": full_text[:200],
             "tool_calls": [],
             "usage": msg.get("usage") or {},
-            "duration_ms": round((__import__("time").monotonic() - _t0) * 1000),
+            "duration_ms": duration_ms,
         })
+        _bg_token_task(asyncio.create_task(record_token_usage(
+            str(DB_PATH),
+            model=active_model,
+            prompt_tokens=int(msg.get("usage", {}).get("prompt_tokens") or 0),
+            completion_tokens=int(msg.get("usage", {}).get("completion_tokens") or 0),
+            total_tokens=int(msg.get("usage", {}).get("total_tokens") or 0),
+            cache_hit_tokens=int(msg.get("usage", {}).get("prompt_cache_hit_tokens") or 0),
+            cache_miss_tokens=int(msg.get("usage", {}).get("prompt_cache_miss_tokens") or 0),
+            duration_ms=duration_ms,
+            round_id=_current_round_id.get(),
+            caller=_caller_type.get(),
+        )))
         return msg
     except httpx.TimeoutException as exc:
         logger.exception(

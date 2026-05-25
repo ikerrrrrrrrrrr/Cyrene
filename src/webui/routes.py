@@ -1351,6 +1351,84 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         results = await search_conversations_structured(q.strip(), limit=max(1, min(limit, 100)))
         return {"ok": True, "results": results}
 
+    # ---- Token Usage API ----
+
+    @router.get("/api/usage/tokens")
+    async def api_token_usage(days: int = 7, model: str = ""):
+        from cyrene.db import get_token_usage_stats
+        stats = await get_token_usage_stats(str(DB_PATH), days=max(1, min(days, 90)), model=model.strip())
+        return {"ok": True, "stats": stats}
+
+    # ---- Backup API ----
+
+    @router.get("/api/backup/list")
+    async def api_backup_list():
+        from cyrene.backup import list_backups
+        return {"ok": True, "backups": list_backups()}
+
+    @router.post("/api/backup/export")
+    async def api_backup_export():
+        from cyrene.backup import export_backup
+        result = await export_backup()
+        return result
+
+    @router.post("/api/backup/restore")
+    async def api_backup_restore(request: Request):
+        from cyrene.backup import restore_backup
+        body = await request.json()
+        path = str(body.get("path") or "").strip()
+        if not path:
+            return {"ok": False, "error": "path is required"}
+        result = await restore_backup(path)
+        return result
+
+    @router.post("/api/backup/delete")
+    async def api_backup_delete(request: Request):
+        from cyrene.backup import delete_backup
+        body = await request.json()
+        name = str(body.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        ok = await delete_backup(name)
+        return {"ok": ok}
+
+    @router.post("/api/backup/download/{backup_name}")
+    async def api_backup_download(backup_name: str):
+        from cyrene.backup import _BACKUP_DIR
+        target = (_BACKUP_DIR / backup_name).resolve()
+        backups_root = _BACKUP_DIR.resolve()
+        if backups_root not in target.parents:
+            return JSONResponse({"error": "invalid backup path"}, status_code=400)
+        if not target.exists() or not target.is_file():
+            return JSONResponse({"error": "backup not found"}, status_code=404)
+        return FileResponse(target, filename=backup_name, media_type="application/zip")
+
+    # ---- Notification API ----
+
+    @router.post("/api/notifications/send")
+    async def api_notifications_send(request: Request):
+        from cyrene.notifications import notify
+        body = await request.json()
+        title = str(body.get("title") or "Cyrene").strip()
+        text = str(body.get("text") or "").strip()
+        channel = str(body.get("channel") or "auto").strip()
+        if not text:
+            return {"ok": False, "error": "text is required"}
+        result = await notify(title, text, channel=channel)
+        return result
+
+    # ---- Browser API ----
+
+    @router.post("/api/browser/navigate")
+    async def api_browser_navigate(request: Request):
+        from cyrene.browser import navigate
+        body = await request.json()
+        url = str(body.get("url") or "").strip()
+        if not url:
+            return {"ok": False, "error": "url is required"}
+        result = await navigate(url)
+        return result
+
     # ---- Memory API ----
 
     @router.get("/api/memory")
