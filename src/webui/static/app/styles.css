@@ -273,7 +273,7 @@ button { font-family: inherit; }
    ============================================================ */
 .app {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 260px 1fr;
   height: 100vh;
   padding: 12px;
   gap: 12px;
@@ -7372,7 +7372,7 @@ html[data-text-size="large"] .seg-btn {
    Project-wide shell application
    ============================================================ */
 .app {
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 260px 1fr;
   background: #ffffff;
 }
 
@@ -8226,8 +8226,8 @@ html[data-density="compact"] .settings-content .subtitle {
 }
 
 .sidebar .recent-session-list {
-  padding-left: 30px !important;
-  padding-right: 22px !important;
+  padding-left: 16px !important;
+  padding-right: 12px !important;
   overflow: hidden;
 }
 
