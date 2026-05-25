@@ -54,6 +54,7 @@ function Sparkline({ data, color }) {
 }
 
 function DashboardTokenChart({ timeline }) {
+  const { t } = useI18n();
   const data = Array.isArray(timeline) ? timeline : [];
   const w = 760;
   const h = 264;
@@ -147,6 +148,7 @@ function DashboardEmotionChart({ series }) {
 }
 
 function DashboardRadialBreakdown({ hit, miss }) {
+  const { t } = useI18n();
   const hitValue = Number(hit || 0);
   const missValue = Number(miss || 0);
   const total = Math.max(1, hitValue + missValue);
