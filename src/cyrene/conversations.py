@@ -240,6 +240,95 @@ def _parse_archive_sections(content: str, date_str: str) -> list[dict[str, str]]
     return sections_out
 
 
+async def search_conversations_structured(
+    query: str,
+    limit: int = 30,
+    max_context_chars: int = 300,
+) -> list[dict[str, str]]:
+    """Full-text search across all conversation archives.
+
+    Returns structured results sorted by date descending, with matching
+    context snippets and conversation metadata.
+
+    Args:
+        query: Search text (case-insensitive).
+        limit: Maximum number of results to return.
+        max_context_chars: Max characters for the matching snippet.
+
+    Returns:
+        List of dicts with keys: date, timestamp, user_body, assistant_body,
+        session_title, snippet, file_path.
+    """
+    ensure_conversations_dir()
+    kw_lower = query.strip().lower()
+    if not kw_lower:
+        return []
+
+    files = sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)
+    results: list[dict[str, str]] = []
+
+    for filepath in files:
+        if not filepath.exists():
+            continue
+        date_str = filepath.stem
+        try:
+            content = filepath.read_text(encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to read conversation file %s", filepath)
+            continue
+
+        sections = _parse_archive_sections(content, date_str)
+        for section in sections:
+            user_body = str(section.get("user_body") or "").strip()
+            assistant_body = str(section.get("assistant_body") or "").strip()
+            session_title = str(section.get("session_title") or "").strip()
+            haystack = f"{user_body} {assistant_body} {session_title}".lower()
+
+            if kw_lower not in haystack:
+                continue
+
+            # build the best snippet around the match
+            body = f"{user_body} {assistant_body}"
+            snippet = _build_search_snippet(body, query, max_chars=max_context_chars)
+
+            results.append({
+                "date": str(section.get("date") or date_str),
+                "timestamp": str(section.get("timestamp") or ""),
+                "user_body": user_body,
+                "assistant_body": assistant_body,
+                "session_title": session_title,
+                "snippet": snippet,
+                "file_path": str(filepath),
+            })
+
+            if len(results) >= limit:
+                return results
+
+    return results
+
+
+def _build_search_snippet(text: str, query: str, max_chars: int = 300) -> str:
+    """Extract a relevant snippet around the first match of *query* in *text*."""
+    kw_lower = query.strip().lower()
+    body = text.strip()
+    if not kw_lower or not body:
+        return body[:max_chars]
+
+    idx = body.lower().find(kw_lower)
+    if idx < 0:
+        return body[:max_chars]
+
+    start = max(0, idx - max_chars // 2)
+    end = min(len(body), idx + len(kw_lower) + max_chars // 2)
+
+    snippet = body[start:end]
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(body):
+        snippet = snippet + "…"
+    return snippet
+
+
 def recall_conversations(
     query: str = "",
     session_id: str = "",

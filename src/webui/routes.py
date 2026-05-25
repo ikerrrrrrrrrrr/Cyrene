@@ -66,7 +66,7 @@ from cyrene.config import (
     STATE_FILE,
     WORKSPACE_DIR,
 )
-from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange, search_conversations
+from cyrene.conversations import CONVERSATIONS_DIR, archive_exchange, search_conversations, search_conversations_structured
 from cyrene.onboarding import (
     get_onboarding_status,
     reset_onboarding_state,
@@ -1345,10 +1345,11 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     # ---- Search API ----
 
     @router.get("/api/search/conversations")
-    async def api_search_conversations(q: str = ""):
+    async def api_search_conversations(q: str = "", limit: int = 30):
         if not q.strip():
             return {"ok": False, "error": "query is required"}
-        return {"ok": True, "results": await search_conversations(q.strip())}
+        results = await search_conversations_structured(q.strip(), limit=max(1, min(limit, 100)))
+        return {"ok": True, "results": results}
 
     # ---- Memory API ----
 

@@ -288,6 +288,7 @@ function App() {
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-left-sidebar-collapsed", false); });
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-right-sidebar-collapsed", false); });
   const [rightSidebarView, setRightSidebarView] = useStateApp("overview");
+  const [searchOpen, setSearchOpen] = useStateApp(false);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   const activeSession = useMemoApp(function () {
@@ -392,9 +393,11 @@ function App() {
   useEffectApp(function () {
     window.__selectedSessionId = activeSession ? activeSession.id : null;
     window.selectUiSession = selectSession;
+    window.__setAppPage = setPage;
     return function () {
       delete window.__selectedSessionId;
       delete window.selectUiSession;
+      delete window.__setAppPage;
     };
   }, [activeSession]);
 
@@ -414,6 +417,7 @@ function App() {
         onSelectSession={selectSession}
         collapsed={leftSidebarCollapsed}
         onToggleCollapsed={function () { setLeftSidebarCollapsed(function (value) { return !value; }); }}
+        onOpenSearch={function () { setSearchOpen(true); }}
       />
       <div className="page">
         <Topbar
@@ -459,11 +463,18 @@ function App() {
         )}
       </div>
 
+      {searchOpen && React.createElement(
+        window.SearchOverlay || (function () { return null; }),
+        {
+          onClose: function () { setSearchOpen(false); },
+          onOpenSession: function () { setPage("sessions"); },
+        }
+      )}
     </div>
   );
 }
 
-function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed, onToggleCollapsed }) {
+function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed, onToggleCollapsed, onOpenSearch }) {
   useDataVersion();
   const { t } = useI18n();
   const [skillsOpen, setSkillsOpen] = useStateApp(true);
@@ -487,7 +498,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
           <div className="brand-name">{brandName}</div>
         </div>
         <span className="sidebar-tool-spacer"></span>
-        <button className="windowbar-btn" type="button" title={t("topbar.search")} onClick={() => setPage("sessions")}>
+        <button className="windowbar-btn" type="button" title={t("topbar.search")} onClick={function () { onOpenSearch && onOpenSearch(); }}>
           <svg width="15" height="15" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8">
             <circle cx="8" cy="8" r="4.2" />
             <path d="M11.2 11.2 15 15" />

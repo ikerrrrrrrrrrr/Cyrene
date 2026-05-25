@@ -336,7 +336,7 @@ const TRANSLATIONS = {
     "chat.guidanceAcceptedBody": "Guidance accepted. I will adjust the current round based on this new request and update you when done.",
     "chat.guidanceQueuedProgress": "Guidance accepted. Waiting for the current round to reach the main agent.",
     "chat.targetRound": "Target round",
-    "chat.addContext": "+ add context",
+    "chat.addContext": "add context",
     "chat.context": "Context",
     "chat.workspaceDirectories": "workspace directories",
     "chat.chooseDirectory": "+ choose directory...",
@@ -886,6 +886,17 @@ const TRANSLATIONS = {
     "tool.desc.query_round": "Inspect currently live rounds and their progress.",
     "tool.desc.CheckClaudeCode": "Check if Claude Code is currently running in a tmux session.",
     "tool.desc.StartClaudeCode": "Start Claude Code in a new tmux session.",
+
+    // ── Search ────────────────────────────────────────────────────────────
+    "search.placeholder": "Search conversations…",
+    "search.noResults": "No matching conversations found.",
+    "search.error": "Search failed.",
+    "search.resultsCount": "{n} result(s)",
+    "search.close": "Close search (Esc)",
+    "search.emptyState": "Type a keyword to search all conversations.",
+    "search.loading": "Searching…",
+    "search.userLabel": "you",
+    "search.assistantLabel": "{name}",
   },
 
   zh: {
@@ -1222,7 +1233,7 @@ const TRANSLATIONS = {
     "chat.guidanceAcceptedBody": "已接受指引。我会按这条新要求调整当前这一轮的工作，并在完成后给你更新。",
     "chat.guidanceQueuedProgress": "指引已接受。等待当前轮次到达主代理。",
     "chat.targetRound": "目标轮次",
-    "chat.addContext": "+ 添加上下文",
+    "chat.addContext": "添加上下文",
     "chat.context": "上下文",
     "chat.workspaceDirectories": "工作区目录",
     "chat.chooseDirectory": "+ 选择目录…",
@@ -1753,6 +1764,17 @@ const TRANSLATIONS = {
     "tool.desc.query_round": "检查当前活动的轮次及其进度。",
     "tool.desc.CheckClaudeCode": "检查 Claude Code 是否正在 tmux 会话中运行。",
     "tool.desc.StartClaudeCode": "在新的 tmux 会话中启动 Claude Code。",
+
+    // ── 搜索 ──────────────────────────────────────────────────────────────
+    "search.placeholder": "搜索全部对话…",
+    "search.noResults": "未找到匹配的对话。",
+    "search.error": "搜索失败。",
+    "search.resultsCount": "共 {n} 条结果",
+    "search.close": "关闭搜索 (Esc)",
+    "search.emptyState": "输入关键词搜索所有历史对话。",
+    "search.loading": "搜索中…",
+    "search.userLabel": "你",
+    "search.assistantLabel": "{name}",
   },
 };
 
