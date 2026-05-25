@@ -972,6 +972,47 @@ button { font-family: inherit; }
   line-height: 1;
 }
 
+.topbar .theme-mode-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.topbar .theme-mode-button svg {
+  position: relative;
+  z-index: 1;
+  display: block;
+}
+
+.topbar .theme-mode-button.theme-mode-dark svg {
+  width: 18px;
+  height: 18px;
+  transform: translate(0.5px, -0.5px);
+}
+
+.topbar .theme-mode-button::after {
+  content: "";
+  position: absolute;
+  inset: 6px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+.topbar .theme-mode-button.theme-mode-dark {
+  color: #e8dd9a;
+  background:
+    color-mix(in srgb, var(--bg-2) 88%, #e8dd9a 12%);
+  border-color: color-mix(in srgb, var(--line-2) 74%, #e8dd9a 26%);
+}
+
+.topbar .theme-mode-button.theme-mode-dark:hover,
+.topbar .theme-mode-button.theme-mode-dark.active {
+  color: #fff2a8;
+  background:
+    color-mix(in srgb, var(--bg-3) 82%, #e8dd9a 18%);
+  border-color: color-mix(in srgb, var(--line-2) 58%, #fff2a8 42%);
+}
+
 /* ============================================================
    DASHBOARD PAGE
    ============================================================ */
