@@ -80,6 +80,10 @@ def register_wechat_routes(app: FastAPI) -> None:
         config = WeChatConfig(bot_token=WECHAT_BOT_TOKEN)
         client = WeChatClient(config)
         updater = WeChatUpdater(client, db_path)
+
+        import sys as _sys
+        _sys.modules["cyrene.channels.wechat"]._current_client = client
+
         app.state.wechat_updater = updater
         await updater.start()
         logger.info("WeChat polling started via /api/wechat/start")

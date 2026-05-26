@@ -248,6 +248,16 @@ function connectEvents() {
         const data = JSON.parse(ev.data);
         if (data.type === "heartbeat") return;
 
+        // Browser notification via SSE
+        if (data.type === "notification" && data.title && data.body) {
+          try {
+            const enabled = localStorage.getItem("cyrene-desktop-notifications") === "1";
+            if (enabled && "Notification" in window && Notification.permission === "granted") {
+              new Notification(data.title, { body: data.body });
+            }
+          } catch (e) { /* best-effort */ }
+        }
+
         // Store recent events for real-time display (ring buffer, max 200)
         window.__sseEvents.push(data);
         if (window.__sseEvents.length > 200) window.__sseEvents.shift();

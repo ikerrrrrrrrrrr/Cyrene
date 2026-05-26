@@ -31,8 +31,10 @@ from croniter import croniter
 
 from cyrene import db
 from cyrene.agent import append_system_message, run_heartbeat_agent, run_steward_agent, run_task_agent
+from cyrene.channels.wechat import get_current_client
 from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STATE_FILE, STEWARD_INTERVAL
 from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
+from cyrene.notifications import notify
 from cyrene.short_term import clear_old_entries, get_context as get_short_term_context
 from cyrene.soul import apply_soul_update, read_shallow_memory, read_soul
 
@@ -441,6 +443,7 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
     notify_state: dict[str, bool] = {"sent": False}
 
     start = time.monotonic()
+    had_error = False
     try:
         result = await run_task_agent(
             wrapped_prompt, bot, task_chat_id, db_path, notify_state,
@@ -461,6 +464,7 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
             db_path, task_id, duration_ms, "success", result=result,
         )
     except Exception as e:
+        had_error = True
         duration_ms = int((time.monotonic() - start) * 1000)
         await db.log_task_run(
             db_path, task_id, duration_ms, "error", error=str(e),
@@ -495,6 +499,38 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
         logger.exception(
             "Failed to update task %s after execution", task_id,
         )
+
+    # ── Multi-channel notifications after task execution ─────────────────
+    try:
+        summary = prompt[:120] + ("…" if len(prompt) > 120 else "")
+        status_label = "error" if had_error else "completed"
+
+        # macOS desktop notification
+        await notify(
+            title=f"Scheduled task {status_label}",
+            body=summary,
+            channel="desktop",
+        )
+
+        # SSE event for frontend browser notifications
+        await notify(
+            title=f"Scheduled task {status_label}",
+            body=summary,
+            channel="sse",
+        )
+
+        # WeChat notification (if user opted in and WeChat is connected)
+        from cyrene.settings_store import get as get_setting
+        if get_setting("wechat_notify_scheduled", True):
+            wx_client = get_current_client()
+            if wx_client and wx_client._config.owner_wxid:
+                wxid = wx_client._config.owner_wxid
+                await wx_client.send_message(
+                    wxid,
+                    f"📋 定时任务 [{status_label}]: {summary}",
+                )
+    except Exception:
+        logger.exception("Failed to send task execution notifications")
 
 
 # ---------------------------------------------------------------------------

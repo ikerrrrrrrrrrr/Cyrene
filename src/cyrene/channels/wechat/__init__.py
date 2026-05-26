@@ -22,6 +22,7 @@ from .web import register_wechat_routes
 
 __all__ = [
     "setup_wechat",
+    "get_current_client",
     "WeChatAuth",
     "WeChatAuthError",
     "WeChatClient",
@@ -30,6 +31,15 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+# Module-level reference so other modules (e.g. scheduler) can send
+# proactive WeChat notifications without coupling to the FastAPI app.
+_current_client: WeChatClient | None = None
+
+
+def get_current_client() -> WeChatClient | None:
+    """Return the currently active WeChatClient, or ``None``."""
+    return _current_client
 
 
 async def setup_wechat(app: FastAPI, db_path: str) -> None:
@@ -43,6 +53,8 @@ async def setup_wechat(app: FastAPI, db_path: str) -> None:
     """
     from cyrene.config import WECHAT_BOT_TOKEN
 
+    global _current_client
+
     # Routes and shared state are needed even without a token (for QR login)
     register_wechat_routes(app)
     app.state.wechat_db_path = str(db_path)
@@ -52,6 +64,7 @@ async def setup_wechat(app: FastAPI, db_path: str) -> None:
         client = WeChatClient(config)
         updater = WeChatUpdater(client, str(db_path))
 
+        _current_client = client
         app.state.wechat_updater = updater
         await updater.start()
         logger.info("WeChat channel started (token found in .env)")

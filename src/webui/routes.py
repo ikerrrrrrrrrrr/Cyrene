@@ -1959,6 +1959,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 return JSONResponse({"error": "heartbeat_interval must be at least 60"}, status_code=400)
             set_setting("heartbeat_interval", value)
             changed.append("heartbeat_interval")
+        if "wechat_notify_scheduled" in body:
+            set_setting("wechat_notify_scheduled", bool(body["wechat_notify_scheduled"]))
+            changed.append("wechat_notify_scheduled")
         return {"ok": True, "changed": changed}
 
     @router.post("/api/settings/reset-data")
@@ -3920,6 +3923,7 @@ def _build_config() -> dict:
         "search_external_url": settings.get("search_external_url", ""),
         "spawn_policy": settings.get("spawn_policy", "conservative"),
         "heartbeat_interval": settings.get("heartbeat_interval", 1800),
+        "wechat_notify_scheduled": settings.get("wechat_notify_scheduled", True),
         "search_port": str(SEARXNG_PORT),
         "search_host": SEARXNG_HOST,
     }

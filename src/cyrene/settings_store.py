@@ -71,6 +71,7 @@ _DEFAULTS: dict = {
     "models": _DEFAULT_MODELS,
     "vision_models": _DEFAULT_VISION_MODELS,
     "secondary_model": {"model": "", "name": "", "api_key": "", "base_url": "", "ctx_limit": 0, "max_concurrency": 0},
+    "wechat_notify_scheduled": True,
     "enabled_tools": _DEFAULT_ENABLED_TOOLS,
 }
 

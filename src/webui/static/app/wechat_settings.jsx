@@ -17,6 +17,7 @@ function WeChatPanel() {
   const [ownerWxid, setOwnerWxid] = useStateSet("");
   const [qrCode, setQrCode] = useStateSet(null);
   const [qrStatus, setQrStatus] = useStateSet("");
+  const [wechatNotifyScheduled, setWechatNotifyScheduled] = useStateSet(true);
   const cancelRef = useRef(false);
 
   async function refreshStatus() {
@@ -29,7 +30,14 @@ function WeChatPanel() {
     } catch (_) {}
   }
 
-  useEffect(() => { refreshStatus(); }, []);
+  useEffect(() => {
+    refreshStatus();
+    fetch("/api/settings/config").then((r) => r.json()).then((cfg) => {
+      if (cfg && cfg.wechat_notify_scheduled !== undefined) {
+        setWechatNotifyScheduled(cfg.wechat_notify_scheduled);
+      }
+    }).catch(() => {});
+  }, []);
 
   // ── QR modal ────────────────────────────────────────────
 
@@ -106,6 +114,20 @@ function WeChatPanel() {
     } catch (_) {}
   }
 
+  // ── WeChat notification toggle ─────────────────────────
+
+  async function toggleWechatNotify() {
+    const next = !wechatNotifyScheduled;
+    setWechatNotifyScheduled(next);
+    try {
+      await fetch("/api/settings/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wechat_notify_scheduled: next }),
+      });
+    } catch (_) {}
+  }
+
   // ── Render ──────────────────────────────────────────────
 
   return (
@@ -158,6 +180,19 @@ function WeChatPanel() {
         {qrStatus ? (
           <div className="wechat-status">{qrStatus}</div>
         ) : null}
+
+        {/* ── Scheduled task notification toggle ─────── */}
+        <div className="settings-channel-toggle-row">
+          <label>发送定时任务通知到微信</label>
+          <div
+            className={"toggle " + (wechatNotifyScheduled ? "on" : "")}
+            onClick={toggleWechatNotify}
+            role="switch"
+            aria-checked={wechatNotifyScheduled}
+            tabIndex={0}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") toggleWechatNotify(); }}
+          ></div>
+        </div>
       </div>
 
       {/* ── QR modal overlay ─────────────────────────── */}

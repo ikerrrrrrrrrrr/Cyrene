@@ -51,6 +51,23 @@
 .wechat-modal-close:hover {
   color: var(--text);
 }
+.settings-channel-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+.settings-channel-toggle-row label {
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.settings-channel-toggle-row .toggle {
+  flex-shrink: 0;
+}
 :root, html[data-theme="dark"] {
   --bg:   #0d1117;
   --bg-1: #131922;
