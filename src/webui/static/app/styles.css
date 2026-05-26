@@ -3073,6 +3073,8 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
                       white-space: nowrap; }
 
 /* Empty / loading states */
+.agent-chat-ended { text-align: center; font-size: 11px; color: var(--text-4);
+  padding: 8px 0; font-family: var(--mono); }
 .agent-chat-empty  { padding: 20px; text-align: center; color: var(--text-3);
                      font-size: 13px; font-family: var(--mono); }
 .agent-chat-loading { padding: 20px; text-align: center; color: var(--text-4); font-size: 12px; }

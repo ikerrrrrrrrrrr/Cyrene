@@ -2402,6 +2402,13 @@ function ShellCard({ shell, ccStatus, onOpenCCModal }) {
 
 // ── Agent group chat (right sidebar) ──
 
+// Dedup helper: match by id OR by from+content (handles SSE vs API ID mismatch)
+function _msgDup(m, existing) {
+  return existing.some(function (e) {
+    return e.id === m.id || (m.from !== "user" && e.from === m.from && e.content === m.content);
+  });
+}
+
 var AGENT_COLORS = [
   "#4A90D9", "#E8734A", "#50B86C", "#D94A8C", "#8B6CC4",
   "#D9A64A", "#4AD9C4", "#C44A6C", "#6CB8D9", "#8CC44A",
@@ -2451,7 +2458,12 @@ function AgentListModal({ agents, onClose }) {
 }
 
 function GroupChatMessage({ msg, prevFrom }) {
-  var color = msg.from !== "user" ? _agentColor(msg.from) : undefined;
+  // System messages render as a full-width separator
+  if (msg.from === "system") {
+    return <div className="agent-chat-ended">━━ {msg.content} ━━</div>;
+  }
+
+  var color = _agentColor(msg.from);
   var nameEl = null;
   var msgClass = "agent-chat-row";
 
@@ -2748,18 +2760,14 @@ function AgentGroupChat({ roundId, subagents, session }) {
         if (fetchRoundRef.current !== roundId) return;
         setMessages(function (existing) {
           var fetched = data.messages || [];
-          // Merge: keep any existing SSE events not yet in the fetched list
           var merged = fetched.slice();
           existing.forEach(function (em) {
-            if (!merged.some(function (m) { return m.id === em.id; })) {
-              merged.push(em);
-            }
+            if (!_msgDup(em, merged)) merged.push(em);
           });
           merged.sort(function (a, b) { return (a.timestamp || "") < (b.timestamp || "") ? -1 : 1; });
           return merged;
         });
         setAgents(data.agents || []);
-        // Check if all agents are done
         var all = data.agents || [];
         var allDone = all.length > 0 && all.every(function (a) { return a.status === "done" || a.status === "timeout"; });
         if (allDone) setChatEnded(true);
@@ -2793,8 +2801,7 @@ function AgentGroupChat({ roundId, subagents, session }) {
           newMsg.content = "@" + newMsg.to + " " + newMsg.content;
         }
         setMessages(function (prev) {
-          // Dedup by id
-          if (prev.some(function (m) { return m.id === newMsg.id; })) return prev;
+          if (_msgDup(newMsg, prev)) return prev;
           return prev.concat([newMsg]);
         });
       } else if (event.type === "agent_chat_user_message" && event.round_id === roundId) {
@@ -2814,15 +2821,12 @@ function AgentGroupChat({ roundId, subagents, session }) {
             return r.json();
           })
           .then(function (data) {
-            // Discard stale responses
             if (fetchRoundRef.current !== _fetchRound) return;
             setMessages(function (existing) {
               var fetched = data.messages || [];
               var merged = fetched.slice();
               existing.forEach(function (em) {
-                if (!merged.some(function (m) { return m.id === em.id; })) {
-                  merged.push(em);
-                }
+                if (!_msgDup(em, merged)) merged.push(em);
               });
               merged.sort(function (a, b) { return (a.timestamp || "") < (b.timestamp || "") ? -1 : 1; });
               return merged;
