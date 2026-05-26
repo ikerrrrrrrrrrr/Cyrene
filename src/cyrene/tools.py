@@ -837,7 +837,7 @@ async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: in
         "type": "agent_comm",
         "from": from_agent,
         "to": target,
-        "content": content[:240],
+        "content": content,  # full content for group chat
         "summary": content[:100].replace("\n", " ").strip() + ("..." if len(content) > 100 else ""),
         "msg_type": "chat",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -889,7 +889,7 @@ async def _tool_broadcast_agent_message(args: dict[str, Any], _bot: Any, _chat_i
         "type": "agent_comm",
         "from": from_agent,
         "to": "all",
-        "content": content[:240],
+        "content": content,  # full content for group chat
         "summary": content[:100].replace("\n", " ").strip() + ("..." if len(content) > 100 else ""),
         "msg_type": "progress",
         "timestamp": datetime.now(timezone.utc).isoformat(),

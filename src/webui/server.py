@@ -55,7 +55,10 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
 
     @app.on_event("startup")
     async def _start_wechat() -> None:
-        await _setup_wechat(app, db_path)
+        try:
+            await _setup_wechat(app, db_path)
+        except Exception:
+            logger.warning("WeChat bot setup failed — check your config / proxy setup")
 
     return app
 

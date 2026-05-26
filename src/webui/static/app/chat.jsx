@@ -2005,6 +2005,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         onOpenCCModal={function (info) { setCcModal(info); }}
         view={rightSidebarView}
         onViewChange={setRightSidebarView}
+        roundId={session.currentRoundId}
       />
     </div>
   );
@@ -2204,7 +2205,7 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, view = "overview", onViewChange }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, view = "overview", onViewChange, roundId }) {
   const { t } = useI18n();
   const viewOptions = [
     { id: "overview", label: t("chat.side.overview") },
@@ -2243,15 +2244,8 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
         {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} />)}
       </div>}
 
-      {showAgents && <div className="side-section" style={{ flex: 1, overflowY: "auto" }}>
-        <div className="side-head">
-          {t("chat.subagents")}
-          <span className="count">{subagents.length}</span>
-        </div>
-        {subagents.length === 0 && (
-          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
-        )}
-        {subagents.map((s) => <SubagentMini key={s.id} sa={s} />)}
+      {showAgents && <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
+        <AgentGroupChat roundId={roundId} subagents={subagents} session={session} />
       </div>}
 
       {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
@@ -2318,24 +2312,533 @@ function ShellCard({ shell, ccStatus, onOpenCCModal }) {
   );
 }
 
-function SubagentMini({ sa }) {
+// ── Agent group chat (right sidebar) ──
+
+var AGENT_COLORS = [
+  "#4A90D9", "#E8734A", "#50B86C", "#D94A8C", "#8B6CC4",
+  "#D9A64A", "#4AD9C4", "#C44A6C", "#6CB8D9", "#8CC44A",
+];
+
+function _agentColor(agentId) {
+  var hash = 0;
+  for (var i = 0; i < agentId.length; i++) {
+    hash = ((hash << 5) - hash) + agentId.charCodeAt(i);
+    hash |= 0;
+  }
+  return AGENT_COLORS[Math.abs(hash) % AGENT_COLORS.length];
+}
+
+function _formatTime(iso) {
+  if (!iso) return "";
+  try {
+    var d = new Date(iso);
+    return d.getHours().toString().padStart(2,"0") + ":" + d.getMinutes().toString().padStart(2,"0");
+  } catch (e) { return ""; }
+}
+
+function AgentListModal({ agents, onClose }) {
+  return ReactDOM.createPortal(
+    <div className="agent-list-overlay" onClick={onClose}>
+      <div className="agent-list-modal" onClick={function (e) { e.stopPropagation(); }}>
+        <div className="agent-list-head">
+          <span>All Subagents</span>
+          <button onClick={onClose}>&times;</button>
+        </div>
+        {agents.map(function (a) {
+          var dotCls = ({running:"running",waiting:"running",resumed:"running",done:"done",timeout:"err"})[a.status] || "done";
+          return (
+            <div className="agent-list-row" key={a.id}>
+              <div className={"agent-list-dot " + dotCls}></div>
+              <span className="agent-list-id">{a.id}</span>
+              <span className="agent-list-task">{a.task || "—"}</span>
+              <span className="agent-list-meta">{a.status}{a.tokens != null ? " · " + a.tokens + " tok" : ""}</span>
+            </div>
+          );
+        })}
+        {agents.length === 0 && <div className="agent-chat-empty">No subagents</div>}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function GroupChatMessage({ msg, prevFrom }) {
+  var color = msg.from !== "user" ? _agentColor(msg.from) : undefined;
+  var nameEl = null;
+  var msgClass = "agent-chat-row";
+
+  if (msg.from === "user") {
+    msgClass += " right";
+  } else if (prevFrom !== msg.from) {
+    nameEl = <div className="agent-chat-name" style={{ color: color }}>{msg.from}</div>;
+  } else {
+    msgClass += " same-agent";
+  }
+
+  var bubbleClass = "agent-chat-bubble" + (msg.from === "user" ? " user" : "");
+
   return (
-    <div className="subagent-mini">
-      <div className={"sa-dot " + sa.status}></div>
-      <div className="sa-body">
-        <div className="sa-name">
-          {sa.name}{sa.id && sa.id !== sa.name ? <span className="id"> · {sa.id}</span> : null}
-        </div>
-        <div className="sa-task">{sa.task}</div>
-        <div className="sa-meta">
-          <span><b>tok</b> {sa.tokens || 0}</span>
-          <span><b>t+</b> {sa.elapsed || "—"}</span>
-          <span style={{ marginLeft: "auto" }}>{sa.status}</span>
-        </div>
-        {sa.status === "running" && (
-          <div className="bar warn"><div style={{ width: ((sa.progress || 0.5) * 100) + "%" }}></div></div>
+    <div className={msgClass}>
+      {nameEl}
+      <div className={bubbleClass}>{msg.content}</div>
+    </div>
+  );
+}
+
+function GroupChatMessages({ messages }) {
+  var scrollRef = React.useRef(null);
+  var userAtBottom = React.useRef(true);
+
+  // Track user's scroll position via onScroll (measures BEFORE new content)
+  function handleScroll() {
+    var el = scrollRef.current;
+    if (!el) return;
+    userAtBottom.current = (el.scrollTop + el.clientHeight >= el.scrollHeight - 40);
+  }
+
+  // Auto-scroll when new messages arrive (only if user was already at bottom)
+  React.useEffect(function () {
+    var el = scrollRef.current;
+    if (!el) return;
+    if (userAtBottom.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages]);
+
+  if (messages.length === 0) {
+    return <div className="agent-chat-messages"><div className="agent-chat-empty">暂无 subagent 对话</div></div>;
+  }
+
+  var rows = [];
+  var prevFrom = null;
+  for (var i = 0; i < messages.length; i++) {
+    var msg = messages[i];
+    // Time separator (5+ min gap)
+    if (i > 0) {
+      var prevTs = messages[i - 1].timestamp;
+      var curTs = msg.timestamp;
+      if (prevTs && curTs) {
+        try {
+          var diff = new Date(curTs) - new Date(prevTs);
+          if (diff > 300000) { // 5 min
+            rows.push(<div className="agent-chat-timesep" key={"ts_" + i}>{_formatTime(curTs)}</div>);
+          }
+        } catch (e) {}
+      }
+    }
+    rows.push(<GroupChatMessage key={msg.id || i} msg={msg} prevFrom={prevFrom} />);
+    prevFrom = msg.from;
+  }
+
+  return (
+    <div className="agent-chat-messages" ref={scrollRef} onScroll={handleScroll}>
+      {rows}
+    </div>
+  );
+}
+
+function GroupChatHeader({ title, agents, chatEnded, settingsOpen, onToggleSettings, onShowAgents, onStop }) {
+  var menuRef = React.useRef(null);
+
+  React.useEffect(function () {
+    if (!settingsOpen) return;
+    function handleClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        onToggleSettings();
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return function () { document.removeEventListener("mousedown", handleClick); };
+  }, [settingsOpen]);
+
+  return (
+    <div className="agent-chat-header">
+      <div className="agent-chat-title" title={title}>{title || "Agent Chat"}</div>
+      <div style={{ position: "relative" }}>
+        <button className="agent-chat-settings-btn" onClick={onToggleSettings}>&#8942;</button>
+        {settingsOpen && (
+          <div className="agent-chat-settings-menu" ref={menuRef}>
+            <button onClick={onShowAgents}>查看全部 subagent</button>
+            {!chatEnded && <button className="danger" onClick={onStop}>停止对话并总结</button>}
+          </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function GroupChatComposer({ agents, chatEnded, onSend }) {
+  var taRef = React.useRef(null);
+  var fileInputRef = React.useRef(null);
+  var [text, setText] = React.useState("");
+  var [attachments, setAttachments] = React.useState([]);
+  var [mentionOpen, setMentionOpen] = React.useState(false);
+  var [mentionFilter, setMentionFilter] = React.useState("");
+
+  // Autosize textarea
+  function syncHeight() {
+    var ta = taRef.current;
+    if (ta) { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 80) + "px"; }
+  }
+
+  function handleChange(e) {
+    var val = e.target.value;
+    setText(val);
+    syncHeight();
+
+    // Detect @ trigger
+    var lastAt = val.lastIndexOf("@");
+    if (lastAt >= 0 && (lastAt === 0 || val[lastAt - 1] === " " || val[lastAt - 1] === "\n")) {
+      var after = val.slice(lastAt + 1);
+      if (!after.includes(" ") && !after.includes("\n")) {
+        setMentionFilter(after);
+        setMentionOpen(true);
+        return;
+      }
+    }
+    setMentionOpen(false);
+  }
+
+  function selectMention(agentId) {
+    var val = text;
+    var lastAt = val.lastIndexOf("@");
+    if (lastAt < 0) return;
+    var before = val.slice(0, lastAt);
+    var after = val.slice(lastAt + 1);
+    var spaceIdx = after.search(/[\s\n]/);
+    var rest = spaceIdx >= 0 ? after.slice(spaceIdx) : "";
+    setText(before + "@" + agentId + rest + " ");
+    setMentionOpen(false);
+    syncHeight();
+    setTimeout(function () { if (taRef.current) taRef.current.focus(); }, 0);
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "Escape") { setMentionOpen(false); }
+  }
+
+  function handleFileSelect() {
+    var files = fileInputRef.current && fileInputRef.current.files;
+    if (!files || !files.length) return;
+    // Upload via existing /api/chat/upload endpoint
+    var formData = new FormData();
+    for (var fi = 0; fi < files.length; fi++) {
+      formData.append("files", files[fi]);
+    }
+    fetch("/api/chat/upload", { method: "POST", body: formData })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var newAtts = (data.attachments || data.files || []).map(function (f) {
+          return { path: f.path || f.url || "", name: f.name || f.filename || "file" };
+        });
+        setAttachments(attachments.concat(newAtts));
+      })
+      .catch(function (err) { console.warn("File upload failed", err); });
+    // Reset file input so the same file can be re-selected
+    fileInputRef.current.value = "";
+  }
+
+  function removeAttachment(idx) {
+    var copy = attachments.slice();
+    copy.splice(idx, 1);
+    setAttachments(copy);
+  }
+
+  function handleSend() {
+    var trimmed = text.trim();
+    if (!trimmed && attachments.length === 0) return;
+
+    // Parse @mentions from text
+    var mentionIds = [];
+    var mentionRe = /@(\S+)/g;
+    var match;
+    while ((match = mentionRe.exec(trimmed)) !== null) {
+      var name = match[1].replace(/[^A-Za-z0-9_-]/g, "");
+      // Check it's a real agent
+      if (agents.some(function (a) { return a.id === name; })) {
+        if (mentionIds.indexOf(name) < 0) mentionIds.push(name);
+      }
+    }
+
+    onSend({ text: trimmed, mentions: mentionIds, attachments: attachments });
+    setText("");
+    setAttachments([]);
+    syncHeight();
+  }
+
+  if (chatEnded) {
+    return (
+      <div className="agent-chat-composer ended">
+        <div className="agent-chat-toolbar">
+          <input ref={fileInputRef} type="file" multiple style={{ display: "none" }} />
+          <button className="iconbtn" disabled={true}>@</button>
+          <button className="iconbtn" disabled={true}>+</button>
+        </div>
+        <div className="agent-chat-input-row">
+          <textarea ref={taRef} disabled={true} placeholder="对话已结束"></textarea>
+          <button className="send" disabled={true}>发送</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="agent-chat-composer">
+      <div className="agent-chat-toolbar">
+        <input ref={fileInputRef} type="file" multiple style={{ display: "none" }} onChange={handleFileSelect} />
+        <button className="iconbtn" onClick={function () { setMentionOpen(!mentionOpen); }}>@</button>
+        <button className="iconbtn" onClick={function () { fileInputRef.current && fileInputRef.current.click(); }}>+</button>
+        {mentionOpen && (
+          <div className="agent-chat-mentions">
+            {agents.filter(function (a) {
+              return !mentionFilter || a.id.toLowerCase().indexOf(mentionFilter.toLowerCase()) >= 0;
+            }).map(function (a) {
+              return (
+                <button key={a.id} className="agent-chat-mention-option"
+                  style={{ color: _agentColor(a.id) }}
+                  onMouseDown={function (e) { e.preventDefault(); selectMention(a.id); }}>
+                  @{a.id}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      <div className="agent-chat-input-row">
+        <textarea ref={taRef} value={text} onChange={handleChange} onKeyDown={handleKeyDown}
+          placeholder="发送消息到 subagent..." rows={1}></textarea>
+        <button className="send" onClick={handleSend}>发送</button>
+      </div>
+      {attachments.length > 0 && (
+        <div className="agent-chat-attachments">
+          {attachments.map(function (f, idx) {
+            return (
+              <span key={idx} className="chip" style={{ cursor: "pointer" }}
+                onClick={function () { removeAttachment(idx); }}>
+                {f.name} &times;
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AgentGroupChat({ roundId, subagents, session }) {
+  var [messages, setMessages] = React.useState([]);
+  var [agents, setAgents] = React.useState([]);
+  var [loading, setLoading] = React.useState(true);
+  var [error, setError] = React.useState(null);
+  var [chatEnded, setChatEnded] = React.useState(false);
+  var [settingsOpen, setSettingsOpen] = React.useState(false);
+  var [modalOpen, setModalOpen] = React.useState(false);
+
+  // Track current round to discard stale fetch responses
+  var fetchRoundRef = React.useRef("");
+
+  // Fetch initial messages
+  React.useEffect(function () {
+    if (!roundId) {
+      setLoading(false);
+      setMessages([]);
+      setAgents([]);
+      return;
+    }
+    fetchRoundRef.current = roundId;
+    setLoading(true);
+    setError(null);
+    setChatEnded(false);
+    fetch("/api/chat/agent-chat-messages?round_id=" + encodeURIComponent(roundId))
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        // Discard stale responses from previous roundId
+        if (fetchRoundRef.current !== roundId) return;
+        setMessages(function (existing) {
+          var fetched = data.messages || [];
+          // Merge: keep any existing SSE events not yet in the fetched list
+          var merged = fetched.slice();
+          existing.forEach(function (em) {
+            if (!merged.some(function (m) { return m.id === em.id; })) {
+              merged.push(em);
+            }
+          });
+          merged.sort(function (a, b) { return (a.timestamp || "") < (b.timestamp || "") ? -1 : 1; });
+          return merged;
+        });
+        setAgents(data.agents || []);
+        // Check if all agents are done
+        var all = data.agents || [];
+        var allDone = all.length > 0 && all.every(function (a) { return a.status === "done" || a.status === "timeout"; });
+        if (allDone) setChatEnded(true);
+        setLoading(false);
+      })
+      .catch(function (err) {
+        setError(String(err));
+        setLoading(false);
+      });
+  }, [roundId]);
+
+  // SSE handlers for real-time updates
+  React.useEffect(function () {
+    function handler(event) {
+      if (event.type === "agent_comm" && event.round_id === roundId) {
+        // Add incoming agent message to the list
+        var newMsg = {
+          id: event.message_id || (event.from + "_" + Date.now()),
+          type: event.broadcast ? "agent_broadcast" : "agent_send",
+          from: event.from,
+          to: event.to || "all",
+          content: event.content || "",
+          timestamp: event.timestamp || new Date().toISOString(),
+          round_id: event.round_id,
+        };
+        if (!newMsg.content) return;
+        // Format display content
+        if (newMsg.type === "agent_broadcast") {
+          newMsg.content = "@所有人 " + newMsg.content;
+        } else if (newMsg.to && newMsg.to !== "all") {
+          newMsg.content = "@" + newMsg.to + " " + newMsg.content;
+        }
+        setMessages(function (prev) {
+          // Dedup by id
+          if (prev.some(function (m) { return m.id === newMsg.id; })) return prev;
+          return prev.concat([newMsg]);
+        });
+      } else if (event.type === "agent_chat_user_message" && event.round_id === roundId) {
+        var userMsg = event.message;
+        if (userMsg) {
+          setMessages(function (prev) {
+            if (prev.some(function (m) { return m.id === userMsg.id; })) return prev;
+            return prev.concat([userMsg]);
+          });
+        }
+      } else if (event.type === "subagent_update" && event.round_id === roundId) {
+        // Refresh agents list and check if all done
+        var _fetchRound = roundId;
+        fetch("/api/chat/agent-chat-messages?round_id=" + encodeURIComponent(roundId))
+          .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+          })
+          .then(function (data) {
+            // Discard stale responses
+            if (fetchRoundRef.current !== _fetchRound) return;
+            setMessages(function (existing) {
+              var fetched = data.messages || [];
+              var merged = fetched.slice();
+              existing.forEach(function (em) {
+                if (!merged.some(function (m) { return m.id === em.id; })) {
+                  merged.push(em);
+                }
+              });
+              merged.sort(function (a, b) { return (a.timestamp || "") < (b.timestamp || "") ? -1 : 1; });
+              return merged;
+            });
+            setAgents(data.agents || []);
+            var all = data.agents || [];
+            var allDone = all.length > 0 && all.every(function (a) {
+              return a.status === "done" || a.status === "timeout";
+            });
+            if (allDone) setChatEnded(true);
+          })
+          .catch(function () {});
+      }
+    }
+    window.__sseHandlers.add(handler);
+    return function () { window.__sseHandlers.delete(handler); };
+  }, [roundId]);
+
+  // When subagents prop changes, merge agent info (status, tokens, etc.)
+  React.useEffect(function () {
+    if (subagents && subagents.length > 0) {
+      setAgents(function (prev) {
+        var merged = prev.map(function (a) {
+          var match = subagents.find(function (s) { return s.id === a.id; });
+          return match ? Object.assign({}, a, { status: match.status, tokens: match.tokens, elapsed: match.elapsed }) : a;
+        });
+        // Add any agents from subagents not yet in list
+        subagents.forEach(function (s) {
+          if (s.id !== "main" && !merged.some(function (a) { return a.id === s.id; })) {
+            merged.push({ id: s.id, task: s.task || "", status: s.status, tokens: s.tokens, elapsed: s.elapsed });
+          }
+        });
+        return merged;
+      });
+    }
+  }, [subagents]);
+
+  function handleStop() {
+    fetch("/api/chat/interrupt", { method: "POST" })
+      .then(function () {
+        setChatEnded(true);
+        setSettingsOpen(false);
+        // Add "对话已结束" system message
+        setMessages(function (prev) {
+          var endMsg = {
+            id: "chat_ended_" + Date.now(),
+            type: "agent_result",
+            from: "system",
+            to: "",
+            content: "━━ 对话已结束 ━━",
+            timestamp: new Date().toISOString(),
+            round_id: roundId,
+          };
+          return prev.concat([endMsg]);
+        });
+      })
+      .catch(function (err) { console.warn("Interrupt failed", err); });
+  }
+
+  function handleSend(payload) {
+    fetch("/api/chat/send-to-agents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        round_id: roundId,
+        text: payload.text,
+        mentions: payload.mentions.length > 0 ? payload.mentions : undefined,
+        attachments: payload.attachments,
+      }),
+    }).catch(function (err) { console.warn("Send to agents failed", err); });
+  }
+
+  // Title from session or first user message
+  var title = "";
+  if (session && session.chat && session.chat.messages) {
+    for (var ti = 0; ti < session.chat.messages.length; ti++) {
+      var m = session.chat.messages[ti];
+      if (m.role === "user" && m.content) {
+        title = String(m.content).replace(/\s+/g, " ").slice(0, 30);
+        break;
+      }
+    }
+  }
+
+  if (loading) {
+    return <div className="agent-chat"><div className="agent-chat-loading">加载中...</div></div>;
+  }
+  if (error) {
+    return <div className="agent-chat"><div className="agent-chat-error">{error}</div></div>;
+  }
+  if (!roundId || agents.length === 0) {
+    return <div className="agent-chat"><div className="agent-chat-empty">暂无活跃 subagent</div></div>;
+  }
+
+  return (
+    <div className="agent-chat">
+      <GroupChatHeader title={title} agents={agents} chatEnded={chatEnded}
+        settingsOpen={settingsOpen}
+        onToggleSettings={function () { setSettingsOpen(!settingsOpen); }}
+        onShowAgents={function () { setSettingsOpen(false); setModalOpen(true); }}
+        onStop={handleStop} />
+      <GroupChatMessages messages={messages} />
+      <GroupChatComposer agents={agents} chatEnded={chatEnded} onSend={handleSend} />
+      {modalOpen && <AgentListModal agents={agents}
+        onClose={function () { setModalOpen(false); }} />}
     </div>
   );
 }

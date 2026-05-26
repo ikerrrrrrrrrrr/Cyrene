@@ -589,6 +589,131 @@ def _round_comm_messages(agent_ids: set[str], round_id: str = "") -> list[dict[s
     return messages
 
 
+async def build_group_chat_messages(round_id: str) -> dict[str, Any]:
+    """Build group-chat-formatted messages for a given round.
+
+    Extracts:
+    - ``send_agent_message`` / ``broadcast_agent_message`` tool calls from
+      each subagent's message history, formatted as chat entries with
+      ``@recipient`` / ``@所有人`` prepended to the body.
+    - Each subagent's final ``result`` (when non-trivial).
+    - User messages from inbox files (``from == "user"``).
+
+    Returns ``{"messages": [...], "agents": [...]}`` sorted chronologically.
+    """
+    async with _lock:
+        entries = [
+            (aid, dict(info))
+            for aid, info in _registry.items()
+            if _matches_round(info, round_id) and aid != "main"
+        ]
+
+    agents_list: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    for agent_id, info in entries:
+        task = str(info.get("task", "") or "").strip()
+        status = str(info.get("status", "") or "unknown").strip()
+        agents_list.append({"id": agent_id, "task": task, "status": status})
+
+        agent_created = str(info.get("created_at") or now)
+        agent_msgs = info.get("messages") or []
+
+        # 1. Extract send_agent_message / broadcast_agent_message tool calls
+        for msg_idx, msg in enumerate(agent_msgs):
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "assistant":
+                continue
+            for tc in (msg.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function", {})
+                if not isinstance(fn, dict):
+                    continue
+                name = str(fn.get("name", "") or "").strip()
+                if name not in ("send_agent_message", "broadcast_agent_message"):
+                    continue
+                try:
+                    args = json.loads(fn.get("arguments", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                content = str(args.get("content", "") or "").strip()
+                if not content:
+                    continue
+
+                is_broadcast = name == "broadcast_agent_message"
+                target = "all" if is_broadcast else str(args.get("to", "") or "").strip()
+                display_content = f"@{target} {content}" if target else content
+
+                # Generate a per-message timestamp from agent_created + offset
+                ts = agent_created  # same-timestamp batch; sort stable within agent
+
+                messages.append({
+                    "id": f"{agent_id}_{tc.get('id', f'msg_{msg_idx}')}",
+                    "type": "agent_broadcast" if is_broadcast else "agent_send",
+                    "from": agent_id,
+                    "to": target,
+                    "content": display_content,
+                    "timestamp": ts,
+                    "round_id": round_id,
+                })
+
+        # 2. Extract subagent result (non-trivial only)
+        result = str(info.get("result", "") or "").strip()
+        result_ts = str(info.get("updated_at") or agent_created)
+        if result and result not in ("Done.", "", "无结果"):
+            messages.append({
+                "id": f"{agent_id}_result",
+                "type": "agent_result",
+                "from": agent_id,
+                "to": "",
+                "content": result,
+                "timestamp": result_ts,
+                "round_id": round_id,
+            })
+
+    # 3. Read inbox messages from user
+    inbox_root = DATA_DIR / "inbox"
+    agent_ids = {aid for aid, _ in entries}
+    if inbox_root.exists():
+        for inbox_dir in sorted(inbox_root.iterdir()):
+            if not inbox_dir.is_dir():
+                continue
+            agent_id = inbox_dir.name
+            if agent_id not in agent_ids:
+                continue
+            for msg_file in sorted(inbox_dir.glob("msg_*.json")):
+                try:
+                    payload = json.loads(msg_file.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("from", "") or "").strip() != "user":
+                    continue
+                if round_id and str(payload.get("round_id", "") or "").strip() != round_id:
+                    continue
+                content = str(payload.get("content", "") or "").strip()
+                if not content:
+                    continue
+                messages.append({
+                    "id": str(payload.get("message_id", msg_file.stem)),
+                    "type": "user_message",
+                    "from": "user",
+                    "to": agent_id,
+                    "content": content,
+                    "timestamp": str(payload.get("timestamp", "") or ""),
+                    "round_id": round_id,
+                })
+
+    # 4. Sort by timestamp (empty timestamps sort last within their group)
+    messages.sort(key=lambda m: str(m.get("timestamp") or ""))
+
+    return {"messages": messages, "agents": agents_list}
+
+
 async def build_round_summary_transcript(round_id: str, exclude_ids: set[str] | None = None) -> str:
     entries = await _registry_entries_for_round(round_id=round_id, exclude_ids=exclude_ids)
     if not entries:
