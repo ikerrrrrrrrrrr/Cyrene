@@ -3609,261 +3609,32 @@ def _extract_stream_delta_text(delta: dict[str, Any]) -> str:
 
 
 async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens: int | None = 32000, *, secondary: bool = False) -> dict:
-    _t0 = __import__("time").monotonic()
-    _phase = _llm_phase_name(tools)
-    candidates, payload = _build_llm_request(messages, tools, max_tokens, stream=False, secondary=secondary)
+    from cyrene.call_llm import call_llm as _unified_call_llm
 
-    transport = httpx.AsyncHTTPTransport(retries=1)
-    try:
-        async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
-            last_error: Exception | None = None
-            for candidate in candidates:
-                is_secondary = candidate.get("id") == "secondary"
-                max_conc = int(candidate.get("max_concurrency") or 0)
-
-                # Concurrency guard: skip secondary if at limit
-                if is_secondary and max_conc > 0 and _secondary_in_flight >= max_conc:
-                    continue
-                if is_secondary and max_conc > 0:
-                    _secondary_in_flight += 1
-
-                try:
-                    model = str(candidate.get("model") or "").strip()
-                    payload["model"] = model
-                    if "deepseek" in model.lower():
-                        payload["thinking"] = {"type": "enabled"}
-                    else:
-                        payload.pop("thinking", None)
-                    headers = {"Content-Type": "application/json"}
-                    api_key = str(candidate.get("api_key") or "").strip()
-                    if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
-                        headers["Authorization"] = f"Bearer {api_key}"
-                    endpoints = list(candidate.get("endpoints") or [])
-                    candidate_error: Exception | None = None
-                    for endpoint in endpoints:
-                        try:
-                            resp = await client.post(
-                                endpoint,
-                                json=payload,
-                                headers=headers,
-                            )
-                            if resp.status_code != 200:
-                                resp.raise_for_status()
-                            data = resp.json()
-                            msg = _message_from_upstream_payload(data)
-                            msg["usage"] = _normalized_usage(data.get("usage"), messages, msg)
-                            if debug.VERBOSE:
-                                debug.log_llm_call(_caller_type.get(), _phase, messages, tools, msg, (__import__("time").monotonic() - _t0) * 1000)
-                            duration_ms = round((__import__("time").monotonic() - _t0) * 1000)
-                            await _publish_runtime_event({
-                                "type": "llm_call", "caller": _caller_type.get(), "phase": _phase,
-                                "model": model,
-                                "tools": [t.get("function", {}).get("name") for t in (tools or [])],
-                                "messages": _sanitize_messages_for_llm(messages),
-                                "response": msg,
-                                "usage": msg.get("usage") or {},
-                                "duration_ms": duration_ms,
-                            })
-                            # Record token usage (fire-and-forget with task tracking)
-                            _bg_token_task(asyncio.create_task(record_token_usage(
-                                str(DB_PATH),
-                                model=model,
-                                prompt_tokens=int(msg.get("usage", {}).get("prompt_tokens") or 0),
-                                completion_tokens=int(msg.get("usage", {}).get("completion_tokens") or 0),
-                                total_tokens=int(msg.get("usage", {}).get("total_tokens") or 0),
-                                cache_hit_tokens=int(msg.get("usage", {}).get("prompt_cache_hit_tokens") or 0),
-                                cache_miss_tokens=int(msg.get("usage", {}).get("prompt_cache_miss_tokens") or 0),
-                                duration_ms=duration_ms,
-                                round_id=_current_round_id.get(),
-                                caller=_caller_type.get(),
-                            )))
-                            return msg
-                        except (httpx.HTTPError, ValueError) as exc:
-                            candidate_error = exc
-                            last_error = exc
-                            if endpoint != endpoints[-1]:
-                                continue
-                            if isinstance(exc, httpx.HTTPError):
-                                logger.warning(
-                                    "Upstream LLM candidate failed [caller=%s phase=%s model=%s endpoint=%s candidate=%s]: %s",
-                                    _caller_type.get(),
-                                    _phase,
-                                    model,
-                                    endpoint,
-                                    candidate.get("id"),
-                                    format_httpx_error(exc),
-                                )
-                    if candidate_error is None:
-                        continue
-                finally:
-                    if is_secondary and max_conc > 0:
-                        _secondary_in_flight -= 1
-            if last_error:
-                raise last_error
-    except httpx.TimeoutException as exc:
-        logger.exception(
-            "Upstream LLM timeout [caller=%s phase=%s model=%s endpoint=%s]: %s",
-            _caller_type.get(),
-            _phase,
-            str(candidates[0].get("model") or ""),
-            str((candidates[0].get("endpoints") or [""])[0]),
-            format_httpx_error(exc),
-        )
-        raise
-    except httpx.HTTPError as exc:
-        logger.exception(
-            "Upstream LLM HTTP error [caller=%s phase=%s model=%s endpoint=%s]: %s",
-            _caller_type.get(),
-            _phase,
-            str(candidates[0].get("model") or ""),
-            str((candidates[0].get("endpoints") or [""])[0]),
-            format_httpx_error(exc),
-        )
-        raise
+    return await _unified_call_llm(
+        messages,
+        tools=tools,
+        max_tokens=max_tokens,
+        model_type="secondary" if secondary else "primary",
+        caller=_caller_type.get(),
+        phase=_llm_phase_name(tools),
+        round_id=_current_round_id.get(),
+    )
 
 
 async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000, *, secondary: bool = False) -> dict[str, Any]:
-    _t0 = __import__("time").monotonic()
-    _phase = _llm_phase_name(None)
-    candidates, payload = _build_llm_request(messages, None, max_tokens, stream=True, secondary=secondary)
+    from cyrene.call_llm import call_llm as _unified_call_llm
 
-    accumulated: list[str] = []
-    usage: dict[str, Any] = {}
-    started = False
-    transport = httpx.AsyncHTTPTransport(retries=1)
-    try:
-        async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
-            last_error: Exception | None = None
-            active_model = ""
-            for candidate in candidates:
-                is_secondary = candidate.get("id") == "secondary"
-                max_conc = int(candidate.get("max_concurrency") or 0)
-
-                # Concurrency guard: skip secondary if at limit
-                if is_secondary and max_conc > 0 and _secondary_in_flight >= max_conc:
-                    continue
-                if is_secondary and max_conc > 0:
-                    _secondary_in_flight += 1
-
-                try:
-                    active_model = str(candidate.get("model") or "").strip()
-                    payload["model"] = active_model
-                    if "deepseek" in active_model.lower():
-                        payload["thinking"] = {"type": "enabled"}
-                    else:
-                        payload.pop("thinking", None)
-                    headers = {"Content-Type": "application/json"}
-                    api_key = str(candidate.get("api_key") or "").strip()
-                    if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
-                        headers["Authorization"] = f"Bearer {api_key}"
-                    endpoints = list(candidate.get("endpoints") or [])
-                    candidate_error: Exception | None = None
-                    for endpoint in endpoints:
-                        try:
-                            async with client.stream("POST", endpoint, json=payload, headers=headers) as resp:
-                                if resp.status_code != 200:
-                                    resp.raise_for_status()
-                                async for raw_line in resp.aiter_lines():
-                                    line = str(raw_line or "").strip()
-                                    if not line:
-                                        continue
-                                    if line.startswith("data:"):
-                                        line = line[5:].strip()
-                                    if not line:
-                                        continue
-                                    if line == "[DONE]":
-                                        break
-                                    try:
-                                        data = json.loads(line)
-                                    except json.JSONDecodeError:
-                                        continue
-                                    if isinstance(data.get("usage"), dict):
-                                        usage = data["usage"]
-                                    for choice in data.get("choices") or []:
-                                        delta = choice.get("delta") or {}
-                                        text = _extract_stream_delta_text(delta)
-                                        if not text:
-                                            continue
-                                        if not started:
-                                            await _emit_reply_stream_event({"type": "reply_start"})
-                                            started = True
-                                        accumulated.append(text)
-                                        await _emit_reply_stream_event({"type": "reply_delta", "delta": text})
-                            break
-                        except httpx.HTTPError as exc:
-                            candidate_error = exc
-                            last_error = exc
-                            if endpoint != endpoints[-1]:
-                                continue
-                            logger.warning(
-                                "Upstream LLM candidate failed [caller=%s phase=%s model=%s endpoint=%s stream=true candidate=%s]: %s",
-                                _caller_type.get(),
-                                _phase,
-                                active_model,
-                                endpoint,
-                                candidate.get("id"),
-                                format_httpx_error(exc),
-                            )
-                    if accumulated or usage:
-                        break
-                finally:
-                    if is_secondary and max_conc > 0:
-                        _secondary_in_flight -= 1
-            if last_error and not accumulated and not usage:
-                raise last_error
-        full_text = "".join(accumulated)
-        if not started:
-            await _emit_reply_stream_event({"type": "reply_start"})
-        await _emit_reply_stream_event({"type": "reply_done", "response": full_text})
-        msg: dict[str, Any] = {"role": "assistant", "content": full_text}
-        msg["usage"] = _normalized_usage(usage, messages, msg)
-        if debug.VERBOSE:
-            debug.log_llm_call(_caller_type.get(), _phase, messages, None, msg, (__import__("time").monotonic() - _t0) * 1000)
-        duration_ms = round((__import__("time").monotonic() - _t0) * 1000)
-        await _publish_runtime_event({
-            "type": "llm_call",
-            "caller": _caller_type.get(),
-            "phase": _phase,
-            "model": active_model,
-            "tools": [],
-            "response": full_text[:200],
-            "tool_calls": [],
-            "usage": msg.get("usage") or {},
-            "duration_ms": duration_ms,
-        })
-        _bg_token_task(asyncio.create_task(record_token_usage(
-            str(DB_PATH),
-            model=active_model,
-            prompt_tokens=int(msg.get("usage", {}).get("prompt_tokens") or 0),
-            completion_tokens=int(msg.get("usage", {}).get("completion_tokens") or 0),
-            total_tokens=int(msg.get("usage", {}).get("total_tokens") or 0),
-            cache_hit_tokens=int(msg.get("usage", {}).get("prompt_cache_hit_tokens") or 0),
-            cache_miss_tokens=int(msg.get("usage", {}).get("prompt_cache_miss_tokens") or 0),
-            duration_ms=duration_ms,
-            round_id=_current_round_id.get(),
-            caller=_caller_type.get(),
-        )))
-        return msg
-    except httpx.TimeoutException as exc:
-        logger.exception(
-            "Upstream LLM timeout [caller=%s phase=%s model=%s endpoint=%s stream=true]: %s",
-            _caller_type.get(),
-            _phase,
-            str(candidates[0].get("model") or ""),
-            str((candidates[0].get("endpoints") or [""])[0]),
-            format_httpx_error(exc),
-        )
-        raise
-    except httpx.HTTPError as exc:
-        logger.exception(
-            "Upstream LLM HTTP error [caller=%s phase=%s model=%s endpoint=%s stream=true]: %s",
-            _caller_type.get(),
-            _phase,
-            str(candidates[0].get("model") or ""),
-            str((candidates[0].get("endpoints") or [""])[0]),
-            format_httpx_error(exc),
-        )
-        raise
+    return await _unified_call_llm(
+        messages,
+        max_tokens=max_tokens,
+        model_type="secondary" if secondary else "primary",
+        stream=True,
+        stream_callback=_reply_stream_writer.get(),
+        caller=_caller_type.get(),
+        phase=_llm_phase_name(None),
+        round_id=_current_round_id.get(),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -307,7 +307,6 @@ async def run_vision_chat(content: list[dict[str, Any]], content_prompt: str = "
             payload = {
                 "model": model,
                 "messages": [{"role": "user", "content": content}],
-                "max_tokens": 1200,
             }
             if "deepseek" in model.lower():
                 payload["thinking"] = {"type": "disabled"}

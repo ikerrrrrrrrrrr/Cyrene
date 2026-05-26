@@ -8,21 +8,14 @@ Architecture:
 
 import asyncio
 import logging
-import os
 import re
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
-import httpx
 import requests
 
 from cyrene import debug
-
-# Track background token-recording tasks to prevent premature GC
-_pending_token_tasks: set[asyncio.Task] = set()
-def _bg_token_task(task: asyncio.Task) -> None:
-    _pending_token_tasks.add(task)
-    task.add_done_callback(_pending_token_tasks.discard)
+from cyrene.call_llm import call_llm as _unified_call_llm
 from cyrene.config import (
     SEARCH_PROXY, SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT, SEARXNG_URL,
 )
@@ -48,71 +41,14 @@ _MAX_CONCURRENT = 20
 
 
 async def _call_llm(messages: list[dict]) -> str:
-    """Call the LLM and return the response text content.
-
-    Uses httpx.AsyncHTTPTransport(retries=1) to avoid HTTP/2 issues.
-    """
-    model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
-    payload: dict = {
-        "model": model,
-        "messages": messages,
-    }
-
-    headers = {"Content-Type": "application/json"}
-    _api_key = os.environ.get("OPENAI_API_KEY", "")
-    if _api_key and _api_key.lower() not in ("lmstudio", "dummy", ""):
-        headers["Authorization"] = f"Bearer {_api_key}"
-
-    _t0 = __import__("time").monotonic()
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            f"{os.environ.get('OPENAI_BASE_URL', 'https://api.deepseek.com/v1').rstrip('/')}/chat/completions",
-            json=payload,
-            headers=headers,
-        )
-        if resp.status_code != 200:
-            logger.error("search LLM error %s: %s", resp.status_code, resp.text[:500])
-            resp.raise_for_status()
-        data = resp.json()
-        message = data["choices"][0]["message"]
-
-    content = message.get("content") or ""
-
-    # Record token usage (both granular and daily-aggregate tables)
-    try:
-        usage = data.get("usage", {})
-        from cyrene.db import record_token_usage, record_model_usage, record_runtime_usage
-        from cyrene.config import DB_PATH
-
-        # Granular per-request record
-        _bg_token_task(asyncio.create_task(record_token_usage(
-            str(DB_PATH),
-            model=model,
-            prompt_tokens=int(usage.get("prompt_tokens") or 0),
-            completion_tokens=int(usage.get("completion_tokens") or 0),
-            total_tokens=int(usage.get("total_tokens") or 0),
-            duration_ms=round((__import__("time").monotonic() - _t0) * 1000),
-            caller="search",
-        )))
-        # Daily aggregate (stats + per-model)
-        _bg_token_task(asyncio.create_task(record_runtime_usage(
-            str(DB_PATH),
-            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-            usage,
-        )))
-        _bg_token_task(asyncio.create_task(record_model_usage(
-            str(DB_PATH),
-            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
-            model,
-            usage,
-        )))
-    except Exception:
-        logger.exception("Failed to record search token usage")
-    if not content:
-        content = message.get("reasoning_content", "") or ""
-    if debug.VERBOSE:
-        debug.log_llm_call("search_filter", "no_tools", messages, None, message, (__import__("time").monotonic() - _t0) * 1000)
-    return content.strip()
+    """Call the LLM and return the response text content."""
+    result = await _unified_call_llm(
+        messages,
+        return_text=True,
+        caller="search",
+        phase="no_tools",
+    )
+    return (result or "").strip()
 
 
 # ---------------------------------------------------------------------------

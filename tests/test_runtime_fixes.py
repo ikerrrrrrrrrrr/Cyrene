@@ -227,7 +227,7 @@ async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_promp
 
 
 async def test_call_llm_falls_back_to_next_model_candidate(monkeypatch):
-    from cyrene import agent
+    from cyrene import call_llm as cll
 
     attempts: list[tuple[str, str]] = []
 
@@ -265,17 +265,16 @@ async def test_call_llm_falls_back_to_next_model_candidate(monkeypatch):
             )
 
     monkeypatch.setattr(
-        agent,
+        cll,
         "get_models",
         lambda: [
             {"id": "candidate-1", "model": "primary-model", "base_url": "https://primary.example/v1", "api_key": "primary-key"},
             {"id": "candidate-2", "model": "fallback-model", "base_url": "https://fallback.example/v1", "api_key": "fallback-key"},
         ],
     )
-    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
-    monkeypatch.setattr(agent, "_publish_runtime_event", AsyncMock())
+    monkeypatch.setattr(cll.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
 
-    message = await agent._call_llm([{"role": "user", "content": "hello"}], tools=None, max_tokens=32)
+    message = await cll.call_llm([{"role": "user", "content": "hello"}], max_tokens=32)
 
     assert message["content"] == "fallback ok"
     assert attempts == [
@@ -285,7 +284,7 @@ async def test_call_llm_falls_back_to_next_model_candidate(monkeypatch):
 
 
 async def test_call_llm_stream_falls_back_to_next_model_candidate(monkeypatch):
-    from cyrene import agent
+    from cyrene import call_llm as cll
 
     attempts: list[tuple[str, str]] = []
     emitted: list[dict[str, Any]] = []
@@ -332,20 +331,27 @@ async def test_call_llm_stream_falls_back_to_next_model_candidate(monkeypatch):
             )
 
     monkeypatch.setattr(
-        agent,
+        cll,
         "get_models",
         lambda: [
             {"id": "candidate-1", "model": "primary-model", "base_url": "https://primary.example/v1", "api_key": "primary-key"},
             {"id": "candidate-2", "model": "fallback-model", "base_url": "https://fallback.example/v1", "api_key": "fallback-key"},
         ],
     )
-    monkeypatch.setattr(agent.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
-    monkeypatch.setattr(agent, "_publish_runtime_event", AsyncMock())
-    monkeypatch.setattr(agent, "_emit_reply_stream_event", AsyncMock(side_effect=lambda event: emitted.append(event)))
+    monkeypatch.setattr(cll.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
 
-    message = await agent._call_llm_stream([{"role": "user", "content": "hello"}], max_tokens=32)
+    async def _capture(event):
+        emitted.append(event)
+
+    message = await cll.call_llm(
+        [{"role": "user", "content": "hello"}],
+        max_tokens=32,
+        stream=True,
+        stream_callback=_capture,
+    )
 
     assert message["content"] == "hello world"
+    assert message["usage"]["total_tokens"] == 3
     assert attempts == [
         ("primary-model", "https://primary.example/v1/chat/completions"),
         ("fallback-model", "https://fallback.example/v1/chat/completions"),
