@@ -285,6 +285,10 @@ function connectEvents() {
         }
       } catch (e) { /* swallow */ }
     };
+    es.onerror = () => {
+      es.close();
+      setTimeout(connectEvents, 3000);
+    };
     window.__cyreneEventSource = es;
   } catch (e) {
     console.warn("SSE connection failed", e);

@@ -81,8 +81,8 @@ def register_wechat_routes(app: FastAPI) -> None:
         client = WeChatClient(config)
         updater = WeChatUpdater(client, db_path)
 
-        import sys as _sys
-        _sys.modules["cyrene.channels.wechat"]._current_client = client
+        from cyrene.channels.wechat import set_current_client
+        set_current_client(client)
 
         app.state.wechat_updater = updater
         await updater.start()

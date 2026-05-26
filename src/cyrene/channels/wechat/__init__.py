@@ -42,6 +42,12 @@ def get_current_client() -> WeChatClient | None:
     return _current_client
 
 
+def set_current_client(client: WeChatClient | None) -> None:
+    """Set the current WeChatClient (used by web.py at startup)."""
+    global _current_client
+    _current_client = client
+
+
 async def setup_wechat(app: FastAPI, db_path: str) -> None:
     """Initialise the WeChat channel.
 

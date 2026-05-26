@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -86,7 +87,7 @@ async def notify(
                 "type": "notification",
                 "title": title,
                 "body": body,
-                "ts": __import__("datetime").datetime.now().isoformat(),
+                "ts": datetime.now(timezone.utc).isoformat(),
             })
             results["sse"] = {"ok": True}
         except Exception as exc:

@@ -76,6 +76,15 @@ _DEFAULTS: dict = {
 }
 
 
+def _deep_merge(base: dict, override: dict) -> None:
+    """Recursively merge *override* into *base*, preserving nested keys from both."""
+    for key, val in override.items():
+        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
+            _deep_merge(base[key], val)
+        else:
+            base[key] = val
+
+
 def _load() -> dict:
     if not _SETTINGS_PATH.exists():
         return copy.deepcopy(_DEFAULTS)
@@ -85,7 +94,7 @@ def _load() -> dict:
         logger.warning("Corrupted web_settings.json, using defaults")
         return copy.deepcopy(_DEFAULTS)
     merged = copy.deepcopy(_DEFAULTS)
-    merged.update(data)
+    _deep_merge(merged, data)
     return merged
 
 

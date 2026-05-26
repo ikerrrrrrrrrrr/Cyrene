@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shlex
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -1818,12 +1819,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
         from cyrene.agent import _caller_type, _current_round_id
         from cyrene.mcp_manager import get_manager as _get_mcp_mgr
 
-        _t0 = __import__("time").monotonic()
+        _t0 = time.monotonic()
         try:
             manager = _get_mcp_mgr()
             result = await manager.execute_tool(name, arguments)
             if _debug.VERBOSE:
-                _debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
+                _debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000)
             await _debug.publish_event({
                 "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
                 "result": str(result),
@@ -1831,7 +1832,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
             })
             from cyrene.pattern import record_action
             await record_action(name, arguments, _caller_type.get(), _current_round_id.get(),
-                          (__import__("time").monotonic() - _t0) * 1000,
+                          (time.monotonic() - _t0) * 1000,
                           result=result, success=True, error="")
             return result
         except ValueError:
@@ -1843,14 +1844,14 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
                 arguments,
                 _caller_type.get(),
                 _current_round_id.get(),
-                (__import__("time").monotonic() - _t0) * 1000,
+                (time.monotonic() - _t0) * 1000,
                 result=f"Tool {name} failed: {e}",
                 success=False,
                 error=str(e),
             )
             return f"Tool {name} failed: {e}"
 
-    _t0 = __import__("time").monotonic()
+    _t0 = time.monotonic()
     try:
         result = await handler(arguments, bot, chat_id, db_path, notify_state)
     except Exception as e:
@@ -1867,7 +1868,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
             arguments,
             _caller_type.get(),
             _current_round_id.get(),
-            (__import__("time").monotonic() - _t0) * 1000,
+            (time.monotonic() - _t0) * 1000,
             result=f"Tool failed: {e}",
             success=False,
             error=str(e),
@@ -1876,7 +1877,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     from cyrene import debug
     if debug.VERBOSE:
         from cyrene.agent import _caller_type
-        debug.log_tool_call(_caller_type.get(), name, arguments, result, (__import__("time").monotonic() - _t0) * 1000)
+        debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000)
     from cyrene.agent import _caller_type, _current_round_id
     await debug.publish_event({
         "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
@@ -1890,7 +1891,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
         arguments,
         _caller_type.get(),
         _current_round_id.get(),
-        (__import__("time").monotonic() - _t0) * 1000,
+        (time.monotonic() - _t0) * 1000,
         result=result,
         success=tool_success,
         error="" if tool_success else str(result),

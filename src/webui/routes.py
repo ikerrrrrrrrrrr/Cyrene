@@ -4049,16 +4049,6 @@ def _infer_subagent_entries(raw_msgs: list[dict], registry: dict[str, dict]) -> 
             entry["round_id"] = meta["round_id"]
 
     return entries
-    result = []
-    for m in msgs:
-        role = m.get("role", "")
-        if role not in ("user", "assistant"):
-            continue
-        content = m.get("content", "")
-        if not content or not content.strip():
-            continue
-        result.append({"role": role, "content": content})
-    return result
 
 
 def _parse_conversation_archive() -> list[dict]:
