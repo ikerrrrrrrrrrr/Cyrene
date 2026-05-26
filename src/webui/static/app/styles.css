@@ -2503,6 +2503,7 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   margin-left: auto;
   font-weight: 600;
   color: var(--text);
+  text-align: right;
 }
 .side-token-ring-total {
   font-size: 10px;
