@@ -2435,9 +2435,10 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
 }
 .side-head {
   display: flex; align-items: center; gap: 8px;
-  font-family: var(--mono); font-size: 11px;
+  font-family: var(--mono); font-size: 12px;
+  font-weight: 700;
   color: var(--text-3); text-transform: uppercase; letter-spacing: 0.12em;
-  margin-bottom: 10px;
+  margin-bottom: 14px;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
 }
@@ -2455,7 +2456,7 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   gap: 5px 12px;
   font-family: var(--mono);
   font-size: 12px;
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 .side-overview-kv .k {
   color: var(--text-4);
@@ -2469,7 +2470,7 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
 .side-token-ring {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 36px;
   margin-top: 4px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
@@ -2489,17 +2490,18 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   gap: 6px;
   font-size: 11px;
   font-family: var(--mono);
-  color: var(--text-2);
+  color: var(--text);
 }
 .side-token-ring-item .dot {
-  width: 7px;
-  height: 7px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
   flex-shrink: 0;
+  box-shadow: none;
 }
 .side-token-ring-item .num {
   margin-left: auto;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
 }
 .side-token-ring-total {
@@ -2537,20 +2539,16 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   color: var(--text-4);
   margin-top: 2px;
 }
-.dot-in { background: var(--accent); }
+.dot-in { background: var(--text-4); }
 .dot-out { background: var(--text-4); }
+.dot-total { background: var(--text-4); }
 .side-model-usage {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
+  margin-top: 16px;
+  padding-top: 0;
+  border-top: none;
 }
-.side-model-usage-head {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text-4);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-bottom: 6px;
+.side-overview-top {
+  margin-bottom: 16px;
 }
 .side-model-row {
   display: flex;
@@ -3025,6 +3023,7 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   border: 1px solid var(--line); border-radius: var(--r-m); background: var(--bg-1);
   box-shadow: var(--shadow-l); min-width: 180px; overflow: hidden;
 }
+.agent-mention { color: var(--info); font-weight: 500; }
 .agent-chat-settings-menu button {
   display: block; width: 100%; text-align: left; padding: 8px 14px;
   font-size: 12px; border: 0; background: transparent; cursor: pointer;
@@ -6313,7 +6312,7 @@ body {
   left: 300px;
   right: 0;
   bottom: 0;
-  padding: 0 clamp(36px, 6vw, 84px) 26px;
+  padding: 0 clamp(36px, 6vw, 84px) 0;
   background: linear-gradient(180deg, rgba(255,255,255,0), #ffffff 20%, #ffffff 100%);
   z-index: 20;
 }
@@ -6391,7 +6390,7 @@ body {
 
   .app[data-screen-label="Cyrene · chat"] .composer {
     left: 0;
-    padding: 0 16px 18px;
+    padding: 0 16px 0;
   }
 
   .chat-welcome h1 {
@@ -7776,7 +7775,7 @@ html[data-text-size="large"] .seg-btn {
 
   .app[data-screen-label="Cyrene · chat"] .composer {
     left: 0;
-    padding: 0 16px 18px;
+    padding: 0 16px 0;
   }
 }
 

@@ -897,6 +897,7 @@ async def _run_subagent(
     chat_id: int,
     db_path: str,
     resume_messages: list | None = None,
+    use_secondary: bool = False,
 ) -> str:
     """Run a sub-agent in its own loop.
 
@@ -949,12 +950,11 @@ async def _run_subagent(
 - Your final text is collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
 
 ## Inter-Agent Coordination (REQUIRED)
-- **Share progress frequently.** After every 2-3 tool calls, send a brief progress update to ALL peer sub-agents via `broadcast_agent_message`. Tell them what you found so far, what you're working on next, and any key data points you've uncovered.
-- **Cross-pollinate findings.** If the registry context shows another sub-agent working on a related topic, proactively send them relevant data, links, or insights via `send_agent_message` — even if it's partial. Early sharing is better than waiting until you're done.
-- **Validate before concluding.** Before settling on a major conclusion, broadcast your draft finding to peers and ask if they have contradictory or supporting evidence. This prevents each sub-agent from operating in an echo chamber.
-- **Acknowledge and incorporate.** When you receive a message from another sub-agent, read it carefully. Acknowledge receipt and explicitly incorporate their findings into your own work. Do NOT ignore peer messages.
-- **Think like a team.** You are part of a research team, not a solo worker. The combined output should be greater than the sum of individual efforts. If you discover something that could help another agent's task, share it immediately.
-- **Minimum bar:** You MUST call `send_agent_message` or `broadcast_agent_message` at least 2-3 times during your work. Sub-agents that never communicate are underperforming.
+- **Chat naturally.** Talk to other sub-agents like in a real group chat — short, conversational messages. No need to report everything.
+- **Share useful findings.** When you find something another sub-agent needs, `send_agent_message` them directly with the key info. Keep it brief — a few sentences max.
+- **Ask for help.** If you're stuck or need data another agent may have, just ask via `send_agent_message`. A short question is fine.
+- **Read peer messages.** When another sub-agent sends you something, take a moment to consider it. Respond briefly if needed.
+- **Minimum bar:** Send at least 2-3 messages during your work via `send_agent_message` or `broadcast_agent_message`. Say it simply — like a coworker in a group chat.
 """
     )
 
@@ -1007,15 +1007,13 @@ async def _run_subagent(
                     "role": "user",
                     "content": (
                         "[Coordination Checkpoint]\n"
-                        "Pause briefly: Have you shared your latest progress with peer sub-agents?\n"
-                        "Have you read and incorporated any new messages from peers?\n"
-                        "If yes, continue working. If no, use send_agent_message or broadcast_agent_message now before proceeding.\n"
-                        "Remember: early sharing of findings prevents duplicated work and catches errors sooner."
+                        "Any updates worth telling other sub-agents? If so, drop a short message.\n"
+                        "Any new messages from peers? Read and respond if needed. Keep it brief."
                     ),
                 })
                 tool_calls_since_checkpoint = 0
 
-            response = await _call_llm(messages, tools=get_active_tool_defs_for_actor("subagent"), max_tokens=None)
+            response = await _call_llm(messages, tools=get_active_tool_defs_for_actor("subagent"), max_tokens=None, secondary=use_secondary)
 
             entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):

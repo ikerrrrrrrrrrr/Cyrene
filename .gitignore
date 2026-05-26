@@ -45,3 +45,6 @@ uv.lock
 tests*
 !tests/
 !tests/*.py
+
+# Promotional landing page
+webpage/

@@ -269,6 +269,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [newModel, setNewModel] = useStateSet(createEmptyModelCandidate());
   const [visionModels, setVisionModels] = useStateSet([]);
   const [newVisionModel, setNewVisionModel] = useStateSet(createEmptyModelCandidate());
+  const [secondaryModel, setSecondaryModel] = useStateSet(null);
   const [modelsSaved, setModelsSaved] = useStateSet("");
   const [toolList, setToolList] = useStateSet([]);
   const [toolsSaved, setToolsSaved] = useStateSet("");
@@ -410,6 +411,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       });
       setModels(normalized.length ? normalized : [normalizeModelCandidate({}, 0, payload.base_url || DEFAULT_MODEL_BASE_URL, "")]);
       setVisionModels(normalizedVision.length ? normalizedVision : [normalizeModelCandidate({}, 0, payload.base_url || DEFAULT_MODEL_BASE_URL, "")]);
+      setSecondaryModel({
+        id: "secondary",
+        model: (payload.secondary_model && payload.secondary_model.model) || "",
+        api_key: (payload.secondary_model && payload.secondary_model.api_key) || "",
+        base_url: (payload.secondary_model && payload.secondary_model.base_url) || DEFAULT_MODEL_BASE_URL,
+        name: (payload.secondary_model && (payload.secondary_model.name || payload.secondary_model.model)) || "",
+        ctx_limit: (payload.secondary_model && payload.secondary_model.ctx_limit != null) ? Number(payload.secondary_model.ctx_limit) : 0,
+        max_concurrency: (payload.secondary_model && payload.secondary_model.max_concurrency != null) ? Number(payload.secondary_model.max_concurrency) : 0,
+      });
     }).catch(() => {});
     fetch("/api/settings/tools").then((r) => r.json()).then((payload) => {
       setToolList(payload.tools || []);
@@ -485,7 +495,18 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       const response = await fetch("/api/settings/models", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ models: normalized, vision_models: normalizedVision }),
+        body: JSON.stringify({
+          models: normalized,
+          vision_models: normalizedVision,
+          secondary_model: secondaryModel ? {
+            model: secondaryModel.model,
+            name: secondaryModel.name,
+            api_key: secondaryModel.api_key,
+            base_url: secondaryModel.base_url,
+            ctx_limit: Number(secondaryModel.ctx_limit) || 0,
+            max_concurrency: Number(secondaryModel.max_concurrency) || 0,
+          } : null,
+        }),
       });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const payload = await response.json();
@@ -497,6 +518,15 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       });
       setModels(nextModels);
       setVisionModels(nextVisionModels);
+      setSecondaryModel({
+        id: "secondary",
+        model: (payload.secondary_model && payload.secondary_model.model) || "",
+        api_key: (payload.secondary_model && payload.secondary_model.api_key) || "",
+        base_url: (payload.secondary_model && payload.secondary_model.base_url) || DEFAULT_MODEL_BASE_URL,
+        name: (payload.secondary_model && (payload.secondary_model.name || payload.secondary_model.model)) || "",
+        ctx_limit: (payload.secondary_model && payload.secondary_model.ctx_limit != null) ? Number(payload.secondary_model.ctx_limit) : 0,
+        max_concurrency: (payload.secondary_model && payload.secondary_model.max_concurrency != null) ? Number(payload.secondary_model.max_concurrency) : 0,
+      });
       setConfig(function (previous) {
         return {
           ...previous,
@@ -517,6 +547,13 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         ? { ...model, [field]: value, name: field === "model" ? value : model.name }
         : model;
     }));
+  }
+
+  function updateSecondaryModel(field, value) {
+    setSecondaryModel(function (prev) {
+      if (!prev) return prev;
+      return { ...prev, [field]: value, name: field === "model" ? value : prev.name };
+    });
   }
 
   function moveVisionModel(id, direction) {
@@ -566,7 +603,10 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       const response = await fetch("/api/settings/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spawn_policy: config.spawn_policy || "conservative" }),
+        body: JSON.stringify({
+          spawn_policy: config.spawn_policy || "conservative",
+          heartbeat_interval: Number(config.heartbeat_interval) || 1800,
+        }),
       });
       if (!response.ok) throw new Error("HTTP " + response.status);
       setAgentsSaved(t("settings.saved"));
@@ -1014,10 +1054,56 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
               <div className="settings-block-head">
                 <div>
                   <h3>{t("settings.secondaryModelSlot")}</h3>
-                  <p>{t("settings.placeholderSlotHint")}</p>
+                  <p>{t("settings.secondaryModelHint")}</p>
                 </div>
               </div>
-              <div className="settings-placeholder-card">{t("settings.secondaryModelPlaceholder")}</div>
+
+              {secondaryModel ? (
+                <div className="settings-primary-model-card">
+                  <div className="settings-card-head">
+                    <div>
+                      <div className="model-name">{t("settings.secondaryModelName")}</div>
+                    </div>
+                  </div>
+
+                  <div className="settings-model-lines">
+                    <div className="settings-model-line">
+                      <span>{t("settings.modelIdentifierLabel")}</span>
+                      <input className="input mono" value={secondaryModel.model}
+                        onChange={(e) => updateSecondaryModel("model", e.target.value)}
+                        placeholder={t("settings.placeholderModelIdentifier")} />
+                    </div>
+                    <div className="settings-model-line">
+                      <span>{t("settings.apiKey")}</span>
+                      <input className="input mono" type="password" value={secondaryModel.api_key}
+                        onChange={(e) => updateSecondaryModel("api_key", e.target.value)}
+                        placeholder="sk-..." />
+                    </div>
+                    <div className="settings-model-line">
+                      <span>{t("settings.baseUrlLabel")}</span>
+                      <input className="input mono" value={secondaryModel.base_url}
+                        onChange={(e) => updateSecondaryModel("base_url", e.target.value)}
+                        placeholder={t("settings.placeholderBaseUrl")} />
+                    </div>
+                    <div className="settings-form-grid settings-form-grid--meta">
+                      <div className="settings-mini-field">
+                        <span>{t("settings.secondaryModelCtxLimit")}</span>
+                        <input className="input mono" type="number" min="0" value={secondaryModel.ctx_limit}
+                          onChange={(e) => updateSecondaryModel("ctx_limit", e.target.value)}
+                          placeholder="0" />
+                        <small className="hint">{t("settings.secondaryModelCtxLimitHint")}</small>
+                      </div>
+                      <div className="settings-mini-field">
+                        <span>{t("settings.secondaryModelConcurrency")}</span>
+                        <input className="input mono" type="number" min="0" value={secondaryModel.max_concurrency}
+                          onChange={(e) => updateSecondaryModel("max_concurrency", e.target.value)}
+                          placeholder="0" />
+                        <small className="hint">{t("settings.secondaryModelConcurrencyHint")}</small>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div className="settings-subpane">
@@ -1148,6 +1234,14 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             <div className="field">
               <div className="label">{t("settings.streamReasoning")}<small>{t("settings.streamReasoningHint")}</small></div>
               <div className={"toggle " + (capabilityToggles.streamThinking ? "on" : "")} onClick={() => toggleCapability("streamThinking")}></div>
+            </div>
+
+            <div className="field">
+              <div className="label">{t("settings.heartbeatInterval")}<small>{t("settings.heartbeatIntervalHint")}</small></div>
+              <input className="input mono" type="number" min="60" step="60"
+                value={config.heartbeat_interval != null ? config.heartbeat_interval : 1800}
+                onChange={(e) => setConfig({ ...config, heartbeat_interval: Number(e.target.value) || 1800 })}
+                style={{ maxWidth: 160 }} />
             </div>
 
             <div className="settings-actions">

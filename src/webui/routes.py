@@ -1680,7 +1680,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/api/settings/models")
     async def api_get_models():
-        from cyrene.settings_store import get_models, get_vision_models
+        from cyrene.settings_store import get_models, get_vision_models, get_secondary_model
         from cyrene.config import OPENAI_API_KEY, DEFAULT_OPENAI_BASE_URL, read_env_file
 
         def _normalize_candidates(raw_items: list[dict[str, Any]] | None, fallback_api_key: str, fallback_base_url: str) -> list[dict[str, Any]]:
@@ -1710,11 +1710,43 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         raw_models = get_models()
         raw_vision_models = get_vision_models()
+        raw_secondary = get_secondary_model()
         active_model_name, base_url = _live_llm_config()
         env_keys = read_env_file()
         active_api_key = _strip_wrapping_quotes(str(env_keys.get("OPENAI_API_KEY") or OPENAI_API_KEY or "").strip())
         normalized = _normalize_candidates(raw_models, active_api_key, base_url)
         normalized_vision = _normalize_candidates(raw_vision_models, active_api_key, base_url)
+
+        # Normalize secondary model (single item)
+        sec_model = str(raw_secondary.get("model") or "").strip()
+        ctx_limit = int(raw_secondary.get("ctx_limit") or 0)
+        max_concurrency = int(raw_secondary.get("max_concurrency") or 0)
+        if sec_model:
+            normalized_secondary = {
+                "id": "secondary",
+                "name": str(raw_secondary.get("name") or sec_model).strip(),
+                "model": sec_model,
+                "desc": "",
+                "ctx": "",
+                "price": "",
+                "api_key": _strip_wrapping_quotes(str(raw_secondary.get("api_key") or active_api_key).strip()),
+                "base_url": str(raw_secondary.get("base_url") or base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                "ctx_limit": ctx_limit,
+                "max_concurrency": max_concurrency,
+            }
+        else:
+            normalized_secondary = {
+                "id": "secondary",
+                "name": "",
+                "model": "",
+                "desc": "",
+                "ctx": "",
+                "price": "",
+                "api_key": "",
+                "base_url": base_url or DEFAULT_OPENAI_BASE_URL,
+                "ctx_limit": 0,
+                "max_concurrency": 0,
+            }
 
         if not normalized:
             normalized = [
@@ -1758,6 +1790,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "primary_candidates": normalized,
             "vision_models": normalized_vision,
             "vision_candidates": normalized_vision,
+            "secondary_model": normalized_secondary,
             "active": active_model_id,
             "active_model_name": active_model_name,
             "base_url": base_url,
@@ -1765,11 +1798,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.put("/api/settings/models")
     async def api_update_models(request: Request):
-        from cyrene.settings_store import save_models, save_vision_models
+        from cyrene.settings_store import save_models, save_vision_models, save_secondary_model
         from cyrene.config import DEFAULT_OPENAI_BASE_URL, write_env_keys
         body = await request.json()
         raw_models = body.get("models")
         raw_vision_models = body.get("vision_models")
+        raw_secondary = body.get("secondary_model")
         if not isinstance(raw_models, list) or len(raw_models) == 0:
             return JSONResponse({"error": "models must be a non-empty list"}, status_code=400)
         if raw_vision_models is not None and (not isinstance(raw_vision_models, list) or len(raw_vision_models) == 0):
@@ -1811,6 +1845,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         save_models(normalized)
         if raw_vision_models is not None:
             save_vision_models(normalized_vision)
+        if isinstance(raw_secondary, dict):
+            save_secondary_model(raw_secondary)
         primary = normalized[0]
         write_env_keys(
             {
@@ -1819,12 +1855,45 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "OPENAI_API_KEY": _strip_wrapping_quotes(str(primary.get("api_key") or "").strip()),
             }
         )
+        # Normalize saved secondary for response
+        from cyrene.settings_store import get_secondary_model
+        saved_secondary = get_secondary_model()
+        sec_model = str(saved_secondary.get("model") or "").strip()
+        ctx_limit = int(saved_secondary.get("ctx_limit") or 0)
+        max_concurrency = int(saved_secondary.get("max_concurrency") or 0)
+        if sec_model:
+            normalized_secondary = {
+                "id": "secondary",
+                "name": str(saved_secondary.get("name") or sec_model).strip(),
+                "model": sec_model,
+                "desc": "",
+                "ctx": "",
+                "price": "",
+                "api_key": _strip_wrapping_quotes(str(saved_secondary.get("api_key") or "").strip()),
+                "base_url": str(saved_secondary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                "ctx_limit": ctx_limit,
+                "max_concurrency": max_concurrency,
+            }
+        else:
+            normalized_secondary = {
+                "id": "secondary",
+                "name": "",
+                "model": "",
+                "desc": "",
+                "ctx": "",
+                "price": "",
+                "api_key": "",
+                "base_url": DEFAULT_OPENAI_BASE_URL,
+                "ctx_limit": 0,
+                "max_concurrency": 0,
+            }
         return {
             "ok": True,
             "models": normalized,
             "primary_candidates": normalized,
             "vision_models": normalized_vision if raw_vision_models is not None else None,
             "vision_candidates": normalized_vision if raw_vision_models is not None else None,
+            "secondary_model": normalized_secondary,
             "active": str(primary.get("id") or "candidate-1"),
             "active_model_name": str(primary.get("model") or "").strip(),
             "base_url": str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
@@ -1884,6 +1953,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 return JSONResponse({"error": "invalid spawn_policy"}, status_code=400)
             set_setting("spawn_policy", value)
             changed.append("spawn_policy")
+        if "heartbeat_interval" in body:
+            value = int(body.get("heartbeat_interval") or 0)
+            if value < 60:
+                return JSONResponse({"error": "heartbeat_interval must be at least 60"}, status_code=400)
+            set_setting("heartbeat_interval", value)
+            changed.append("heartbeat_interval")
         return {"ok": True, "changed": changed}
 
     @router.post("/api/settings/reset-data")
@@ -3844,6 +3919,7 @@ def _build_config() -> dict:
         "search_mode": settings.get("search_mode", "builtin"),
         "search_external_url": settings.get("search_external_url", ""),
         "spawn_policy": settings.get("spawn_policy", "conservative"),
+        "heartbeat_interval": settings.get("heartbeat_interval", 1800),
         "search_port": str(SEARXNG_PORT),
         "search_host": SEARXNG_HOST,
     }

@@ -903,14 +903,16 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
     """Spawn a sub-agent to handle a specific task."""
     agent_id = str(args.get("agent_id", ""))
     task = str(args.get("task", ""))
+    use_secondary = bool(args.get("use_secondary", False))
     if not agent_id or not task:
         return "Error: agent_id and task are required."
     from cyrene.agent import _current_agent_id, _current_round_id
     if _current_agent_id.get() != "main":
         return "Only the main agent can spawn subagents."
     await _reg_subagent(agent_id, task, round_id=_current_round_id.get())
-    _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path), agent_id)
-    return f"Sub-agent '{agent_id}' spawned. Task: {task[:80]}"
+    _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path, use_secondary=use_secondary), agent_id)
+    suffix = " (secondary model)" if use_secondary else ""
+    return f"Sub-agent '{agent_id}' spawned{suffix}. Task: {task[:80]}"
 
 
 async def _tool_query_round(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -1531,6 +1533,7 @@ TOOL_DEFS = [
                 "properties": {
                     "agent_id": {"type": "string", "description": "Unique ID for the sub-agent"},
                     "task": {"type": "string", "description": "The task for the sub-agent to complete"},
+                    "use_secondary": {"type": "boolean", "description": "Route this sub-agent to the secondary (local small) model for simple tasks that don't need the main model's full reasoning."},
                 },
                 "required": ["agent_id", "task"],
             },

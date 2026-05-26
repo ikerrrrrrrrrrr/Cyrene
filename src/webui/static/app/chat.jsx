@@ -2248,6 +2248,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
       </div>}
 
       {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
+        <SideTokenRing tokens={session.summary.tokens} />
         <div className="side-head">{t("chat.runSummary")}</div>
         <div className="side-overview-kv">
           <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
@@ -2256,7 +2257,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
           <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
           <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
         </div>
-        <SideTokenRing tokens={session.summary.tokens} />
+        <SideModelUsage />
       </div>}
     </div>
   );
@@ -2266,18 +2267,23 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
 
 function SideTokenRing({ tokens }) {
   var { t } = useI18n();
-  if (!tokens || tokens === "—") return null;
-  var prompt = null, completion = null, match;
-  var re = /([\d.]+)(k|M)?\s*(in|out)/g;
-  while ((match = re.exec(tokens)) !== null) {
-    var val = parseFloat(match[1]) * (match[2] === "k" ? 1000 : match[2] === "M" ? 1000000 : 1);
-    if (match[3] === "in") prompt = val;
-    if (match[3] === "out") completion = val;
-  }
-  if (prompt === null && completion === null) return null;
-  var total = (prompt || 0) + (completion || 0);
-  if (total === 0) return null;
 
+  // Parse session tokens for the ring chart
+  var prompt = null, completion = null, total = null, match;
+  if (tokens && tokens !== "—") {
+    var re = /([\d.]+)(k|M)?\s*(in|out)/g;
+    while ((match = re.exec(tokens)) !== null) {
+      var val = parseFloat(match[1]) * (match[2] === "k" ? 1000 : match[2] === "M" ? 1000000 : 1);
+      if (match[3] === "in") prompt = val;
+      if (match[3] === "out") completion = val;
+    }
+    if (prompt !== null || completion !== null) {
+      total = (prompt || 0) + (completion || 0);
+      if (total === 0) total = null;
+    }
+  }
+
+  // Dashboard data (cache + model stats)
   var dash = (typeof DATA !== "undefined" && DATA.dashboard) || {};
   var usage = dash.usage || {};
   var cacheHit = Number(usage.cache_hit_tokens || 0);
@@ -2285,12 +2291,59 @@ function SideTokenRing({ tokens }) {
   var cacheTotal = cacheHit + cacheMiss;
   var cachePct = cacheTotal > 0 ? Math.round(cacheHit / cacheTotal * 100) : null;
 
-  // ring: cache hit proportion
+  // ring: cache hit proportion (fallback to token in/out when no cache data)
+  var hasTokens = prompt !== null || completion !== null;
+  var showRing = true;
+  var ringTotal = cacheTotal > 0 ? cacheTotal : (hasTokens ? (prompt || 0) + (completion || 0) : 0);
+  var ringA = cacheTotal > 0 ? cacheHit : (hasTokens ? (prompt || 0) : 0);
+  var ringLabel = cacheTotal > 0 ? cachePct + "%" : (hasTokens ? null : "—");
+  var ringSub = cacheTotal > 0 ? t("chat.side.cacheHitRate") : (hasTokens ? null : t("chat.side.cacheHitRate"));
   var r = 42, c = 2 * Math.PI * r;
-  var hitRatio = cacheTotal > 0 ? cacheHit / cacheTotal : 0;
-  var hitOffset = c * (1 - hitRatio);
+  var ringRatio = ringTotal > 0 ? ringA / ringTotal : 0;
+  var ringOffset = c * (1 - ringRatio);
 
-  // model stats
+  return (
+    <div className="side-overview-top">
+      {showRing && <div className="side-token-ring">
+        <div className="side-ring-wrap">
+          <svg width="100" height="100" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r={r} fill="none" stroke="var(--line)" strokeWidth="6" />
+            {ringRatio > 0 && <circle cx="50" cy="50" r={r} fill="none" stroke="var(--accent)" strokeWidth="6"
+              strokeDasharray={c} strokeDashoffset={ringOffset}
+              transform="rotate(-90 50 50)" strokeLinecap="round" />}
+          </svg>
+          {ringLabel !== null && <div className="side-ring-label">
+            <span className="side-ring-pct">{ringLabel}</span>
+            {ringSub !== null && <span className="side-ring-sub">{ringSub}</span>}
+          </div>}
+        </div>
+        <div className="side-token-ring-meta">
+          <div className="side-token-ring-item">
+            <span className="dot dot-in"></span>
+            <span>{t("chat.tokenIn")}</span>
+            <span className="num">{prompt !== null ? compactNumber(prompt) : "-"}</span>
+          </div>
+          <div className="side-token-ring-item">
+            <span className="dot dot-out"></span>
+            <span>{t("chat.tokenOut")}</span>
+            <span className="num">{completion !== null ? compactNumber(completion) : "-"}</span>
+          </div>
+          <div className="side-token-ring-item">
+            <span className="dot dot-total"></span>
+            <span>{t("chat.tokenTotal")}</span>
+            <span className="num">{total !== null ? compactNumber(total) : "-"}</span>
+          </div>
+        </div>
+      </div>}
+    </div>
+  );
+}
+
+// ── Side model usage ──
+
+function SideModelUsage() {
+  var { t } = useI18n();
+  var dash = (typeof DATA !== "undefined" && DATA.dashboard) || {};
   var rawStats = Array.isArray(dash.model_stats) ? dash.model_stats : [];
   var modelMap = {};
   rawStats.forEach(function (row) {
@@ -2302,51 +2355,22 @@ function SideTokenRing({ tokens }) {
     .sort(function (a, b) { return b.requests - a.requests; })
     .slice(0, 5);
   var modelTotal = modelEntries.reduce(function (s, m) { return s + m.requests; }, 0);
-
+  if (modelEntries.length === 0) return null;
   return (
-    <div>
-      <div className="side-token-ring">
-        <div className="side-ring-wrap">
-          <svg width="100" height="100" viewBox="0 0 100 100">
-            <circle cx="50" cy="50" r={r} fill="none" stroke="var(--line)" strokeWidth="6" />
-            {cacheTotal > 0 && <circle cx="50" cy="50" r={r} fill="none" stroke="var(--accent)" strokeWidth="6"
-              strokeDasharray={c} strokeDashoffset={hitOffset}
-              transform="rotate(-90 50 50)" strokeLinecap="round" />}
-          </svg>
-          {cachePct !== null && <div className="side-ring-label">
-            <span className="side-ring-pct">{cachePct}%</span>
-            <span className="side-ring-sub">{t("chat.side.cacheHitRate")}</span>
-          </div>}
-        </div>
-        <div className="side-token-ring-meta">
-          <div className="side-token-ring-item">
-            <span className="dot dot-in"></span>
-            <span>{t("chat.tokenIn")}</span>
-            <span className="num">{compactNumber(prompt)}</span>
-          </div>
-          <div className="side-token-ring-item">
-            <span className="dot dot-out"></span>
-            <span>{t("chat.tokenOut")}</span>
-            <span className="num">{compactNumber(completion)}</span>
-          </div>
-          <div className="side-token-ring-total">{t("chat.tokenTotal")}: {compactNumber(total)}</div>
-        </div>
-      </div>
-      {modelEntries.length > 0 && <div className="side-model-usage">
-        <div className="side-model-usage-head">{t("chat.side.modelUsage")}</div>
-        {modelEntries.map(function (m) {
-          var pct = modelTotal ? Math.round(m.requests / modelTotal * 100) : 0;
-          return (
-            <div key={m.model} className="side-model-row">
-              <span className="side-model-name">{m.model}</span>
-              <div className="side-model-track">
-                <div className="side-model-fill" style={{ width: pct + "%" }}></div>
-              </div>
-              <span className="side-model-pct">{pct}%</span>
+    <div className="side-model-usage">
+      <div className="side-head">{t("chat.side.modelUsage")}</div>
+      {modelEntries.map(function (m) {
+        var pct = modelTotal ? Math.round(m.requests / modelTotal * 100) : 0;
+        return (
+          <div key={m.model} className="side-model-row">
+            <span className="side-model-name">{m.model}</span>
+            <div className="side-model-track">
+              <div className="side-model-fill" style={{ width: pct + "%" }}></div>
             </div>
-          );
-        })}
-      </div>}
+            <span className="side-model-pct">{pct}%</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2477,6 +2501,8 @@ function GroupChatMessage({ msg, prevFrom }) {
 
   var bubbleClass = "agent-chat-bubble" + (msg.from === "user" ? " user" : "");
   var html = renderMarkdown(msg.content || "");
+  // Highlight @mentions in blue (after markdown, before render)
+  html = html.replace(/@(\w[\w.-]*)/g, '<span class="agent-mention">@$1</span>');
 
   return (
     <div className={msgClass}>

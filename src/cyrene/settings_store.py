@@ -66,9 +66,11 @@ _DEFAULTS: dict = {
     "search_mode": "builtin",
     "search_external_url": "",
     "spawn_policy": "conservative",
+    "heartbeat_interval": 1800,
     "write_permission_mode": "workspace_only",
     "models": _DEFAULT_MODELS,
     "vision_models": _DEFAULT_VISION_MODELS,
+    "secondary_model": {"model": "", "name": "", "api_key": "", "base_url": "", "ctx_limit": 0, "max_concurrency": 0},
     "enabled_tools": _DEFAULT_ENABLED_TOOLS,
 }
 
@@ -156,6 +158,23 @@ def get_vision_models() -> list[dict]:
 def save_vision_models(models: list[dict]) -> None:
     """Replace the entire vision models list."""
     set_("vision_models", models)
+
+
+def get_secondary_model() -> dict:
+    """Return the single secondary model config."""
+    return _load().get("secondary_model", {"model": "", "name": "", "api_key": "", "base_url": "", "ctx_limit": 0, "max_concurrency": 0})
+
+
+def save_secondary_model(model: dict) -> None:
+    """Save the single secondary model config."""
+    set_("secondary_model", {
+        "model": str(model.get("model") or "").strip(),
+        "name": str(model.get("name") or str(model.get("model") or "")).strip(),
+        "api_key": str(model.get("api_key") or "").strip(),
+        "base_url": str(model.get("base_url") or "").strip(),
+        "ctx_limit": int(model.get("ctx_limit") or 0),
+        "max_concurrency": int(model.get("max_concurrency") or 0),
+    })
 
 
 # ---------------------------------------------------------------------------

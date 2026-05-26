@@ -57,9 +57,23 @@ _LOTTERY_FILE = BASE_DIR / "data" / "lottery_state.json"
 
 _STEWARD_STATE_FILE = DATA_DIR / "steward_state.json"
 
-# Big-heartbeat cadence: perform proactive checks every ~30 minutes.
-# Converted to the number of SCHEDULER_INTERVAL ticks.
-_BIG_HEARTBEAT_INTERVAL = max(1, 1800 // SCHEDULER_INTERVAL)
+# Big-heartbeat cadence: perform proactive checks.
+# Read from web_settings.json (default 1800s = 30 min), converted to ticks.
+_HEARTBEAT_INTERVAL_SECONDS: int = 0  # lazy-loaded on first use
+
+
+def _get_heartbeat_interval() -> int:
+    global _HEARTBEAT_INTERVAL_SECONDS
+    if not _HEARTBEAT_INTERVAL_SECONDS:
+        try:
+            from cyrene.settings_store import get
+            _HEARTBEAT_INTERVAL_SECONDS = int(get("heartbeat_interval", 1800) or 1800)
+        except Exception:
+            _HEARTBEAT_INTERVAL_SECONDS = 1800
+    return _HEARTBEAT_INTERVAL_SECONDS
+
+
+_BIG_HEARTBEAT_INTERVAL: int = 0  # set during setup_scheduler
 
 # Steward cadence: run steward agent every STEWARD_INTERVAL seconds.
 _STEWARD_TICK_INTERVAL = max(1, STEWARD_INTERVAL // SCHEDULER_INTERVAL)
@@ -792,7 +806,10 @@ def setup_scheduler(bot, db_path: str) -> AsyncIOScheduler:
     work without modification.
     """
     global _scheduler
+    global _BIG_HEARTBEAT_INTERVAL
     _load_lottery_state()
+    hb_seconds = _get_heartbeat_interval()
+    _BIG_HEARTBEAT_INTERVAL = max(1, hb_seconds // SCHEDULER_INTERVAL)
     _scheduler = AsyncIOScheduler()
     _scheduler.add_job(
         _heartbeat,
@@ -805,9 +822,10 @@ def setup_scheduler(bot, db_path: str) -> AsyncIOScheduler:
     big_minutes = (_BIG_HEARTBEAT_INTERVAL * SCHEDULER_INTERVAL) // 60
     logger.info(
         "Scheduler configured: interval=%ds, big_heartbeat every %d ticks "
-        "(~%d min)",
+        "(~%d min, configured=%ds)",
         SCHEDULER_INTERVAL,
         _BIG_HEARTBEAT_INTERVAL,
         big_minutes,
+        hb_seconds,
     )
     return _scheduler
