@@ -494,10 +494,24 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
             wx_client = get_current_client()
             if wx_client and wx_client._config.owner_wxid:
                 wxid = wx_client._config.owner_wxid
-                await wx_client.send_message(
-                    wxid,
-                    f"📋 定时任务 [{status_label}]: {summary}",
-                )
+                try:
+                    await wx_client.send_message(
+                        wxid,
+                        f"📋 定时任务 [{status_label}]: {summary}",
+                    )
+                except Exception:
+                    # Token expired or client replaced concurrently — retry once
+                    wx_client2 = get_current_client()
+                    if wx_client2 is not wx_client and wx_client2 and wx_client2._config.owner_wxid:
+                        try:
+                            await wx_client2.send_message(
+                                wx_client2._config.owner_wxid,
+                                f"📋 定时任务 [{status_label}]: {summary}",
+                            )
+                        except Exception:
+                            logger.warning("WeChat notification failed, skipping")
+                    else:
+                        logger.warning("WeChat notification failed, skipping")
     except Exception:
         logger.exception("Failed to send task execution notifications")
 

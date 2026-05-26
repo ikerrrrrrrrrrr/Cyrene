@@ -76,6 +76,10 @@ class WeChatClient:
         self._config = config
         self._http = httpx.AsyncClient(timeout=15)
 
+    async def close(self) -> None:
+        """Close the underlying HTTP client, releasing the connection pool."""
+        await self._http.aclose()
+
     # ── Internal helpers ────────────────────────────────────────────────
 
     def _base_info(self) -> dict:

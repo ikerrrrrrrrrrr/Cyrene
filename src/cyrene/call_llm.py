@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any, Callable, Awaitable
 
 import httpx
@@ -55,7 +56,7 @@ def _normalized_candidate(raw: dict[str, Any], index: int = 0, *, active_model: 
     model = str(raw.get("model") or raw.get("name") or raw.get("id") or "").strip()
     if not model:
         model = active_model
-    base_url = str(raw.get("base_url") or active_base_url).strip() or DEFAULT_OPENAI_BASE_URL
+    base_url = str(raw.get("base_url") or active_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
     api_key = _strip_wrapping_quotes(str(raw.get("api_key") or active_api_key or "").strip())
     return {
         "id": str(raw.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
@@ -236,17 +237,39 @@ def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
 # Payload building
 # ---------------------------------------------------------------------------
 
-_APPROX_TOKENS_PER_CHAR = 0.25
-
-
 def _approx_token_count(text: str) -> int:
-    return int(len(str(text or "")) * _APPROX_TOKENS_PER_CHAR)
+    """Estimate token count with CJK-aware heuristic.
+
+    CJK characters average ~1 token each; runs of ASCII word chars
+    average ~0.25 tokens/char (4 chars per token); punctuation/other
+    are counted individually.
+    """
+    source = str(text or "")
+    if not source.strip():
+        return 0
+    units = re.findall(r"[一-鿿]|[A-Za-z0-9_]+|[^\s]", source)
+    total = 0
+    for unit in units:
+        if re.fullmatch(r"[A-Za-z0-9_]+", unit):
+            total += max(1, (len(unit) + 3) // 4)
+        else:
+            total += 1
+    return total
 
 
 def _message_token_estimate(message: dict[str, Any]) -> int:
     total = 4
-    total += _approx_token_count(message.get("content") or "")
+    content = message.get("content")
+    if isinstance(content, str):
+        total += _approx_token_count(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                total += _approx_token_count(block.get("text") or "")
+    else:
+        total += _approx_token_count(content or "")
     total += _approx_token_count(message.get("role") or "")
+    total += _approx_token_count(message.get("reasoning_content") or "")
     for tc in message.get("tool_calls") or []:
         total += _approx_token_count(tc.get("function", {}).get("name") or "")
         total += _approx_token_count(tc.get("function", {}).get("arguments") or "")
@@ -360,10 +383,37 @@ def _format_httpx_error(exc: Exception) -> str:
     detail = str(exc or "").strip()
     if detail:
         parts.append(detail)
+
     request = getattr(exc, "request", None)
     if request is not None:
-        url = str(request.url)
-        parts.append(f"url={url}")
+        method = str(getattr(request, "method", "") or "").strip()
+        url = str(getattr(request, "url", "") or "").strip()
+        request_part = "request="
+        if method:
+            request_part += method
+        if url:
+            request_part += f" {url}" if method else url
+        parts.append(request_part)
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        parts.append(f"status={response.status_code}")
+        try:
+            body = str(response.text or "").strip()
+        except Exception:
+            body = ""
+        if body:
+            body_preview = re.sub(r"\s+", " ", body)[:500]
+            parts.append(f"body={body_preview}")
+
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        cause_text = str(cause or "").strip()
+        if cause_text:
+            parts.append(f"cause={type(cause).__name__}: {cause_text}")
+        else:
+            parts.append(f"cause={type(cause).__name__}")
+
     return " | ".join(parts)
 
 
@@ -568,8 +618,8 @@ async def call_llm(
                         if endpoint != endpoints[-1]:
                             continue
                         logger.warning(
-                            "call_llm candidate failed [caller=%s model=%s endpoint=%s candidate=%s]: %s",
-                            caller, model, endpoint, candidate.get("id"), _format_httpx_error(exc),
+                            "call_llm candidate failed [caller=%s phase=%s model=%s endpoint=%s candidate=%s]: %s",
+                            caller, phase, model, endpoint, candidate.get("id"), _format_httpx_error(exc),
                         )
 
                 if candidate_error:
@@ -588,6 +638,10 @@ async def call_llm(
                     _secondary_in_flight -= 1
 
         if last_error:
+            logger.exception(
+                "call_llm all candidates exhausted [caller=%s phase=%s]: %s",
+                caller, phase, _format_httpx_error(last_error),
+            )
             raise last_error
     return ""
 

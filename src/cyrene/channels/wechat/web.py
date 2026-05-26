@@ -76,12 +76,19 @@ def register_wechat_routes(app: FastAPI) -> None:
 
         from .bot import WeChatUpdater
         from .client import WeChatClient, WeChatConfig
+        from cyrene.channels.wechat import get_current_client, set_current_client
+
+        # Close old client before creating a new one
+        old_client = get_current_client()
+        if old_client is not None:
+            try:
+                await old_client.close()
+            except Exception:
+                logger.exception("Failed to close old WeChat client")
 
         config = WeChatConfig(bot_token=WECHAT_BOT_TOKEN)
         client = WeChatClient(config)
         updater = WeChatUpdater(client, db_path)
-
-        from cyrene.channels.wechat import set_current_client
         set_current_client(client)
 
         app.state.wechat_updater = updater
@@ -96,6 +103,11 @@ def register_wechat_routes(app: FastAPI) -> None:
         if updater is not None:
             await updater.stop()
             app.state.wechat_updater = None
+            from cyrene.channels.wechat import get_current_client, set_current_client
+            old = get_current_client()
+            set_current_client(None)
+            if old is not None:
+                await old.close()
             logger.info("WeChat polling stopped via /api/wechat/stop")
             return {"ok": True}
         return {"ok": True, "already_stopped": True}

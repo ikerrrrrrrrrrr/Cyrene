@@ -240,8 +240,14 @@ window.__sseEvents = [];
 window.__sseHandlers = new Set();
 
 // Subscribe to SSE so live events bump UI state.
+let _retryDelay = 1000;
+
 function connectEvents() {
   try {
+    // Close any existing EventSource before creating a new one
+    if (window.__cyreneEventSource) {
+      window.__cyreneEventSource.close();
+    }
     const es = new EventSource("/api/events");
     es.onmessage = (ev) => {
       try {
@@ -287,8 +293,10 @@ function connectEvents() {
     };
     es.onerror = () => {
       es.close();
-      setTimeout(connectEvents, 3000);
+      setTimeout(connectEvents, _retryDelay);
+      _retryDelay = Math.min(_retryDelay * 2, 15000);
     };
+    es.onopen = () => { _retryDelay = 1000; };
     window.__cyreneEventSource = es;
   } catch (e) {
     console.warn("SSE connection failed", e);

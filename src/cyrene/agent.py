@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,15 +11,14 @@ import httpx
 
 from contextvars import ContextVar
 
-from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE, DB_PATH, DEFAULT_OPENAI_BASE_URL, _strip_wrapping_quotes
+from cyrene.config import ASSISTANT_NAME, DATA_DIR, STATE_FILE
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context, touch_entry
 from cyrene.skills_registry import build_skill_prompt_block
-from cyrene.settings_store import get_models, get_spawn_policy
+from cyrene.settings_store import get_spawn_policy
 from cyrene import debug
 from cyrene.attachments import build_public_attachment_payload, register_generated_attachment
 from cyrene.conversations import get_archived_round
-from cyrene.db import record_token_usage
 from cyrene.llm import _assistant_text, _truncate
 from cyrene.tools import get_active_tool_defs, TOOL_HANDLERS, _execute_tool
 from cyrene.subagent import (

@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 _SETTINGS_PATH = DATA_DIR / "web_settings.json"
 
+# Clean up orphaned .tmp files from previous crashes on import
+for _p in _SETTINGS_PATH.parent.glob("web_settings.json.tmp"):
+    try:
+        _p.unlink()
+    except OSError:
+        pass
+
 _DEFAULT_MODELS = [
     {"id": "deepseek-chat", "name": "deepseek-chat", "desc": "DeepSeek default",
      "ctx": "64k", "price": "low"},
