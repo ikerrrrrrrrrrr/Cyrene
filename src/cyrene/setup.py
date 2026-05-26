@@ -84,7 +84,8 @@ async def _setup_from_name(name: str) -> None:
 
 async def _generate_soul_profile(name: str, bio: str = "", style: str = "", lang: str = "") -> str:
     """用搜索结果 + 模型知识生成行为人格文件。"""
-    from cyrene.agent import _call_llm, _assistant_text
+    from cyrene.agent.state import _call_llm
+    from cyrene.llm import _assistant_text
 
     research_section = ""
     if bio:

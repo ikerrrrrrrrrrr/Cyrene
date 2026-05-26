@@ -103,11 +103,13 @@ async def _request_write_elevation(
     path_hint: str,
     reason: str = "",
 ) -> str:
-    from cyrene.agent import (
+    from cyrene.agent.state import (
         _current_agent_id,
         _current_client_request_id,
         _current_command,
         _current_round_id,
+    )
+    from cyrene.agent.session import (
         _upsert_pending_question,
         get_session_labels,
     )
@@ -278,7 +280,7 @@ async def _tool_send_message_to_user(args: dict[str, Any], _bot: Any, _chat_id: 
             "user message via @mention. Use quit with your result for normal rounds."
         )
 
-    from cyrene.agent import append_system_message
+    from cyrene.agent.session import append_system_message
     await append_system_message(text)
     if _notify_state is not None:
         _notify_state["sent"] = True
@@ -290,13 +292,9 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     text = str(args.get("text", "") or "").strip()
     if not text:
         return "Error: 'text' is required."
-    from cyrene.agent import (
-        append_system_message,
-        _current_agent_id,
-        _current_client_request_id,
-        _current_round_id,
-        _insert_intermediate_user_reply,
-    )
+    from cyrene.agent.state import _current_agent_id, _current_client_request_id, _current_round_id
+    from cyrene.agent.session import append_system_message
+    from cyrene.agent.message import _insert_intermediate_user_reply
 
     if _current_agent_id.get() != "main":
         return "Only the main agent can send a user-visible WebUI message. Subagents must report via quit or send_agent_message."
@@ -324,13 +322,9 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
     if not path_arg:
         return "Error: 'path' is required."
 
-    from cyrene.agent import (
-        append_system_message,
-        _current_agent_id,
-        _current_client_request_id,
-        _current_round_id,
-        _insert_intermediate_user_reply,
-    )
+    from cyrene.agent.state import _current_agent_id, _current_client_request_id, _current_round_id
+    from cyrene.agent.session import append_system_message
+    from cyrene.agent.message import _insert_intermediate_user_reply
 
     if _current_agent_id.get() != "main":
         return "Only the main agent can send a file to the WebUI."
@@ -376,13 +370,9 @@ async def _tool_send_wechat_file(args: dict[str, Any], bot: Any, chat_id: int, _
     if not path_arg:
         return "Error: 'path' is required."
 
-    from cyrene.agent import (
-        _current_agent_id,
-        _current_round_id,
-        _current_client_request_id,
-        _insert_intermediate_user_reply,
-        append_system_message,
-    )
+    from cyrene.agent.state import _current_agent_id, _current_round_id, _current_client_request_id
+    from cyrene.agent.message import _insert_intermediate_user_reply
+    from cyrene.agent.session import append_system_message
 
     if _current_agent_id.get() != "main":
         return "Only the main agent can send files via WeChat."
@@ -440,13 +430,8 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
     if not text:
         return "Error: 'text' is required."
 
-    from cyrene.agent import (
-        _current_agent_id,
-        _current_client_request_id,
-        _current_command,
-        _current_round_id,
-        _upsert_pending_question,
-    )
+    from cyrene.agent.state import _current_agent_id, _current_client_request_id, _current_command, _current_round_id
+    from cyrene.agent.session import _upsert_pending_question
 
     if _current_agent_id.get() != "main":
         return "Only the main agent can ask the user a clarification question."
@@ -463,7 +448,7 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
             if label:
                 options.append(label)
 
-    from cyrene.agent import get_session_labels
+    from cyrene.agent.session import get_session_labels
 
     labels = get_session_labels(round_id)
     question = await _upsert_pending_question({
@@ -487,15 +472,9 @@ async def _tool_prompt_claude_code(args: dict[str, Any], _bot: Any, _chat_id: in
     if not task:
         return "Error: 'task' is required."
 
-    from cyrene.agent import (
-        _current_agent_id,
-        _current_client_request_id,
-        _current_round_id,
-        _upsert_pending_question,
-        build_claude_code_question_payload,
-        get_session_labels,
-        optimize_claude_code_prompt,
-    )
+    from cyrene.agent.state import _current_agent_id, _current_client_request_id, _current_round_id
+    from cyrene.agent.session import _upsert_pending_question, get_session_labels
+    from cyrene.agent.prompts import build_claude_code_question_payload, optimize_claude_code_prompt
     from cyrene.cc_bridge import get_cc_status
 
     if _current_agent_id.get() != "main":
@@ -689,7 +668,7 @@ async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
         stderr=asyncio.subprocess.PIPE,
     )
 
-    from cyrene.agent import _interrupt_event
+    from cyrene.agent.state import _interrupt_event
 
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
@@ -822,7 +801,7 @@ async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: in
     content = str(args.get("content", ""))
     if not target or not content:
         return "Error: both 'to' and 'content' are required."
-    from cyrene.agent import _current_agent_id, _current_round_id
+    from cyrene.agent.state import _current_agent_id, _current_round_id
     current_round_id = _current_round_id.get()
     if not await can_receive(target, round_id=current_round_id):
         if target.lower() in {"main", "main_agent", "cyrene", "danny", "host", "coordinator", "parent"}:
@@ -852,7 +831,7 @@ async def _tool_broadcast_agent_message(args: dict[str, Any], _bot: Any, _chat_i
     content = str(args.get("content", ""))
     if not content:
         return "Error: 'content' is required."
-    from cyrene.agent import _current_agent_id, _current_round_id
+    from cyrene.agent.state import _current_agent_id, _current_round_id
     from cyrene.subagent import _registry as _sub_registry, _lock as _reg_lock
     current_round_id = _current_round_id.get()
     from_agent = _current_agent_id.get()
@@ -907,7 +886,7 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
     use_secondary = bool(args.get("use_secondary", False))
     if not agent_id or not task:
         return "Error: agent_id and task are required."
-    from cyrene.agent import _current_agent_id, _current_round_id
+    from cyrene.agent.state import _current_agent_id, _current_round_id
     if _current_agent_id.get() != "main":
         return "Only the main agent can spawn subagents."
     await _reg_subagent(agent_id, task, round_id=_current_round_id.get())
@@ -918,11 +897,11 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
 
 async def _tool_query_round(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     """Query live round status for the main agent."""
-    from cyrene.agent import _current_agent_id
+    from cyrene.agent.state import _current_agent_id
 
     if _current_agent_id.get() != "main":
         return "Only the main agent can inspect live round status."
-    from cyrene.agent import query_live_rounds
+    from cyrene.agent.round import query_live_rounds
 
     return query_live_rounds(round_id=str(args.get("round_id", "")).strip())
 
@@ -973,7 +952,7 @@ async def _tool_recall_memory(args: dict[str, Any], _bot: Any, _chat_id: int, _d
 
 
 async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
-    from cyrene.agent import _current_round_id
+    from cyrene.agent.state import _current_round_id
 
     cwd = str(_resolve_workspace_path(str(args.get("cwd", ".") or ".")))
     command = str(args.get("command", "") or "")
@@ -1816,7 +1795,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     if handler is None:
         # Fallback: try MCP tool
         from cyrene import debug as _debug
-        from cyrene.agent import _caller_type, _current_round_id
+        from cyrene.agent.state import _caller_type, _current_round_id
         from cyrene.mcp_manager import get_manager as _get_mcp_mgr
 
         _t0 = time.monotonic()
@@ -1856,7 +1835,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
         result = await handler(arguments, bot, chat_id, db_path, notify_state)
     except Exception as e:
         from cyrene import debug
-        from cyrene.agent import _caller_type, _current_round_id
+        from cyrene.agent.state import _caller_type, _current_round_id
         await debug.publish_event({
             "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
             "result": f"Tool failed: {e}",
@@ -1876,9 +1855,9 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
         raise
     from cyrene import debug
     if debug.VERBOSE:
-        from cyrene.agent import _caller_type
+        from cyrene.agent.state import _caller_type
         debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000)
-    from cyrene.agent import _caller_type, _current_round_id
+    from cyrene.agent.state import _caller_type, _current_round_id
     await debug.publish_event({
         "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
         "result": str(result),

@@ -7,6 +7,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+# Patch missing deps before any cyrene import
+sys.modules.setdefault("PIL", MagicMock())
+sys.modules["PIL"].Image = MagicMock()
+sys.modules.setdefault("pypdf", MagicMock())
+
+from cyrene.agent import state as _agent_state
+from cyrene.agent import session as _agent_session
+from cyrene.agent import agent as _agent_core
+
 
 def _patch(obj, attr, replacement):
     """Simple patch helper."""
@@ -37,13 +46,13 @@ async def test_phase1_retry_with_unified_system_prompt():
         calls.append((messages, tools))
         return next(responses)
 
-    _orig_llm = _patch(agent, "_call_llm", fake_call_llm)
-    _orig_save = _patch(agent, "_save_session_messages", AsyncMock())
+    _orig_llm = _patch(_agent_core, "_call_llm", fake_call_llm)
+    _orig_save = _patch(_agent_core, "_save_session_messages", AsyncMock())
     try:
         result = await agent._run_main_agent("check Toronto weather", [], None, 0, "db.sqlite3")
     finally:
-        _patch(agent, "_call_llm", _orig_llm)
-        _patch(agent, "_save_session_messages", _orig_save)
+        _patch(_agent_core, "_call_llm", _orig_llm)
+        _patch(_agent_core, "_save_session_messages", _orig_save)
 
     # Phase 1 system prompt is MAIN only
     phase1_msgs, _ = calls[0]
@@ -75,29 +84,27 @@ async def test_phase2_prefix_matches_phase1():
     ])
     phase2_responses = iter([
         {
-            "content": "done",
+            "content": "Task is done. All work completed.",
             "tool_calls": [{"id": "q1", "function": {"name": "quit", "arguments": "{}"}}],
         },
     ])
 
-    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
         nonlocal phase1_done
         if not phase1_done:
             phase1_done = True
             return next(phase1_responses)
         return next(phase2_responses)
 
-    _orig_llm = _patch(agent, "_call_llm", fake_call_llm)
-    _orig_save = _patch(agent, "_save_session_messages", AsyncMock())
-    _orig_exec = _patch(agent, "_execute_tool", AsyncMock(return_value="ok"))
+    _orig_llm = _patch(_agent_core, "_call_llm", fake_call_llm)
+    _orig_save = _patch(_agent_core, "_save_session_messages", AsyncMock())
     try:
         result = await agent._run_main_agent("test task", [], None, 0, "db.sqlite3")
     finally:
-        _patch(agent, "_call_llm", _orig_llm)
-        _patch(agent, "_save_session_messages", _orig_save)
-        _patch(agent, "_execute_tool", _orig_exec)
+        _patch(_agent_core, "_call_llm", _orig_llm)
+        _patch(_agent_core, "_save_session_messages", _orig_save)
 
-    assert "done" in result
+    assert "Task is done" in result
     print("PASS: test_phase2_prefix_matches_phase1")
 
 
@@ -117,8 +124,7 @@ async def test_subagent_stable_system_prompt():
         },
     ])
 
-    async def fake_call_llm(messages, tools=None, max_tokens=32000):
-        # Capture clean copies of messages
+    async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
         saved = [{"role": m["role"], "content": str(m.get("content", ""))[:200]} for m in messages]
         llm_inputs.append(saved)
         assert max_tokens is None
@@ -127,7 +133,7 @@ async def test_subagent_stable_system_prompt():
     async def fake_wait(agent_id, inbox_check_func, mark_read_func=None, max_wait=600, result=""):
         return ""
 
-    _orig_llm = _patch(agent, "_call_llm", fake_call_llm)
+    _orig_llm = _patch(_agent_state, "_call_llm", fake_call_llm)
     _orig_exec = _patch(tools, "_execute_tool", AsyncMock(return_value="file content"))
     _orig_wait = _patch(subagent, "wait_for_others", fake_wait)
     _orig_save = _patch(subagent, "save_messages", AsyncMock())
@@ -141,7 +147,7 @@ async def test_subagent_stable_system_prompt():
     try:
         result = await subagent._run_subagent("test_agent", "test task", None, 0, "db.sqlite3")
     finally:
-        _patch(agent, "_call_llm", _orig_llm)
+        _patch(_agent_state, "_call_llm", _orig_llm)
         _patch(tools, "_execute_tool", _orig_exec)
         _patch(subagent, "wait_for_others", _orig_wait)
         _patch(subagent, "save_messages", _orig_save)
@@ -151,7 +157,6 @@ async def test_subagent_stable_system_prompt():
         _patch(inbox, "get_inbox_context", _orig_inbox_ctx)
         _patch(inbox, "mark_all_read", _orig_mark)
 
-    # Verify messages[0] is always clean
     for i, msgs in enumerate(llm_inputs):
         assert msgs[0]["role"] == "system", f"Call {i}: messages[0] should be system"
         assert "[活跃子 agent]" not in msgs[0]["content"], (
@@ -161,7 +166,6 @@ async def test_subagent_stable_system_prompt():
             f"Call {i}: system prompt leaked inbox context"
         )
 
-    # Registry context is in a user message
     call1 = llm_inputs[0]
     registry_msgs = [m for m in call1 if m["role"] == "user" and "[活跃子 agent]" in m.get("content", "")]
     assert len(registry_msgs) > 0, "Registry context should be injected as a user message"
@@ -181,7 +185,7 @@ async def test_subagent_empty_quit_exits_without_feedback_retry():
         },
     ])
 
-    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
         saved = [{"role": m["role"], "content": str(m.get("content", ""))[:200]} for m in messages]
         llm_inputs.append(saved)
         return next(responses)
@@ -189,7 +193,7 @@ async def test_subagent_empty_quit_exits_without_feedback_retry():
     async def fake_wait(agent_id, inbox_check_func, mark_read_func=None, max_wait=600, result=""):
         return ""
 
-    _orig_llm = _patch(agent, "_call_llm", fake_call_llm)
+    _orig_llm = _patch(_agent_state, "_call_llm", fake_call_llm)
     _orig_exec = _patch(tools, "_execute_tool", AsyncMock(return_value="ok"))
     _orig_wait = _patch(subagent, "wait_for_others", fake_wait)
     _orig_save = _patch(subagent, "save_messages", AsyncMock())
@@ -203,7 +207,7 @@ async def test_subagent_empty_quit_exits_without_feedback_retry():
     try:
         result = await subagent._run_subagent("test_agent", "test task", None, 0, "db.sqlite3")
     finally:
-        _patch(agent, "_call_llm", _orig_llm)
+        _patch(_agent_state, "_call_llm", _orig_llm)
         _patch(tools, "_execute_tool", _orig_exec)
         _patch(subagent, "wait_for_others", _orig_wait)
         _patch(subagent, "save_messages", _orig_save)
@@ -239,7 +243,7 @@ async def test_subagent_resume_strips_old_context():
         },
     ])
 
-    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
         saved = [{"role": m["role"], "content": str(m.get("content", ""))[:200]} for m in messages]
         llm_inputs.append(saved)
         return next(responses)
@@ -247,7 +251,7 @@ async def test_subagent_resume_strips_old_context():
     async def fake_wait(agent_id, inbox_check_func, mark_read_func=None, max_wait=600, result=""):
         return ""
 
-    _orig_llm = _patch(agent, "_call_llm", fake_call_llm)
+    _orig_llm = _patch(_agent_state, "_call_llm", fake_call_llm)
     _orig_exec = _patch(tools, "_execute_tool", AsyncMock(return_value="ok"))
     _orig_wait = _patch(subagent, "wait_for_others", fake_wait)
     _orig_save = _patch(subagent, "save_messages", AsyncMock())
@@ -264,7 +268,7 @@ async def test_subagent_resume_strips_old_context():
             resume_messages=old_messages,
         )
     finally:
-        _patch(agent, "_call_llm", _orig_llm)
+        _patch(_agent_state, "_call_llm", _orig_llm)
         _patch(tools, "_execute_tool", _orig_exec)
         _patch(subagent, "wait_for_others", _orig_wait)
         _patch(subagent, "save_messages", _orig_save)
@@ -274,8 +278,6 @@ async def test_subagent_resume_strips_old_context():
         _patch(inbox, "get_inbox_context", _orig_inbox_ctx)
         _patch(inbox, "mark_all_read", _orig_mark)
 
-    # Old context from resume_messages should be stripped
-    # Only the new context (bob) should be present
     call_msgs = llm_inputs[0]
     context_msgs = [m for m in call_msgs if "[活跃子 agent]" in str(m.get("content", ""))]
     assert len(context_msgs) == 1, (

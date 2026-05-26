@@ -935,6 +935,11 @@ const TRANSLATIONS = {
     "search.loading": "Searching…",
     "search.userLabel": "you",
     "search.assistantLabel": "{name}",
+
+    // ── Archive context (scroll up in live session) ──────────────────────
+    "chat.historyContext": "━━━ history context ━━━",
+    "chat.earlierConversation": "↑ earlier conversation",
+    "chat.loadingArchive": "loading…",
   },
 
   zh: {
@@ -957,7 +962,7 @@ const TRANSLATIONS = {
     // ── 顶栏 ───────────────────────────────────────────────────────────
     "topbar.dashboard": "仪表盘",
     "topbar.chat": "对话",
-    "topbar.agentFlow": "代理流程",
+    "topbar.agentFlow": "运行",
     "topbar.sessions": "会话",
     "topbar.skills": "技能",
     "topbar.memory": "记忆",
@@ -1329,6 +1334,9 @@ const TRANSLATIONS = {
     "chat.welcomePeakHour": "高峰时段",
     "chat.welcomeFavoriteModel": "常用模型",
     "chat.welcomeDescription": "你已经在使用 Cyrene 把会话转化为有效的工作上下文。",
+    "chat.youHaveUsed": "你已经使用",
+    "chat.tokenRead": "读取了",
+    "chat.tokenOutput": "输出了",
 
     // ── 右侧边栏视图 ────────────────────────────────────────────────────
     "chat.side.overview": "概览",
@@ -1629,7 +1637,7 @@ const TRANSLATIONS = {
     "settings.agents": "代理",
     "settings.agentsSubtitle": "SOUL.md 和子代理生成策略等行为设置统一放在这里。",
     "settings.flowchartOrientation": "流程图方向",
-    "settings.flowchartOrientationHint": "代理流程画布上节点的流动方向。",
+    "settings.flowchartOrientationHint": "运行流程图画布上节点的流动方向。",
     "settings.spawnPolicy": "生成策略",
     "settings.spawnPolicyHint": "主代理何时被允许委派子代理。",
     "settings.aggressive": "激进 — 经常委派",
@@ -1849,6 +1857,11 @@ const TRANSLATIONS = {
     "search.loading": "搜索中…",
     "search.userLabel": "你",
     "search.assistantLabel": "{name}",
+
+    // ── Archive context (scroll up in live session) ──────────────────────
+    "chat.historyContext": "━━━ 历史上下文 ━━━",
+    "chat.earlierConversation": "↑ 更早的对话",
+    "chat.loadingArchive": "加载中…",
   },
 };
 

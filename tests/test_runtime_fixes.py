@@ -3,15 +3,72 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+# Patch missing deps before any cyrene import
+sys.modules.setdefault("PIL", MagicMock())
+sys.modules["PIL"].Image = MagicMock()
+sys.modules.setdefault("pypdf", MagicMock())
+
+
+def _patch_call_llm(monkeypatch, fake):
+    """Patch _call_llm in all sub-modules that import it at module level."""
+    from cyrene.agent import state as _s, agent as _a, coordinator as _c, guidance as _g, session as _se
+    for _mod in (_s, _a, _c, _g, _se):
+        if hasattr(_mod, '_call_llm'):
+            monkeypatch.setattr(_mod, '_call_llm', fake)
+
+
+def _patch_call_llm_stream(monkeypatch, fake):
+    from cyrene.agent import agent as _a
+    monkeypatch.setattr(_a, '_call_llm_stream', fake)
+
+
+def _patch_save_session(monkeypatch, fake):
+    """Patch _save_session_messages in all sub-modules that import it."""
+    from cyrene.agent import agent as _a, session as _se
+    for _mod in (_a, _se):
+        if hasattr(_mod, '_save_session_messages'):
+            monkeypatch.setattr(_mod, '_save_session_messages', fake)
+
+
+def _patch_append_session(monkeypatch, fake):
+    from cyrene.agent import agent as _a, session as _se
+    for _mod in (_a, _se):
+        if hasattr(_mod, '_append_session_message'):
+            monkeypatch.setattr(_mod, '_append_session_message', fake)
+
+
+def _patch_execute_tool(monkeypatch, fake):
+    """Patch _execute_tool in all sub-modules that import it."""
+    from cyrene.agent import agent as _a, coordinator as _c
+    for _mod in (_a, _c):
+        if hasattr(_mod, '_execute_tool'):
+            monkeypatch.setattr(_mod, '_execute_tool', fake)
+
+
+def _patch_state_file(monkeypatch, path):
+    from cyrene.agent import state as _s
+    monkeypatch.setattr(_s, 'STATE_FILE', path)
+
+
+def _patch_data_dir(monkeypatch, path):
+    from cyrene.agent import state as _s
+    monkeypatch.setattr(_s, 'DATA_DIR', path)
+
 
 async def test_execution_agent_returns_quit_text(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     async def fake_call_llm(messages, tools=None, max_tokens=32000):
         return {
@@ -19,7 +76,7 @@ async def test_execution_agent_returns_quit_text(monkeypatch):
             "tool_calls": [{"id": "q1", "function": {"name": "quit", "arguments": "{}"}}],
         }
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    _patch_call_llm(monkeypatch, fake_call_llm)
     result = await agent._run_execution_agent("do something", None, 0, "db.sqlite3")
     assert result == "scheduled task completed"
 
@@ -102,6 +159,12 @@ async def test_execute_tool_awaits_event_publish(monkeypatch):
 
 async def test_subagent_cannot_send_user_visible_message(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import tools
 
     called = {"append": False}
@@ -110,7 +173,7 @@ async def test_subagent_cannot_send_user_visible_message(monkeypatch):
         called["append"] = True
         return {}
 
-    monkeypatch.setattr(agent, "append_system_message", fake_append_system_message)
+    monkeypatch.setattr(_agent_session, "append_system_message", fake_append_system_message)
 
     token = agent._current_agent_id.set("agent_worker")
     try:
@@ -198,12 +261,18 @@ async def test_recall_memory_tool_returns_archived_matches_and_persisted_memory(
 
 async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_prompt(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     seen: dict[str, Any] = {}
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "[Previous context:]\n- remembers tea")
 
     def fake_get_memory_context(include_short_term: bool = True):
@@ -216,7 +285,7 @@ async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_promp
         return "ok"
 
     monkeypatch.setattr(agent, "get_memory_context", fake_get_memory_context)
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent("hello", None, 0, "db.sqlite3")
 
@@ -452,6 +521,12 @@ async def test_chat_with_uploaded_images_falls_back_to_vision_model(monkeypatch,
 
 async def test_save_session_messages_emits_session_update(tmp_path, monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
 
     seen = []
@@ -459,8 +534,8 @@ async def test_save_session_messages_emits_session_update(tmp_path, monkeypatch)
     async def fake_publish_event(event):
         seen.append(event)
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(debug, "publish_event", fake_publish_event)
 
     await agent._save_session_messages([
@@ -477,6 +552,12 @@ async def test_save_session_messages_emits_session_update(tmp_path, monkeypatch)
 
 async def test_proactive_round_hides_internal_prompt_and_initial_detail(tmp_path, monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
 
     events = []
@@ -490,11 +571,11 @@ async def test_proactive_round_hides_internal_prompt_and_initial_detail(tmp_path
             "tool_calls": [],
         }
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_memory_context", lambda include_short_term=True: "")
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    _patch_call_llm(monkeypatch, fake_call_llm)
     monkeypatch.setattr(debug, "publish_event", fake_publish_event)
 
     result = await agent._run_chat_agent(
@@ -590,6 +671,12 @@ async def test_heartbeat_proactive_check_uses_main_agent_loop(monkeypatch):
 
 async def test_execute_task_fallback_persists_webui_reminder(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
     from cyrene import scheduler
 
@@ -607,8 +694,8 @@ async def test_execute_task_fallback_persists_webui_reminder(monkeypatch, tmp_pa
     async def fake_update_task_after_run(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(scheduler, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(scheduler, "DATA_DIR", tmp_path)
     monkeypatch.setattr(debug, "publish_event", fake_publish_event)
@@ -641,6 +728,12 @@ async def test_execute_task_fallback_persists_webui_reminder(monkeypatch, tmp_pa
 def test_format_httpx_error_includes_request_response_and_cause():
     import httpx
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     request = httpx.Request("POST", "https://example.test/v1/chat/completions")
     response = httpx.Response(502, request=request, text='{"error":"upstream exploded"}')
@@ -674,6 +767,12 @@ async def test_send_agent_message_redirects_main_alias():
 
 async def test_send_agent_message_rejects_cross_round_target():
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import subagent
     from cyrene import tools
 
@@ -697,6 +796,12 @@ async def test_send_agent_message_rejects_cross_round_target():
 
 async def test_send_message_tool_persists_intermediate_reply(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
     from cyrene import tools
 
@@ -705,8 +810,8 @@ async def test_send_message_tool_persists_intermediate_reply(monkeypatch, tmp_pa
     async def fake_publish_event(event):
         seen.append(event)
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(debug, "publish_event", fake_publish_event)
 
     agent.STATE_FILE.write_text(json.dumps({
@@ -746,6 +851,12 @@ async def test_send_message_tool_persists_intermediate_reply(monkeypatch, tmp_pa
 
 async def test_send_message_tool_from_scheduler_persists_system_message(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
     from cyrene import tools
 
@@ -754,8 +865,8 @@ async def test_send_message_tool_from_scheduler_persists_system_message(monkeypa
     async def fake_publish_event(event):
         seen.append(event)
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(tools, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(tools, "DATA_DIR", tmp_path)
     monkeypatch.setattr(debug, "publish_event", fake_publish_event)
@@ -830,6 +941,12 @@ async def test_schedule_task_once_normalizes_naive_local_time_to_utc(monkeypatch
 
 async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
     from cyrene import tools
 
@@ -838,8 +955,8 @@ async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):
     async def fake_publish_event(event):
         seen.append(event)
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(debug, "publish_event", fake_publish_event)
 
     agent.STATE_FILE.write_text(json.dumps({
@@ -883,13 +1000,19 @@ async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):
 
 async def test_ask_user_wait_state_does_not_persist_assistant_trace(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
 
     async def fake_call_llm(messages, tools=None, max_tokens=32000):
-        if tools is agent._LIGHT_TOOL_DEFS:
+        if tools is _agent_state._LIGHT_TOOL_DEFS:
             return {
                 "content": "我应该先问清楚。",
                 "tool_calls": [
@@ -921,8 +1044,8 @@ async def test_ask_user_wait_state_does_not_persist_assistant_trace(monkeypatch,
             "option_count": 2,
         }, ensure_ascii=False)
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
-    monkeypatch.setattr(agent, "_execute_tool", fake_execute_tool)
+    _patch_call_llm(monkeypatch, fake_call_llm)
+    _patch_execute_tool(monkeypatch, fake_execute_tool)
 
     result = await agent._run_chat_agent("帮我继续", None, 0, "db.sqlite3", client_request_id="req_wait")
     state = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))
@@ -939,11 +1062,17 @@ async def test_ask_user_wait_state_does_not_persist_assistant_trace(monkeypatch,
 
 async def test_answer_pending_question_resumes_same_round(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     seen = {}
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     agent.STATE_FILE.write_text(json.dumps({
         "messages": [
             {"role": "user", "content": "做一个旅游计划", "round_id": "round_1", "message_id": "u1"},
@@ -990,7 +1119,7 @@ async def test_answer_pending_question_resumes_same_round(monkeypatch, tmp_path)
         seen["persist_user_message"] = persist_user_message
         return "继续完成后的最终答案"
 
-    monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
+    monkeypatch.setattr(_agent_coordinator, "_run_chat_agent", fake_run_chat_agent)
 
     result = await agent.answer_pending_question(
         "question_1",
@@ -1078,6 +1207,12 @@ async def test_stream_reply_payload_emits_ndjson_events():
 
 async def test_run_main_agent_chat_only_streams_final_reply(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     saved = {}
     streamed = []
@@ -1095,11 +1230,11 @@ async def test_run_main_agent_chat_only_streams_final_reply(monkeypatch):
     async def fake_save_session_messages(messages):
         saved["messages"] = list(messages)
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
-    monkeypatch.setattr(agent, "_call_llm_stream", fake_call_llm_stream)
-    monkeypatch.setattr(agent, "_save_session_messages", fake_save_session_messages)
-    monkeypatch.setattr(agent, "_append_session_message", AsyncMock())
-    monkeypatch.setattr(agent, "_publish_runtime_event", AsyncMock())
+    _patch_call_llm(monkeypatch, fake_call_llm)
+    _patch_call_llm_stream(monkeypatch, fake_call_llm_stream)
+    _patch_save_session(monkeypatch, fake_save_session_messages)
+    _patch_append_session(monkeypatch, AsyncMock())
+    monkeypatch.setattr(_agent_state, "_publish_runtime_event", AsyncMock())
 
     async def collect(event):
         streamed.append(event)
@@ -1128,6 +1263,12 @@ async def test_run_main_agent_chat_only_streams_final_reply(monkeypatch):
 
 async def test_stream_agent_reply_forwards_live_events_before_completion(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from webui import routes
 
     seen = {"archived": None}
@@ -1165,6 +1306,12 @@ async def test_stream_agent_reply_forwards_live_events_before_completion(monkeyp
 
 def test_flush_intermediate_replies_keeps_messages_for_later_saves():
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     base_messages = [
         {"role": "system", "content": "sys"},
@@ -1201,14 +1348,20 @@ async def test_query_round_tool_reports_live_round():
 
 async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
     from cyrene import inbox
     import cyrene.conversations as conversations
 
     ack_text = "收到这条引导了，我会按新的方向继续这一轮。"
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
     agent.STATE_FILE.write_text(
         json.dumps({
@@ -1262,8 +1415,8 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
     async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
         seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
 
-    monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
-    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
+    monkeypatch.setattr(_agent_coordinator, "_run_chat_agent", fake_run_chat_agent)
+    monkeypatch.setattr(_agent_guidance, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
@@ -1306,14 +1459,20 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
 
 async def test_queue_round_guidance_persists_user_message_immediately(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import subagent
     from cyrene import inbox
 
     await subagent.clear()
     await subagent.register("alice", "research topic", round_id="round_1")
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
     agent.STATE_FILE.write_text(
         json.dumps({
@@ -1325,7 +1484,7 @@ async def test_queue_round_guidance_persists_user_message_immediately(monkeypatc
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(agent, "_ensure_main_inbox_worker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(_agent_guidance, "_ensure_main_inbox_worker", lambda *_args, **_kwargs: None)
 
     item = await agent.queue_round_guidance("round_1", "queued follow-up", None, 0, "db.sqlite3", client_request_id="req_queued")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
@@ -1342,6 +1501,12 @@ async def test_queue_round_guidance_persists_user_message_immediately(monkeypatc
 
 async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import behavior_learning
     from cyrene import debug
     from cyrene import inbox
@@ -1353,8 +1518,8 @@ async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeyp
     await subagent.clear()
     await subagent.register("alice", "research topic", round_id="round_1")
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
     agent.STATE_FILE.write_text(
         json.dumps({
@@ -1390,12 +1555,12 @@ async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeyp
     async def fail_run_chat_agent(*_args, **_kwargs):
         raise AssertionError("_run_chat_agent should not run when the round already has subagents")
 
-    monkeypatch.setattr(agent, "_fan_out_guidance_to_subagents", fake_fan_out)
-    monkeypatch.setattr(agent, "_wait_for_subagent_round", fake_wait)
+    monkeypatch.setattr(_agent_guidance, "_fan_out_guidance_to_subagents", fake_fan_out)
+    monkeypatch.setattr(_agent_guidance, "_wait_for_subagent_round", fake_wait)
     monkeypatch.setattr(subagent, "run_summary_subagent", fake_summary_subagent)
     monkeypatch.setattr(subagent, "build_flow_snapshot", fake_flow_snapshot)
-    monkeypatch.setattr(agent, "_run_chat_agent", fail_run_chat_agent)
-    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
+    monkeypatch.setattr(_agent_coordinator, "_run_chat_agent", fail_run_chat_agent)
+    monkeypatch.setattr(_agent_guidance, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
     monkeypatch.setattr(behavior_learning, "try_route_and_execute_skill", AsyncMock(return_value=None))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
@@ -1433,14 +1598,20 @@ async def test_main_inbox_guidance_relays_to_subagents_and_inserts_reply(monkeyp
 
 async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
     from cyrene import inbox
     import cyrene.conversations as conversations
 
     ack_text = "收到，我会按这个补充要求继续处理。"
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
     agent.STATE_FILE.write_text(
         json.dumps({
@@ -1467,8 +1638,8 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
     async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
         seen["archived"] = (user_message, assistant_response, session_title, round_title, round_id)
 
-    monkeypatch.setattr(agent, "_run_chat_agent", boom_run_chat_agent)
-    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
+    monkeypatch.setattr(_agent_coordinator, "_run_chat_agent", boom_run_chat_agent)
+    monkeypatch.setattr(_agent_guidance, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
     monkeypatch.setattr(debug, "publish_event", lambda event: events.append(event) or asyncio.sleep(0))
@@ -1501,6 +1672,12 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
 
 async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import behavior_learning
     from cyrene import debug
     from cyrene import inbox
@@ -1508,10 +1685,10 @@ async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(mon
 
     ack_text = "明白，我按你的新要求重做这一轮的回复。"
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     monkeypatch.setattr(agent, "get_memory_context", lambda: "")
     agent.STATE_FILE.write_text(
@@ -1541,8 +1718,8 @@ async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(mon
     async def fake_archive_exchange(user_message, assistant_response, chat_id, session_title="", round_title="", round_id="", archive_session_id=""):
         return None
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
-    monkeypatch.setattr(agent, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
+    _patch_call_llm(monkeypatch, fake_call_llm)
+    monkeypatch.setattr(_agent_guidance, "_generate_guidance_ack", AsyncMock(return_value=ack_text))
     monkeypatch.setattr(behavior_learning, "try_route_and_execute_skill", AsyncMock(return_value=None))
     monkeypatch.setattr(conversations, "archive_exchange", fake_archive_exchange)
     events = []
@@ -1581,11 +1758,17 @@ async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(mon
 
 async def test_run_chat_agent_persists_client_request_ids(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import debug
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     monkeypatch.setattr(agent, "get_memory_context", lambda: "")
     events = []
@@ -1600,7 +1783,7 @@ async def test_run_chat_agent_persists_client_request_ids(monkeypatch, tmp_path)
         ])
         return "raw reply"
 
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent("current request", None, 0, "db.sqlite3", client_request_id="req_live")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
@@ -1618,6 +1801,12 @@ async def test_run_chat_agent_persists_client_request_ids(monkeypatch, tmp_path)
 
 async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import soul
 
     base_messages = [
@@ -1627,9 +1816,9 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
         {"role": "assistant", "content": "other round reply", "round_id": "round_2"},
     ]
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
@@ -1642,7 +1831,7 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
         ])
         return "raw reply"
 
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent(
         "guided follow-up",
@@ -1667,6 +1856,12 @@ async def test_run_chat_agent_history_override_preserves_other_rounds(monkeypatc
 
 async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_place(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     base_messages = [
         {"role": "user", "content": "round one question", "round_id": "round_1"},
@@ -1674,9 +1869,9 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
         {"role": "user", "content": "later queued guidance", "round_id": "round_1", "queued_guidance_id": "guide_2"},
     ]
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
@@ -1689,7 +1884,7 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
         ])
         return "reply to current guidance"
 
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent(
         "current queued guidance",
@@ -1715,6 +1910,12 @@ async def test_run_chat_agent_persist_insert_at_keeps_later_queued_messages_in_p
 
 async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import soul
 
     base_messages = [
@@ -1722,9 +1923,9 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
         {"role": "assistant", "content": "previous reply", "round_id": "round_0"},
     ]
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
@@ -1743,7 +1944,7 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
         ])
         return "raw reply"
 
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent("current request", None, 0, "db.sqlite3", forced_round_id="round_1")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
@@ -1761,14 +1962,20 @@ async def test_run_chat_agent_live_merge_preserves_concurrent_guidance(monkeypat
 
 async def test_save_session_messages_replaces_live_round_block_without_duplication(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     base_messages = [
         {"role": "user", "content": "previous question", "round_id": "round_0"},
         {"role": "assistant", "content": "previous reply", "round_id": "round_0"},
     ]
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
     round_token = agent._current_round_id.set("round_1")
@@ -1814,6 +2021,12 @@ async def test_save_session_messages_replaces_live_round_block_without_duplicati
 
 async def test_run_chat_agent_history_override_visible_reply_update_does_not_duplicate_messages(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     base_messages = [
         {"role": "user", "content": "round one question", "round_id": "round_1"},
@@ -1822,9 +2035,9 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
         {"role": "assistant", "content": "other round reply", "round_id": "round_2"},
     ]
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
     agent.STATE_FILE.write_text(json.dumps({"messages": base_messages}, ensure_ascii=False), encoding="utf-8")
 
@@ -1837,7 +2050,7 @@ async def test_run_chat_agent_history_override_visible_reply_update_does_not_dup
         ])
         return "raw reply"
 
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent(
         "guided follow-up",
@@ -1912,6 +2125,12 @@ async def test_subagent_registry_emits_update_events(monkeypatch):
 
 async def test_run_subagent_persists_quit_tool_messages_before_resume(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import subagent
 
     llm_inputs = []
@@ -1944,7 +2163,7 @@ async def test_run_subagent_persists_quit_tool_messages_before_resume(monkeypatc
     async def fake_wait_for_others(agent_id, inbox_check_func, mark_read_func=None, max_wait=600, result=""):
         return next(wait_results)
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    _patch_call_llm(monkeypatch, fake_call_llm)
     monkeypatch.setattr(subagent, "wait_for_others", fake_wait_for_others)
 
     await subagent.clear()
@@ -2240,16 +2459,22 @@ def test_build_current_session_recovers_subagents_from_state_and_inbox(tmp_path,
 
 async def test_clear_session_id_removes_live_flow_residue(tmp_path, monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import inbox
     from cyrene import subagent
     from webui import routes
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
     monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(routes, "DATA_DIR", tmp_path)
     monkeypatch.setattr(inbox, "INBOX_DIR", tmp_path / "inbox")
-    monkeypatch.setattr(agent, "_compress_old_messages", AsyncMock())
+    monkeypatch.setattr(_agent_session, "_compress_old_messages", AsyncMock())
 
     agent.STATE_FILE.write_text(
         json.dumps({
@@ -2857,10 +3082,16 @@ def test_convert_messages_marks_intermediate_replies():
 
 async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
@@ -2871,7 +3102,7 @@ async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_
         ])
         return "raw final"
 
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent("hi", None, 0, "db.sqlite3")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
@@ -2883,10 +3114,16 @@ async def test_run_chat_agent_returns_main_agent_text_directly(monkeypatch, tmp_
 
 async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final_message(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(agent, "_refresh_session_labels", AsyncMock())
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
     monkeypatch.setattr(agent, "get_context", lambda max_chars=5000: "")
 
     async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang=""):
@@ -2902,7 +3139,7 @@ async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final
         ])
         return "[Sub-agents are still working in the background. You can continue the conversation.]"
 
-    monkeypatch.setattr(agent, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
 
     result = await agent._run_chat_agent("keep going", None, 0, "db.sqlite3")
     saved = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))["messages"]
@@ -2915,10 +3152,16 @@ async def test_run_chat_agent_returns_main_text_when_internal_trace_has_no_final
 
 async def test_tool_bash_returns_early_when_interrupted(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import tools
 
     interrupt_event = asyncio.Event()
-    monkeypatch.setattr(agent, "_interrupt_event", interrupt_event)
+    monkeypatch.setattr(_agent_state, "_interrupt_event", interrupt_event)
 
     task = asyncio.create_task(tools._tool_bash(
         {"command": "sleep 30", "timeout_ms": 60000},
@@ -2938,6 +3181,12 @@ async def test_tool_bash_returns_early_when_interrupted(monkeypatch):
 
 async def test_interrupt_active_run_clears_after_locked_run_finishes():
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     agent._interrupt_event.clear()
     locked = asyncio.Event()
@@ -2963,6 +3212,12 @@ async def test_interrupt_active_run_clears_after_locked_run_finishes():
 
 async def test_run_agent_clears_stale_interrupt_before_starting(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     seen = {}
 
@@ -2970,7 +3225,7 @@ async def test_run_agent_clears_stale_interrupt_before_starting(monkeypatch):
         seen["interrupt_before_start"] = agent._interrupt_event.is_set()
         return "ok"
 
-    monkeypatch.setattr(agent, "_run_chat_agent", fake_run_chat_agent)
+    monkeypatch.setattr(_agent_coordinator, "_run_chat_agent", fake_run_chat_agent)
     agent._interrupt_event.set()
 
     result = await agent.run_agent("hi", None, 0, "db.sqlite3")
@@ -2981,11 +3236,17 @@ async def test_run_agent_clears_stale_interrupt_before_starting(monkeypatch):
 
 async def test_run_main_agent_returns_background_notice_when_monitoring_is_interrupted(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
     from cyrene import inbox
     from cyrene import subagent
 
     interrupt_event = asyncio.Event()
-    monkeypatch.setattr(agent, "_interrupt_event", interrupt_event)
+    monkeypatch.setattr(_agent_state, "_interrupt_event", interrupt_event)
 
     responses = iter([
         {
@@ -3011,9 +3272,9 @@ async def test_run_main_agent_returns_background_notice_when_monitoring_is_inter
     async def fake_snapshot():
         return {"alice": {"status": "running", "task": "research"}}
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
-    monkeypatch.setattr(agent, "_execute_tool", fake_execute_tool)
-    monkeypatch.setattr(agent, "_save_session_messages", fake_save)
+    _patch_call_llm(monkeypatch, fake_call_llm)
+    _patch_execute_tool(monkeypatch, fake_execute_tool)
+    _patch_save_session(monkeypatch, fake_save)
     monkeypatch.setattr(subagent, "collect_results", lambda: asyncio.sleep(0, result="summary"))
     monkeypatch.setattr(subagent, "clear", lambda: asyncio.sleep(0))
     monkeypatch.setattr(subagent, "get_snapshot", fake_snapshot)
@@ -3032,6 +3293,12 @@ async def test_run_main_agent_returns_background_notice_when_monitoring_is_inter
 
 async def test_run_main_agent_retries_invalid_phase1_tool_and_returns_model_explanation(monkeypatch):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
     calls = []
     responses = iter([
@@ -3055,22 +3322,28 @@ async def test_run_main_agent_retries_invalid_phase1_tool_and_returns_model_expl
     async def fake_save(messages):
         saved.append(messages)
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
-    monkeypatch.setattr(agent, "_save_session_messages", fake_save)
+    _patch_call_llm(monkeypatch, fake_call_llm)
+    _patch_save_session(monkeypatch, fake_save)
 
     result = await agent._run_main_agent("现在先看看多伦多的天气", [], None, 0, "db.sqlite3")
 
     assert result == "当前阶段没有合适工具，请改用 use_tools 进入完整工具阶段。"
-    assert calls[0] is agent._LIGHT_TOOL_DEFS
-    assert calls[1] is agent._LIGHT_TOOL_DEFS
+    assert calls[0] is _agent_state._LIGHT_TOOL_DEFS
+    assert calls[1] is _agent_state._LIGHT_TOOL_DEFS
     assert saved
 
 
 async def test_refresh_session_labels_persists_titles(monkeypatch, tmp_path):
     from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
 
-    monkeypatch.setattr(agent, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(agent, "DATA_DIR", tmp_path)
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
 
     await agent._save_session_messages([
         {"role": "user", "content": "讨论加密货币辩论结构", "round_id": "round_1"},
@@ -3080,7 +3353,7 @@ async def test_refresh_session_labels_persists_titles(monkeypatch, tmp_path):
     async def fake_call_llm(messages, tools=None, max_tokens=32000):
         return {"content": '{"round_title":"加密货币辩论","session_title":"加密货币多代理讨论"}'}
 
-    monkeypatch.setattr(agent, "_call_llm", fake_call_llm)
+    _patch_call_llm(monkeypatch, fake_call_llm)
 
     await agent._refresh_session_labels("讨论加密货币辩论结构", "round_1")
     state = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))

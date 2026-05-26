@@ -1560,7 +1560,8 @@ async def _heuristic_request_fingerprint(
 
 
 async def _call_llm_json(prompt: str, *, caller: str = "behavior_learning") -> dict[str, Any]:
-    from cyrene.agent import _call_llm, _caller_type, _assistant_text
+    from cyrene.agent.state import _call_llm, _caller_type
+    from cyrene.llm import _assistant_text
 
     token = _caller_type.set(caller)
     try:
@@ -3793,7 +3794,8 @@ async def try_route_and_execute_skill(
         return None
     params = extraction["params"]
     await mark_turn_skill_routed(skill["skill_id"])
-    from cyrene.agent import _final_user_reply_from_history, _apply_assistant_meta
+    from cyrene.agent.guidance import _final_user_reply_from_history
+    from cyrene.agent.message import _apply_assistant_meta
     from cyrene.tools import _execute_tool
 
     messages: list[dict[str, Any]] = [

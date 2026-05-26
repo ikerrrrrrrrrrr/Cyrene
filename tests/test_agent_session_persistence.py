@@ -1,8 +1,15 @@
 import json
+import sys
+from unittest.mock import MagicMock
 
 import pytest
 
+sys.modules.setdefault("PIL", MagicMock())
+sys.modules["PIL"].Image = MagicMock()
+sys.modules.setdefault("pypdf", MagicMock())
+
 from cyrene import agent
+import cyrene.agent.state as agent_state
 
 
 def test_dedupe_messages_by_id_keeps_latest_occurrence_in_original_position() -> None:
@@ -25,16 +32,16 @@ async def test_save_session_messages_does_not_regress_final_reply(tmp_path) -> N
     state_file = tmp_path / "state.json"
     data_dir = tmp_path
 
-    old_state_file = agent.STATE_FILE
-    old_data_dir = agent.DATA_DIR
+    old_state_file = agent_state.STATE_FILE
+    old_data_dir = agent_state.DATA_DIR
     old_base = agent._persist_base_messages.get()
     old_merge_live = agent._persist_merge_live_state.get()
     old_prefix = agent._persist_history_prefix_len.get()
     old_insert = agent._persist_insert_at.get()
     old_round_id = agent._current_round_id.get()
     try:
-        agent.STATE_FILE = state_file
-        agent.DATA_DIR = data_dir
+        agent_state.STATE_FILE = state_file
+        agent_state.DATA_DIR = data_dir
 
         existing = [
             {
@@ -88,8 +95,8 @@ async def test_save_session_messages_does_not_regress_final_reply(tmp_path) -> N
             "msg_final_assistant",
         ]
     finally:
-        agent.STATE_FILE = old_state_file
-        agent.DATA_DIR = old_data_dir
+        agent_state.STATE_FILE = old_state_file
+        agent_state.DATA_DIR = old_data_dir
         agent._persist_base_messages.set(old_base)
         agent._persist_merge_live_state.set(old_merge_live)
         agent._persist_history_prefix_len.set(old_prefix)
@@ -102,15 +109,15 @@ async def test_save_session_messages_with_persist_base_preserves_concurrent_mess
     state_file = tmp_path / "state.json"
     data_dir = tmp_path
 
-    old_state_file = agent.STATE_FILE
-    old_data_dir = agent.DATA_DIR
+    old_state_file = agent_state.STATE_FILE
+    old_data_dir = agent_state.DATA_DIR
     old_base = agent._persist_base_messages.get()
     old_merge_live = agent._persist_merge_live_state.get()
     old_prefix = agent._persist_history_prefix_len.get()
     old_insert = agent._persist_insert_at.get()
     try:
-        agent.STATE_FILE = state_file
-        agent.DATA_DIR = data_dir
+        agent_state.STATE_FILE = state_file
+        agent_state.DATA_DIR = data_dir
 
         base_messages = [
             {"role": "user", "message_id": "u1", "content": "first"},
@@ -141,8 +148,8 @@ async def test_save_session_messages_with_persist_base_preserves_concurrent_mess
         saved = json.loads(state_file.read_text(encoding="utf-8"))["messages"]
         assert [msg["message_id"] for msg in saved] == ["u1", "a1", "g1", "u2", "a2"]
     finally:
-        agent.STATE_FILE = old_state_file
-        agent.DATA_DIR = old_data_dir
+        agent_state.STATE_FILE = old_state_file
+        agent_state.DATA_DIR = old_data_dir
         agent._persist_base_messages.set(old_base)
         agent._persist_merge_live_state.set(old_merge_live)
         agent._persist_history_prefix_len.set(old_prefix)
@@ -154,15 +161,15 @@ async def test_save_session_messages_with_persist_base_keeps_question_answer_aft
     state_file = tmp_path / "state.json"
     data_dir = tmp_path
 
-    old_state_file = agent.STATE_FILE
-    old_data_dir = agent.DATA_DIR
+    old_state_file = agent_state.STATE_FILE
+    old_data_dir = agent_state.DATA_DIR
     old_base = agent._persist_base_messages.get()
     old_merge_live = agent._persist_merge_live_state.get()
     old_prefix = agent._persist_history_prefix_len.get()
     old_insert = agent._persist_insert_at.get()
     try:
-        agent.STATE_FILE = state_file
-        agent.DATA_DIR = data_dir
+        agent_state.STATE_FILE = state_file
+        agent_state.DATA_DIR = data_dir
 
         base_messages = [
             {"role": "user", "message_id": "u1", "content": "start", "round_id": "round_q"},
@@ -188,9 +195,6 @@ async def test_save_session_messages_with_persist_base_keeps_question_answer_aft
 
         agent._persist_base_messages.set(base_messages)
         agent._persist_merge_live_state.set(False)
-        # Pending-question resumes append an ephemeral system instruction to
-        # prompt history. That system message is not present in the persisted
-        # UI message list, so raw prefix slicing used to skip u2.
         agent._persist_history_prefix_len.set(len(base_messages) + 1)
         agent._persist_insert_at.set(len(base_messages))
 
@@ -199,8 +203,8 @@ async def test_save_session_messages_with_persist_base_keeps_question_answer_aft
         saved = json.loads(state_file.read_text(encoding="utf-8"))["messages"]
         assert [msg["message_id"] for msg in saved] == ["u1", "q1", "u2", "a2"]
     finally:
-        agent.STATE_FILE = old_state_file
-        agent.DATA_DIR = old_data_dir
+        agent_state.STATE_FILE = old_state_file
+        agent_state.DATA_DIR = old_data_dir
         agent._persist_base_messages.set(old_base)
         agent._persist_merge_live_state.set(old_merge_live)
         agent._persist_history_prefix_len.set(old_prefix)
@@ -211,11 +215,11 @@ def test_get_session_labels_persists_generated_archive_session_id(tmp_path) -> N
     state_file = tmp_path / "state.json"
     data_dir = tmp_path
 
-    old_state_file = agent.STATE_FILE
-    old_data_dir = agent.DATA_DIR
+    old_state_file = agent_state.STATE_FILE
+    old_data_dir = agent_state.DATA_DIR
     try:
-        agent.STATE_FILE = state_file
-        agent.DATA_DIR = data_dir
+        agent_state.STATE_FILE = state_file
+        agent_state.DATA_DIR = data_dir
         state_file.write_text(json.dumps({"messages": []}, ensure_ascii=False), encoding="utf-8")
 
         labels_first = agent.get_session_labels()
@@ -226,5 +230,5 @@ def test_get_session_labels_persists_generated_archive_session_id(tmp_path) -> N
         assert labels_first["archive_session_id"] == labels_second["archive_session_id"]
         assert saved_state["archive_session_id"] == labels_first["archive_session_id"]
     finally:
-        agent.STATE_FILE = old_state_file
-        agent.DATA_DIR = old_data_dir
+        agent_state.STATE_FILE = old_state_file
+        agent_state.DATA_DIR = old_data_dir

@@ -314,6 +314,7 @@ async def test_get_raw_messages_returns_full_history():
 async def test_run_summary_subagent_collects_peer_messages():
     """总结 subagent 应该读取其他 subagent 的 transcript 和互发消息。"""
     from cyrene import agent
+    from cyrene.agent import state as agent_state
     from cyrene import inbox
     from cyrene import subagent
 
@@ -321,7 +322,7 @@ async def test_run_summary_subagent_collects_peer_messages():
         tmp_path = Path(tmp)
         old_data_dir = subagent.DATA_DIR
         old_inbox_dir = inbox.INBOX_DIR
-        old_call_llm = agent._call_llm
+        old_call_llm = agent_state._call_llm
         captured: dict[str, str] = {}
         try:
             subagent.DATA_DIR = tmp_path
@@ -350,7 +351,7 @@ async def test_run_summary_subagent_collects_peer_messages():
                 captured["prompt"] = messages[1]["content"]
                 return {"content": "Integrated peer summary"}
 
-            agent._call_llm = fake_call_llm
+            agent_state._call_llm = fake_call_llm
 
             result = await subagent.run_summary_subagent(
                 round_id="round_1",
@@ -367,7 +368,7 @@ async def test_run_summary_subagent_collects_peer_messages():
         finally:
             subagent.DATA_DIR = old_data_dir
             inbox.INBOX_DIR = old_inbox_dir
-            agent._call_llm = old_call_llm
+            agent_state._call_llm = old_call_llm
     print("PASS test_run_summary_subagent_collects_peer_messages")
 
 

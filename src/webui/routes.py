@@ -25,6 +25,7 @@ from cyrene.cc_bridge import get_cc_preview, get_cc_status
 from cyrene.cc_learner import analyze_session, learn_from_session
 from cyrene.cc_terminal import CCTerminalSession
 from cyrene import debug
+from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
     EXPORTS_DIR as _EXPORTS_DIR,
     attachment_kind_from_meta,
@@ -42,7 +43,6 @@ from cyrene.agent import (
     answer_pending_question,
     append_system_message,
     clear_session_id,
-    format_httpx_error,
     get_pending_question,
     get_live_rounds,
     get_session_labels,
@@ -1091,6 +1091,60 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         """
         await clear_session_id()
         return {"ok": True, "sessions": _build_sessions()}
+
+    @router.get("/api/sessions/archive-context")
+    async def api_archive_context(cursor: str = ""):
+        """Return the next archive session after *cursor*.
+
+        Cursor is a full archive session id (``archive_YYYY-MM-DD_<id>``).
+        When empty, returns the most recent archive session.
+        Each message has ``isArchivedContext: true`` so the frontend can
+        style it as read‑only historical context.
+
+        Skips the current live session's own archive to avoid showing
+        the same messages that are already in the live view.
+        """
+        # Skip the archive that belongs to the current live session
+        current_skip_ids: set[str] = set()
+        if STATE_FILE.exists():
+            try:
+                state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                caid = str(state.get("archive_session_id", "")).strip()
+                cad = datetime.now().astimezone().strftime("%Y-%m-%d")
+                if caid:
+                    current_skip_ids.add(f"{cad}:{caid}")
+            except Exception:
+                pass
+
+        archives = _build_archive_sessions(skip_archive_ids=current_skip_ids)
+        if not archives:
+            return {"messages": [], "hasMore": False}
+
+        start = 0
+        if cursor.strip():
+            for idx, a in enumerate(archives):
+                if a.get("id") == cursor.strip():
+                    start = idx + 1
+                    break
+            else:
+                return {"messages": [], "hasMore": False}
+
+        if start >= len(archives):
+            return {"messages": [], "hasMore": False}
+
+        target = archives[start]
+        raw_messages = target.get("chat", {}).get("messages", [])
+        for msg in raw_messages:
+            msg["isArchivedContext"] = True
+
+        return {
+            "messages": raw_messages,
+            "id": target["id"],
+            "archiveSessionId": target.get("archiveSessionId", ""),
+            "archiveDate": target.get("archiveDate", ""),
+            "title": target.get("title", ""),
+            "hasMore": (start + 1) < len(archives),
+        }
 
     @router.delete("/api/sessions/{session_id}")
     async def api_delete_session(session_id: str):
@@ -2363,7 +2417,7 @@ def _build_current_session() -> dict | None:
         "title": str(state.get("session_title", "")).strip() or ("new session" if is_empty else "current session"),
         "status": live_status,
         "started": started_at,
-        "archiveDate": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "archiveDate": datetime.now().astimezone().strftime("%Y-%m-%d"),
         "archiveSessionId": str(state.get("archive_session_id", "")).strip(),
         "dur": duration,
         "preview": (last_msg["body"][:80] + "…") if last_msg and last_msg.get("body") else "—",
@@ -2428,7 +2482,7 @@ def _build_archive_sessions(
                 (str(section.get("session_title", "")).strip() for section in group_sections if section.get("session_title")),
                 "",
             )
-            title = group_session_title or file_session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
+            title = group_session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
             preview = messages[-1].get("body", "")[:80] if messages else ""
             current_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
             current_round_title = next(
@@ -2509,7 +2563,7 @@ def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
         round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
         round_title = _parse_archive_meta(section, "round_title")
         archive_session_id = _parse_archive_meta(section, "archive_session_id")
-        session_title = _parse_archive_meta(section, "session_title") or file_session_title
+        session_title = _parse_archive_meta(section, "session_title")
         body_start = section.find("## ")
         raw_entry = section[body_start:].strip() if body_start >= 0 else section.strip()
         sections_out.append({
@@ -3706,21 +3760,53 @@ async def _build_dashboard(ui_tz=None) -> dict:
     topic_rows = await cy_db.get_topic_counts_range(_db_path, day_from, day_to, limit=18)
     archive_day_count = await cy_db.count_stat_days(_db_path)
 
-    emotion_days: dict[str, list[float]] = {}
-    for offset in range(hist_days, -1, -1):
-        day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
-        emotion_days[day] = []
+    # 从 daily_stats 汇总全量历史数据（与 timeline 同源）
+    historical_prompt = sum((r.get("prompt_tokens") or 0) for r in stats_by_day.values())
+    historical_completion = sum((r.get("completion_tokens") or 0) for r in stats_by_day.values())
+    historical_total = sum((r.get("total_tokens") or 0) for r in stats_by_day.values())
+    historical_cache_hit = sum((r.get("cache_hit_tokens") or 0) for r in stats_by_day.values())
+    historical_cache_miss = sum((r.get("cache_miss_tokens") or 0) for r in stats_by_day.values())
+    historical_requests = sum((r.get("llm_requests") or 0) for r in stats_by_day.values())
+
+    # 按模型计算总花费（不同模型定价不同）
+    total_spend = 0.0
+    for row in model_stats_rows:
+        mdl = str(row.get("model") or "").strip().lower()
+        pt = int(row.get("prompt_tokens") or 0)
+        ct = int(row.get("completion_tokens") or 0)
+        if "opus-4" in mdl:
+            total_spend += (pt / 1_000_000) * 15.0 + (ct / 1_000_000) * 75.0
+        elif "sonnet-4" in mdl:
+            total_spend += (pt / 1_000_000) * 3.0 + (ct / 1_000_000) * 15.0
+        elif "haiku-4" in mdl:
+            total_spend += (pt / 1_000_000) * 0.25 + (ct / 1_000_000) * 1.25
+        elif "deepseek-v4-flash" in mdl:
+            total_spend += (pt / 1_000_000) * 0.14 + (ct / 1_000_000) * 0.28
+        elif "deepseek-reasoner" in mdl:
+            total_spend += (pt / 1_000_000) * 0.55 + (ct / 1_000_000) * 2.19
+        elif "deepseek" in mdl or "deepseek-chat" in mdl:
+            total_spend += (pt / 1_000_000) * 0.14 + (ct / 1_000_000) * 0.28
+        else:
+            total_spend += (pt / 1_000_000) * 1.0 + (ct / 1_000_000) * 2.0
+    spend_str = "<$0.01" if total_spend < 0.01 else f"${total_spend:.2f}"
+
+    # 情感数据从 short_term 条目按 last_mentioned 日期聚合，不依赖数据库
+    emotion_by_day: dict[str, list[float]] = {}
+    for entry in st_entries:
+        day = str(entry.get("last_mentioned", "")).strip()
+        if day:
+            valence = int(entry.get("emotional_valence", 0) or 0)
+            emotion_by_day.setdefault(day, []).append(valence)
 
     emotion_series = []
-    for day in emotion_days:
-        row = stats_by_day.get(day) or {}
-        emotion_count = int(row.get("emotion_count") or 0)
-        emotion_sum = float(row.get("emotion_sum") or 0)
-        avg = round(emotion_sum / emotion_count, 2) if emotion_count else 0.0
+    for offset in range(hist_days, -1, -1):
+        day = (now_local - timedelta(days=offset)).strftime("%Y-%m-%d")
+        vals = emotion_by_day.get(day, [])
+        avg = round(sum(vals) / len(vals), 2) if vals else 0.0
         emotion_series.append({
             "date": day,
             "value": avg,
-            "count": emotion_count,
+            "count": len(vals),
         })
 
     token_timeline: dict[str, dict[str, int]] = {}
@@ -3772,7 +3858,7 @@ async def _build_dashboard(ui_tz=None) -> dict:
     return {
         "today": {
             "learned": learned_today,
-            "learned_count": int((stats_by_day.get(today) or {}).get("memory_new") or 0),
+            "learned_count": len(today_entries),
             "memory_count": len(st_entries),
             "archive_days": archive_day_count,
         },
@@ -3785,14 +3871,18 @@ async def _build_dashboard(ui_tz=None) -> dict:
         "topic_cloud": topic_rows,
         "emotion": emotion_series,
         "usage": {
-            "requests": combined_usage.get("requests"),
-            "tokens": _format_tokens(combined_usage),
-            "spend": _calc_spend(combined_usage),
-            "prompt_tokens": combined_usage.get("prompt_tokens"),
-            "completion_tokens": combined_usage.get("completion_tokens"),
-            "total_tokens": combined_usage.get("total_tokens"),
-            "cache_hit_tokens": combined_usage.get("prompt_cache_hit_tokens"),
-            "cache_miss_tokens": combined_usage.get("prompt_cache_miss_tokens"),
+            "requests": historical_requests,
+            "tokens": _format_tokens({
+                "prompt_tokens": historical_prompt,
+                "completion_tokens": historical_completion,
+                "total_tokens": historical_total,
+            }),
+            "spend": spend_str,
+            "prompt_tokens": historical_prompt,
+            "completion_tokens": historical_completion,
+            "total_tokens": historical_total,
+            "cache_hit_tokens": historical_cache_hit,
+            "cache_miss_tokens": historical_cache_miss,
             "total_messages": (session_usage.get("requests") or 0) + (subagent_usage.get("requests") or 0),
             "active_days": sum(1 for row in stats_by_day.values() if int(row.get("llm_requests") or 0) > 0),
             "current_streak": _calc_current_streak(stats_by_day, today),

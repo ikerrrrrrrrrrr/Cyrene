@@ -1,0 +1,438 @@
+"""Agent coordinator: entry points, chat agent orchestration, execution agent.
+
+Depends on all other ``agent.*`` modules.  ``_run_chat_agent`` is the
+main orchestration function that sets up context, assembles the system
+prompt, and delegates to ``agent._run_main_agent`` (the core two-phase
+loop).
+"""
+
+import asyncio
+import json
+import logging
+from typing import Any
+
+import cyrene.agent.state as _state
+
+from cyrene import debug
+from cyrene.agent.guidance import (
+    _final_reply_from_history,
+    _final_plain_reply_from_history,
+    _final_user_reply_from_history,
+    _is_placeholder_reply,
+    _tool_result_fallback_text,
+)
+from cyrene.agent.message import (
+    _apply_assistant_meta,
+    _assistant_entry_from_response,
+    _flush_intermediate_user_replies,
+)
+from cyrene.agent.prompts import (
+    _CLAUDE_CODE_PROMPT,
+    _DAILY_REVIEW_PROMPT,
+    _DEEP_COMPARE_PROMPT,
+    _DEEP_RESEARCH_PROMPT,
+    _EXECUTION_SYSTEM_PROMPT,
+    _HELP_ME_DECIDE_PROMPT,
+    _LEARNING_PLAN_PROMPT,
+    _MAIN_AGENT_PROMPT,
+    _PHASE1_DECISION_PROMPT,
+    _QUICK_ANSWER_PROMPT,
+    _spawn_policy_prompt_block,
+)
+from cyrene.agent.session import (
+    _expand_report_reference_history,
+    _load_session_messages,
+    _refresh_session_labels,
+    _save_session_messages,
+    clear_session_id,
+    get_session_labels,
+)
+from cyrene.agent.state import (
+    _active_main_round_id,
+    _active_main_round_prompt,
+    _active_main_round_public_prompt,
+    _active_main_round_started_at,
+    _agent_lock,
+    _AWAITING_USER_SENTINEL,
+    _call_llm,
+    _caller_type,
+    _current_client_request_id,
+    _current_command,
+    _current_round_id,
+    _deep_research_first_round,
+    _deep_research_mode,
+    _interrupt_event,
+    _LIGHT_TOOL_DEFS,
+    _MAX_TOOL_ROUNDS,
+    _pending_interrupt_clearers,
+    _pending_intermediate_user_replies,
+    _persist_base_messages,
+    _persist_history_prefix_len,
+    _persist_insert_at,
+    _persist_merge_live_state,
+    _publish_runtime_event,
+    _streaming_reply_requested,
+    _tool_quit,
+    _ui_round_assistant_meta,
+    _ui_round_hide_initial_detail,
+)
+from cyrene.config import ASSISTANT_NAME
+from cyrene.llm import _assistant_text, _truncate
+from cyrene.memory import get_memory_context
+from cyrene.short_term import get_context
+from cyrene.skills_registry import build_skill_prompt_block
+from cyrene.settings_store import get_spawn_policy
+from cyrene.tools import TOOL_HANDLERS, _execute_tool, get_active_tool_defs
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Execution agent (internal, all tools)
+# ---------------------------------------------------------------------------
+
+async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
+    _caller_type.set("execution_agent")
+    messages = [
+        {"role": "system", "content": _EXECUTION_SYSTEM_PROMPT},
+        {"role": "user", "content": task},
+    ]
+
+    final_text = "Done."
+    for _ in range(_MAX_TOOL_ROUNDS):
+        response = await _call_llm(messages, tools=get_active_tool_defs())
+
+        assistant_entry: dict[str, Any] = {"role": "assistant"}
+        if response.get("content"):
+            assistant_entry["content"] = response["content"]
+        else:
+            assistant_entry["content"] = ""
+        if response.get("tool_calls"):
+            assistant_entry["tool_calls"] = response["tool_calls"]
+        if response.get("reasoning_content"):
+            assistant_entry["reasoning_content"] = response["reasoning_content"]
+        if response.get("usage"):
+            assistant_entry["usage"] = response["usage"]
+        messages.append(assistant_entry)
+
+        tool_calls = response.get("tool_calls") or []
+        if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
+            final_text = _assistant_text(response) or "Done."
+            break
+        if not tool_calls:
+            return _assistant_text(response) or "Done."
+
+        for tc in tool_calls:
+            call_id = tc["id"]
+            fn = tc["function"]
+            name = fn["name"]
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+                result = await _execute_tool(name, args, bot, chat_id, db_path, notify_state)
+            except Exception as e:
+                result = f"Tool {name} failed: {e}"
+            messages.append({"role": "tool", "tool_call_id": call_id, "content": _truncate(result)})
+
+    return final_text
+
+
+# ---------------------------------------------------------------------------
+# Chat agent (entry point with lock)
+# ---------------------------------------------------------------------------
+
+async def run_agent(
+    user_message: str,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    client_request_id: str = "",
+    lang: str = "",
+    command: str = "",
+    public_user_message: str | None = None,
+    public_attachments: list[dict[str, Any]] | None = None,
+) -> str:
+    """Main entry point. Runs the main agent loop with full tools."""
+    if _agent_lock.locked():
+        interrupt_active_run()
+    async with _agent_lock:
+        _interrupt_event.clear()
+        return await _run_chat_agent(
+            user_message, bot, chat_id, db_path,
+            client_request_id=client_request_id, lang=lang, command=command,
+            public_user_message=public_user_message, public_attachments=public_attachments,
+        )
+
+
+async def _clear_interrupt_when_idle() -> None:
+    try:
+        while _agent_lock.locked():
+            await asyncio.sleep(0.05)
+    finally:
+        _interrupt_event.clear()
+
+
+def interrupt_active_run() -> bool:
+    if not _agent_lock.locked():
+        _interrupt_event.clear()
+        return False
+    _interrupt_event.set()
+    task = asyncio.create_task(_clear_interrupt_when_idle())
+    _pending_interrupt_clearers.add(task)
+    task.add_done_callback(_pending_interrupt_clearers.discard)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Chat agent coordinator
+# ---------------------------------------------------------------------------
+
+async def _run_chat_agent(
+    user_message: str,
+    bot: Any,
+    chat_id: int,
+    db_path: str,
+    ephemeral_system: str = "",
+    forced_round_id: str = "",
+    history_override: list[dict[str, Any]] | None = None,
+    persist_base_messages: list[dict[str, Any]] | None = None,
+    persist_insert_at: int | None = None,
+    client_request_id: str = "",
+    persist_user_message: bool = True,
+    public_user_message: str | None = None,
+    public_attachments: list[dict[str, Any]] | None = None,
+    public_prompt: str | None = None,
+    refresh_labels: bool = True,
+    hide_initial_detail: bool = False,
+    assistant_message_meta: dict[str, Any] | None = None,
+    lang: str = "",
+    command: str = "",
+) -> str:
+    import time as _time
+
+    round_id = str(forced_round_id or "").strip() or f"round_{int(_time.time() * 1000)}"
+    round_token = _current_round_id.set(round_id)
+    full_session_messages = _load_session_messages()
+    # Update state module globals so reads via cyrene.agent.state are visible
+    _state._active_main_round_id = round_id
+    _state._active_main_round_prompt = user_message
+    _state._active_main_round_public_prompt = user_message if public_prompt is None else str(public_prompt)
+    _state._active_main_round_started_at = _time.time()
+    raw_history = list(history_override) if history_override is not None else _load_session_messages()
+    history = _expand_report_reference_history(raw_history, user_message)
+    merge_base = persist_base_messages
+    merge_insert_at = persist_insert_at
+    merge_live_state = history_override is None
+    if history_override is not None and merge_base is None:
+        merge_base = list(full_session_messages)
+        merge_insert_at = len(merge_base)
+        merge_live_state = False
+    elif merge_live_state and merge_insert_at is None:
+        merge_insert_at = len(history)
+
+    base_token = _persist_base_messages.set(merge_base)
+    merge_live_token = _persist_merge_live_state.set(merge_live_state and merge_base is None)
+    prefix_token = _persist_history_prefix_len.set(len(history) if (merge_base is not None or merge_live_state) else 0)
+    insert_token = _persist_insert_at.set(merge_insert_at if (merge_base is not None or merge_live_state) else None)
+    client_request_token = _current_client_request_id.set(client_request_id)
+    intermediate_reply_token = _pending_intermediate_user_replies.set([])
+    hide_initial_detail_token = _ui_round_hide_initial_detail.set(bool(hide_initial_detail))
+    assistant_meta_token = _ui_round_assistant_meta.set(dict(assistant_message_meta) if assistant_message_meta else None)
+    behavior_turn_context: dict[str, Any] | None = None
+    final_output = ""
+    try:
+        restored_short_term = False
+        if not history:
+            st = get_context(max_chars=5000)
+            if st:
+                history = [{"role": "system", "content": "[Restored context]\n" + st}]
+                restored_short_term = True
+        if ephemeral_system:
+            history = [*history, {"role": "system", "content": ephemeral_system}]
+
+        try:
+            from cyrene import behavior_learning as _behavior_learning
+            labels = get_session_labels(round_id)
+            behavior_turn_context = await _behavior_learning.begin_turn(
+                session_id=labels.get("archive_session_id", ""),
+                round_id=round_id, user_message=user_message,
+                history=history, session_title=labels.get("session_title", ""),
+            )
+        except Exception:
+            logger.warning("Failed to initialize behavior-learning turn context", exc_info=True)
+            behavior_turn_context = None
+
+        try:
+            memory_context = get_memory_context(include_short_term=not restored_short_term)
+        except TypeError as exc:
+            if "include_short_term" not in str(exc):
+                raise
+            memory_context = get_memory_context()
+        main_system = _MAIN_AGENT_PROMPT
+        if lang and lang != "en":
+            main_system += f"\n\nThe user has set their preferred language to {lang}. Reply in this language."
+        if memory_context:
+            main_system = main_system + "\n\n## Memory Context\n" + memory_context
+        skill_prompt_block = build_skill_prompt_block()
+        if skill_prompt_block:
+            main_system = main_system + "\n\n" + skill_prompt_block
+
+        is_deep_research = command == "deep-research"
+        dr_token = _deep_research_mode.set(is_deep_research)
+        dr_first_token = _deep_research_first_round.set(is_deep_research and not bool(forced_round_id))
+        cmd_token = _current_command.set(command)
+
+        # Command-specific prompt injection
+        if command == "deep-research":
+            main_system = main_system + "\n\n" + _DEEP_RESEARCH_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: deep-research (maximum parallelism).\n"
+                "- You MUST spawn subagents for EVERY research track. Never do research yourself — your only job is to decompose, delegate, and synthesize.\n"
+                "- Launch ALL subagents at once in a single batch. Do not wait for some to finish before spawning others.\n"
+                "- If a research track is broad, split it further into narrower sub-tracks and spawn additional subagents.\n"
+                "- Err on the side of MORE subagents. 5–10 subagents is normal; 10+ is acceptable for complex questions.\n"
+                "- Even small, focused questions within a track deserve their own subagent. Granularity beats breadth per agent.\n"
+                "- If any subagent result is thin, contradictory, or incomplete, immediately spawn follow-up subagents to fill the gap.\n"
+                "- The ONLY reason not to spawn a subagent is if the task is already fully answered with high confidence. When in doubt, spawn."
+            )
+        elif command == "quick-answer":
+            main_system = main_system + "\n\n" + _QUICK_ANSWER_PROMPT
+        elif command == "help-me-decide":
+            main_system = main_system + "\n\n" + _HELP_ME_DECIDE_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: help-me-decide.\n"
+                "- Spawn exactly ONE subagent per option. Launch all simultaneously.\n"
+                "- Do NOT do any option research yourself — delegate every option to its own subagent.\n"
+                "- After all subagents return, synthesize into a decision report."
+            )
+        elif command == "learning-plan":
+            main_system = main_system + "\n\n" + _LEARNING_PLAN_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: learning-plan.\n"
+                "- Spawn exactly ONE subagent per knowledge module. Launch all simultaneously.\n"
+                "- Do NOT research learning resources yourself — delegate every module to its own subagent.\n"
+                "- After all subagents return, synthesize into a structured learning plan."
+            )
+        elif command == "daily-review":
+            main_system = main_system + "\n\n" + _DAILY_REVIEW_PROMPT
+            main_system = main_system + "\n\n" + _spawn_policy_prompt_block("off")
+        elif command == "deep-compare":
+            main_system = main_system + "\n\n" + _DEEP_COMPARE_PROMPT
+            main_system += (
+                "\n\n## Subagent Spawn Policy\n"
+                "Current policy: deep-compare.\n"
+                "- Spawn exactly ONE subagent per comparison dimension. Launch all simultaneously.\n"
+                "- Do NOT do any comparison research yourself — delegate every dimension to its own subagent.\n"
+                "- After all subagents return, synthesize into a comparison matrix and recommendation."
+            )
+        elif command == "claude-code":
+            main_system = main_system + "\n\n" + _CLAUDE_CODE_PROMPT
+        else:
+            main_system = main_system + "\n\n" + _spawn_policy_prompt_block(get_spawn_policy())
+
+        from cyrene.agent.agent import _run_main_agent
+
+        main_text = await _run_main_agent(
+            user_message, history, bot, chat_id, db_path, main_system,
+            client_request_id=client_request_id, persist_user_message=persist_user_message,
+            public_user_message=public_user_message, public_attachments=public_attachments, lang=lang,
+        )
+
+        if refresh_labels:
+            await _refresh_session_labels(user_message, round_id)
+        if main_text == _AWAITING_USER_SENTINEL:
+            return main_text
+        final_output = main_text or "Done."
+        if behavior_turn_context is not None:
+            try:
+                from cyrene import behavior_learning as _behavior_learning
+                latest_labels = get_session_labels(round_id)
+                await _behavior_learning.complete_turn(
+                    turn_id=behavior_turn_context["turn_id"],
+                    assistant_response=final_output,
+                    session_title=latest_labels.get("session_title", ""),
+                    round_title=latest_labels.get("round_title", ""),
+                )
+                _ = asyncio.create_task(_behavior_learning.process_unprocessed_turns())
+            except Exception:
+                logger.warning("Failed to finalize behavior-learning turn", exc_info=True)
+        await _publish_runtime_event({
+            "type": "chat_message",
+            "client_request_id": client_request_id,
+        })
+        return final_output
+    finally:
+        if behavior_turn_context is not None:
+            try:
+                from cyrene import behavior_learning as _behavior_learning
+                _behavior_learning.clear_turn_context(behavior_turn_context)
+            except Exception:
+                logger.debug("Failed to clear behavior-learning context", exc_info=True)
+        _current_command.reset(cmd_token)
+        _deep_research_mode.reset(dr_token)
+        _deep_research_first_round.reset(dr_first_token)
+        _ui_round_assistant_meta.reset(assistant_meta_token)
+        _ui_round_hide_initial_detail.reset(hide_initial_detail_token)
+        _pending_intermediate_user_replies.reset(intermediate_reply_token)
+        _current_client_request_id.reset(client_request_token)
+        _persist_insert_at.reset(insert_token)
+        _persist_history_prefix_len.reset(prefix_token)
+        _persist_merge_live_state.reset(merge_live_token)
+        _persist_base_messages.reset(base_token)
+        _state._active_main_round_id = ""
+        _state._active_main_round_prompt = ""
+        _state._active_main_round_public_prompt = ""
+        _state._active_main_round_started_at = 0.0
+        _current_round_id.reset(round_token)
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible public API
+# ---------------------------------------------------------------------------
+
+async def run_task_agent(prompt: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
+    return await _run_execution_agent(prompt, bot, chat_id, db_path, notify_state=notify_state)
+
+
+async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str) -> str:
+    proactive_system = (
+        "This round was initiated by the scheduler, not by a user chat message.\n"
+        "The hidden task you receive is internal guidance, not text to answer literally.\n"
+        "Your final assistant reply will be shown directly to the user in the Web UI.\n"
+        "Write to the user in a natural, user-facing voice.\n"
+        "Match the user's preferred language based on their past messages.\n"
+        "Do not mention the scheduler, heartbeat, lottery, hidden prompt, or internal instructions.\n"
+        "If you decide to speak, send one concise, useful proactive message to the user.\n"
+        "If tools are useful, use the normal main-agent loop and let the UI show the later details."
+    )
+    if _agent_lock.locked():
+        return ""
+    async with _agent_lock:
+        _interrupt_event.clear()
+        return await _run_chat_agent(
+            prompt, bot, chat_id, db_path,
+            ephemeral_system=proactive_system, persist_user_message=False,
+            public_prompt="", refresh_labels=False, hide_initial_detail=True,
+            assistant_message_meta={"proactive": True, "system_initiated": True},
+        )
+
+
+async def run_steward_agent(conversation_text: str, soulmd_content: str, bot: Any, chat_id: int, db_path: str) -> str:
+    steward_prompt = f"""You are a memory steward. Your job is to update Cyrene's SOUL.md based on recent conversations.
+
+Read the recent conversation and current SOUL.md, then output:
+- APPEND: what new information to add
+- ERASE: what old information to remove
+- MERGE: what to consolidate
+- Or SKIP if nothing important
+
+SOUL.md:
+{soulmd_content}
+
+Recent conversation:
+{conversation_text}
+
+Output only the modifications needed, one per line, prefixed with APPEND/ERASE/MERGE/SKIP."""
+    return await _run_execution_agent(steward_prompt, bot, chat_id, db_path)

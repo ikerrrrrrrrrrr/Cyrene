@@ -45,7 +45,7 @@ _SUMMARY_AGENT_PREFIX = "agent_summary_"
 
 def _is_deep_research() -> bool:
     try:
-        from cyrene.agent import _deep_research_mode
+        from cyrene.agent.state import _deep_research_mode
         return _deep_research_mode.get()
     except Exception:
         return False
@@ -599,6 +599,10 @@ async def build_group_chat_messages(round_id: str) -> dict[str, Any]:
     - Each subagent's final ``result`` (when non-trivial).
     - User messages from inbox files (``from == "user"``).
 
+    Falls back to ``subagent_flow_snapshot`` in saved session messages when
+    the live ``_registry`` has no entries for *round_id* (e.g. after the
+    round has completed and the registry was cleared).
+
     Returns ``{"messages": [...], "agents": [...]}`` sorted chronologically.
     """
     async with _lock:
@@ -607,6 +611,68 @@ async def build_group_chat_messages(round_id: str) -> dict[str, Any]:
             for aid, info in _registry.items()
             if _matches_round(info, round_id) and aid != "main"
         ]
+
+    # Fallback: live registry may have been cleared — reconstruct from
+    # subagent_flow_snapshot embedded in the saved session messages.
+    if not entries:
+        from cyrene.agent.state import STATE_FILE
+
+        if STATE_FILE and STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+                raw_msgs = data.get("messages", []) if isinstance(data, dict) else []
+                for msg in reversed(raw_msgs):
+                    snapshot = msg.get("subagent_flow_snapshot")
+                    if not isinstance(snapshot, dict):
+                        continue
+                    if str(snapshot.get("round_id", "")).strip() != round_id:
+                        continue
+                    agents_data = snapshot.get("agents") or {}
+                    comm_msgs = snapshot.get("comm_messages") or []
+                    agents_list = []
+                    msg_list = []
+                    for agent_id, info in agents_data.items():
+                        if not isinstance(info, dict):
+                            continue
+                        agents_list.append({
+                            "id": agent_id,
+                            "task": str(info.get("task", "") or "").strip(),
+                            "status": str(info.get("status", "") or "done").strip(),
+                        })
+                        result = str(info.get("result", "") or "").strip()
+                        if result and result not in ("Done.", "", "无结果"):
+                            msg_list.append({
+                                "id": f"{agent_id}_result",
+                                "type": "agent_result",
+                                "from": agent_id,
+                                "to": "",
+                                "content": result,
+                                "timestamp": str(info.get("updated_at") or info.get("created_at") or ""),
+                                "round_id": round_id,
+                            })
+                    for comm in comm_msgs:
+                        if not isinstance(comm, dict):
+                            continue
+                        content = str(comm.get("content", "") or "").strip()
+                        if not content:
+                            continue
+                        target = str(comm.get("to", "") or "").strip()
+                        is_broadcast = str(comm.get("type", "") or "").strip() == "broadcast"
+                        display = f"@{'所有人' if is_broadcast or not target else target} {content}"
+                        from_agent = str(comm.get("from", "") or "").strip()
+                        msg_list.append({
+                            "id": str(comm.get("message_id", "") or f"{from_agent}_{comm.get('timestamp', '')}"),
+                            "type": "agent_broadcast" if is_broadcast else "agent_send",
+                            "from": from_agent,
+                            "to": target or "all",
+                            "content": display,
+                            "timestamp": str(comm.get("timestamp", "") or ""),
+                            "round_id": round_id,
+                        })
+                    msg_list.sort(key=lambda m: str(m.get("timestamp") or ""))
+                    return {"messages": msg_list, "agents": agents_list}
+            except Exception:
+                logger.warning("Failed to load flow snapshot for round %s", round_id, exc_info=True)
 
     agents_list: list[dict[str, str]] = []
     messages: list[dict[str, Any]] = []
@@ -776,7 +842,7 @@ async def run_summary_subagent(
     subagent transcripts directly — the main agent will synthesise from the
     full raw material without any intermediate compression.
     """
-    from cyrene.agent import _call_llm
+    from cyrene.agent.state import _call_llm
     from cyrene.llm import _assistant_text
 
     summary_agent_id = _summary_agent_id(round_id)
@@ -850,7 +916,7 @@ async def run_summary_subagent(
     await save_messages(summary_agent_id, messages)
 
     try:
-        response = await _call_llm(messages, tools=None, max_tokens=None)
+        response = await _call_llm(messages, tools=None, max_tokens=32000)
         assistant_entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or ""}
         if response.get("reasoning_content"):
             assistant_entry["reasoning_content"] = response["reasoning_content"]
@@ -910,9 +976,11 @@ async def _run_subagent(
 
     Uses lazy imports from agent.py to avoid circular dependencies.
     """
-    from cyrene.agent import (
+    from cyrene.agent.prompts import (
         _MAIN_AGENT_PROMPT, _DEEP_RESEARCH_SUBAGENT_PROMPT,
         _DECISION_SUBAGENT_PROMPT, _LEARNING_SUBAGENT_PROMPT, _COMPARE_SUBAGENT_PROMPT,
+    )
+    from cyrene.agent.state import (
         _deep_research_mode, _current_command,
         _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS,
     )

@@ -5990,7 +5990,7 @@ body {
   background: #f7f7f5;
   box-shadow: 10px 0 30px rgba(28, 28, 25, 0.04);
   backdrop-filter: none;
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 
 .sidebar::before,
@@ -6152,6 +6152,15 @@ body {
   background: #ffffff;
   box-shadow: none;
   min-height: 56px;
+}
+
+.app[data-screen-label="Cyrene · chat"] {
+  grid-template-rows: 1fr;
+  overflow: hidden;
+}
+
+.app[data-screen-label="Cyrene · chat"] .page {
+  min-height: 0;
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-layout {
@@ -6653,6 +6662,7 @@ html[data-text-size="large"] .setup-section h2 { font-size: 25px; }
   grid-template-columns: 1fr 320px;
   gap: 12px;
   height: auto;
+  max-height: 100vh;
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-layout.right-collapsed {
@@ -7643,6 +7653,7 @@ html[data-text-size="large"] .seg-btn {
   min-height: 0;
   height: auto;
   flex: 1;
+  max-height: 100vh;
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-main {
@@ -8444,7 +8455,7 @@ html[data-text-size="large"] .settings-nav .nav-item {
   border: 1px solid #e3e3df;
   border-radius: 12px;
   overflow-x: hidden;
-  overflow-y: hidden;
+  overflow-y: auto;
   box-shadow:
     0 1px 0 rgba(255,255,255,0.92) inset,
     0 16px 34px rgba(24,24,22,0.08);
@@ -8820,6 +8831,8 @@ html[data-theme="dark"] .welcome-range .active {
   padding-right: calc(var(--chat-column-pad) - var(--chat-scrollbar-center-comp));
 }
 
+
+
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .thread-header,
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-banner,
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .msg {
@@ -8828,6 +8841,72 @@ html[data-theme="dark"] .welcome-range .active {
   margin-left: auto;
   margin-right: auto;
   box-sizing: border-box;
+}
+
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .context-divider,
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-loading {
+  width: min(100%, var(--chat-content-max)) !important;
+  max-width: var(--chat-content-max) !important;
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+/* ── Archive context divider ── */
+.context-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 20px 0 14px;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  user-select: none;
+  pointer-events: none;
+}
+.context-divider::before,
+.context-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+.context-divider.main-divider {
+  margin: 28px 0 18px;
+  color: var(--accent);
+}
+.context-divider.main-divider::before,
+.context-divider.main-divider::after {
+  background: color-mix(in srgb, var(--accent) 30%, var(--line));
+}
+
+/* ── Archived context messages (read-only, dimmed) ── */
+.msg.archived-context {
+  opacity: 0.75;
+  pointer-events: none;
+  user-select: none;
+}
+.msg.archived-context .msg-body {
+  background: var(--bg-2) !important;
+  border-color: var(--line-dim, var(--line)) !important;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* ── Archive loading indicator ── */
+.archive-loading {
+  text-align: center;
+  padding: 14px 0 8px;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
+  animation: archive-pulse 1.2s ease-in-out infinite;
+}
+@keyframes archive-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .chat-welcome {

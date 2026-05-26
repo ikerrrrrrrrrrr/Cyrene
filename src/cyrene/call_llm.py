@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import time as _time
 from typing import Any, Callable, Awaitable
 
 import httpx
@@ -531,7 +532,6 @@ async def call_llm(
     Raises:
         httpx.HTTPError: When all candidates and endpoints fail.
     """
-    import time as _time
     _t0 = _time.monotonic()
 
     resolved = candidates if candidates is not None else _resolve_candidates(model_type)
@@ -558,10 +558,10 @@ async def call_llm(
             # Concurrency guard for secondary model
             if is_secondary and max_conc > 0 and _secondary_in_flight >= max_conc:
                 continue
-            if is_secondary and max_conc > 0:
-                _secondary_in_flight += 1
 
             try:
+                if is_secondary and max_conc > 0:
+                    _secondary_in_flight += 1
                 model = str(candidate.get("model") or "").strip()
                 payload = _build_payload(messages, tools, max_tokens, stream, model, thinking)
 

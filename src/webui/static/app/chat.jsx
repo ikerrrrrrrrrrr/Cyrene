@@ -606,6 +606,13 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       .catch(function () {});
   }, [isLiveSession, session.id]);
 
+  /* Reset archive context when switching to a new session. */
+  useEffect(function () {
+    setArchiveContexts([]);
+    setHasMoreArchive(true);
+    archiveLoadLock.current = false;
+  }, [session.id]);
+
   async function removeContext(label) {
     setHiddenContexts(Object.assign({}, hiddenContexts, (function (o) { o[label] = true; return o; })({})));
     var chips = session.chat.contextChips;
@@ -685,6 +692,13 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [mentionedAgents, setMentionedAgents] = useState([]);
   const [welcomeTab, setWelcomeTab] = useState("overview");
   const [welcomeRange, setWelcomeRange] = useState("all");
+  const [showInputToken, setShowInputToken] = useState(Math.random() > 0.5);
+  const [archiveContexts, setArchiveContexts] = useState([]);   // loaded newest-first
+  const [loadingArchive, setLoadingArchive] = useState(false);
+  const [hasMoreArchive, setHasMoreArchive] = useState(true);
+  const archiveLoadLock = useRef(false);
+  const scrollHeightBeforeRef = useRef(0);
+  const scrollTopAtTriggerRef = useRef(0);
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -717,6 +731,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const scrollRef = useRef(null);
   const composerRef = useRef(null);
   const fileInputRef = useRef(null);
+  const userAtBottomRef = useRef(true);
+  const initialScrollDoneRef = useRef(false);
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
   const prunedRetainedMessages = isLiveSession
@@ -754,9 +770,21 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     ? pendingQuestion.options.length
     : 0;
 
+  function isNearBottom(el, threshold) {
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= (threshold || 60);
+  }
+
   function scrollChatToBottom(settle) {
     var el = scrollRef.current;
     if (!el) return function () {};
+    // After initial mount, only scroll if user is actually near bottom
+    if (initialScrollDoneRef.current && !isNearBottom(el, 60)) {
+      userAtBottomRef.current = false;
+      return function () {};
+    }
+    initialScrollDoneRef.current = true;
+    userAtBottomRef.current = true;
     var timers = [];
     function scrollDown() {
       var target = scrollRef.current;
@@ -792,12 +820,19 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var el = scrollRef.current;
     var composer = composerRef.current;
     if (!el || !composer) return;
-    function sync() { el.style.setProperty("--scroll-pb", composer.offsetHeight + "px"); }
+    function sync() {
+      el.style.setProperty("--scroll-pb", composer.offsetHeight + "px");
+      // Re-scroll when padding changes if user was at bottom
+      var scrollEl = scrollRef.current;
+      if (scrollEl && userAtBottomRef.current) {
+        scrollEl.scrollTop = scrollEl.scrollHeight;
+      }
+    }
     sync();
     var ro = new ResizeObserver(sync);
     ro.observe(composer);
     return function () { ro.disconnect(); };
-  }, []);
+  }, [isLiveSession]);
 
   useEffect(function () {
     let cancelled = false;
@@ -1481,6 +1516,37 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     ].join(":");
   }).join("|");
 
+  // ── Build archive context entries (prepended above current messages) ──
+  var archiveRenderEntries = [];
+  if (archiveContexts.length > 0) {
+    var counts = {};
+    // archiveContexts is newest-first; render oldest (last) at top
+    for (var archIdx = archiveContexts.length - 1; archIdx >= 0; archIdx--) {
+      var ctx = archiveContexts[archIdx];
+      // Divider between archive groups
+      if (archIdx < archiveContexts.length - 1) {
+        archiveRenderEntries.push({
+          isArchiveDivider: true,
+          renderKey: "arch_div_" + archIdx,
+        });
+      }
+      ctx.messages.forEach(function (archMsg, msgIdx) {
+        var key = messageKey(archMsg) + "_arch_" + ctx.id + "_" + msgIdx;
+        counts[key] = (counts[key] || 0) + 1;
+        archiveRenderEntries.push({
+          msg: archMsg,
+          renderKey: key + "::" + counts[key],
+        });
+      });
+    }
+    // Main divider that separates all archive context from current session
+    archiveRenderEntries.push({
+      isMainDivider: true,
+      renderKey: "main_arch_div",
+    });
+  }
+  var hasArchiveContent = archiveRenderEntries.length > 0;
+
   useEffect(function () {
     return scrollChatToBottom(!visibleSending);
   }, [renderedMessageSignature, visibleSending]);
@@ -1497,6 +1563,60 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     } catch (e) {
       alert(t("chat.failedToCreate") + ": " + e.message);
     }
+  }
+
+  // ── Archive context loading (scroll up to reveal older sessions) ──
+
+  function triggerArchiveLoad() {
+    if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
+
+    archiveLoadLock.current = true;
+    setLoadingArchive(true);
+
+    var cursor = archiveContexts.length > 0
+      ? archiveContexts[archiveContexts.length - 1].id
+      : "";
+    fetch("/api/sessions/archive-context?cursor=" + encodeURIComponent(cursor))
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.messages && data.messages.length > 0) {
+          setArchiveContexts(function (prev) { return prev.concat([data]); });
+          setHasMoreArchive(data.hasMore);
+        } else {
+          setHasMoreArchive(false);
+        }
+        setLoadingArchive(false);
+        archiveLoadLock.current = false;
+      })
+      .catch(function () {
+        setLoadingArchive(false);
+        archiveLoadLock.current = false;
+      });
+  }
+
+  /* Native wheel listener — triggers archive load on scroll-up gesture.
+     Accumulates deltaY so rapid scroll ticks don't over-fire. */
+  useEffect(function () {
+    var el = scrollRef.current;
+    if (!el || !isLiveSession) return;
+    var accumulated = 0;
+    function onWheel(e) {
+      if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
+      accumulated += e.deltaY;
+      if (accumulated > 0) accumulated = 0;          // scrolled down → reset
+      if (accumulated <= -80) {                       // scrolled up 80px → trigger
+        accumulated = 0;
+        triggerArchiveLoad();
+      }
+    }
+    el.addEventListener('wheel', onWheel, {passive: true});
+    return function () { el.removeEventListener('wheel', onWheel); };
+  }, [isLiveSession, loadingArchive, hasMoreArchive, archiveContexts.length]);
+
+  function onChatScroll() {
+    var el = scrollRef.current;
+    if (!el) return;
+    userAtBottomRef.current = isNearBottom(el, 60);
   }
 
   var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[c.label]; });
@@ -1527,7 +1647,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           />
         ) : (
         <>
-        <div className="chat-scroll" ref={scrollRef}>
+        <div className="chat-scroll" ref={scrollRef} onScroll={onChatScroll}>
           <div className="thread-header">
             <span className={"sa-dot " + session.status} style={{ marginTop: 0, width: 6, height: 6 }}></span>
             <span>{session.title}</span>
@@ -1553,6 +1673,31 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               </span>
             </div>
           )}
+          {loadingArchive && (
+            <div className="archive-loading">{t("chat.loadingArchive") || "loading…"}</div>
+          )}
+          {archiveRenderEntries.map(function (entry) {
+            if (entry.isArchiveDivider) {
+              return <div key={entry.renderKey} className="context-divider archive-between"><span>{t("chat.earlierConversation") || "↑ 更早的对话"}</span></div>;
+            }
+            if (entry.isMainDivider) {
+              return <div key={entry.renderKey} className="context-divider main-divider"><span>{t("chat.historyContext") || "━━━ 历史上下文 ━━━"}</span></div>;
+            }
+            return (
+              <Message
+                key={entry.renderKey}
+                msg={entry.msg}
+                assistantName={DATA.assistantName}
+              />
+            );
+          })}
+          {renderedMessageEntries.map((entry) => (
+            <Message
+              key={entry.renderKey}
+              msg={entry.msg}
+              assistantName={DATA.assistantName}
+            />
+          ))}
           {renderedMessages.length === 0 && (
             <div className="chat-welcome">
               <h1><span className="welcome-mark"></span>{t("chat.welcomeTitle")}</h1>
@@ -1604,7 +1749,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                         })}
                       </div>
                     )}
-                    <p>{t("chat.welcomeDescription")}</p>
+                    <p onClick={() => setShowInputToken(!showInputToken)}
+                       style={{ cursor: "pointer", userSelect: "none" }}>
+                      {t("chat.youHaveUsed")} Cyrene {showInputToken ? t("chat.tokenRead") : t("chat.tokenOutput")} {showInputToken ? compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.prompt_tokens) || 0) : compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.completion_tokens) || 0)} token。
+                    </p>
                   </div>
                 ) : (
                   <div>
@@ -1640,13 +1788,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               </div>
             </div>
           )}
-          {renderedMessageEntries.map((entry) => (
-            <Message
-              key={entry.renderKey}
-              msg={entry.msg}
-              assistantName={DATA.assistantName}
-            />
-          ))}
           {visibleSending && !runtimeAttachedToLastMessage && (
             <div className="msg agent">
               <div className="msg-meta">
@@ -1688,7 +1829,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         </div>
 
         {!isLiveSession && (
-          <div className="composer" style={{ textAlign: "center", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 11 }}>
+          <div className="composer" ref={composerRef} style={{ textAlign: "center", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 11 }}>
             <div style={{ padding: "16px 0" }}>
               {t("chat.archivedSessionMessage")}<a style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
                   onClick={function () { onSelectSession && onSelectSession(null); }}>{t("chat.liveSessionLink")}</a>{t("chat.toSendMessages")}
@@ -2013,6 +2154,24 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
 function Message({ msg, assistantName }) {
   const { t } = useI18n();
+
+  // Archived context — pure read-only rendering
+  if (msg.isArchivedContext) {
+    return (
+      <div className={"msg " + msg.role + " archived-context"}>
+        <div className="msg-meta">
+          <span className={"msg-role " + msg.role}>
+            {msg.role === "user" ? "▸ " + t("chat.you") :
+             msg.role === "agent" ? "● " + (assistantName || "agent") :
+             msg.role}
+          </span>
+          <span className="msg-time">{msg.time}</span>
+        </div>
+        <div className="msg-body">{msg.body}</div>
+      </div>
+    );
+  }
+
   const renderMarkdownBody = !msg.streamingReply;
   const attachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
   const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
@@ -2296,8 +2455,8 @@ function SideTokenRing({ tokens }) {
   var showRing = true;
   var ringTotal = cacheTotal > 0 ? cacheTotal : (hasTokens ? (prompt || 0) + (completion || 0) : 0);
   var ringA = cacheTotal > 0 ? cacheHit : (hasTokens ? (prompt || 0) : 0);
-  var ringLabel = cacheTotal > 0 ? cachePct + "%" : (hasTokens ? null : "—");
-  var ringSub = cacheTotal > 0 ? t("chat.side.cacheHitRate") : (hasTokens ? null : t("chat.side.cacheHitRate"));
+  var ringLabel = cacheTotal > 0 ? cachePct + "%" : (hasTokens ? compactNumber(total) : "—");
+  var ringSub = cacheTotal > 0 ? t("chat.side.cacheHitRate") : (hasTokens ? t("chat.tokenTotal") : t("chat.side.cacheHitRate"));
   var r = 42, c = 2 * Math.PI * r;
   var ringRatio = ringTotal > 0 ? ringA / ringTotal : 0;
   var ringOffset = c * (1 - ringRatio);
@@ -2902,7 +3061,7 @@ function AgentGroupChat({ roundId, subagents, session }) {
             type: "agent_result",
             from: "system",
             to: "",
-            content: "━━ 对话已结束 ━━",
+            content: "━ 对话已结束 ━",
             timestamp: new Date().toISOString(),
             round_id: roundId,
           };
