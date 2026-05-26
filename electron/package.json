@@ -1,6 +1,7 @@
 {
   "name": "cyrene",
-  "version": "0.4.11",
+  "version": "0.4.13",
+  "license": "Apache-2.0",
   "description": "Cyrene AI Agent — self-evolving AI companion",
   "author": {
     "name": "Cyrene",

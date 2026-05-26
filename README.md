@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue" alt="Python">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License">
   <img src="https://img.shields.io/badge/status-alpha-yellow" alt="Status">
 </p>
 
@@ -55,4 +55,4 @@ Open `http://localhost:4242`. First launch runs a personality setup wizard.
 
 ## License
 
-MIT
+Apache 2.0
