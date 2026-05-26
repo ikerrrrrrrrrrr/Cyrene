@@ -361,7 +361,8 @@ async def test_call_llm_stream_falls_back_to_next_model_candidate(monkeypatch):
 
 
 async def test_run_vision_chat_uses_vision_candidates_after_primary_failure(monkeypatch):
-    from cyrene import attachments
+    from cyrene import attachments as att
+    from cyrene import call_llm as cll
 
     attempts: list[tuple[str, str]] = []
 
@@ -393,23 +394,23 @@ async def test_run_vision_chat_uses_vision_candidates_after_primary_failure(monk
                 return FakeResponse(400, {}, request)
             return FakeResponse(
                 200,
-                {"choices": [{"message": {"content": "vision fallback ok"}}]},
+                {"choices": [{"message": {"content": "vision fallback ok"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}},
                 request,
             )
 
     monkeypatch.setattr(
-        attachments,
+        cll,
         "get_models",
         lambda: [{"id": "candidate-1", "model": "primary-model", "base_url": "https://primary.example/v1", "api_key": "primary-key"}],
     )
     monkeypatch.setattr(
-        attachments,
+        cll,
         "get_vision_models",
         lambda: [{"id": "vision-1", "model": "vision-model", "base_url": "https://vision.example/v1", "api_key": "vision-key"}],
     )
-    monkeypatch.setattr(attachments.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setattr(cll.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
 
-    payload = await attachments.run_vision_chat(
+    payload = await att.run_vision_chat(
         [{"type": "text", "text": "describe"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}],
         content_prompt="describe",
     )

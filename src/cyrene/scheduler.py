@@ -375,37 +375,6 @@ def _build_proactive_user_prompt(context: str, silence_hours: float | None) -> s
 - {silence_line}"""
 
 
-async def _call_llm_text_only(messages: list[dict], max_tokens: int = 200) -> str:
-    """Minimal LLM call for proactive message generation.
-
-    Unlike ``_call_llm`` in agent.py, this function:
-    * Does NOT publish SSE events (no Web UI timeline pollution).
-    * Disables DeepSeek thinking mode (no reasoning_content leak).
-    * Returns only the content text — no tool calls, no metadata.
-    """
-    model = os.environ.get("OPENAI_MODEL", "deepseek-chat")
-    base_url = os.environ.get("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-
-    endpoint = f"{base_url.rstrip('/')}/chat/completions"
-    headers = {"Content-Type": "application/json"}
-    if api_key and api_key.lower() not in ("lmstudio", "dummy", ""):
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    payload: dict = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(endpoint, json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-
-    return (data["choices"][0]["message"].get("content") or "").strip()
-
-
 # ---------------------------------------------------------------------------
 # Scheduled-task execution  (preserved from the original scheduler)
 # ---------------------------------------------------------------------------

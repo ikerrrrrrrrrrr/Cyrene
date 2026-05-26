@@ -52,8 +52,6 @@ _MAX_TOOL_ROUNDS = 16
 _pending_compressors: set[asyncio.Task] = set()
 _pending_label_refreshes: set[asyncio.Task] = set()
 _pending_interrupt_clearers: set[asyncio.Task] = set()
-_pending_token_tasks: set[asyncio.Task] = set()
-_secondary_in_flight: int = 0
 _main_inbox_worker: asyncio.Task | None = None
 _active_main_round_id = ""
 _active_main_round_prompt = ""
@@ -69,10 +67,6 @@ _REPORT_REF_PREFIX = "[Deep research report]"
 _REPORT_REF_MAX_PREVIEW = 280
 
 
-def _bg_token_task(task: asyncio.Task) -> None:
-    """Track a background token-recording task to prevent premature GC."""
-    _pending_token_tasks.add(task)
-    task.add_done_callback(_pending_token_tasks.discard)
 
 
 def _init_session_epoch() -> None:
@@ -3555,42 +3549,6 @@ def _resolve_secondary_candidates() -> list[dict[str, Any]]:
         "ctx_limit": ctx_limit,
         "max_concurrency": max_concurrency,
     }]
-
-
-def _build_llm_request(
-    messages: list[dict],
-    tools: list | None,
-    max_tokens: int | None,
-    *,
-    stream: bool,
-    secondary: bool = False,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if secondary:
-        candidates = _resolve_secondary_candidates()
-        if candidates:
-            ctx_limit = int(candidates[0].get("ctx_limit") or 0)
-            if ctx_limit > 0:
-                total = sum(_message_token_estimate(m) for m in messages)
-                if total > ctx_limit:
-                    candidates = []  # context too large for secondary model
-        candidates.extend(_resolve_llm_candidates())  # primary as fallback
-    else:
-        candidates = _resolve_llm_candidates()
-    active = candidates[0]
-    model = active["model"]
-    payload: dict[str, Any] = {
-        "model": model,
-        "messages": _sanitize_messages_for_llm(messages),
-    }
-    if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-    if stream:
-        payload["stream"] = True
-        payload["stream_options"] = {"include_usage": True}
-    return candidates, payload
 
 
 def _extract_stream_delta_text(delta: dict[str, Any]) -> str:

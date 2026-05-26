@@ -572,16 +572,16 @@ async def call_llm(
                             caller, model, endpoint, candidate.get("id"), _format_httpx_error(exc),
                         )
 
-                if model_type == "vision" and candidate_error and _looks_like_vision_capability_error(candidate_error):
-                    raise candidate_error
-
                 if candidate_error:
-                    raise candidate_error
+                    # All endpoints for this candidate failed — try the next one.
+                    # The error is preserved in last_error and re-raised only
+                    # after all candidates are exhausted.
+                    continue
 
             except Exception as exc:
                 last_error = exc
                 if model_type == "vision" and _looks_like_vision_capability_error(exc):
-                    raise
+                    continue
                 continue
             finally:
                 if is_secondary and max_conc > 0:
