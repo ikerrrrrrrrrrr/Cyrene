@@ -943,7 +943,7 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
             if insert_at is None:
                 insert_at = len(base_messages)
             insert_at = max(0, min(insert_at, len(base_messages)))
-            suffix = messages[prefix_len:]
+            suffix = _message_suffix_after_persisted_prefix(messages, base_messages, prefix_len)
             round_id = str(_current_round_id.get() or "").strip()
             replace_end = insert_at
             while replace_end < len(base_messages) and _is_replaceable_live_message(base_messages[replace_end], round_id):
@@ -961,15 +961,14 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
             if insert_at is None:
                 insert_at = len(base_messages)
             insert_at = max(0, min(insert_at, len(base_messages)))
-            suffix = messages[prefix_len:]
+            suffix = _message_suffix_after_persisted_prefix(messages, base_messages, prefix_len)
             existing_tail = current_messages[insert_at:] if insert_at < len(current_messages) else []
             effective_messages = [
                 *base_messages[:insert_at],
-                # For anchored reinserts (guidance/question resumes), the new
-                # suffix belongs at the insertion point. Keep any concurrently
-                # persisted tail entries after it instead of letting them drift
-                # in front of the resumed round transcript.
-                *_merge_message_sequence(suffix, existing_tail or base_messages[insert_at:]),
+                # Preserve messages that were persisted concurrently after the
+                # anchor, then append the resumed transcript without duplicating
+                # any shared message ids.
+                *_merge_message_sequence(existing_tail or base_messages[insert_at:], suffix),
             ]
         await _write_session_messages_locked(state, effective_messages)
 
@@ -1867,6 +1866,39 @@ def _merge_message_sequence(existing: list[dict[str, Any]], incoming: list[dict[
             seen_ids.add(message_id)
 
     return _dedupe_messages_by_id(merged)
+
+
+def _message_suffix_after_persisted_prefix(
+    messages: list[dict[str, Any]],
+    base_messages: list[dict[str, Any]],
+    fallback_prefix_len: int,
+) -> list[dict[str, Any]]:
+    """Return newly produced messages after the persisted history prefix.
+
+    The agent's in-memory prompt history can include transient system messages
+    that are filtered before UI persistence. Counting raw prompt messages can
+    therefore skip the first real user-visible message after a resume. Prefer
+    stable message ids from the persisted base and fall back to the legacy
+    prefix length when ids are unavailable.
+    """
+    base_ids = {
+        str(message.get("message_id", "")).strip()
+        for message in base_messages
+        if isinstance(message, dict) and str(message.get("message_id", "")).strip()
+    }
+    if base_ids:
+        index = 0
+        while index < len(messages):
+            message = messages[index]
+            message_id = str(message.get("message_id", "")).strip() if isinstance(message, dict) else ""
+            if not message_id or message_id not in base_ids:
+                break
+            index += 1
+        if index > 0:
+            return messages[index:]
+
+    prefix_len = max(0, min(fallback_prefix_len, len(messages)))
+    return messages[prefix_len:]
 
 
 def _round_epoch_ms(round_id: str) -> int | None:

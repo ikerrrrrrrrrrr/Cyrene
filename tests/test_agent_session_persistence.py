@@ -149,6 +149,64 @@ async def test_save_session_messages_with_persist_base_preserves_concurrent_mess
         agent._persist_insert_at.set(old_insert)
 
 
+@pytest.mark.asyncio
+async def test_save_session_messages_with_persist_base_keeps_question_answer_after_transient_system(tmp_path) -> None:
+    state_file = tmp_path / "state.json"
+    data_dir = tmp_path
+
+    old_state_file = agent.STATE_FILE
+    old_data_dir = agent.DATA_DIR
+    old_base = agent._persist_base_messages.get()
+    old_merge_live = agent._persist_merge_live_state.get()
+    old_prefix = agent._persist_history_prefix_len.get()
+    old_insert = agent._persist_insert_at.get()
+    try:
+        agent.STATE_FILE = state_file
+        agent.DATA_DIR = data_dir
+
+        base_messages = [
+            {"role": "user", "message_id": "u1", "content": "start", "round_id": "round_q"},
+            {
+                "role": "assistant",
+                "message_id": "q1",
+                "content": "Need permission?",
+                "round_id": "round_q",
+                "question_prompt": True,
+                "question_id": "question_1",
+            },
+        ]
+        state_file.write_text(
+            json.dumps({"archive_session_id": "session_test", "messages": base_messages}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        incoming = [
+            *base_messages,
+            {"role": "user", "message_id": "u2", "content": "allow once", "round_id": "round_q"},
+            {"role": "assistant", "message_id": "a2", "content": "continuing", "round_id": "round_q"},
+        ]
+
+        agent._persist_base_messages.set(base_messages)
+        agent._persist_merge_live_state.set(False)
+        # Pending-question resumes append an ephemeral system instruction to
+        # prompt history. That system message is not present in the persisted
+        # UI message list, so raw prefix slicing used to skip u2.
+        agent._persist_history_prefix_len.set(len(base_messages) + 1)
+        agent._persist_insert_at.set(len(base_messages))
+
+        await agent._save_session_messages(incoming)
+
+        saved = json.loads(state_file.read_text(encoding="utf-8"))["messages"]
+        assert [msg["message_id"] for msg in saved] == ["u1", "q1", "u2", "a2"]
+    finally:
+        agent.STATE_FILE = old_state_file
+        agent.DATA_DIR = old_data_dir
+        agent._persist_base_messages.set(old_base)
+        agent._persist_merge_live_state.set(old_merge_live)
+        agent._persist_history_prefix_len.set(old_prefix)
+        agent._persist_insert_at.set(old_insert)
+
+
 def test_get_session_labels_persists_generated_archive_session_id(tmp_path) -> None:
     state_file = tmp_path / "state.json"
     data_dir = tmp_path
