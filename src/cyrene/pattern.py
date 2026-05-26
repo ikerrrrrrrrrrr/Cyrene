@@ -11,7 +11,7 @@ from cyrene import behavior_learning as _behavior
 logger = logging.getLogger(__name__)
 
 
-def record_action(
+async def record_action(
     tool: str,
     args: dict[str, Any],
     caller: str,
@@ -22,7 +22,7 @@ def record_action(
     success: bool = True,
     error: str = "",
 ) -> None:
-    _behavior.record_action(
+    await _behavior.record_action(
         tool,
         args,
         caller,
@@ -34,64 +34,64 @@ def record_action(
     )
 
 
-def list_patterns(status: str = "all") -> list[dict[str, Any]]:
-    return _behavior.list_patterns(status)
+async def list_patterns(status: str = "all") -> list[dict[str, Any]]:
+    return await _behavior.list_patterns(status)
 
 
-def list_learned_skills() -> list[dict[str, Any]]:
-    return _behavior.list_learned_skills()
+async def list_learned_skills() -> list[dict[str, Any]]:
+    return await _behavior.list_learned_skills()
 
 
-def get_learned_skill(skill_id: str) -> dict[str, Any] | None:
-    return _behavior.get_learned_skill(skill_id)
+async def get_learned_skill(skill_id: str) -> dict[str, Any] | None:
+    return await _behavior.get_learned_skill(skill_id)
 
 
-def list_learned_skill_versions(skill_id: str) -> list[dict[str, Any]]:
-    return _behavior.list_learned_skill_versions(skill_id)
+async def list_learned_skill_versions(skill_id: str) -> list[dict[str, Any]]:
+    return await _behavior.list_learned_skill_versions(skill_id)
 
 
-def list_learned_skill_patches(skill_id: str, status: str = "all") -> list[dict[str, Any]]:
-    return _behavior.list_learned_skill_patches(skill_id, status)
+async def list_learned_skill_patches(skill_id: str, status: str = "all") -> list[dict[str, Any]]:
+    return await _behavior.list_learned_skill_patches(skill_id, status)
 
 
-def list_learned_skill_runs(skill_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    return _behavior.list_learned_skill_runs(skill_id, limit)
+async def list_learned_skill_runs(skill_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    return await _behavior.list_learned_skill_runs(skill_id, limit)
 
 
-def list_skill_replay_tests(skill_id: str) -> list[dict[str, Any]]:
-    return _behavior.list_skill_replay_tests(skill_id)
+async def list_skill_replay_tests(skill_id: str) -> list[dict[str, Any]]:
+    return await _behavior.list_skill_replay_tests(skill_id)
 
 
-def vocabulary_snapshot() -> dict[str, Any]:
-    return _behavior.vocabulary_snapshot()
+async def vocabulary_snapshot() -> dict[str, Any]:
+    return await _behavior.vocabulary_snapshot()
 
 
-def create_vocabulary_label(**kwargs) -> dict[str, Any]:
-    return _behavior.create_vocabulary_label(**kwargs)
+async def create_vocabulary_label(**kwargs) -> dict[str, Any]:
+    return await _behavior.create_vocabulary_label(**kwargs)
 
 
-def create_vocabulary_alias(**kwargs) -> dict[str, Any]:
-    return _behavior.create_vocabulary_alias(**kwargs)
+async def create_vocabulary_alias(**kwargs) -> dict[str, Any]:
+    return await _behavior.create_vocabulary_alias(**kwargs)
 
 
-def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_label: str = "") -> dict[str, Any]:
-    return _behavior.promote_unknown_label(unknown_id, canonical_label=canonical_label, alias_label=alias_label)
+async def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_label: str = "") -> dict[str, Any]:
+    return await _behavior.promote_unknown_label(unknown_id, canonical_label=canonical_label, alias_label=alias_label)
 
 
-def dismiss_unknown_label(unknown_id: str) -> bool:
-    return _behavior.dismiss_unknown_label(unknown_id)
+async def dismiss_unknown_label(unknown_id: str) -> bool:
+    return await _behavior.dismiss_unknown_label(unknown_id)
 
 
-def list_scripts(status: str = "all") -> list[dict[str, Any]]:
-    return _behavior.list_compat_scripts(status)
+async def list_scripts(status: str = "all") -> list[dict[str, Any]]:
+    return await _behavior.list_compat_scripts(status)
 
 
-def approve_script(script_id: str) -> bool:
-    return _behavior.manual_activate_skill(script_id)
+async def approve_script(script_id: str) -> bool:
+    return await _behavior.manual_activate_skill(script_id)
 
 
-def reject_script(script_id: str) -> bool:
-    return _behavior.manual_deprecate_skill(script_id)
+async def reject_script(script_id: str) -> bool:
+    return await _behavior.manual_deprecate_skill(script_id)
 
 
 async def run_script(script_id: str, param_overrides: dict[str, Any] | None = None) -> str:
@@ -110,8 +110,8 @@ async def apply_skill_patch(skill_id: str, patch_id: str) -> dict[str, Any]:
     return await _behavior.apply_skill_patch(skill_id, patch_id)
 
 
-def reject_skill_patch(skill_id: str, patch_id: str) -> bool:
-    return _behavior.reject_skill_patch(skill_id, patch_id)
+async def reject_skill_patch(skill_id: str, patch_id: str) -> bool:
+    return await _behavior.reject_skill_patch(skill_id, patch_id)
 
 
 async def rollback_learned_skill(skill_id: str, version: int) -> dict[str, Any]:
@@ -147,7 +147,7 @@ async def _tool_list_scripts(
     _notify_state: dict | None,
 ) -> str:
     status = str(args.get("status", "all"))
-    skills = list_scripts(status)
+    skills = await list_scripts(status)
     if not skills:
         return "No learned skills found."
     lines = []
@@ -179,7 +179,8 @@ async def _tool_approve_script(
     _notify_state: dict | None,
 ) -> str:
     script_id = str(args.get("script_id", "")).strip()
-    return f"Activated '{script_id}'." if approve_script(script_id) else f"Skill '{script_id}' not found."
+    ok = await approve_script(script_id)
+    return f"Activated '{script_id}'." if ok else f"Skill '{script_id}' not found."
 
 
 async def _tool_reject_script(
@@ -190,7 +191,8 @@ async def _tool_reject_script(
     _notify_state: dict | None,
 ) -> str:
     script_id = str(args.get("script_id", "")).strip()
-    return f"Deprecated '{script_id}'." if reject_script(script_id) else f"Skill '{script_id}' not found."
+    ok = await reject_script(script_id)
+    return f"Deprecated '{script_id}'." if ok else f"Skill '{script_id}' not found."
 
 
 async def _tool_learn_patterns(

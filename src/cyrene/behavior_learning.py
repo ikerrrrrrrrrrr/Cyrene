@@ -17,6 +17,8 @@ import logging
 import re
 import sqlite3
 import time
+
+import aiosqlite
 from collections import defaultdict
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -491,10 +493,21 @@ def _json_loads(raw: Any, fallback: Any) -> Any:
     return parsed
 
 
-def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_DB_FILE))
-    conn.row_factory = sqlite3.Row
-    return conn
+class _Conn:
+    """Async context manager wrapping aiosqlite with sqlite3.Row row_factory."""
+    def __init__(self):
+        self._conn = aiosqlite.connect(str(_DB_FILE))
+
+    async def __aenter__(self) -> aiosqlite.Connection:
+        await self._conn.__aenter__()
+        self._conn.row_factory = sqlite3.Row
+        return self._conn
+
+    async def __aexit__(self, *args):
+        return await self._conn.__aexit__(*args)
+
+
+_conn = _Conn
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -808,17 +821,17 @@ def _default_skill_stats() -> dict[str, Any]:
     }
 
 
-def _ensure_tables() -> None:
-    with _conn() as conn:
-        conn.executescript(_CREATE_TABLES)
-        conn.commit()
+async def _ensure_tables() -> None:
+    async with _conn() as conn:
+        await conn.executescript(_CREATE_TABLES)
+        await conn.commit()
 
 
-def _seed_core_vocabulary() -> None:
+async def _seed_core_vocabulary() -> None:
     now = _now_iso()
-    with _conn() as conn:
+    async with _conn() as conn:
         for label in sorted(_CORE_DOMAINS):
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT OR IGNORE INTO behavior_vocabulary_labels
                 (label_id, label_type, canonical_label, domain, parent_label, raw_description, status, created_at, updated_at)
@@ -827,7 +840,7 @@ def _seed_core_vocabulary() -> None:
                 (f"domain:{label}", label, now, now),
             )
         for label in sorted(_CORE_TYPES):
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT OR IGNORE INTO behavior_vocabulary_labels
                 (label_id, label_type, canonical_label, domain, parent_label, raw_description, status, created_at, updated_at)
@@ -837,7 +850,7 @@ def _seed_core_vocabulary() -> None:
             )
         for alias_key, canonical in _STATIC_ALIASES.items():
             label_type, alias = alias_key.split(":", 1)
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT OR IGNORE INTO behavior_vocabulary_aliases
                 (alias_id, label_type, canonical_label, alias_label, created_at, vocabulary_version)
@@ -845,7 +858,7 @@ def _seed_core_vocabulary() -> None:
                 """,
                 (f"alias:{label_type}:{alias}", label_type, canonical, alias, now, _VOCABULARY_VERSION),
             )
-        conn.commit()
+        await conn.commit()
 
 
 async def init(data_dir: Path, workspace_dir: Path) -> None:
@@ -853,8 +866,8 @@ async def init(data_dir: Path, workspace_dir: Path) -> None:
     _DATA_DIR = data_dir
     _WORKSPACE_DIR = workspace_dir
     _DB_FILE = DB_PATH
-    _ensure_tables()
-    _seed_core_vocabulary()
+    await _ensure_tables()
+    await _seed_core_vocabulary()
     await _refresh_generated_skill_names_with_llm()
     _INIT_DONE = True
 
@@ -866,7 +879,7 @@ def _pattern_dir() -> Path:
     return path
 
 
-def begin_turn(
+async def begin_turn(
     *,
     session_id: str,
     round_id: str,
@@ -875,7 +888,7 @@ def begin_turn(
     session_title: str = "",
 ) -> dict[str, Any]:
     if not _INIT_DONE:
-        _ensure_tables()
+        await _ensure_tables()
     now = _now_iso()
     normalized_session_id = str(session_id or "").strip() or _new_id("session")
     normalized_round_id = str(round_id or "").strip() or _new_id("round")
@@ -888,13 +901,14 @@ def begin_turn(
         "correction_feedback": False,
         "round_title": "",
     }
-    with _conn() as conn:
-        row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT session_id FROM behavior_sessions WHERE session_id = ?",
             (normalized_session_id,),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row is None:
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT INTO behavior_sessions
                 (session_id, created_at, updated_at, session_summary, metadata_json)
@@ -909,7 +923,7 @@ def begin_turn(
                 ),
             )
         else:
-            conn.execute(
+            await conn.execute(
                 """
                 UPDATE behavior_sessions
                 SET updated_at = ?, session_summary = COALESCE(NULLIF(?, ''), session_summary)
@@ -918,7 +932,7 @@ def begin_turn(
                 (now, _truncate_text(session_title, 240), normalized_session_id),
             )
         if feedback:
-            latest_turn = conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT turn_id, user_feedback, metadata_json
                 FROM behavior_turns
@@ -927,11 +941,12 @@ def begin_turn(
                 LIMIT 1
                 """,
                 (normalized_session_id,),
-            ).fetchone()
+            )
+            latest_turn = await cursor.fetchone()
             if latest_turn is not None:
                 latest_meta = _json_loads(latest_turn["metadata_json"], {})
                 latest_meta["correction_feedback"] = True
-                conn.execute(
+                await conn.execute(
                     """
                     UPDATE behavior_turns
                     SET user_feedback = ?, metadata_json = ?, updated_at = ?
@@ -939,7 +954,7 @@ def begin_turn(
                     """,
                     ("correction", _json_dumps(latest_meta), now, latest_turn["turn_id"]),
                 )
-        conn.execute(
+        await conn.execute(
             """
             INSERT INTO behavior_turns
             (turn_id, session_id, round_id, created_at, updated_at, user_message, context_summary,
@@ -957,7 +972,7 @@ def begin_turn(
                 _json_dumps(metadata),
             ),
         )
-        conn.commit()
+        await conn.commit()
     session_token = _current_session_id.set(normalized_session_id)
     turn_token = _current_turn_id.set(turn_id)
     round_token = _current_round_id.set(normalized_round_id)
@@ -990,7 +1005,7 @@ def _map_tool_to_action(tool_name: str) -> tuple[str, str, str, int]:
     return ("state_management", "call_tool", _safe_slug(tool_name), 0)
 
 
-def record_action(
+async def record_action(
     tool_name: str,
     args: dict[str, Any],
     caller: str,
@@ -1015,13 +1030,14 @@ def record_action(
         "raw_args": dict(args or {}),
         "action_domain": domain,
     }
-    with _conn() as conn:
-        row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT COALESCE(MAX(action_index), -1) AS max_idx FROM behavior_actions WHERE turn_id = ?",
             (turn_id,),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         next_index = int(row["max_idx"] or -1) + 1
-        conn.execute(
+        await conn.execute(
             """
             INSERT INTO behavior_actions
             (action_id, turn_id, session_id, round_id, created_at, action_index, action_type, action_subtype,
@@ -1046,35 +1062,36 @@ def record_action(
                 _json_dumps(metadata),
             ),
         )
-        conn.execute(
+        await conn.execute(
             "UPDATE behavior_turns SET updated_at = ? WHERE turn_id = ?",
             (now, turn_id),
         )
-        conn.execute(
+        await conn.execute(
             "UPDATE behavior_sessions SET updated_at = ? WHERE session_id = ?",
             (now, session_id),
         )
-        conn.commit()
+        await conn.commit()
 
 
-def mark_turn_skill_routed(skill_id: str) -> None:
+async def mark_turn_skill_routed(skill_id: str) -> None:
     turn_id = _current_turn_id.get()
     if not turn_id:
         return
-    with _conn() as conn:
-        conn.execute(
+    async with _conn() as conn:
+        await conn.execute(
             "UPDATE behavior_turns SET linked_skill_id = ?, updated_at = ? WHERE turn_id = ?",
             (str(skill_id or ""), _now_iso(), turn_id),
         )
-        conn.commit()
+        await conn.commit()
 
 
-def _classify_turn_outcome(turn_id: str) -> str:
-    with _conn() as conn:
-        rows = conn.execute(
+async def _classify_turn_outcome(turn_id: str) -> str:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT success FROM behavior_actions WHERE turn_id = ?",
             (turn_id,),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
         if not rows:
             return "success"
         success_count = sum(1 for row in rows if int(row["success"] or 0) == 1)
@@ -1086,7 +1103,7 @@ def _classify_turn_outcome(turn_id: str) -> str:
         return "partial_success"
 
 
-def complete_turn(
+async def complete_turn(
     *,
     turn_id: str,
     assistant_response: str,
@@ -1094,12 +1111,13 @@ def complete_turn(
     round_title: str = "",
 ) -> None:
     now = _now_iso()
-    outcome = _classify_turn_outcome(turn_id)
-    with _conn() as conn:
-        row = conn.execute(
+    outcome = await _classify_turn_outcome(turn_id)
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT metadata_json, session_id FROM behavior_turns WHERE turn_id = ?",
             (turn_id,),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row is None:
             return
         metadata = _json_loads(row["metadata_json"], {})
@@ -1108,7 +1126,7 @@ def complete_turn(
             metadata["session_title"] = session_title
         if round_title:
             metadata["round_title"] = round_title
-        conn.execute(
+        await conn.execute(
             """
             UPDATE behavior_turns
             SET updated_at = ?, outcome_status = ?, metadata_json = ?
@@ -1117,7 +1135,7 @@ def complete_turn(
             (now, outcome, _json_dumps(metadata), turn_id),
         )
         if session_title:
-            conn.execute(
+            await conn.execute(
                 """
                 UPDATE behavior_sessions
                 SET updated_at = ?, session_summary = ?
@@ -1125,31 +1143,32 @@ def complete_turn(
                 """,
                 (now, _truncate_text(session_title, 240), row["session_id"]),
             )
-        conn.commit()
+        await conn.commit()
 
 
-def _alias_lookup(label_type: str, label: str) -> str:
+async def _alias_lookup(label_type: str, label: str) -> str:
     normalized = _safe_slug(label)
     if not normalized:
         return ""
     static_key = f"{label_type}:{normalized}"
     if static_key in _STATIC_ALIASES:
         return _STATIC_ALIASES[static_key]
-    with _conn() as conn:
-        row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT canonical_label
             FROM behavior_vocabulary_aliases
             WHERE label_type = ? AND alias_label = ?
             """,
             (label_type, normalized),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row is not None:
             return str(row["canonical_label"] or "")
     return normalized
 
 
-def _record_unknown_label(
+async def _record_unknown_label(
     *,
     turn_id: str,
     label_type: str,
@@ -1163,17 +1182,18 @@ def _record_unknown_label(
     if not normalized_raw:
         return
     now = _now_iso()
-    with _conn() as conn:
-        row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT unknown_id, seen_count, example_turns
             FROM behavior_unknown_labels
             WHERE label_type = ? AND raw_description = ?
             """,
             (label_type, normalized_raw),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row is None:
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT INTO behavior_unknown_labels
                 (unknown_id, label_type, raw_description, proposed_domain, proposed_type, proposed_subtype,
@@ -1197,7 +1217,7 @@ def _record_unknown_label(
             examples = _json_loads(row["example_turns"], [])
             if turn_id and turn_id not in examples:
                 examples = [turn_id, *examples][:12]
-            conn.execute(
+            await conn.execute(
                 """
                 UPDATE behavior_unknown_labels
                 SET proposed_domain = COALESCE(NULLIF(?, ''), proposed_domain),
@@ -1220,16 +1240,16 @@ def _record_unknown_label(
                     row["unknown_id"],
                 ),
             )
-        conn.commit()
+        await conn.commit()
 
 
-def _normalize_domain(value: str, turn_id: str = "") -> str:
-    normalized = _alias_lookup("domain", value)
+async def _normalize_domain(value: str, turn_id: str = "") -> str:
+    normalized = await _alias_lookup("domain", value)
     if normalized in _CORE_DOMAINS:
         return normalized
     if normalized and normalized in _CORE_TYPES:
         return "unknown"
-    _record_unknown_label(
+    await _record_unknown_label(
         turn_id=turn_id,
         label_type="domain",
         raw_description=value,
@@ -1239,11 +1259,11 @@ def _normalize_domain(value: str, turn_id: str = "") -> str:
     return "unknown"
 
 
-def _normalize_type(value: str, turn_id: str = "") -> str:
-    normalized = _alias_lookup("type", value)
+async def _normalize_type(value: str, turn_id: str = "") -> str:
+    normalized = await _alias_lookup("type", value)
     if normalized in _CORE_TYPES:
         return normalized
-    _record_unknown_label(
+    await _record_unknown_label(
         turn_id=turn_id,
         label_type="type",
         raw_description=value,
@@ -1253,10 +1273,10 @@ def _normalize_type(value: str, turn_id: str = "") -> str:
     return "unknown"
 
 
-def _normalize_subtype(value: str, turn_id: str = "") -> str:
-    normalized = _alias_lookup("subtype", value)
+async def _normalize_subtype(value: str, turn_id: str = "") -> str:
+    normalized = await _alias_lookup("subtype", value)
     if normalized == "unknown":
-        _record_unknown_label(
+        await _record_unknown_label(
             turn_id=turn_id,
             label_type="subtype",
             raw_description=value,
@@ -1266,12 +1286,12 @@ def _normalize_subtype(value: str, turn_id: str = "") -> str:
     return normalized
 
 
-def _normalize_semantic_label(value: str, *, label_type: str, turn_id: str = "") -> str:
-    normalized = _alias_lookup(label_type, value)
+async def _normalize_semantic_label(value: str, *, label_type: str, turn_id: str = "") -> str:
+    normalized = await _alias_lookup(label_type, value)
     if not normalized:
         normalized = "unknown"
     if normalized not in {"", "unknown"}:
-        _record_unknown_label(
+        await _record_unknown_label(
             turn_id=turn_id,
             label_type=label_type,
             raw_description=value,
@@ -1280,7 +1300,7 @@ def _normalize_semantic_label(value: str, *, label_type: str, turn_id: str = "")
             reason="open_semantic_label",
         )
     elif value:
-        _record_unknown_label(
+        await _record_unknown_label(
             turn_id=turn_id,
             label_type=label_type,
             raw_description=value,
@@ -1300,7 +1320,7 @@ def _normalize_slot(slot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> dict[str, Any]:
+async def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> dict[str, Any]:
     fp = dict(fingerprint or {})
     intent = fp.get("intent") or {}
     obj = fp.get("object") or {}
@@ -1310,27 +1330,27 @@ def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> 
         obj = {}
     action_sequence = fp.get("action_sequence") or []
 
-    normalized_intent_type = _normalize_semantic_label(
+    normalized_intent_type = await _normalize_semantic_label(
         str(intent.get("type") or "unknown"),
         label_type="intent_type",
         turn_id=turn_id,
     )
-    normalized_intent_subtype = _normalize_semantic_label(
+    normalized_intent_subtype = await _normalize_semantic_label(
         str(intent.get("subtype") or "unknown"),
         label_type="intent_subtype",
         turn_id=turn_id,
     )
-    normalized_object_type = _normalize_semantic_label(
+    normalized_object_type = await _normalize_semantic_label(
         str(obj.get("type") or "unknown"),
         label_type="object_type",
         turn_id=turn_id,
     )
-    normalized_object_subtype = _normalize_semantic_label(
+    normalized_object_subtype = await _normalize_semantic_label(
         str(obj.get("subtype") or "unknown"),
         label_type="object_subtype",
         turn_id=turn_id,
     )
-    normalized_domain = _normalize_domain(str(fp.get("domain") or "unknown"), turn_id)
+    normalized_domain = await _normalize_domain(str(fp.get("domain") or "unknown"), turn_id)
     raw_text = " ".join(
         str(part or "")
         for part in (
@@ -1347,9 +1367,9 @@ def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> 
     for action in action_sequence:
         if not isinstance(action, dict):
             continue
-        action_domain = _normalize_domain(str(action.get("domain") or normalized_domain), turn_id)
-        action_type = _normalize_type(str(action.get("type") or "unknown"), turn_id)
-        action_subtype = _normalize_subtype(str(action.get("subtype") or "unknown"), turn_id)
+        action_domain = await _normalize_domain(str(action.get("domain") or normalized_domain), turn_id)
+        action_type = await _normalize_type(str(action.get("type") or "unknown"), turn_id)
+        action_subtype = await _normalize_subtype(str(action.get("subtype") or "unknown"), turn_id)
         if "unknown" in {action_domain, action_type, action_subtype}:
             has_unknown = True
         normalized_actions.append(
@@ -1419,7 +1439,7 @@ def normalize_fingerprint(fingerprint: dict[str, Any], *, turn_id: str = "") -> 
     return normalized
 
 
-def _heuristic_request_fingerprint(
+async def _heuristic_request_fingerprint(
     user_message: str,
     action_sequence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -1512,7 +1532,7 @@ def _heuristic_request_fingerprint(
             action_sequence = [
                 {"domain": "external_information_query", "type": "query_realtime_info", "subtype": "search_web", "raw_description": "Search current information"},
             ]
-    return normalize_fingerprint(
+    return await normalize_fingerprint(
         {
             "intent": {
                 "type": intent_type,
@@ -1553,9 +1573,9 @@ async def _call_llm_json(prompt: str, *, caller: str = "behavior_learning") -> d
         _caller_type.reset(token)
 
 
-def _action_rows_for_turn(turn_id: str) -> list[dict[str, Any]]:
-    with _conn() as conn:
-        rows = conn.execute(
+async def _action_rows_for_turn(turn_id: str) -> list[dict[str, Any]]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT *
             FROM behavior_actions
@@ -1563,7 +1583,8 @@ def _action_rows_for_turn(turn_id: str) -> list[dict[str, Any]]:
             ORDER BY action_index ASC
             """,
             (turn_id,),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     actions: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -1573,24 +1594,26 @@ def _action_rows_for_turn(turn_id: str) -> list[dict[str, Any]]:
 
 
 async def build_turn_fingerprint(turn_id: str) -> dict[str, Any]:
-    with _conn() as conn:
-        existing = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT fingerprint_content FROM behavior_fingerprints WHERE turn_id = ?",
             (turn_id,),
-        ).fetchone()
+        )
+        existing = await cursor.fetchone()
         if existing is not None:
             return _json_loads(existing["fingerprint_content"], {})
-        turn_row = conn.execute(
+        cursor = await conn.execute(
             """
             SELECT turn_id, session_id, round_id, user_message, context_summary
             FROM behavior_turns
             WHERE turn_id = ?
             """,
             (turn_id,),
-        ).fetchone()
+        )
+        turn_row = await cursor.fetchone()
     if turn_row is None:
         return {}
-    action_rows = _action_rows_for_turn(turn_id)
+    action_rows = await _action_rows_for_turn(turn_id)
     action_summary = []
     deterministic_actions = []
     deterministic_entities: list[str] = []
@@ -1644,7 +1667,7 @@ Observed agent actions:
 JSON only.
 """
     payload = await _call_llm_json(prompt)
-    heuristic_fp = _heuristic_request_fingerprint(
+    heuristic_fp = await _heuristic_request_fingerprint(
         str(turn_row["user_message"]),
         action_sequence=deterministic_actions,
     )
@@ -1675,10 +1698,10 @@ JSON only.
         merged_entities = list(payload.get("entities") or [])
         merged_entities.extend(deterministic_entities)
         payload["entities"] = _normalize_entities(merged_entities)
-    fingerprint = normalize_fingerprint(payload, turn_id=turn_id)
+    fingerprint = await normalize_fingerprint(payload, turn_id=turn_id)
     now = _now_iso()
-    with _conn() as conn:
-        conn.execute(
+    async with _conn() as conn:
+        await conn.execute(
             """
             INSERT OR REPLACE INTO behavior_fingerprints
             (turn_id, fingerprint_content, vocabulary_version, created_at, updated_at)
@@ -1686,13 +1709,13 @@ JSON only.
             """,
             (turn_id, _json_dumps(fingerprint), _VOCABULARY_VERSION, now, now),
         )
-        conn.commit()
+        await conn.commit()
     return fingerprint
 
 
 async def build_request_fingerprint(user_message: str, history: list[dict[str, Any]]) -> dict[str, Any]:
     context_summary = _history_summary(history)
-    heuristic = _heuristic_request_fingerprint(user_message)
+    heuristic = await _heuristic_request_fingerprint(user_message)
     prompt = f"""You are matching a new user request against learned automation skills.
 
 Return exactly one JSON object with these keys:
@@ -1715,7 +1738,7 @@ JSON only.
     payload = await _call_llm_json(prompt, caller="skill_router")
     if not payload:
         return heuristic
-    normalized = normalize_fingerprint(payload)
+    normalized = await normalize_fingerprint(payload)
     heuristic_actions = heuristic.get("action_sequence") or []
     normalized_actions = normalized.get("action_sequence") or []
     if (
@@ -1926,18 +1949,19 @@ Similarity breakdown:
     return bool(result.get("should_merge"))
 
 
-def _fingerprint_for_turn(turn_id: str) -> dict[str, Any]:
-    with _conn() as conn:
-        row = conn.execute(
+async def _fingerprint_for_turn(turn_id: str) -> dict[str, Any]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT fingerprint_content FROM behavior_fingerprints WHERE turn_id = ?",
             (turn_id,),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
     return _json_loads(row["fingerprint_content"], {}) if row else {}
 
 
-def _member_turn_ids(pattern_id: str) -> list[str]:
-    with _conn() as conn:
-        rows = conn.execute(
+async def _member_turn_ids(pattern_id: str) -> list[str]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT turn_id
             FROM behavior_pattern_turns
@@ -1945,7 +1969,8 @@ def _member_turn_ids(pattern_id: str) -> list[str]:
             ORDER BY created_at ASC
             """,
             (pattern_id,),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     return [str(row["turn_id"]) for row in rows]
 
 
@@ -1983,12 +2008,12 @@ def _pattern_description(prototype: dict[str, Any]) -> str:
     ) or "behavior_pattern"
 
 
-def _fetch_turn_rows(turn_ids: list[str]) -> list[dict[str, Any]]:
+async def _fetch_turn_rows(turn_ids: list[str]) -> list[dict[str, Any]]:
     if not turn_ids:
         return []
     placeholders = ",".join("?" for _ in turn_ids)
-    with _conn() as conn:
-        rows = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             f"""
             SELECT *
             FROM behavior_turns
@@ -1996,13 +2021,14 @@ def _fetch_turn_rows(turn_ids: list[str]) -> list[dict[str, Any]]:
             ORDER BY created_at ASC
             """,
             tuple(turn_ids),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
 
-def _compute_pattern_stats(turn_ids: list[str], prototype: dict[str, Any]) -> dict[str, Any]:
-    turns = _fetch_turn_rows(turn_ids)
-    fingerprints = [_fingerprint_for_turn(turn_id) for turn_id in turn_ids]
+async def _compute_pattern_stats(turn_ids: list[str], prototype: dict[str, Any]) -> dict[str, Any]:
+    turns = await _fetch_turn_rows(turn_ids)
+    fingerprints = [await _fingerprint_for_turn(turn_id) for turn_id in turn_ids]
     success_count = 0.0
     partial_count = 0.0
     failure_count = 0.0
@@ -2067,20 +2093,21 @@ def _pattern_status(stats: dict[str, Any], linked_skill_ids: list[str]) -> str:
     return "candidate"
 
 
-def _upsert_pattern(pattern_id: str) -> None:
-    turn_ids = _member_turn_ids(pattern_id)
-    fingerprints = [_fingerprint_for_turn(turn_id) for turn_id in turn_ids]
+async def _upsert_pattern(pattern_id: str) -> None:
+    turn_ids = await _member_turn_ids(pattern_id)
+    fingerprints = [await _fingerprint_for_turn(turn_id) for turn_id in turn_ids]
     prototype = _choose_pattern_prototype([fp for fp in fingerprints if fp])
-    stats = _compute_pattern_stats(turn_ids, prototype)
+    stats = await _compute_pattern_stats(turn_ids, prototype)
     skillability = _pattern_skillability(stats, prototype)
-    with _conn() as conn:
-        linked_skill_rows = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT skill_id FROM learned_skills WHERE pattern_id = ? ORDER BY created_at ASC",
             (pattern_id,),
-        ).fetchall()
+        )
+        linked_skill_rows = await cursor.fetchall()
         linked_skill_ids = [str(row["skill_id"]) for row in linked_skill_rows]
         status = _pattern_status(stats, linked_skill_ids)
-        conn.execute(
+        await conn.execute(
             """
             UPDATE behavior_patterns
             SET description = ?, prototype_fingerprint = ?, statistics_json = ?, skillability_json = ?,
@@ -2098,19 +2125,20 @@ def _upsert_pattern(pattern_id: str) -> None:
                 pattern_id,
             ),
         )
-        conn.commit()
+        await conn.commit()
 
 
 async def _merge_turn_into_pattern(turn_id: str, fingerprint: dict[str, Any]) -> tuple[str, bool]:
-    with _conn() as conn:
-        rows = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT pattern_id, prototype_fingerprint
             FROM behavior_patterns
             WHERE status != 'deprecated'
             ORDER BY updated_at DESC
             """
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     best_pattern_id = ""
     best_similarity: dict[str, Any] = {"total": 0.0, "hard_fail": False, "breakdown": {}}
     best_prototype: dict[str, Any] = {}
@@ -2138,8 +2166,8 @@ async def _merge_turn_into_pattern(turn_id: str, fingerprint: dict[str, Any]) ->
     if not should_merge:
         pattern_id = _new_id("pattern")
         now = _now_iso()
-        with _conn() as conn:
-            conn.execute(
+        async with _conn() as conn:
+            await conn.execute(
                 """
                 INSERT INTO behavior_patterns
                 (pattern_id, description, prototype_fingerprint, statistics_json, skillability_json, status, linked_skill_list, created_at, updated_at)
@@ -2155,7 +2183,7 @@ async def _merge_turn_into_pattern(turn_id: str, fingerprint: dict[str, Any]) ->
                     now,
                 ),
             )
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT INTO behavior_pattern_turns
                 (pattern_id, turn_id, similarity, created_at)
@@ -2163,11 +2191,11 @@ async def _merge_turn_into_pattern(turn_id: str, fingerprint: dict[str, Any]) ->
                 """,
                 (pattern_id, turn_id, 1.0, now),
             )
-            conn.commit()
-        _upsert_pattern(pattern_id)
+            await conn.commit()
+        await _upsert_pattern(pattern_id)
         return pattern_id, False
-    with _conn() as conn:
-        conn.execute(
+    async with _conn() as conn:
+        await conn.execute(
             """
             INSERT OR REPLACE INTO behavior_pattern_turns
             (pattern_id, turn_id, similarity, created_at)
@@ -2175,16 +2203,16 @@ async def _merge_turn_into_pattern(turn_id: str, fingerprint: dict[str, Any]) ->
             """,
             (best_pattern_id, turn_id, float(best_similarity["total"]), _now_iso()),
         )
-        conn.commit()
-    _upsert_pattern(best_pattern_id)
+        await conn.commit()
+    await _upsert_pattern(best_pattern_id)
     return best_pattern_id, True
 
 
-def _derive_parameter_templates(turn_ids: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+async def _derive_parameter_templates(turn_ids: list[str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     action_groups: list[list[dict[str, Any]]] = []
     for turn_id in turn_ids[:_MAX_PATTERN_EXAMPLES]:
         group: list[dict[str, Any]] = []
-        for action in _action_rows_for_turn(turn_id):
+        for action in await _action_rows_for_turn(turn_id):
             metadata = action.get("metadata_json") or {}
             group.append(
                 {
@@ -2302,21 +2330,23 @@ def _looks_like_generated_skill_name(name: str) -> bool:
     return text.startswith("skill_")
 
 
-def _unique_skill_name(conn: sqlite3.Connection, preferred_name: str, *, skill_id: str = "") -> str:
+async def _unique_skill_name(conn: aiosqlite.Connection, preferred_name: str, *, skill_id: str = "") -> str:
     base = str(preferred_name or "").strip() or "学习技能"
     candidate = base
     counter = 2
     while True:
         if skill_id:
-            row = conn.execute(
+            cursor = await conn.execute(
                 "SELECT skill_id FROM learned_skills WHERE name = ? AND skill_id != ?",
                 (candidate, skill_id),
-            ).fetchone()
+            )
+            row = await cursor.fetchone()
         else:
-            row = conn.execute(
+            cursor = await conn.execute(
                 "SELECT skill_id FROM learned_skills WHERE name = ?",
                 (candidate,),
-            ).fetchone()
+            )
+            row = await cursor.fetchone()
         if row is None:
             return candidate
         candidate = f"{base} {counter}"
@@ -2368,13 +2398,13 @@ Context JSON:
 
 
 async def _refresh_generated_skill_names_with_llm() -> None:
-    with _conn() as conn:
-        rows = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT skill_id, name, description, pattern_id, skill_type, trigger_json FROM learned_skills ORDER BY created_at ASC"
-        ).fetchall()
-        existing = conn.execute("SELECT skill_id, name FROM learned_skills ORDER BY created_at ASC").fetchall()
+        )
+        rows = await cursor.fetchall()
     updates: list[tuple[str, str, str]] = []
-    seen_names = {str(row["name"] or "").strip() for row in existing if str(row["name"] or "").strip()}
+    seen_names = {str(row["name"] or "").strip() for row in rows if str(row["name"] or "").strip()}
     for row in rows:
         current_name = str(row["name"] or "")
         if not _looks_like_generated_skill_name(current_name):
@@ -2383,7 +2413,7 @@ async def _refresh_generated_skill_names_with_llm() -> None:
         prototype = (trigger or {}).get("base_fingerprint") or {}
         if not prototype:
             continue
-        turn_examples = _fetch_turn_rows(_member_turn_ids(str(row["pattern_id"] or "")))
+        turn_examples = await _fetch_turn_rows(await _member_turn_ids(str(row["pattern_id"] or "")))
         proposed_name, proposed_description = await _generate_skill_identity_with_llm(
             pattern_id=str(row["pattern_id"] or ""),
             prototype=prototype,
@@ -2403,14 +2433,14 @@ async def _refresh_generated_skill_names_with_llm() -> None:
             updates.append((unique_name, proposed_description, str(row["skill_id"] or "")))
     if not updates:
         return
-    with _conn() as conn:
+    async with _conn() as conn:
         now = _now_iso()
         for name, description, skill_id in updates:
-            conn.execute(
+            await conn.execute(
                 "UPDATE learned_skills SET name = ?, description = ?, updated_at = ? WHERE skill_id = ?",
                 (name, description, now, skill_id),
             )
-        conn.commit()
+        await conn.commit()
 
 
 def _skill_trigger_from_prototype(prototype: dict[str, Any], turn_examples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2427,15 +2457,16 @@ def _skill_trigger_from_prototype(prototype: dict[str, Any], turn_examples: list
 
 
 async def _skill_definition_from_pattern(pattern_id: str, skill_type: str) -> dict[str, Any]:
-    turn_ids = _member_turn_ids(pattern_id)
-    turn_examples = _fetch_turn_rows(turn_ids)
-    with _conn() as conn:
-        row = conn.execute(
+    turn_ids = await _member_turn_ids(pattern_id)
+    turn_examples = await _fetch_turn_rows(turn_ids)
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT prototype_fingerprint, description FROM behavior_patterns WHERE pattern_id = ?",
             (pattern_id,),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
     prototype = _json_loads(row["prototype_fingerprint"], {}) if row else {}
-    steps, input_schema = _derive_parameter_templates(turn_ids)
+    steps, input_schema = await _derive_parameter_templates(turn_ids)
     if not input_schema:
         input_schema = [
             {
@@ -2537,9 +2568,9 @@ def _skill_row_to_definition(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any
     }
 
 
-def _save_skill_version(
+async def _save_skill_version(
     *,
-    conn: sqlite3.Connection,
+    conn: aiosqlite.Connection,
     skill_id: str,
     version: int,
     parent_version: int | None,
@@ -2550,7 +2581,7 @@ def _save_skill_version(
     test_result: dict[str, Any] | None = None,
     rollback_target: int | None = None,
 ) -> None:
-    conn.execute(
+    await conn.execute(
         """
         INSERT OR REPLACE INTO learned_skill_versions
         (skill_id, version, parent_version, skill_definition, change_type, change_summary,
@@ -2572,7 +2603,7 @@ def _save_skill_version(
     )
 
 
-def _insert_replay_tests(conn: sqlite3.Connection, skill_id: str, turn_ids: list[str], trigger: dict[str, Any]) -> list[str]:
+async def _insert_replay_tests(conn: aiosqlite.Connection, skill_id: str, turn_ids: list[str], trigger: dict[str, Any]) -> list[str]:
     created_ids: list[str] = []
     now = _now_iso()
     for turn_id in turn_ids[:_MAX_PATTERN_EXAMPLES]:
@@ -2581,7 +2612,7 @@ def _insert_replay_tests(conn: sqlite3.Connection, skill_id: str, turn_ids: list
             "trigger": trigger,
             "turn_id": turn_id,
         }
-        conn.execute(
+        await conn.execute(
             """
             INSERT OR REPLACE INTO behavior_replay_tests
             (test_id, skill_id, turn_id, test_type, input_payload, expected_payload, last_result, created_at, updated_at)
@@ -2594,29 +2625,31 @@ def _insert_replay_tests(conn: sqlite3.Connection, skill_id: str, turn_ids: list
 
 
 async def _create_skill(pattern_id: str) -> str | None:
-    with _conn() as conn:
-        pattern_row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT statistics_json FROM behavior_patterns WHERE pattern_id = ?",
             (pattern_id,),
-        ).fetchone()
+        )
+        pattern_row = await cursor.fetchone()
         if pattern_row is None:
             return None
         stats = _json_loads(pattern_row["statistics_json"], {})
         if float(stats.get("effective_count") or 0) < 2:
             return None
-        existing = conn.execute(
+        cursor = await conn.execute(
             "SELECT skill_id FROM learned_skills WHERE pattern_id = ?",
             (pattern_id,),
-        ).fetchone()
+        )
+        existing = await cursor.fetchone()
         if existing is not None:
             return str(existing["skill_id"])
         definition = await _skill_definition_from_pattern(pattern_id, "draft")
-        definition["name"] = _unique_skill_name(conn, str(definition.get("name") or "学习技能"))
+        definition["name"] = await _unique_skill_name(conn, str(definition.get("name") or "学习技能"))
         skill_id = _new_id("learned_skill")
         now = _now_iso()
-        replay_ids = _insert_replay_tests(conn, skill_id, definition["created_from"]["turn_list"], definition["trigger"])
+        replay_ids = await _insert_replay_tests(conn, skill_id, definition["created_from"]["turn_list"], definition["trigger"])
         definition["tests"] = replay_ids
-        conn.execute(
+        await conn.execute(
             """
             INSERT INTO learned_skills
             (skill_id, name, description, current_version, status, skill_type, risk_level, requires_llm,
@@ -2656,7 +2689,7 @@ async def _create_skill(pattern_id: str) -> str | None:
             "created_at": now,
             "updated_at": now,
         }
-        _save_skill_version(
+        await _save_skill_version(
             conn=conn,
             skill_id=skill_id,
             version=1,
@@ -2665,8 +2698,8 @@ async def _create_skill(pattern_id: str) -> str | None:
             change_type="create",
             change_summary="Initial draft learned skill generated from pattern evidence.",
         )
-        conn.commit()
-    _upsert_pattern(pattern_id)
+        await conn.commit()
+    await _upsert_pattern(pattern_id)
     return skill_id
 
 
@@ -2683,8 +2716,11 @@ def _target_skill_type(stats: dict[str, Any], prototype: dict[str, Any]) -> str:
 
 
 async def _update_skill_to_type(skill_id: str, target_type: str, reason: str) -> None:
-    with _conn() as conn:
-        row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
         if row is None:
             return
         current = _skill_row_to_definition(row)
@@ -2705,7 +2741,7 @@ async def _update_skill_to_type(skill_id: str, target_type: str, reason: str) ->
             "created_at": current["created_at"],
             "updated_at": _now_iso(),
         }
-        conn.execute(
+        await conn.execute(
             """
             UPDATE learned_skills
             SET name = ?, description = ?, current_version = ?, status = 'shadow', skill_type = ?,
@@ -2734,7 +2770,7 @@ async def _update_skill_to_type(skill_id: str, target_type: str, reason: str) ->
                 skill_id,
             ),
         )
-        _save_skill_version(
+        await _save_skill_version(
             conn=conn,
             skill_id=skill_id,
             version=next_version,
@@ -2743,12 +2779,15 @@ async def _update_skill_to_type(skill_id: str, target_type: str, reason: str) ->
             change_type="promote_type",
             change_summary=reason,
         )
-        conn.commit()
+        await conn.commit()
 
 
-def _activate_skill(skill_id: str, reason: str) -> None:
-    with _conn() as conn:
-        row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+async def _activate_skill(skill_id: str, reason: str) -> None:
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
         if row is None:
             return
         current = _skill_row_to_definition(row)
@@ -2758,11 +2797,11 @@ def _activate_skill(skill_id: str, reason: str) -> None:
         current["status"] = "active"
         current["version"] = next_version
         current["updated_at"] = _now_iso()
-        conn.execute(
+        await conn.execute(
             "UPDATE learned_skills SET status = 'active', current_version = ?, updated_at = ? WHERE skill_id = ?",
             (next_version, current["updated_at"], skill_id),
         )
-        _save_skill_version(
+        await _save_skill_version(
             conn=conn,
             skill_id=skill_id,
             version=next_version,
@@ -2771,21 +2810,27 @@ def _activate_skill(skill_id: str, reason: str) -> None:
             change_type="activate",
             change_summary=reason,
         )
-        conn.commit()
+        await conn.commit()
 
 
-def manual_activate_skill(skill_id: str) -> bool:
-    with _conn() as conn:
-        row = conn.execute("SELECT skill_id FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+async def manual_activate_skill(skill_id: str) -> bool:
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
     if row is None:
         return False
-    _activate_skill(skill_id, "Manually activated from evolution UI.")
+    await _activate_skill(skill_id, "Manually activated from evolution UI.")
     return True
 
 
-def manual_deprecate_skill(skill_id: str) -> bool:
-    with _conn() as conn:
-        row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+async def manual_deprecate_skill(skill_id: str) -> bool:
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
         if row is None:
             return False
         current = _skill_row_to_definition(row)
@@ -2793,11 +2838,11 @@ def manual_deprecate_skill(skill_id: str) -> bool:
         current["status"] = "deprecated"
         current["version"] = next_version
         current["updated_at"] = _now_iso()
-        conn.execute(
+        await conn.execute(
             "UPDATE learned_skills SET status = 'deprecated', current_version = ?, updated_at = ? WHERE skill_id = ?",
             (next_version, current["updated_at"], skill_id),
         )
-        _save_skill_version(
+        await _save_skill_version(
             conn=conn,
             skill_id=skill_id,
             version=next_version,
@@ -2806,13 +2851,16 @@ def manual_deprecate_skill(skill_id: str) -> bool:
             change_type="deprecate",
             change_summary="Manually deprecated from evolution UI.",
         )
-        conn.commit()
+        await conn.commit()
     return True
 
 
-def _update_shadow_promotion(skill_id: str) -> None:
-    with _conn() as conn:
-        row = conn.execute("SELECT run_statistics_json, status FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+async def _update_shadow_promotion(skill_id: str) -> None:
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
         if row is None or str(row["status"]) != "shadow":
             return
         stats = _json_loads(row["run_statistics_json"], {})
@@ -2820,12 +2868,15 @@ def _update_shadow_promotion(skill_id: str) -> None:
         shadow_failure = int(stats.get("shadow_failure") or 0)
         consistency_avg = float(stats.get("consistency_avg") or 0.0)
     if shadow_success >= _SHADOW_SUCCESS_THRESHOLD and shadow_failure <= 1 and consistency_avg >= _SHADOW_CONSISTENCY_THRESHOLD:
-        _activate_skill(skill_id, "Shadow validation passed and skill promoted to active.")
+        await _activate_skill(skill_id, "Shadow validation passed and skill promoted to active.")
 
 
-def _update_skill_run_stats(skill_id: str, *, execution_status: str, consistency_score: float = 0.0) -> None:
-    with _conn() as conn:
-        row = conn.execute("SELECT run_statistics_json FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+async def _update_skill_run_stats(skill_id: str, *, execution_status: str, consistency_score: float = 0.0) -> None:
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
         if row is None:
             return
         stats = _json_loads(row["run_statistics_json"], _default_skill_stats())
@@ -2842,17 +2893,17 @@ def _update_skill_run_stats(skill_id: str, *, execution_status: str, consistency
             stats["active_success"] = int(stats.get("active_success") or 0) + 1
         elif execution_status in {"failure", "fallback"}:
             stats["active_failure"] = int(stats.get("active_failure") or 0) + 1
-        conn.execute(
+        await conn.execute(
             "UPDATE learned_skills SET run_statistics_json = ?, updated_at = ? WHERE skill_id = ?",
             (_json_dumps(stats), _now_iso(), skill_id),
         )
-        conn.commit()
-    _update_shadow_promotion(skill_id)
+        await conn.commit()
+    await _update_shadow_promotion(skill_id)
 
 
-def _create_patch_proposal(skill_id: str, base_version: int, patch_type: str, reason: str, patch_content: dict[str, Any]) -> None:
-    with _conn() as conn:
-        conn.execute(
+async def _create_patch_proposal(skill_id: str, base_version: int, patch_type: str, reason: str, patch_content: dict[str, Any]) -> None:
+    async with _conn() as conn:
+        await conn.execute(
             """
             INSERT INTO learned_skill_patches
             (patch_id, skill_id, base_version, patch_type, reason, patch_content, risk_assessment, status, created_at)
@@ -2868,14 +2919,14 @@ def _create_patch_proposal(skill_id: str, base_version: int, patch_type: str, re
                 _now_iso(),
             ),
         )
-        conn.commit()
+        await conn.commit()
 
 
-def _maybe_propose_patch(skill_id: str, version: int, failure_reason: str) -> None:
+async def _maybe_propose_patch(skill_id: str, version: int, failure_reason: str) -> None:
     reason = str(failure_reason or "")
     if not reason:
         return
-    skill = get_learned_skill(skill_id)
+    skill = await get_learned_skill(skill_id)
     if skill is None:
         return
     lowered = reason.lower()
@@ -2885,7 +2936,7 @@ def _maybe_propose_patch(skill_id: str, version: int, failure_reason: str) -> No
         patch_type = "update_trigger"
     else:
         patch_type = "replace_step"
-    _create_patch_proposal(
+    await _create_patch_proposal(
         skill_id,
         version,
         patch_type,
@@ -2897,11 +2948,12 @@ def _maybe_propose_patch(skill_id: str, version: int, failure_reason: str) -> No
     )
 
 
-def _read_patterns() -> list[dict[str, Any]]:
-    with _conn() as conn:
-        rows = conn.execute(
+async def _read_patterns() -> list[dict[str, Any]]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT * FROM behavior_patterns ORDER BY updated_at DESC"
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     patterns: list[dict[str, Any]] = []
     for row in rows:
         item = dict(row)
@@ -2913,8 +2965,8 @@ def _read_patterns() -> list[dict[str, Any]]:
     return patterns
 
 
-def list_patterns(status: str = "all") -> list[dict[str, Any]]:
-    patterns = _read_patterns()
+async def list_patterns(status: str = "all") -> list[dict[str, Any]]:
+    patterns = await _read_patterns()
     if status != "all":
         patterns = [item for item in patterns if item.get("status") == status]
     result: list[dict[str, Any]] = []
@@ -2941,11 +2993,12 @@ def list_patterns(status: str = "all") -> list[dict[str, Any]]:
     return result
 
 
-def list_learned_skills() -> list[dict[str, Any]]:
-    with _conn() as conn:
-        rows = conn.execute(
+async def list_learned_skills() -> list[dict[str, Any]]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT * FROM learned_skills ORDER BY updated_at DESC"
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     skills: list[dict[str, Any]] = []
     for row in rows:
         definition = _skill_row_to_definition(row)
@@ -2974,15 +3027,18 @@ def list_learned_skills() -> list[dict[str, Any]]:
     return skills
 
 
-def get_learned_skill(skill_id: str) -> dict[str, Any] | None:
-    with _conn() as conn:
-        row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+async def get_learned_skill(skill_id: str) -> dict[str, Any] | None:
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
     return _skill_row_to_definition(row) if row is not None else None
 
 
-def list_learned_skill_versions(skill_id: str) -> list[dict[str, Any]]:
-    with _conn() as conn:
-        rows = conn.execute(
+async def list_learned_skill_versions(skill_id: str) -> list[dict[str, Any]]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT skill_id, version, parent_version, change_type, change_summary, patch_list, created_at,
                    test_result, rollback_target
@@ -2991,7 +3047,8 @@ def list_learned_skill_versions(skill_id: str) -> list[dict[str, Any]]:
             ORDER BY version DESC
             """,
             (skill_id,),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     return [
         {
             "skill_id": str(row["skill_id"]),
@@ -3008,10 +3065,10 @@ def list_learned_skill_versions(skill_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def list_learned_skill_patches(skill_id: str, status: str = "all") -> list[dict[str, Any]]:
-    with _conn() as conn:
+async def list_learned_skill_patches(skill_id: str, status: str = "all") -> list[dict[str, Any]]:
+    async with _conn() as conn:
         if status == "all":
-            rows = conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT *
                 FROM learned_skill_patches
@@ -3019,9 +3076,10 @@ def list_learned_skill_patches(skill_id: str, status: str = "all") -> list[dict[
                 ORDER BY created_at DESC
                 """,
                 (skill_id,),
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
         else:
-            rows = conn.execute(
+            cursor = await conn.execute(
                 """
                 SELECT *
                 FROM learned_skill_patches
@@ -3029,7 +3087,8 @@ def list_learned_skill_patches(skill_id: str, status: str = "all") -> list[dict[
                 ORDER BY created_at DESC
                 """,
                 (skill_id, status),
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
     return [
         {
             "patch_id": str(row["patch_id"]),
@@ -3046,9 +3105,9 @@ def list_learned_skill_patches(skill_id: str, status: str = "all") -> list[dict[
     ]
 
 
-def list_learned_skill_runs(skill_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    with _conn() as conn:
-        rows = conn.execute(
+async def list_learned_skill_runs(skill_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT *
             FROM learned_skill_runs
@@ -3057,37 +3116,41 @@ def list_learned_skill_runs(skill_id: str, limit: int = 50) -> list[dict[str, An
             LIMIT ?
             """,
             (skill_id, max(1, int(limit))),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
 
-def list_skill_replay_tests(skill_id: str) -> list[dict[str, Any]]:
-    return _replay_tests_for_skill(skill_id)
+async def list_skill_replay_tests(skill_id: str) -> list[dict[str, Any]]:
+    return await _replay_tests_for_skill(skill_id)
 
 
-def vocabulary_snapshot() -> dict[str, Any]:
-    with _conn() as conn:
-        label_rows = conn.execute(
+async def vocabulary_snapshot() -> dict[str, Any]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT label_type, canonical_label, domain, parent_label, raw_description, status, updated_at
             FROM behavior_vocabulary_labels
             ORDER BY label_type ASC, canonical_label ASC
             """
-        ).fetchall()
-        alias_rows = conn.execute(
+        )
+        label_rows = await cursor.fetchall()
+        cursor = await conn.execute(
             """
             SELECT label_type, canonical_label, alias_label, vocabulary_version, created_at
             FROM behavior_vocabulary_aliases
             ORDER BY label_type ASC, canonical_label ASC, alias_label ASC
             """
-        ).fetchall()
-        unknown_rows = conn.execute(
+        )
+        alias_rows = await cursor.fetchall()
+        cursor = await conn.execute(
             """
             SELECT *
             FROM behavior_unknown_labels
             ORDER BY seen_count DESC, updated_at DESC
             """
-        ).fetchall()
+        )
+        unknown_rows = await cursor.fetchall()
     return {
         "labels": [dict(row) for row in label_rows],
         "aliases": [dict(row) for row in alias_rows],
@@ -3102,7 +3165,7 @@ def vocabulary_snapshot() -> dict[str, Any]:
     }
 
 
-def create_vocabulary_label(
+async def create_vocabulary_label(
     *,
     label_type: str,
     canonical_label: str,
@@ -3117,8 +3180,8 @@ def create_vocabulary_label(
         raise ValueError("label_type and canonical_label are required")
     now = _now_iso()
     label_id = f"{normalized_type}:{normalized_label}"
-    with _conn() as conn:
-        conn.execute(
+    async with _conn() as conn:
+        await conn.execute(
             """
             INSERT OR REPLACE INTO behavior_vocabulary_labels
             (label_id, label_type, canonical_label, domain, parent_label, raw_description, status, created_at, updated_at)
@@ -3137,7 +3200,7 @@ def create_vocabulary_label(
                 now,
             ),
         )
-        conn.commit()
+        await conn.commit()
     return {
         "label_id": label_id,
         "label_type": normalized_type,
@@ -3145,7 +3208,7 @@ def create_vocabulary_label(
     }
 
 
-def create_vocabulary_alias(*, label_type: str, canonical_label: str, alias_label: str) -> dict[str, Any]:
+async def create_vocabulary_alias(*, label_type: str, canonical_label: str, alias_label: str) -> dict[str, Any]:
     normalized_type = _safe_slug(label_type)
     normalized_canonical = _safe_slug(canonical_label)
     normalized_alias = _safe_slug(alias_label)
@@ -3153,8 +3216,8 @@ def create_vocabulary_alias(*, label_type: str, canonical_label: str, alias_labe
         raise ValueError("label_type, canonical_label, and alias_label are required")
     now = _now_iso()
     alias_id = f"alias:{normalized_type}:{normalized_alias}"
-    with _conn() as conn:
-        conn.execute(
+    async with _conn() as conn:
+        await conn.execute(
             """
             INSERT OR REPLACE INTO behavior_vocabulary_aliases
             (alias_id, label_type, canonical_label, alias_label, created_at, vocabulary_version)
@@ -3170,7 +3233,7 @@ def create_vocabulary_alias(*, label_type: str, canonical_label: str, alias_labe
                 _VOCABULARY_VERSION,
             ),
         )
-        conn.commit()
+        await conn.commit()
     return {
         "alias_id": alias_id,
         "label_type": normalized_type,
@@ -3179,12 +3242,13 @@ def create_vocabulary_alias(*, label_type: str, canonical_label: str, alias_labe
     }
 
 
-def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_label: str = "") -> dict[str, Any]:
-    with _conn() as conn:
-        row = conn.execute(
+async def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_label: str = "") -> dict[str, Any]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT * FROM behavior_unknown_labels WHERE unknown_id = ?",
             (unknown_id,),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row is None:
             raise ValueError("unknown label not found")
         label_type = _safe_slug(str(row["label_type"] or "unknown"))
@@ -3197,7 +3261,7 @@ def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_l
         )
         if not proposed:
             raise ValueError("canonical label is required")
-        conn.execute(
+        await conn.execute(
             """
             INSERT OR IGNORE INTO behavior_vocabulary_labels
             (label_id, label_type, canonical_label, domain, parent_label, raw_description, status, created_at, updated_at)
@@ -3207,7 +3271,7 @@ def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_l
         )
         alias_source = _safe_slug(alias_label or str(row["raw_description"] or ""))
         if alias_source:
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT OR REPLACE INTO behavior_vocabulary_aliases
                 (alias_id, label_type, canonical_label, alias_label, created_at, vocabulary_version)
@@ -3223,11 +3287,11 @@ def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_l
                     _VOCABULARY_VERSION,
                 ),
             )
-        conn.execute(
+        await conn.execute(
             "UPDATE behavior_unknown_labels SET status = 'promoted', updated_at = ? WHERE unknown_id = ?",
             (_now_iso(), unknown_id),
         )
-        conn.commit()
+        await conn.commit()
     return {
         "unknown_id": unknown_id,
         "label_type": label_type,
@@ -3236,19 +3300,20 @@ def promote_unknown_label(unknown_id: str, *, canonical_label: str = "", alias_l
     }
 
 
-def dismiss_unknown_label(unknown_id: str) -> bool:
-    with _conn() as conn:
-        row = conn.execute(
+async def dismiss_unknown_label(unknown_id: str) -> bool:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT unknown_id FROM behavior_unknown_labels WHERE unknown_id = ?",
             (unknown_id,),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row is None:
             return False
-        conn.execute(
+        await conn.execute(
             "UPDATE behavior_unknown_labels SET status = 'dismissed', updated_at = ? WHERE unknown_id = ?",
             (_now_iso(), unknown_id),
         )
-        conn.commit()
+        await conn.commit()
     return True
 
 
@@ -3389,12 +3454,12 @@ def _apply_change_list(definition: dict[str, Any], change_list: list[dict[str, A
     return applied
 
 
-def _sanitize_skill_definition(definition: dict[str, Any]) -> dict[str, Any]:
+async def _sanitize_skill_definition(definition: dict[str, Any]) -> dict[str, Any]:
     sanitized = _clone_json_value(definition)
     if isinstance(sanitized.get("trigger"), dict):
         base_fp = (sanitized["trigger"] or {}).get("base_fingerprint")
         if isinstance(base_fp, dict):
-            sanitized["trigger"]["base_fingerprint"] = normalize_fingerprint(base_fp)
+            sanitized["trigger"]["base_fingerprint"] = await normalize_fingerprint(base_fp)
     if isinstance(sanitized.get("input_schema"), list):
         sanitized["input_schema"] = [
             _normalize_slot(item)
@@ -3410,8 +3475,8 @@ def _sanitize_skill_definition(definition: dict[str, Any]) -> dict[str, Any]:
     return sanitized
 
 
-def _persist_skill_version(
-    conn: sqlite3.Connection,
+async def _persist_skill_version(
+    conn: aiosqlite.Connection,
     *,
     skill_id: str,
     current_row: sqlite3.Row,
@@ -3435,7 +3500,7 @@ def _persist_skill_version(
             current_row["run_statistics_json"], _default_skill_stats()
         ),
     }
-    conn.execute(
+    await conn.execute(
         """
         UPDATE learned_skills
         SET name = ?, description = ?, current_version = ?, status = ?, skill_type = ?, risk_level = ?,
@@ -3466,7 +3531,7 @@ def _persist_skill_version(
             skill_id,
         ),
     )
-    _save_skill_version(
+    await _save_skill_version(
         conn=conn,
         skill_id=skill_id,
         version=next_version,
@@ -3633,10 +3698,11 @@ Similarity:
 
 
 async def match_active_skill(user_message: str, history: list[dict[str, Any]]) -> dict[str, Any] | None:
-    with _conn() as conn:
-        rows = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT * FROM learned_skills WHERE status = 'active' ORDER BY updated_at DESC"
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     if not rows:
         return None
     request_fp = await build_request_fingerprint(user_message, history)
@@ -3687,11 +3753,12 @@ async def try_route_and_execute_skill(
     similarity = match["similarity"]
     input_schema = skill["input_schema"]
     current_turn = _current_turn_id.get()
-    with _conn() as conn:
-        turn_row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT context_summary FROM behavior_turns WHERE turn_id = ?",
             (current_turn,),
-        ).fetchone()
+        )
+        turn_row = await cursor.fetchone()
     context_summary = str(turn_row["context_summary"] or "") if turn_row else ""
     extraction = await extract_skill_parameters(
         user_message=user_message,
@@ -3701,8 +3768,8 @@ async def try_route_and_execute_skill(
     )
     if not extraction["complete"]:
         run_id = _new_id("skill_run")
-        with _conn() as conn:
-            conn.execute(
+        async with _conn() as conn:
+            await conn.execute(
                 """
                 INSERT INTO learned_skill_runs
                 (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
@@ -3720,12 +3787,12 @@ async def try_route_and_execute_skill(
                     _now_iso(),
                 ),
             )
-            conn.commit()
-        _update_skill_run_stats(skill["skill_id"], execution_status="fallback")
-        _maybe_propose_patch(skill["skill_id"], int(skill["version"]), "missing_required_parameters")
+            await conn.commit()
+        await _update_skill_run_stats(skill["skill_id"], execution_status="fallback")
+        await _maybe_propose_patch(skill["skill_id"], int(skill["version"]), "missing_required_parameters")
         return None
     params = extraction["params"]
-    mark_turn_skill_routed(skill["skill_id"])
+    await mark_turn_skill_routed(skill["skill_id"])
     from cyrene.agent import _final_user_reply_from_history, _apply_assistant_meta
     from cyrene.tools import _execute_tool
 
@@ -3780,8 +3847,8 @@ async def try_route_and_execute_skill(
         messages.append(tool_entry)
         if not tool_success:
             run_id = _new_id("skill_run")
-            with _conn() as conn:
-                conn.execute(
+            async with _conn() as conn:
+                await conn.execute(
                     """
                     INSERT INTO learned_skill_runs
                     (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
@@ -3798,9 +3865,9 @@ async def try_route_and_execute_skill(
                         _now_iso(),
                     ),
                 )
-                conn.commit()
-            _update_skill_run_stats(skill["skill_id"], execution_status="failure")
-            _maybe_propose_patch(skill["skill_id"], int(skill["version"]), failure_reason or f"{tool_name}_failed")
+                await conn.commit()
+            await _update_skill_run_stats(skill["skill_id"], execution_status="failure")
+            await _maybe_propose_patch(skill["skill_id"], int(skill["version"]), failure_reason or f"{tool_name}_failed")
             return None
     final_text = await _final_user_reply_from_history(messages, max_tokens=None)
     final_entry = {"role": "assistant", "content": final_text}
@@ -3810,8 +3877,8 @@ async def try_route_and_execute_skill(
         final_entry["round_id"] = round_id
     messages.append(_apply_assistant_meta(final_entry))
     run_id = _new_id("skill_run")
-    with _conn() as conn:
-        conn.execute(
+    async with _conn() as conn:
+        await conn.execute(
             """
             INSERT INTO learned_skill_runs
             (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
@@ -3828,8 +3895,8 @@ async def try_route_and_execute_skill(
                 _now_iso(),
             ),
         )
-        conn.commit()
-    _update_skill_run_stats(skill["skill_id"], execution_status="success", consistency_score=round(extraction["confidence"], 4))
+        await conn.commit()
+    await _update_skill_run_stats(skill["skill_id"], execution_status="success", consistency_score=round(extraction["confidence"], 4))
     return {
         "skill": skill,
         "messages": messages,
@@ -3870,8 +3937,8 @@ async def _validate_shadow_skill_for_turn(skill: dict[str, Any], turn_row: dict[
         )
     )
     run_id = _new_id("skill_run")
-    with _conn() as conn:
-        conn.execute(
+    async with _conn() as conn:
+        await conn.execute(
             """
             INSERT INTO learned_skill_runs
             (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
@@ -3891,8 +3958,8 @@ async def _validate_shadow_skill_for_turn(skill: dict[str, Any], turn_row: dict[
                 _now_iso(),
             ),
         )
-        conn.commit()
-    _update_skill_run_stats(
+        await conn.commit()
+    await _update_skill_run_stats(
         skill["skill_id"],
         execution_status="shadow_success" if success else "shadow_failure",
         consistency_score=round(consistency, 4),
@@ -3900,14 +3967,16 @@ async def _validate_shadow_skill_for_turn(skill: dict[str, Any], turn_row: dict[
 
 
 async def _validate_shadow_skills_for_turn(turn_id: str, fingerprint: dict[str, Any]) -> None:
-    with _conn() as conn:
-        rows = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT * FROM learned_skills WHERE status = 'shadow' ORDER BY updated_at DESC"
-        ).fetchall()
-        turn_row = conn.execute(
+        )
+        rows = await cursor.fetchall()
+        cursor = await conn.execute(
             "SELECT * FROM behavior_turns WHERE turn_id = ?",
             (turn_id,),
-        ).fetchone()
+        )
+        turn_row = await cursor.fetchone()
     if turn_row is None:
         return
     for row in rows:
@@ -3916,15 +3985,15 @@ async def _validate_shadow_skills_for_turn(turn_id: str, fingerprint: dict[str, 
 
 
 async def _backfill_shadow_validation(skill_id: str) -> None:
-    skill = get_learned_skill(skill_id)
+    skill = await get_learned_skill(skill_id)
     if skill is None or str(skill.get("status") or "") != "shadow":
         return
     turn_ids = list((skill.get("created_from") or {}).get("turn_list") or [])
     if not turn_ids and skill.get("pattern_id"):
-        turn_ids = _member_turn_ids(str(skill["pattern_id"]))
+        turn_ids = await _member_turn_ids(str(skill["pattern_id"]))
     for turn_id in turn_ids:
-        with _conn() as conn:
-            existing = conn.execute(
+        async with _conn() as conn:
+            cursor = await conn.execute(
                 """
                 SELECT 1
                 FROM learned_skill_runs
@@ -3932,44 +4001,50 @@ async def _backfill_shadow_validation(skill_id: str) -> None:
                 LIMIT 1
                 """,
                 (skill_id, int(skill["version"]), str(turn_id)),
-            ).fetchone()
-            turn_row = conn.execute(
+            )
+            existing = await cursor.fetchone()
+            cursor = await conn.execute(
                 "SELECT * FROM behavior_turns WHERE turn_id = ?",
                 (str(turn_id),),
-            ).fetchone()
+            )
+            turn_row = await cursor.fetchone()
         if existing is not None or turn_row is None:
             continue
-        fingerprint = _fingerprint_for_turn(str(turn_id))
+        fingerprint = await _fingerprint_for_turn(str(turn_id))
         if not fingerprint:
             continue
         await _validate_shadow_skill_for_turn(skill, dict(turn_row), fingerprint)
-        skill = get_learned_skill(skill_id)
+        skill = await get_learned_skill(skill_id)
         if skill is None or str(skill.get("status") or "") != "shadow":
             return
 
 
-def _replay_tests_for_skill(skill_id: str) -> list[dict[str, Any]]:
-    with _conn() as conn:
-        rows = conn.execute(
+async def _replay_tests_for_skill(skill_id: str) -> list[dict[str, Any]]:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT * FROM behavior_replay_tests WHERE skill_id = ? ORDER BY created_at ASC",
             (skill_id,),
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
     return [dict(row) for row in rows]
 
 
 async def _run_replay_tests(skill_id: str) -> dict[str, Any]:
-    skill = get_learned_skill(skill_id)
+    skill = await get_learned_skill(skill_id)
     if skill is None:
         return {"passed": 0, "total": 0, "pass_rate": 0.0}
-    tests = _replay_tests_for_skill(skill_id)
+    tests = await _replay_tests_for_skill(skill_id)
     passed = 0
     total = 0
     now = _now_iso()
     for test in tests:
         total += 1
         turn_id = str(test.get("turn_id") or "")
-        with _conn() as conn:
-            turn_row = conn.execute("SELECT user_message, context_summary FROM behavior_turns WHERE turn_id = ?", (turn_id,)).fetchone()
+        async with _conn() as conn:
+            cursor = await conn.execute(
+                "SELECT user_message, context_summary FROM behavior_turns WHERE turn_id = ?", (turn_id,)
+            )
+            turn_row = await cursor.fetchone()
         if turn_row is None:
             continue
         request_fp = await build_request_fingerprint(str(turn_row["user_message"]), [{"role": "system", "content": str(turn_row["context_summary"])}])
@@ -3977,12 +4052,12 @@ async def _run_replay_tests(skill_id: str) -> dict[str, Any]:
         ok = not similarity["hard_fail"] and float(similarity["total"]) >= _ROUTER_JUDGE_THRESHOLD
         if ok:
             passed += 1
-        with _conn() as conn:
-            conn.execute(
+        async with _conn() as conn:
+            await conn.execute(
                 "UPDATE behavior_replay_tests SET last_result = ?, updated_at = ? WHERE test_id = ?",
                 (_json_dumps({"ok": ok, "similarity": similarity}), now, test["test_id"]),
             )
-            conn.commit()
+            await conn.commit()
     return {
         "passed": passed,
         "total": total,
@@ -4002,8 +4077,11 @@ async def update_learned_skill(
 ) -> dict[str, Any] | None:
     if not isinstance(updates, dict):
         return None
-    with _conn() as conn:
-        row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        row = await cursor.fetchone()
         if row is None:
             return None
         current = _skill_row_to_definition(row)
@@ -4041,14 +4119,14 @@ async def update_learned_skill(
         definition["pattern_id"] = current["pattern_id"]
         definition["created_at"] = current["created_at"]
         definition["run_statistics"] = current["run_statistics"]
-        sanitized = _sanitize_skill_definition(definition)
+        sanitized = await _sanitize_skill_definition(definition)
         valid_statuses = {"draft", "shadow", "active", "refined", "deprecated"}
         if str(sanitized.get("status") or "") not in valid_statuses:
             sanitized["status"] = current["status"]
         if str(sanitized.get("skill_type") or "") not in _SKILL_TYPE_ORDER:
             sanitized["skill_type"] = current["skill_type"]
         sanitized["requires_llm"] = bool(sanitized.get("requires_llm"))
-        persisted = _persist_skill_version(
+        persisted = await _persist_skill_version(
             conn,
             skill_id=skill_id,
             current_row=row,
@@ -4056,7 +4134,7 @@ async def update_learned_skill(
             change_type="manual_edit",
             change_summary=reason,
         )
-        conn.commit()
+        await conn.commit()
     replay_result = await _run_replay_tests(skill_id)
     return {
         **persisted,
@@ -4065,12 +4143,16 @@ async def update_learned_skill(
 
 
 async def apply_skill_patch(skill_id: str, patch_id: str) -> dict[str, Any]:
-    with _conn() as conn:
-        skill_row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
-        patch_row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        skill_row = await cursor.fetchone()
+        cursor = await conn.execute(
             "SELECT * FROM learned_skill_patches WHERE skill_id = ? AND patch_id = ?",
             (skill_id, patch_id),
-        ).fetchone()
+        )
+        patch_row = await cursor.fetchone()
         if skill_row is None or patch_row is None:
             return {"ok": False, "error": "Skill or patch not found."}
         if str(patch_row["status"] or "") != "proposed":
@@ -4093,8 +4175,8 @@ async def apply_skill_patch(skill_id: str, patch_id: str) -> dict[str, Any]:
         definition["pattern_id"] = current["pattern_id"]
         definition["created_at"] = current["created_at"]
         definition["run_statistics"] = current["run_statistics"]
-        sanitized = _sanitize_skill_definition(definition)
-        persisted = _persist_skill_version(
+        sanitized = await _sanitize_skill_definition(definition)
+        persisted = await _persist_skill_version(
             conn,
             skill_id=skill_id,
             current_row=skill_row,
@@ -4103,11 +4185,11 @@ async def apply_skill_patch(skill_id: str, patch_id: str) -> dict[str, Any]:
             change_summary=str(patch_row["reason"] or "Applied skill patch."),
             patch_list=applied_changes,
         )
-        conn.execute(
+        await conn.execute(
             "UPDATE learned_skill_patches SET status = 'applied' WHERE patch_id = ?",
             (patch_id,),
         )
-        conn.commit()
+        await conn.commit()
     replay_result = await _run_replay_tests(skill_id)
     return {
         "ok": True,
@@ -4118,33 +4200,38 @@ async def apply_skill_patch(skill_id: str, patch_id: str) -> dict[str, Any]:
     }
 
 
-def reject_skill_patch(skill_id: str, patch_id: str) -> bool:
-    with _conn() as conn:
-        row = conn.execute(
+async def reject_skill_patch(skill_id: str, patch_id: str) -> bool:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT patch_id FROM learned_skill_patches WHERE skill_id = ? AND patch_id = ?",
             (skill_id, patch_id),
-        ).fetchone()
+        )
+        row = await cursor.fetchone()
         if row is None:
             return False
-        conn.execute(
+        await conn.execute(
             "UPDATE learned_skill_patches SET status = 'rejected' WHERE patch_id = ?",
             (patch_id,),
         )
-        conn.commit()
+        await conn.commit()
     return True
 
 
 async def rollback_learned_skill(skill_id: str, rollback_version: int) -> dict[str, Any]:
-    with _conn() as conn:
-        current_row = conn.execute("SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)).fetchone()
-        version_row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM learned_skills WHERE skill_id = ?", (skill_id,)
+        )
+        current_row = await cursor.fetchone()
+        cursor = await conn.execute(
             """
             SELECT skill_definition
             FROM learned_skill_versions
             WHERE skill_id = ? AND version = ?
             """,
             (skill_id, int(rollback_version)),
-        ).fetchone()
+        )
+        version_row = await cursor.fetchone()
         if current_row is None or version_row is None:
             return {"ok": False, "error": "Skill or target version not found."}
         definition = _json_loads(version_row["skill_definition"], {})
@@ -4154,8 +4241,8 @@ async def rollback_learned_skill(skill_id: str, rollback_version: int) -> dict[s
         definition["pattern_id"] = str(current_row["pattern_id"] or definition.get("pattern_id") or "")
         definition["created_at"] = str(current_row["created_at"] or definition.get("created_at") or _now_iso())
         definition["run_statistics"] = _json_loads(current_row["run_statistics_json"], _default_skill_stats())
-        sanitized = _sanitize_skill_definition(definition)
-        persisted = _persist_skill_version(
+        sanitized = await _sanitize_skill_definition(definition)
+        persisted = await _persist_skill_version(
             conn,
             skill_id=skill_id,
             current_row=current_row,
@@ -4164,7 +4251,7 @@ async def rollback_learned_skill(skill_id: str, rollback_version: int) -> dict[s
             change_summary=f"Rolled back skill to version {rollback_version}.",
             rollback_target=int(rollback_version),
         )
-        conn.commit()
+        await conn.commit()
     replay_result = await _run_replay_tests(skill_id)
     return {
         "ok": True,
@@ -4175,15 +4262,17 @@ async def rollback_learned_skill(skill_id: str, rollback_version: int) -> dict[s
 
 
 async def _maybe_create_or_update_skill(pattern_id: str) -> None:
-    with _conn() as conn:
-        pattern_row = conn.execute(
+    async with _conn() as conn:
+        cursor = await conn.execute(
             "SELECT prototype_fingerprint, statistics_json FROM behavior_patterns WHERE pattern_id = ?",
             (pattern_id,),
-        ).fetchone()
-        skill_row = conn.execute(
+        )
+        pattern_row = await cursor.fetchone()
+        cursor = await conn.execute(
             "SELECT skill_id FROM learned_skills WHERE pattern_id = ?",
             (pattern_id,),
-        ).fetchone()
+        )
+        skill_row = await cursor.fetchone()
     if pattern_row is None:
         return
     prototype = _json_loads(pattern_row["prototype_fingerprint"], {})
@@ -4195,16 +4284,16 @@ async def _maybe_create_or_update_skill(pattern_id: str) -> None:
     if not skill_id:
         return
     target_type = _target_skill_type(stats, prototype)
-    skill = get_learned_skill(skill_id)
+    skill = await get_learned_skill(skill_id)
     if skill is None:
         return
     if _SKILL_TYPE_ORDER.get(target_type, 0) > _SKILL_TYPE_ORDER.get(skill["skill_type"], 0):
         await _update_skill_to_type(skill_id, target_type, f"Promoted to {target_type} based on stronger pattern evidence.")
         replay_result = await _run_replay_tests(skill_id)
         if replay_result["total"] and replay_result["pass_rate"] < 0.50:
-            refreshed = get_learned_skill(skill_id)
+            refreshed = await get_learned_skill(skill_id)
             if refreshed is not None:
-                _create_patch_proposal(
+                await _create_patch_proposal(
                     skill_id,
                     int(refreshed["version"]),
                     "update_trigger",
@@ -4222,16 +4311,17 @@ async def _maybe_create_or_update_skill(pattern_id: str) -> None:
     await _backfill_shadow_validation(skill_id)
 
 
-def _promote_unknown_pool() -> None:
-    with _conn() as conn:
-        rows = conn.execute(
+async def _promote_unknown_pool() -> None:
+    async with _conn() as conn:
+        cursor = await conn.execute(
             """
             SELECT *
             FROM behavior_unknown_labels
             WHERE status = 'open' AND seen_count >= 3
             ORDER BY seen_count DESC, updated_at DESC
             """
-        ).fetchall()
+        )
+        rows = await cursor.fetchall()
         now = _now_iso()
         for row in rows:
             label_type = str(row["label_type"] or "")
@@ -4241,7 +4331,7 @@ def _promote_unknown_pool() -> None:
             )
             if not proposed:
                 continue
-            conn.execute(
+            await conn.execute(
                 """
                 INSERT OR IGNORE INTO behavior_vocabulary_aliases
                 (alias_id, label_type, canonical_label, alias_label, created_at, vocabulary_version)
@@ -4256,24 +4346,25 @@ def _promote_unknown_pool() -> None:
                     _VOCABULARY_VERSION,
                 ),
             )
-            conn.execute(
+            await conn.execute(
                 "UPDATE behavior_unknown_labels SET status = 'promoted', updated_at = ? WHERE unknown_id = ?",
                 (now, row["unknown_id"]),
             )
-        conn.commit()
+        await conn.commit()
 
 
 async def process_unprocessed_turns(force: bool = False) -> dict[str, Any]:
     async with _PROCESS_LOCK:
-        with _conn() as conn:
-            turn_rows = conn.execute(
+        async with _conn() as conn:
+            cursor = await conn.execute(
                 """
                 SELECT turn_id
                 FROM behavior_turns
                 WHERE processed_status = 0
                 ORDER BY created_at ASC
                 """
-            ).fetchall()
+            )
+            turn_rows = await cursor.fetchall()
         stats = {
             "processed_turns": 0,
             "merged_patterns": 0,
@@ -4287,10 +4378,10 @@ async def process_unprocessed_turns(force: bool = False) -> dict[str, Any]:
             fingerprint = await build_turn_fingerprint(turn_id)
             if not fingerprint:
                 continue
-            before_skills = {item["id"]: item for item in list_learned_skills()}
+            before_skills = {item["id"]: item for item in await list_learned_skills()}
             pattern_id, merged = await _merge_turn_into_pattern(turn_id, fingerprint)
             await _maybe_create_or_update_skill(pattern_id)
-            after_skills = {item["id"]: item for item in list_learned_skills()}
+            after_skills = {item["id"]: item for item in await list_learned_skills()}
             if merged:
                 stats["merged_patterns"] += 1
             else:
@@ -4311,14 +4402,14 @@ async def process_unprocessed_turns(force: bool = False) -> dict[str, Any]:
                 stats["skills_updated"] += len(updated_skill_ids)
             await _validate_shadow_skills_for_turn(turn_id, fingerprint)
             stats["shadow_checks"] += 1
-            with _conn() as conn:
-                conn.execute(
+            async with _conn() as conn:
+                await conn.execute(
                     "UPDATE behavior_turns SET processed_status = 1, updated_at = ? WHERE turn_id = ?",
                     (_now_iso(), turn_id),
                 )
-                conn.commit()
+                await conn.commit()
             stats["processed_turns"] += 1
-        _promote_unknown_pool()
+        await _promote_unknown_pool()
         return stats
 
 
@@ -4338,29 +4429,29 @@ async def scan_for_manual_learn() -> dict[str, Any]:
 
 
 async def rebuild_learning_state(*, reprocess_all_turns: bool = True) -> dict[str, Any]:
-    with _conn() as conn:
-        conn.execute("DELETE FROM behavior_pattern_turns")
-        conn.execute("DELETE FROM behavior_patterns")
-        conn.execute("DELETE FROM behavior_fingerprints")
-        conn.execute("DELETE FROM behavior_replay_tests")
-        conn.execute("DELETE FROM learned_skill_patches")
-        conn.execute("DELETE FROM learned_skill_runs")
-        conn.execute("DELETE FROM learned_skill_versions")
-        conn.execute("DELETE FROM learned_skills")
+    async with _conn() as conn:
+        await conn.execute("DELETE FROM behavior_pattern_turns")
+        await conn.execute("DELETE FROM behavior_patterns")
+        await conn.execute("DELETE FROM behavior_fingerprints")
+        await conn.execute("DELETE FROM behavior_replay_tests")
+        await conn.execute("DELETE FROM learned_skill_patches")
+        await conn.execute("DELETE FROM learned_skill_runs")
+        await conn.execute("DELETE FROM learned_skill_versions")
+        await conn.execute("DELETE FROM learned_skills")
         if reprocess_all_turns:
-            conn.execute("UPDATE behavior_turns SET processed_status = 0, linked_skill_id = '', updated_at = updated_at")
-        conn.commit()
+            await conn.execute("UPDATE behavior_turns SET processed_status = 0, linked_skill_id = '', updated_at = updated_at")
+        await conn.commit()
     stats = await process_unprocessed_turns(force=True)
-    learned = list_learned_skills()
+    learned = await list_learned_skills()
     return {
         **stats,
-        "patterns": list_patterns("all"),
+        "patterns": await list_patterns("all"),
         "learned_skills": learned,
     }
 
 
 async def run_learned_skill(skill_id: str, param_overrides: dict[str, Any] | None = None) -> str:
-    skill = get_learned_skill(skill_id)
+    skill = await get_learned_skill(skill_id)
     if skill is None:
         return f"Learned skill '{skill_id}' not found."
     from cyrene.tools import _execute_tool
@@ -4399,8 +4490,8 @@ async def run_learned_skill(skill_id: str, param_overrides: dict[str, Any] | Non
     return "\n".join(results) if results else f"Skill '{skill_id}' has no executable steps."
 
 
-def list_compat_scripts(status: str = "all") -> list[dict[str, Any]]:
-    learned = list_learned_skills()
+async def list_compat_scripts(status: str = "all") -> list[dict[str, Any]]:
+    learned = await list_learned_skills()
     if status != "all":
         learned = [item for item in learned if item.get("status") == status]
     return [

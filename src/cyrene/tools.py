@@ -1830,7 +1830,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
                 "round_id": _current_round_id.get(),
             })
             from cyrene.pattern import record_action
-            record_action(name, arguments, _caller_type.get(), _current_round_id.get(),
+            await record_action(name, arguments, _caller_type.get(), _current_round_id.get(),
                           (__import__("time").monotonic() - _t0) * 1000,
                           result=result, success=True, error="")
             return result
@@ -1838,7 +1838,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
             raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
             from cyrene.pattern import record_action
-            record_action(
+            await record_action(
                 name,
                 arguments,
                 _caller_type.get(),
@@ -1862,7 +1862,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
             "round_id": _current_round_id.get(),
         })
         from cyrene.pattern import record_action
-        record_action(
+        await record_action(
             name,
             arguments,
             _caller_type.get(),
@@ -1885,7 +1885,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     })
     from cyrene.pattern import record_action
     tool_success = not str(result).lower().startswith("tool failed:")
-    record_action(
+    await record_action(
         name,
         arguments,
         _caller_type.get(),

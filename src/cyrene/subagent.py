@@ -919,9 +919,10 @@ async def _run_subagent(
     from cyrene.llm import _assistant_text, _truncate
     from cyrene.tools import get_active_tool_defs_for_actor, is_tool_allowed_for_actor, _execute_tool
 
-    _caller_type.set(f"subagent_{agent_id}")
+    caller_token = _caller_type.set(f"subagent_{agent_id}")
     round_id = await get_round_id(agent_id)
     round_token = _current_round_id.set(round_id) if round_id else None
+    dm_token = _direct_message_mode.set(False)
     from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
 
     cmd = _current_command.get()
@@ -1110,6 +1111,8 @@ async def _run_subagent(
         logger.exception("Sub-agent %s crashed", agent_id)
         final_text = f"Sub-agent crashed: {e}"
     finally:
+        _caller_type.reset(caller_token)
+        _direct_message_mode.reset(dm_token)
         if round_token is not None:
             _current_round_id.reset(round_token)
 

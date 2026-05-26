@@ -4524,7 +4524,7 @@ async def _run_chat_agent(
             from cyrene import behavior_learning as _behavior_learning
 
             labels = get_session_labels(round_id)
-            behavior_turn_context = _behavior_learning.begin_turn(
+            behavior_turn_context = await _behavior_learning.begin_turn(
                 session_id=labels.get("archive_session_id", ""),
                 round_id=round_id,
                 user_message=user_message,
@@ -4630,7 +4630,7 @@ async def _run_chat_agent(
                 from cyrene import behavior_learning as _behavior_learning
 
                 latest_labels = get_session_labels(round_id)
-                _behavior_learning.complete_turn(
+                await _behavior_learning.complete_turn(
                     turn_id=behavior_turn_context["turn_id"],
                     assistant_response=final_output,
                     session_title=latest_labels.get("session_title", ""),

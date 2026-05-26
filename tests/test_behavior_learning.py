@@ -13,22 +13,22 @@ async def _init_behavior(tmp_path, monkeypatch):
 
     await bl.init(tmp_path, tmp_path)
     monkeypatch.setattr(bl, "_DB_FILE", tmp_path / "behavior-learning.db")
-    bl._ensure_tables()
-    bl._seed_core_vocabulary()
+    await bl._ensure_tables()
+    await bl._seed_core_vocabulary()
     monkeypatch.setattr(bl, "_call_llm_json", _fake_llm_json)
     return bl
 
 
-def _record_code_fix_turn(bl, *, session_id: str, round_id: str, user_message: str):
-    context = bl.begin_turn(
+async def _record_code_fix_turn(bl, *, session_id: str, round_id: str, user_message: str):
+    context = await bl.begin_turn(
         session_id=session_id,
         round_id=round_id,
         user_message=user_message,
         history=[],
         session_title="Behavior test session",
     )
-    bl.record_action("read_file", {"path": "src/app.py"}, "main_agent", round_id, 12, result="file content", success=True)
-    bl.record_action(
+    await bl.record_action("read_file", {"path": "src/app.py"}, "main_agent", round_id, 12, result="file content", success=True)
+    await bl.record_action(
         "edit_file",
         {"path": "src/app.py", "old_string": "return raw", "new_string": "return exported"},
         "main_agent",
@@ -37,7 +37,7 @@ def _record_code_fix_turn(bl, *, session_id: str, round_id: str, user_message: s
         result="patched",
         success=True,
     )
-    bl.record_action(
+    await bl.record_action(
         "run_shell",
         {"command": "pytest -q tests/test_export.py"},
         "main_agent",
@@ -46,7 +46,7 @@ def _record_code_fix_turn(bl, *, session_id: str, round_id: str, user_message: s
         result="1 passed",
         success=True,
     )
-    bl.complete_turn(
+    await bl.complete_turn(
         turn_id=context["turn_id"],
         assistant_response="已修复并验证。",
         session_title="Behavior test session",
@@ -59,7 +59,7 @@ async def test_behavior_learning_promotes_to_active_skill(tmp_path, monkeypatch)
     bl = await _init_behavior(tmp_path, monkeypatch)
 
     for index in range(1, 6):
-        _record_code_fix_turn(
+        await _record_code_fix_turn(
             bl,
             session_id="session-alpha",
             round_id=f"round-{index}",
@@ -67,8 +67,8 @@ async def test_behavior_learning_promotes_to_active_skill(tmp_path, monkeypatch)
         )
 
     stats = await bl.process_unprocessed_turns(force=True)
-    patterns = bl.list_patterns()
-    skills = bl.list_learned_skills()
+    patterns = await bl.list_patterns()
+    skills = await bl.list_learned_skills()
 
     assert stats["processed_turns"] == 5
     assert stats["merged_patterns"] == 4
@@ -85,7 +85,7 @@ async def test_behavior_learning_manual_edit_and_rollback(tmp_path, monkeypatch)
     bl = await _init_behavior(tmp_path, monkeypatch)
 
     for index in range(1, 3):
-        _record_code_fix_turn(
+        await _record_code_fix_turn(
             bl,
             session_id="session-beta",
             round_id=f"round-{index}",
@@ -93,7 +93,8 @@ async def test_behavior_learning_manual_edit_and_rollback(tmp_path, monkeypatch)
         )
 
     await bl.process_unprocessed_turns(force=True)
-    skill = bl.list_learned_skills()[0]
+    skills = await bl.list_learned_skills()
+    skill = skills[0]
     updated = await bl.update_learned_skill(
         skill["id"],
         {"description": "manual edit description"},
@@ -105,7 +106,7 @@ async def test_behavior_learning_manual_edit_and_rollback(tmp_path, monkeypatch)
     assert updated["version"] == 2
 
     rollback = await bl.rollback_learned_skill(skill["id"], 1)
-    restored = bl.get_learned_skill(skill["id"])
+    restored = await bl.get_learned_skill(skill["id"])
 
     assert rollback["ok"] is True
     assert restored is not None
@@ -117,7 +118,7 @@ async def test_behavior_learning_patch_application_and_vocabulary_snapshot(tmp_p
     bl = await _init_behavior(tmp_path, monkeypatch)
 
     for index in range(1, 3):
-        _record_code_fix_turn(
+        await _record_code_fix_turn(
             bl,
             session_id="session-gamma",
             round_id=f"round-{index}",
@@ -125,18 +126,20 @@ async def test_behavior_learning_patch_application_and_vocabulary_snapshot(tmp_p
         )
 
     await bl.process_unprocessed_turns(force=True)
-    skill = bl.list_learned_skills()[0]
+    skills = await bl.list_learned_skills()
+    skill = skills[0]
 
-    bl._maybe_propose_patch(skill["id"], int(skill["version"]), "missing parameters: path")
-    patches = bl.list_learned_skill_patches(skill["id"])
+    await bl._maybe_propose_patch(skill["id"], int(skill["version"]), "missing parameters: path")
+    patches = await bl.list_learned_skill_patches(skill["id"])
     patch = patches[0]
     applied = await bl.apply_skill_patch(skill["id"], patch["patch_id"])
-    refreshed = bl.get_learned_skill(skill["id"])
-    vocabulary = bl.vocabulary_snapshot()
+    refreshed = await bl.get_learned_skill(skill["id"])
+    vocabulary = await bl.vocabulary_snapshot()
 
     assert applied["ok"] is True
     assert refreshed is not None
     assert refreshed["fallback_policy"]["on_missing_args"] == "ask_user"
-    assert bl.list_learned_skill_patches(skill["id"])[0]["status"] == "applied"
+    result = await bl.list_learned_skill_patches(skill["id"])
+    assert result[0]["status"] == "applied"
     assert vocabulary["vocabulary_version"] == 1
     assert any(item["label_type"] == "intent_type" for item in vocabulary["unknown_labels"])

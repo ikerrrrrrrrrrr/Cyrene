@@ -1132,9 +1132,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         """Aggregated data for the Evolution page."""
         from cyrene import pattern as _pattern
         status = await _build_status()
-        scripts = _pattern.list_scripts("all")
-        patterns = _pattern.list_patterns("all")
-        learned_skills = _pattern.list_learned_skills()
+        scripts = await _pattern.list_scripts("all")
+        patterns = await _pattern.list_patterns("all")
+        learned_skills = await _pattern.list_learned_skills()
         cc_learning = await _build_cc_learning_snapshot()
         return {
             "phase": status.get("phase", ""),
@@ -1148,22 +1148,22 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/scripts")
     async def api_scripts(status: str = "all"):
         from cyrene import pattern as _pattern
-        return {"scripts": _pattern.list_scripts(status)}
+        return {"scripts": await _pattern.list_scripts(status)}
 
     @router.get("/api/patterns")
     async def api_patterns(status: str = "all"):
         from cyrene import pattern as _pattern
-        return {"patterns": _pattern.list_patterns(status)}
+        return {"patterns": await _pattern.list_patterns(status)}
 
     @router.get("/api/learned-skills")
     async def api_learned_skills():
         from cyrene import pattern as _pattern
-        return {"skills": _pattern.list_learned_skills()}
+        return {"skills": await _pattern.list_learned_skills()}
 
     @router.get("/api/learned-skills/{skill_id}")
     async def api_learned_skill_detail(skill_id: str):
         from cyrene import pattern as _pattern
-        skill = _pattern.get_learned_skill(skill_id)
+        skill = await _pattern.get_learned_skill(skill_id)
         if skill is None:
             return JSONResponse({"error": "skill not found"}, status_code=404)
         return {"skill": skill}
@@ -1171,22 +1171,22 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/learned-skills/{skill_id}/versions")
     async def api_learned_skill_versions(skill_id: str):
         from cyrene import pattern as _pattern
-        return {"versions": _pattern.list_learned_skill_versions(skill_id)}
+        return {"versions": await _pattern.list_learned_skill_versions(skill_id)}
 
     @router.get("/api/learned-skills/{skill_id}/patches")
     async def api_learned_skill_patches(skill_id: str, status: str = "all"):
         from cyrene import pattern as _pattern
-        return {"patches": _pattern.list_learned_skill_patches(skill_id, status)}
+        return {"patches": await _pattern.list_learned_skill_patches(skill_id, status)}
 
     @router.get("/api/learned-skills/{skill_id}/runs")
     async def api_learned_skill_runs(skill_id: str, limit: int = 50):
         from cyrene import pattern as _pattern
-        return {"runs": _pattern.list_learned_skill_runs(skill_id, limit)}
+        return {"runs": await _pattern.list_learned_skill_runs(skill_id, limit)}
 
     @router.get("/api/learned-skills/{skill_id}/replay-tests")
     async def api_learned_skill_replay_tests(skill_id: str):
         from cyrene import pattern as _pattern
-        return {"tests": _pattern.list_skill_replay_tests(skill_id)}
+        return {"tests": await _pattern.list_skill_replay_tests(skill_id)}
 
     @router.post("/api/learned-skills/{skill_id}/update")
     async def api_update_learned_skill(skill_id: str, request: Request):
@@ -1228,7 +1228,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.post("/api/learned-skills/{skill_id}/patches/{patch_id}/reject")
     async def api_reject_learned_skill_patch(skill_id: str, patch_id: str):
         from cyrene import pattern as _pattern
-        ok = _pattern.reject_skill_patch(skill_id, patch_id)
+        ok = await _pattern.reject_skill_patch(skill_id, patch_id)
         if not ok:
             return JSONResponse({"error": "patch not found"}, status_code=404)
         return {"ok": True}
@@ -1236,13 +1236,13 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.post("/api/learned-skills/{skill_id}/activate")
     async def api_activate_learned_skill(skill_id: str):
         from cyrene import pattern as _pattern
-        ok = _pattern.approve_script(skill_id)
+        ok = await _pattern.approve_script(skill_id)
         return {"ok": ok}
 
     @router.post("/api/learned-skills/{skill_id}/deprecate")
     async def api_deprecate_learned_skill(skill_id: str):
         from cyrene import pattern as _pattern
-        ok = _pattern.reject_script(skill_id)
+        ok = await _pattern.reject_script(skill_id)
         return {"ok": ok}
 
     @router.post("/api/learned-skills/{skill_id}/run")
@@ -1254,13 +1254,13 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.post("/api/scripts/{script_id}/approve")
     async def api_approve_script(script_id: str):
         from cyrene import pattern as _pattern
-        ok = _pattern.approve_script(script_id)
+        ok = await _pattern.approve_script(script_id)
         return {"ok": ok}
 
     @router.post("/api/scripts/{script_id}/reject")
     async def api_reject_script(script_id: str):
         from cyrene import pattern as _pattern
-        ok = _pattern.reject_script(script_id)
+        ok = await _pattern.reject_script(script_id)
         return {"ok": ok}
 
     @router.post("/api/scripts/{script_id}/run")
@@ -1277,9 +1277,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         return {
             "ok": True,
             "stats": stats,
-            "patterns": _pattern.list_patterns("all"),
-            "learned_skills": _pattern.list_learned_skills(),
-            "scripts": _pattern.list_scripts("all"),
+            "patterns": await _pattern.list_patterns("all"),
+            "learned_skills": await _pattern.list_learned_skills(),
+            "scripts": await _pattern.list_scripts("all"),
         }
 
     @router.post("/api/patterns/rebuild")
@@ -1290,15 +1290,15 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         return {
             "ok": True,
             "result": result,
-            "patterns": _pattern.list_patterns("all"),
-            "learned_skills": _pattern.list_learned_skills(),
-            "scripts": _pattern.list_scripts("all"),
+            "patterns": await _pattern.list_patterns("all"),
+            "learned_skills": await _pattern.list_learned_skills(),
+            "scripts": await _pattern.list_scripts("all"),
         }
 
     @router.get("/api/vocabulary")
     async def api_vocabulary():
         from cyrene import pattern as _pattern
-        return _pattern.vocabulary_snapshot()
+        return await _pattern.vocabulary_snapshot()
 
     @router.post("/api/vocabulary/labels")
     async def api_create_vocabulary_label(request: Request):
@@ -1306,7 +1306,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         payload = await request.json()
         try:
-            result = _pattern.create_vocabulary_label(
+            result = await _pattern.create_vocabulary_label(
                 label_type=str((payload or {}).get("label_type") or ""),
                 canonical_label=str((payload or {}).get("canonical_label") or ""),
                 domain=str((payload or {}).get("domain") or ""),
@@ -1324,7 +1324,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         payload = await request.json()
         try:
-            result = _pattern.create_vocabulary_alias(
+            result = await _pattern.create_vocabulary_alias(
                 label_type=str((payload or {}).get("label_type") or ""),
                 canonical_label=str((payload or {}).get("canonical_label") or ""),
                 alias_label=str((payload or {}).get("alias_label") or ""),
@@ -1339,7 +1339,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         payload = await request.json()
         try:
-            result = _pattern.promote_unknown_label(
+            result = await _pattern.promote_unknown_label(
                 unknown_id,
                 canonical_label=str((payload or {}).get("canonical_label") or ""),
                 alias_label=str((payload or {}).get("alias_label") or ""),
@@ -1351,7 +1351,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.post("/api/vocabulary/unknown/{unknown_id}/dismiss")
     async def api_dismiss_unknown_label(unknown_id: str):
         from cyrene import pattern as _pattern
-        ok = _pattern.dismiss_unknown_label(unknown_id)
+        ok = await _pattern.dismiss_unknown_label(unknown_id)
         if not ok:
             return JSONResponse({"error": "unknown label not found"}, status_code=404)
         return {"ok": True}
