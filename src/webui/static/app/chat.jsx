@@ -272,25 +272,25 @@ function runtimeTraceDescriptor(activeRequest) {
   const guidanceAccepted = Boolean(isGuidance && activeRequest && activeRequest.guidanceAccepted);
   if (isGuidance && !guidanceAccepted) {
     return {
-      timeLabel: "guiding…",
-      summary: "details · main inbox",
-      head: "queue",
-      empty: "Sending to main inbox…",
+      timeLabel: window.t("chat.guiding"),
+      summary: window.t("chat.detailsInbox"),
+      head: window.t("chat.queue"),
+      empty: window.t("chat.sendingToInbox"),
     };
   }
   if (guidanceAccepted) {
     return {
       timeLabel: "…",
-      summary: "details · after guidance",
-      head: "processing",
-      empty: "Continuing with the accepted guidance…",
+      summary: window.t("chat.detailsAfterGuidance"),
+      head: window.t("chat.processing"),
+      empty: window.t("chat.continuingGuidance"),
     };
   }
   return {
     timeLabel: "…",
-    summary: "details · processing",
-    head: "processing",
-    empty: "Thinking...",
+    summary: window.t("chat.detailsProcessing"),
+    head: window.t("chat.processing"),
+    empty: window.t("chat.thinking"),
   };
 }
 
@@ -322,8 +322,8 @@ function snapshotRuntimeTrace(state, options) {
 
 function runtimeAttachmentFromTrace(msg) {
   return {
-    summary: String(msg && msg.traceSummary || "details · processing"),
-    head: String(msg && msg.traceHead || "processing"),
+    summary: String(msg && msg.traceSummary || window.t("chat.detailsProcessing")),
+    head: String(msg && msg.traceHead || window.t("chat.processing")),
     elapsed: String(msg && msg.traceElapsed || "00:00"),
     timeLabel: "—",
     entries: Array.isArray(msg && msg.traceEntries) ? msg.traceEntries.slice() : [],
@@ -2211,11 +2211,10 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     { id: "overview", label: t("chat.side.overview") },
     { id: "agents", label: t("chat.side.agents") },
     { id: "shells", label: t("chat.side.shells") },
-    { id: "all", label: t("chat.side.all") },
   ];
-  const showShells = view === "all" || view === "shells";
-  const showAgents = view === "all" || view === "agents";
-  const showSummary = view === "all" || view === "overview";
+  const showShells = view === "shells";
+  const showAgents = view === "agents";
+  const showSummary = view === "overview";
   return (
     <div className="chat-side">
       <div className="chat-side-switcher">
@@ -2250,14 +2249,103 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
 
       {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
         <div className="side-head">{t("chat.runSummary")}</div>
-        <div className="kv" style={{ rowGap: 6 }}>
+        <div className="side-overview-kv">
           <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
           <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
           <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
           <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
-          <span className="k">{t("chat.tokens")}</span><span className="v">{tokensDisplay(session.summary.tokens, t)}</span>
           <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
         </div>
+        <SideTokenRing tokens={session.summary.tokens} />
+      </div>}
+    </div>
+  );
+}
+
+// ── Side overview token ring ──
+
+function SideTokenRing({ tokens }) {
+  var { t } = useI18n();
+  if (!tokens || tokens === "—") return null;
+  var prompt = null, completion = null, match;
+  var re = /([\d.]+)(k|M)?\s*(in|out)/g;
+  while ((match = re.exec(tokens)) !== null) {
+    var val = parseFloat(match[1]) * (match[2] === "k" ? 1000 : match[2] === "M" ? 1000000 : 1);
+    if (match[3] === "in") prompt = val;
+    if (match[3] === "out") completion = val;
+  }
+  if (prompt === null && completion === null) return null;
+  var total = (prompt || 0) + (completion || 0);
+  if (total === 0) return null;
+
+  var dash = (typeof DATA !== "undefined" && DATA.dashboard) || {};
+  var usage = dash.usage || {};
+  var cacheHit = Number(usage.cache_hit_tokens || 0);
+  var cacheMiss = Number(usage.cache_miss_tokens || 0);
+  var cacheTotal = cacheHit + cacheMiss;
+  var cachePct = cacheTotal > 0 ? Math.round(cacheHit / cacheTotal * 100) : null;
+
+  // ring: cache hit proportion
+  var r = 42, c = 2 * Math.PI * r;
+  var hitRatio = cacheTotal > 0 ? cacheHit / cacheTotal : 0;
+  var hitOffset = c * (1 - hitRatio);
+
+  // model stats
+  var rawStats = Array.isArray(dash.model_stats) ? dash.model_stats : [];
+  var modelMap = {};
+  rawStats.forEach(function (row) {
+    if (!modelMap[row.model]) modelMap[row.model] = 0;
+    modelMap[row.model] += row.requests || 0;
+  });
+  var modelEntries = Object.keys(modelMap)
+    .map(function (m) { return { model: m, requests: modelMap[m] }; })
+    .sort(function (a, b) { return b.requests - a.requests; })
+    .slice(0, 5);
+  var modelTotal = modelEntries.reduce(function (s, m) { return s + m.requests; }, 0);
+
+  return (
+    <div>
+      <div className="side-token-ring">
+        <div className="side-ring-wrap">
+          <svg width="100" height="100" viewBox="0 0 100 100">
+            <circle cx="50" cy="50" r={r} fill="none" stroke="var(--line)" strokeWidth="6" />
+            {cacheTotal > 0 && <circle cx="50" cy="50" r={r} fill="none" stroke="var(--accent)" strokeWidth="6"
+              strokeDasharray={c} strokeDashoffset={hitOffset}
+              transform="rotate(-90 50 50)" strokeLinecap="round" />}
+          </svg>
+          {cachePct !== null && <div className="side-ring-label">
+            <span className="side-ring-pct">{cachePct}%</span>
+            <span className="side-ring-sub">{t("chat.side.cacheHitRate")}</span>
+          </div>}
+        </div>
+        <div className="side-token-ring-meta">
+          <div className="side-token-ring-item">
+            <span className="dot dot-in"></span>
+            <span>{t("chat.tokenIn")}</span>
+            <span className="num">{compactNumber(prompt)}</span>
+          </div>
+          <div className="side-token-ring-item">
+            <span className="dot dot-out"></span>
+            <span>{t("chat.tokenOut")}</span>
+            <span className="num">{compactNumber(completion)}</span>
+          </div>
+          <div className="side-token-ring-total">{t("chat.tokenTotal")}: {compactNumber(total)}</div>
+        </div>
+      </div>
+      {modelEntries.length > 0 && <div className="side-model-usage">
+        <div className="side-model-usage-head">{t("chat.side.modelUsage")}</div>
+        {modelEntries.map(function (m) {
+          var pct = modelTotal ? Math.round(m.requests / modelTotal * 100) : 0;
+          return (
+            <div key={m.model} className="side-model-row">
+              <span className="side-model-name">{m.model}</span>
+              <div className="side-model-track">
+                <div className="side-model-fill" style={{ width: pct + "%" }}></div>
+              </div>
+              <span className="side-model-pct">{pct}%</span>
+            </div>
+          );
+        })}
       </div>}
     </div>
   );
@@ -2376,11 +2464,12 @@ function GroupChatMessage({ msg, prevFrom }) {
   }
 
   var bubbleClass = "agent-chat-bubble" + (msg.from === "user" ? " user" : "");
+  var html = renderMarkdown(msg.content || "");
 
   return (
     <div className={msgClass}>
       {nameEl}
-      <div className={bubbleClass}>{msg.content}</div>
+      <div className={bubbleClass} dangerouslySetInnerHTML={{ __html: html }}></div>
     </div>
   );
 }
@@ -2515,6 +2604,10 @@ function GroupChatComposer({ agents, chatEnded, onSend }) {
 
   function handleKeyDown(e) {
     if (e.key === "Escape") { setMentionOpen(false); }
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      handleSend();
+    }
   }
 
   function handleFileSelect() {
@@ -2566,49 +2659,45 @@ function GroupChatComposer({ agents, chatEnded, onSend }) {
     syncHeight();
   }
 
+  var inputRow = (
+    <div className="agent-chat-input-row">
+      <input ref={fileInputRef} type="file" multiple style={{ display: "none" }} onChange={handleFileSelect} />
+      <button className="iconbtn" onClick={function () { fileInputRef.current && fileInputRef.current.click(); }}
+        disabled={chatEnded}>+</button>
+      <button className="iconbtn" onClick={function () { setMentionOpen(!mentionOpen); }}
+        disabled={chatEnded}>@</button>
+      {mentionOpen && (
+        <div className="agent-chat-mentions">
+          {agents.filter(function (a) {
+            return !mentionFilter || a.id.toLowerCase().indexOf(mentionFilter.toLowerCase()) >= 0;
+          }).map(function (a) {
+            return (
+              <button key={a.id} className="agent-chat-mention-option"
+                style={{ color: _agentColor(a.id) }}
+                onMouseDown={function (e) { e.preventDefault(); selectMention(a.id); }}>
+                @{a.id}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <textarea ref={taRef} value={text} onChange={handleChange} onKeyDown={handleKeyDown}
+        placeholder="发送消息到 subagent..." rows={1} disabled={chatEnded}></textarea>
+      <button className="send" onClick={handleSend} disabled={chatEnded}>发送</button>
+    </div>
+  );
+
   if (chatEnded) {
     return (
       <div className="agent-chat-composer ended">
-        <div className="agent-chat-toolbar">
-          <input ref={fileInputRef} type="file" multiple style={{ display: "none" }} />
-          <button className="iconbtn" disabled={true}>@</button>
-          <button className="iconbtn" disabled={true}>+</button>
-        </div>
-        <div className="agent-chat-input-row">
-          <textarea ref={taRef} disabled={true} placeholder="对话已结束"></textarea>
-          <button className="send" disabled={true}>发送</button>
-        </div>
+        {inputRow}
       </div>
     );
   }
 
   return (
     <div className="agent-chat-composer">
-      <div className="agent-chat-toolbar">
-        <input ref={fileInputRef} type="file" multiple style={{ display: "none" }} onChange={handleFileSelect} />
-        <button className="iconbtn" onClick={function () { setMentionOpen(!mentionOpen); }}>@</button>
-        <button className="iconbtn" onClick={function () { fileInputRef.current && fileInputRef.current.click(); }}>+</button>
-        {mentionOpen && (
-          <div className="agent-chat-mentions">
-            {agents.filter(function (a) {
-              return !mentionFilter || a.id.toLowerCase().indexOf(mentionFilter.toLowerCase()) >= 0;
-            }).map(function (a) {
-              return (
-                <button key={a.id} className="agent-chat-mention-option"
-                  style={{ color: _agentColor(a.id) }}
-                  onMouseDown={function (e) { e.preventDefault(); selectMention(a.id); }}>
-                  @{a.id}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-      <div className="agent-chat-input-row">
-        <textarea ref={taRef} value={text} onChange={handleChange} onKeyDown={handleKeyDown}
-          placeholder="发送消息到 subagent..." rows={1}></textarea>
-        <button className="send" onClick={handleSend}>发送</button>
-      </div>
+      {inputRow}
       {attachments.length > 0 && (
         <div className="agent-chat-attachments">
           {attachments.map(function (f, idx) {
@@ -2807,8 +2896,9 @@ function AgentGroupChat({ roundId, subagents, session }) {
   }
 
   // Title from session or first user message
-  var title = "";
-  if (session && session.chat && session.chat.messages) {
+  // Title: use session.title (set by main agent), fallback to first user message
+  var title = (session && session.title) || (session && session.currentRoundTitle) || "";
+  if (!title && session && session.chat && session.chat.messages) {
     for (var ti = 0; ti < session.chat.messages.length; ti++) {
       var m = session.chat.messages[ti];
       if (m.role === "user" && m.content) {

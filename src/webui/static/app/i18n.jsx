@@ -400,6 +400,8 @@ const TRANSLATIONS = {
     "chat.side.agents": "Agents",
     "chat.side.shells": "Shells",
     "chat.side.all": "All",
+    "chat.side.modelUsage": "Models",
+    "chat.side.cacheHitRate": "Cache hit",
 
     // ── Agents Page ──────────────────────────────────────────────────────
     "agents.rounds": "Rounds",
@@ -1324,6 +1326,8 @@ const TRANSLATIONS = {
     "chat.side.agents": "代理",
     "chat.side.shells": "Shell",
     "chat.side.all": "全部",
+    "chat.side.modelUsage": "模型",
+    "chat.side.cacheHitRate": "缓存命中率",
 
     // ── 代理流程页 ──────────────────────────────────────────────────────
     "agents.rounds": "轮次",

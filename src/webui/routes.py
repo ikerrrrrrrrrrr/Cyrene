@@ -899,6 +899,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return {"ok": False, "error": "No target agents found"}
 
         sent_to: list[str] = []
+        first_msg_id = ""
         for target in targets:
             msg_id = await _send_inbox(
                 from_agent="user",
@@ -909,6 +910,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             )
             if msg_id:
                 sent_to.append(target)
+                if not first_msg_id:
+                    first_msg_id = msg_id
                 # Handle DONE/TIMEOUT agents: reactivate + spawn new task
                 info = _sub_reg.get(target)
                 if info and str(info.get("status", "")).strip() in ("done", "timeout"):
@@ -932,7 +935,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "type": "agent_chat_user_message",
             "round_id": round_id,
             "message": {
-                "id": f"user_msg_{int(time.time() * 1000)}",
+                "id": first_msg_id or f"user_msg_{int(time.time() * 1000)}",
                 "type": "user_message",
                 "from": "user",
                 "to": "all" if not mentions else ",".join(mentions),
