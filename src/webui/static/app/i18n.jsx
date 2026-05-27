@@ -1623,7 +1623,7 @@ const TRANSLATIONS = {
     "settings.secondaryModelConcurrency": "最大并发数",
     "settings.secondaryModelConcurrencyHint": "如果正在进行的请求已达到此数量，新请求跳过次要模型走主要模型。0 = 不限制。",
     "settings.visionModelPlaceholder": "当前仅保留占位，识图模型路由尚未接线。",
-    "settings.addFallbackCandidate": "添加回退 选",
+    "settings.addFallbackCandidate": "添加回退选项",
     "settings.modelCandidateRequired": "至少需要一个主要模型候选。",
     "settings.moveUp": "上移",
     "settings.moveDown": "下移",

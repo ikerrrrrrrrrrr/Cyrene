@@ -1732,6 +1732,7 @@ html[data-theme="light"] .msg.user .msg-body {
   border-radius: var(--r-m);
   background: var(--bg-1);
   overflow: hidden;
+  overflow-anchor: none;
   order: 1;
   box-shadow: var(--surface-gloss), var(--shadow-sm);
 }
@@ -6182,7 +6183,7 @@ body {
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-scroll {
-  padding: 56px clamp(36px, 7vw, 112px) var(--scroll-pb, 180px);
+  padding: 56px clamp(36px, 7vw, 112px) calc(var(--scroll-pb, 180px) + var(--scroll-pb-extra, 0px));
 }
 
 .app[data-screen-label="Cyrene · chat"] .thread-header,
@@ -8835,6 +8836,7 @@ html[data-theme="dark"] .welcome-range .active {
 
 .archive-container {
   width: 100%;
+  overflow-anchor: none;
 }
 .archive-container .msg {
   animation: archive-fade-in 0.3s ease-out both;

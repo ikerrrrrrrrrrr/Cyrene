@@ -607,12 +607,28 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       .catch(function () {});
   }, [isLiveSession, session.id]);
 
-  /* Reset archive context when switching to a new session. */
+  /* Reset archive context and scroll state when switching to a new session. */
   useEffect(function () {
     setArchiveContexts([]);
     setHasMoreArchive(true);
     archiveLoadLock.current = false;
+    compensationPendingRef.current = false;
+    initialScrollDoneRef.current = false;
+    initialArchiveLoadTriggeredRef.current = false;
+    initialPositioningInProgressRef.current = false;
+    // Clear any extra bottom padding from previous initial positioning
+    var el = scrollRef.current;
+    if (el) el.style.setProperty('--scroll-pb-extra', '0px');
   }, [session.id]);
+
+  /* Auto-load the first archive batch when entering a live session.
+     The layout effect positions the viewport after archives render. */
+  useEffect(function () {
+    if (!isLiveSession) return;
+    if (initialArchiveLoadTriggeredRef.current) return;
+    initialArchiveLoadTriggeredRef.current = true;
+    triggerArchiveLoad({ initialLoad: true });
+  }, [isLiveSession, session.id]);
 
   async function removeContext(label) {
     setHiddenContexts(Object.assign({}, hiddenContexts, (function (o) { o[label] = true; return o; })({})));
@@ -698,9 +714,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [loadingArchive, setLoadingArchive] = useState(false);
   const [hasMoreArchive, setHasMoreArchive] = useState(true);
   const archiveLoadLock = useRef(false);
+  const contentSentinelRef = useRef(null);
   const scrollHeightBeforeRef = useRef(0);
-  const scrollTopAtTriggerRef = useRef(0);
+  const compensationPendingRef = useRef(false);
   const lastArchiveTrigger = useRef(0);
+  const initialArchiveLoadTriggeredRef = useRef(false);
+  const initialPositioningInProgressRef = useRef(false);
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -780,6 +799,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   function scrollChatToBottom(settle) {
     var el = scrollRef.current;
     if (!el) return function () {};
+    // Don't scroll while initial archive positioning is in progress
+    if (initialPositioningInProgressRef.current) return function () {};
     // After initial mount, only scroll if user is actually near bottom
     if (initialScrollDoneRef.current && !isNearBottom(el, 60)) {
       userAtBottomRef.current = false;
@@ -1560,6 +1581,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       setArchiveContexts([]);
       setHasMoreArchive(true);
       archiveLoadLock.current = false;
+      compensationPendingRef.current = false;
+      initialArchiveLoadTriggeredRef.current = false;
+      initialPositioningInProgressRef.current = false;
       const r = await fetch("/api/sessions", { method: "POST" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
@@ -1572,12 +1596,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   // ── Archive context loading (scroll up to reveal older sessions) ──
 
-  function triggerArchiveLoad() {
+  function triggerArchiveLoad(options) {
     if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
 
+    var isInitial = options && options.initialLoad;
+
     archiveLoadLock.current = true;
-    scrollHeightBeforeRef.current = scrollRef.current ? scrollRef.current.scrollHeight : 0;
-    scrollTopAtTriggerRef.current = scrollRef.current ? scrollRef.current.scrollTop : 0;
+    if (isInitial) {
+      initialPositioningInProgressRef.current = true;
+    } else {
+      scrollHeightBeforeRef.current = scrollRef.current ? scrollRef.current.scrollHeight : 0;
+      compensationPendingRef.current = true;
+    }
     setLoadingArchive(true);
 
     var cursor = archiveContexts.length > 0
@@ -1591,6 +1621,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           setHasMoreArchive(data.hasMore);
         } else {
           setHasMoreArchive(false);
+          if (isInitial) {
+            initialPositioningInProgressRef.current = false;
+            initialScrollDoneRef.current = false;
+            requestAnimationFrame(function () {
+              scrollChatToBottom(true);
+            });
+          } else {
+            compensationPendingRef.current = false;
+          }
         }
         setLoadingArchive(false);
         archiveLoadLock.current = false;
@@ -1598,6 +1637,13 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       .catch(function () {
         setLoadingArchive(false);
         archiveLoadLock.current = false;
+        if (isInitial) {
+          initialPositioningInProgressRef.current = false;
+          initialArchiveLoadTriggeredRef.current = false;
+          initialScrollDoneRef.current = false;
+        } else {
+          compensationPendingRef.current = false;
+        }
       });
   }
 
@@ -1620,30 +1666,78 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     return function () { el.removeEventListener('wheel', onWheel); };
   }, [isLiveSession, loadingArchive, hasMoreArchive, archiveContexts.length]);
 
-  /* Scroll compensation — keeps viewport steady when archive content is added above. */
+  /* Scroll compensation — two modes:
+     A) Initial positioning after auto-load: pin sentinel (no messages) or latest user message
+     B) Subsequent loads: sentinel-based compensation to keep viewport stable */
   _useLayoutEffect(function () {
-    if (scrollHeightBeforeRef.current > 0 && archiveContexts.length > 0) {
+    // A) Initial positioning — after first archive batch loads on session entry
+    if (initialPositioningInProgressRef.current && archiveContexts.length > 0) {
       var el = scrollRef.current;
-      if (el) {
-        var added = el.scrollHeight - scrollHeightBeforeRef.current;
-        if (added > 0) {
-          el.scrollTop = scrollTopAtTriggerRef.current + added;
+      if (!el) { initialPositioningInProgressRef.current = false; return; }
+
+      // Force synchronous layout so measurements are correct
+      var forceLayout = el.offsetHeight;
+      var containerRect = el.getBoundingClientRect();
+      var padTop = 56; // .chat-scroll padding-top on chat page
+      var desired = 0;
+
+      if (renderedMessages.length > 0) {
+        // Session has messages: scroll latest user message to viewport top
+        var allMsgEls = el.querySelectorAll('.msg.user');
+        var lastUserEl = null;
+        for (var i = allMsgEls.length - 1; i >= 0; i--) {
+          if (!allMsgEls[i].closest('.archive-container')) {
+            lastUserEl = allMsgEls[i];
+            break;
+          }
         }
-        scrollHeightBeforeRef.current = 0;
-        scrollTopAtTriggerRef.current = 0;
+        if (lastUserEl) {
+          desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop;
+        }
       } else {
-        scrollHeightBeforeRef.current = 0;
-        scrollTopAtTriggerRef.current = 0;
+        // No messages: place divider bottom right at content-area top so it's just out of view
+        var mainDivider = el.querySelector('.main-divider');
+        if (mainDivider) {
+          desired = mainDivider.getBoundingClientRect().bottom - containerRect.top + el.scrollTop - padTop;
+        }
       }
+
+      if (desired > 0) {
+        el.scrollTop = desired;
+        if (el.scrollTop < desired) {
+          // Content too short — grow bottom padding so desired position is reachable
+          el.style.setProperty('--scroll-pb-extra', (desired - el.scrollTop) + 'px');
+          forceLayout = el.offsetHeight; // force reflow after padding change
+          el.scrollTop = desired;
+        }
+      }
+
+      // Mark initial positioning complete
+      initialScrollDoneRef.current = true;
+      userAtBottomRef.current = renderedMessages.length > 0 ? false : true;
+      initialPositioningInProgressRef.current = false;
+      return;
     }
-  }, [archiveContexts]);
+
+    // B) Subsequent archive loads — scrollHeight compensation (no spinner DOM change)
+    if (compensationPendingRef.current && archiveContexts.length > 0) {
+      var elB = scrollRef.current;
+      if (elB) {
+        var added = elB.scrollHeight - scrollHeightBeforeRef.current;
+        if (added > 0) {
+          elB.scrollTop += added;
+        }
+      }
+      compensationPendingRef.current = false;
+    }
+  }, [archiveContexts, renderedMessages]);
 
   function onChatScroll() {
     var el = scrollRef.current;
     if (!el) return;
     userAtBottomRef.current = isNearBottom(el, 60);
     // Don't trigger while compensation is in progress
-    if (scrollHeightBeforeRef.current > 0) return;
+    if (compensationPendingRef.current) return;
     if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
     if (el.scrollTop > 10) return;
     var now = Date.now();
@@ -1707,9 +1801,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             </div>
           )}
           <div className="archive-container">
-          {loadingArchive && (
-            <div className="archive-loading">{t("chat.loadingArchive") || "loading…"}</div>
-          )}
           {archiveRenderEntries.map(function (entry) {
             if (entry.isArchiveDivider) {
               return <div key={entry.renderKey} className="context-divider archive-between"><span>{t("chat.earlierConversation") || "↑ 更早的对话"}</span></div>;
@@ -1726,6 +1817,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             );
           })}
           </div>
+          <div ref={contentSentinelRef} style={{height: 0, overflow: 'hidden'}} />
           {renderedMessageEntries.map((entry) => (
             <Message
               key={entry.renderKey}
