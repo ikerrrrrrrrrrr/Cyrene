@@ -2406,8 +2406,9 @@ def _build_current_session() -> dict | None:
     subagents.sort(key=lambda item: (item.get("createdAt") == "—", item.get("createdAt"), item["name"]))
     live_rounds = get_live_rounds()
 
-    started_at = datetime.fromtimestamp(_SERVER_STARTED_AT, tz=timezone.utc).strftime("%H:%M")
-    duration = _format_duration(time.time() - _SERVER_STARTED_AT)
+    session_start = _session_started_at(raw_msgs)
+    started_at = datetime.fromtimestamp(session_start, tz=timezone.utc).strftime("%H:%M")
+    duration = _format_duration(time.time() - session_start)
     last_msg = messages[-1] if messages else None
 
     is_empty = not messages
@@ -2432,6 +2433,10 @@ def _build_current_session() -> dict | None:
         live_summary["requests"] = combined_live_usage.get("requests")
         live_summary["tokens"] = _format_tokens(combined_live_usage)
         live_summary["spend"] = _calc_spend(combined_live_usage)
+        live_summary["toolCalls"] = live_summary["toolCalls"] + sum(
+            _count_tool_calls(info.get("messages", []))
+            for info in subagent_registry.values()
+        )
 
     # Set timestamp filter so CC preview only shows entries from this session
     set_cc_since(started_at)
@@ -2878,7 +2883,19 @@ def _collapse_duplicate_user_messages(messages: list[dict]) -> list[dict]:
 
 
 def _count_tool_calls(raw_msgs: list[dict]) -> int:
-    return sum(len(m.get("tool_calls") or []) for m in raw_msgs)
+    count = sum(len(m.get("tool_calls") or []) for m in raw_msgs)
+    if count == 0:
+        count = sum(1 for m in raw_msgs if m.get("role") == "tool")
+    return count
+
+
+def _session_started_at(raw_msgs: list[dict]) -> float:
+    for m in raw_msgs:
+        round_id = str(m.get("round_id", "")).strip()
+        match = re.fullmatch(r"round_(\d+)", round_id)
+        if match:
+            return int(match.group(1)) / 1000.0
+    return _SERVER_STARTED_AT
 
 
 def _build_simple_flow(messages: list[dict]) -> dict:
@@ -4050,9 +4067,9 @@ def _build_context_chips() -> list[dict]:
     from cyrene.settings_store import is_workspace_active, is_soul_active
     chips = []
     if is_soul_active():
-        chips.append({"icon": "🧠", "label": "SOUL.md"})
+        chips.append({"icon": "🧠", "label": "SOUL.md", "key": "soul"})
     if is_workspace_active():
-        chips.append({"icon": "📁", "label": "workspace"})
+        chips.append({"icon": "📁", "label": "workspace", "key": "workspace"})
     return chips
 
 

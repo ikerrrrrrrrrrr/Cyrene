@@ -626,39 +626,48 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     triggerArchiveLoad({ initialLoad: true });
   }, [isLiveSession, session.id]);
 
-  async function removeContext(label) {
-    setHiddenContexts(Object.assign({}, hiddenContexts, (function (o) { o[label] = true; return o; })({})));
+  function contextKey(c) { return c.key || c.label; }
+
+  function contextDisplayLabel(c) {
+    var key = c.key || c.label;
+    if (key === "soul") return t("chat.contextSoul");
+    if (key === "workspace") return t("chat.contextWorkspace");
+    return c.label;
+  }
+
+  async function removeContext(chipKey) {
+    setHiddenContexts(Object.assign({}, hiddenContexts, (function (o) { o[chipKey] = true; return o; })({})));
     var chips = session.chat.contextChips;
     if (chips) {
       for (var i = chips.length - 1; i >= 0; i--) {
-        if (chips[i].label === label) chips.splice(i, 1);
+        if (contextKey(chips[i]) === chipKey) chips.splice(i, 1);
       }
     }
-    if (label === "SOUL.md") {
+    if (chipKey === "soul") {
       await fetch("/api/context/remove-soul", { method: "POST" });
-    } else if (label === "workspace") {
+    } else if (chipKey === "workspace") {
       await fetch("/api/context/remove-workspace", { method: "POST" });
     }
     setContextPickerOpen(false);
     if (window.refreshSessions) window.refreshSessions();
   }
 
-  async function addContext(label, path) {
+  async function addContext(chipKey, path) {
     var h = Object.assign({}, hiddenContexts);
-    delete h[label];
+    delete h[chipKey];
     setHiddenContexts(h);
-    var icon = label === "SOUL.md" ? "🧠" : "📁";
+    var icon = chipKey === "soul" ? "🧠" : "📁";
     var chips = session.chat.contextChips;
     if (chips) {
       var found = false;
       for (var i = 0; i < chips.length; i++) {
-        if (chips[i].label === label) { found = true; break; }
+        if (contextKey(chips[i]) === chipKey) { found = true; break; }
       }
-      if (!found) chips.push({ icon: icon, label: label });
+      if (!found) chips.push({ icon: icon, label: chipKey, key: chipKey });
     }
-    if (label === "SOUL.md") {
+    if (chipKey === "soul") {
       await fetch("/api/context/add-soul", { method: "POST" });
-    } else if (label === "workspace") {
+    } else if (chipKey === "workspace") {
       await fetch("/api/context/add-workspace", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1809,11 +1818,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     userAtBottomRef.current = isNearBottom(el, 60);
   }
 
-  var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[c.label]; });
-  var visibleLabels = visibleChips.map(function (c) { return c.label; });
+  var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[contextKey(c)]; });
+  var visibleKeys = visibleChips.map(function (c) { return contextKey(c); });
   var addableContexts = [];
-  if (visibleLabels.indexOf("SOUL.md") === -1) addableContexts.push({ icon: "🧠", label: "SOUL.md", hasPicker: false });
-  if (visibleLabels.indexOf("workspace") === -1) addableContexts.push({ icon: "📁", label: "workspace", hasPicker: true });
+  if (visibleKeys.indexOf("soul") === -1) addableContexts.push({ icon: "🧠", key: "soul", hasPicker: false });
+  if (visibleKeys.indexOf("workspace") === -1) addableContexts.push({ icon: "📁", key: "workspace", hasPicker: true });
   var hasAddable = addableContexts.length > 0 || liveRounds.length > 0;
 
   return (
@@ -2045,7 +2054,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             <div className="composer-chips">
               {visibleChips.map((c, i) => (
                 <span className="chip" key={i}>
-                  {c.icon} {c.label} <span className="x" onClick={function () { removeContext(c.label); }}>×</span>
+                  {c.icon} {contextDisplayLabel(c)} <span className="x" onClick={function () { removeContext(contextKey(c)); }}>×</span>
                 </span>
               ))}
               {hasSelectedGuideRound && (
@@ -2093,11 +2102,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                     {addableContexts.map(function (ctx) {
                       return (
                         <button
-                          key={ctx.label}
+                          key={ctx.key}
                           className="context-option"
-                          onClick={function () { addContext(ctx.label, ""); }}
+                          onClick={function () { addContext(ctx.key, ""); }}
                         >
-                          <span style={{ marginRight: 6 }}>{ctx.icon}</span> {ctx.label}
+                          <span style={{ marginRight: 6 }}>{ctx.icon}</span> {contextDisplayLabel(ctx)}
                         </button>
                       );
                     })}
