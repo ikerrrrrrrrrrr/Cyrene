@@ -1846,7 +1846,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           />
         ) : (
         <>
-        <div className="chat-scroll" ref={scrollRef} onScroll={onChatScroll}>
+        <div className="chat-scroll" ref={scrollRef} onScroll={onChatScroll} style={{overflowAnchor: 'none'}}>
           <div className="thread-header">
             <span className={"sa-dot " + session.status} style={{ marginTop: 0, width: 6, height: 6 }}></span>
             <span>{session.title}</span>
