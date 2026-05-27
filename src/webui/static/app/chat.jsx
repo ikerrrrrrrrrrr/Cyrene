@@ -831,13 +831,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function scrollToLatestUserMessage() {
     var el = scrollRef.current;
-    if (!el) { console.log('[scrollToLatestUserMessage] no scrollRef'); return; }
+    if (!el) return;
     // If already animating a user message to the top, skip — calling scrollTo
     // again would cancel the in-progress smooth animation.
-    if (pinnedMessageRef.current) { console.log('[scrollToLatestUserMessage] already pinned, skip'); return; }
+    if (pinnedMessageRef.current) return;
     // Find the latest user message element (outside of archive containers)
     var allUserEls = el.querySelectorAll('.msg.user');
-    console.log('[scrollToLatestUserMessage] found .msg.user count:', allUserEls.length);
     var lastUserEl = null;
     for (var i = allUserEls.length - 1; i >= 0; i--) {
       if (!allUserEls[i].closest('.archive-container')) {
@@ -845,7 +844,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         break;
       }
     }
-    if (!lastUserEl) { console.log('[scrollToLatestUserMessage] no user el found'); return; }
+    if (!lastUserEl) return;
     // Clear extra padding so measurements are accurate
     el.style.setProperty('--scroll-pb-extra', '0px');
     el.offsetHeight;
@@ -853,14 +852,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var padTop = 56;
     var desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
     var maxScroll = el.scrollHeight - el.clientHeight;
-    console.log('[scrollToLatestUserMessage] desired:', desired, 'maxScroll:', maxScroll, 'scrollTop was:', el.scrollTop);
     // If content below the user message is too short to let it reach the
     // viewport top, add temporary bottom padding (same strategy as the
     // initial-positioning layout effect).
     if (desired > maxScroll) {
       var shortfall = desired - maxScroll;
       if (shortfall > el.clientHeight) shortfall = el.clientHeight;
-      console.log('[scrollToLatestUserMessage] shortfall:', shortfall);
       el.style.setProperty('--scroll-pb-extra', shortfall + 'px');
       el.offsetHeight; // force layout recalc
       maxScroll = el.scrollHeight - el.clientHeight;
@@ -877,18 +874,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
      reply can unfold below it. Checks renderedMessages (includes pending) so we catch
      the first render, not just SSE updates. */
   useEffect(function () {
-    console.log('[scroll-effect-1] fire. renderedMessages:', renderedMessages.length, 'last role:', renderedMessages.length ? renderedMessages[renderedMessages.length-1].role : 'n/a');
     if (renderedMessages.length === 0) {
-      console.log('[scroll-effect-1] empty → scrollChatToBottom');
       return scrollChatToBottom(false);
     }
-    // Check if the last rendered message is from user (includes pending)
     var lastRendered = renderedMessages[renderedMessages.length - 1];
     if (lastRendered && lastRendered.role === 'user') {
-      console.log('[scroll-effect-1] last is user → scrollToLatestUserMessage');
       scrollToLatestUserMessage();
-    } else {
-      console.log('[scroll-effect-1] last is', lastRendered && lastRendered.role, '→ skip');
     }
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
@@ -1652,6 +1643,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       const data = await r.json();
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
       resetChatRuntime({ abort: true });
+      // Clear scroll state for the fresh session — session.id does not change
+      // for the live session so the usual session-change effect won't fire.
+      pinnedMessageRef.current = false;
+      initialPositioningInProgressRef.current = false;
+      initialScrollDoneRef.current = false;
+      initialArchiveLoadTriggeredRef.current = false;
+      pendingCompensationRef.current = null;
+      var scrollEl = scrollRef.current;
+      if (scrollEl) scrollEl.style.setProperty('--scroll-pb-extra', '0px');
       onSelectSession && onSelectSession(null);
     } catch (e) {
       initialPositioningInProgressRef.current = false;
@@ -1667,14 +1667,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var isInitial = options && options.initialLoad;
 
     archiveLoadLock.current = true;
-    if (isInitial) {
-      initialPositioningInProgressRef.current = true;
-    } else {
-      // Record archive container height so the layout effect can compensate
-      // exactly for the added content without any jump.
-      var archiveEl = scrollRef.current && scrollRef.current.querySelector('.archive-container');
-      if (archiveEl) pendingCompensationRef.current = archiveEl.scrollHeight;
-    }
     var cursor = archiveContexts.length > 0
       ? archiveContexts[archiveContexts.length - 1].id
       : "";
@@ -1682,6 +1674,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (data.messages && data.messages.length > 0) {
+          // Record archive-container bottom in scroll coordinates (viewport-
+          // relative + scrollTop) so user scroll during fetch doesn't skew it.
+          if (!isInitial) {
+            var el = scrollRef.current;
+            var arch = el && el.querySelector('.archive-container');
+            if (arch) pendingCompensationRef.current = arch.getBoundingClientRect().bottom + el.scrollTop;
+          }
+          if (isInitial) initialPositioningInProgressRef.current = true;
           setArchiveContexts(function (prev) { return prev.concat([data]); });
           setHasMoreArchive(data.hasMore);
         } else {
@@ -1706,8 +1706,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       });
   }
 
-  /* Wheel listener — at top of loaded archives, trigger next batch.
-     No blocking — just trigger and let scrollHeight compensation handle position. */
+  /* Wheel listener — trigger archive load when user scrolls near the top.
+     Using a larger threshold (half viewport) gives the fetch a head start,
+     so the content is ready by the time the user actually reaches the top. */
   useEffect(function () {
     var el = scrollRef.current;
     if (!el || !isLiveSession) return;
@@ -1720,7 +1721,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       if (!isLiveSession || !hasMoreArchive) return;
       var cur = scrollRef.current;
       if (!cur) return;
-      if (cur.scrollTop <= 5 && !triggered && !archiveLoadLock.current) {
+      // Trigger when scrollTop drops below half the visible height —
+      // earlier than before, so the fetch completes before the user hits 0.
+      var nearTop = cur.scrollTop <= Math.max(5, cur.clientHeight * 0.45);
+      if (nearTop && !triggered && !archiveLoadLock.current) {
         triggered = true;
         triggerArchiveLoad();
       }
@@ -1783,15 +1787,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       return;
     }
 
-    // Subsequent loads: compensate scroll position by the exact height of
-    // newly added archive content, keeping the visible area stable.
-    var prevHeight = pendingCompensationRef.current;
-    if (prevHeight != null && archiveContexts.length > 0) {
+    // Subsequent loads: compensate by tracking the archive container's bottom
+    // edge in scroll coordinates.  New content pushes it down; we add the
+    // displacement to scrollTop so the visible area stays stable.
+    var prevBottom = pendingCompensationRef.current;
+    if (prevBottom != null && archiveContexts.length > 0) {
       pendingCompensationRef.current = null;
-      var archiveEl2 = scrollRef.current && scrollRef.current.querySelector('.archive-container');
-      if (archiveEl2) {
-        var addedHeight = archiveEl2.scrollHeight - prevHeight;
-        if (addedHeight > 0) scrollRef.current.scrollTop += addedHeight;
+      var el2 = scrollRef.current;
+      var arch = el2 && el2.querySelector('.archive-container');
+      if (arch && el2) {
+        var curBottom = arch.getBoundingClientRect().bottom + el2.scrollTop;
+        var shift = curBottom - prevBottom;
+        if (shift > 0) el2.scrollTop += shift;
       }
     }
   }, [archiveContexts, renderedMessages]);

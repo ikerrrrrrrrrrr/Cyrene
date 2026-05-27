@@ -6184,6 +6184,7 @@ body {
 
 .app[data-screen-label="Cyrene · chat"] .chat-scroll {
   padding: 56px clamp(36px, 7vw, 112px) calc(var(--scroll-pb, 180px) + var(--scroll-pb-extra, 0px));
+  scrollbar-gutter: stable;
 }
 
 .app[data-screen-label="Cyrene · chat"] .thread-header,
