@@ -837,7 +837,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (lastUserEl) {
       var containerRect = el.getBoundingClientRect();
       var desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - 56;
-      el.scrollTop = Math.max(0, desired);
+      // Ensure enough scrollable space so desired position is reachable
+      if (desired > el.scrollHeight - el.clientHeight) {
+        el.style.setProperty('--scroll-pb-extra', (desired - (el.scrollHeight - el.clientHeight)) + 'px');
+        el.offsetHeight;
+      }
+      el.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
       userAtBottomRef.current = false;
     }
   }
