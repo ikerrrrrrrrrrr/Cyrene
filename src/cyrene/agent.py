@@ -3458,6 +3458,7 @@ async def _run_main_agent(
             effective_system=effective_system,
             client_request_id=client_request_id,
             round_id=round_id,
+            lang=lang,
         )
     except Exception:
         logger.warning("Learned skill routing failed; falling back to main agent loop", exc_info=True)

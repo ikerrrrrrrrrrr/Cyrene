@@ -8905,8 +8905,6 @@ html[data-theme="dark"] .welcome-range .active {
 .msg.archived-context .msg-body {
   background: var(--bg-2) !important;
   border-color: var(--line-dim, var(--line)) !important;
-  font-size: 15px;
-  line-height: 1.6;
 }
 
 /* ── Archive loading indicator ── */

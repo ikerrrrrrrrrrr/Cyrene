@@ -342,6 +342,9 @@ async def test_call_llm_falls_back_to_next_model_candidate(monkeypatch):
         ],
     )
     monkeypatch.setattr(cll.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setenv("OPENAI_MODEL", "primary-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://primary.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-key")
 
     message = await cll.call_llm([{"role": "user", "content": "hello"}], max_tokens=32)
 
@@ -408,6 +411,9 @@ async def test_call_llm_stream_falls_back_to_next_model_candidate(monkeypatch):
         ],
     )
     monkeypatch.setattr(cll.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setenv("OPENAI_MODEL", "primary-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://primary.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-key")
 
     async def _capture(event):
         emitted.append(event)
@@ -478,6 +484,9 @@ async def test_run_vision_chat_uses_vision_candidates_after_primary_failure(monk
         lambda: [{"id": "vision-1", "model": "vision-model", "base_url": "https://vision.example/v1", "api_key": "vision-key"}],
     )
     monkeypatch.setattr(cll.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setenv("OPENAI_MODEL", "primary-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://primary.example/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-key")
 
     payload = await att.run_vision_chat(
         [{"type": "text", "text": "describe"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}],

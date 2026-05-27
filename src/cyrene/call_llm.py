@@ -75,6 +75,13 @@ def _resolve_llm_candidates() -> list[dict[str, Any]]:
 
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+
+    active_candidate = _normalized_candidate({}, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
+    active_candidate["id"] = "runtime-active"
+    active_key = (active_candidate["model"], active_candidate["base_url"], active_candidate["api_key"])
+    seen.add(active_key)
+    candidates.append(active_candidate)
+
     for index, raw in enumerate(get_models() or []):
         candidate = _normalized_candidate(raw, index, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
         key = (candidate["model"], candidate["base_url"], candidate["api_key"])
@@ -83,14 +90,6 @@ def _resolve_llm_candidates() -> list[dict[str, Any]]:
         seen.add(key)
         candidates.append(candidate)
 
-    active_key = (active_model, active_base_url, active_api_key)
-    if not candidates:
-        seen.add(active_key)
-        candidates.append(_normalized_candidate({}, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key))
-    elif active_key not in seen:
-        fallback = _normalized_candidate({}, len(candidates), active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
-        fallback["id"] = "runtime-active"
-        candidates.append(fallback)
     return candidates
 
 
@@ -126,6 +125,12 @@ def _resolve_vision_candidates() -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str]] = set()
     candidates: list[dict[str, Any]] = []
 
+    active_candidate = _normalized_candidate({}, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
+    active_candidate["id"] = "runtime-active-vision"
+    active_key = (active_candidate["model"], active_candidate["base_url"], active_candidate["api_key"])
+    seen.add(active_key)
+    candidates.append(active_candidate)
+
     for raw in get_models() or []:
         candidate = _normalized_candidate(raw, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
         key = (candidate["model"], candidate["base_url"], candidate["api_key"])
@@ -140,8 +145,6 @@ def _resolve_vision_candidates() -> list[dict[str, Any]]:
             seen.add(key)
             candidates.append(candidate)
 
-    if not candidates:
-        candidates.append(_normalized_candidate({}, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key))
     return candidates
 
 

@@ -132,7 +132,7 @@ def test_get_active_tool_defs_includes_mcp():
     """get_active_tool_defs() should include MCP tools when manager has them."""
     from cyrene import tools
     from cyrene import mcp_manager as mm
-    from cyrene.settings_store import _DEFAULT_ENABLED_TOOLS
+    from cyrene.config_store import _DEFAULT_ENABLED_TOOLS
 
     with tempfile.TemporaryDirectory() as tmp:
         # Simulate a manager with tools

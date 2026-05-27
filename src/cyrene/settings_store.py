@@ -1,268 +1,30 @@
 """Runtime settings store — persists user preferences that can be changed via Web UI.
 
-These are NOT env vars (which require restart) — they are live-editable settings
-stored in a JSON file under DATA_DIR.
+Delegates to the encrypted config_store for all read/write operations.
 """
 
-import copy
-import json
-import logging
-
-from cyrene.config import DATA_DIR
-
-logger = logging.getLogger(__name__)
-
-_SETTINGS_PATH = DATA_DIR / "web_settings.json"
-
-# Clean up orphaned .tmp files from previous crashes on import
-for _p in _SETTINGS_PATH.parent.glob("web_settings.json.tmp"):
-    try:
-        _p.unlink()
-    except OSError:
-        pass
-
-_DEFAULT_MODELS = [
-    {"id": "deepseek-chat", "name": "deepseek-chat", "desc": "DeepSeek default",
-     "ctx": "64k", "price": "low"},
-    {"id": "haiku45", "name": "claude-haiku-4-5", "desc": "Fast, capable",
-     "ctx": "200k", "price": "$0.25 / $1.25"},
-    {"id": "sonnet45", "name": "claude-sonnet-4-5", "desc": "Heavy reasoning",
-     "ctx": "200k", "price": "$3.00 / $15.00"},
-]
-
-_DEFAULT_VISION_MODELS = [
-    {"id": "vision-1", "name": "gpt-4.1-mini", "desc": "Vision fallback default",
-     "ctx": "128k", "price": "medium"},
-]
-
-_DEFAULT_ENABLED_TOOLS = {
-    "Read": True,
-    "Write": True,
-    "Edit": True,
-    "Glob": True,
-    "Grep": True,
-    "Bash": True,
-    "StartShell": True,
-    "SendShell": True,
-    "ListShells": True,
-    "CloseShell": True,
-    "WebFetch": True,
-    "WebSearch": True,
-    "spawn_subagent": True,
-    "send_agent_message": True,
-    "schedule_task": True,
-    "list_tasks": True,
-    "pause_task": True,
-    "resume_task": True,
-    "cancel_task": True,
-    "send_message": True,
-    "send_file": True,
-    "send_wechat_file": True,
-    "ask_user": True,
-    "PromptClaudeCode": True,
-    "send_telegram": False,
-    "query_round": True,
-    "CheckClaudeCode": True,
-    "StartClaudeCode": True,
-}
-
-# quit is always enabled — never stored, never filtered
-_PROTECTED_TOOLS = {"quit"}
-
-_DEFAULTS: dict = {
-    "search_mode": "builtin",
-    "search_external_url": "",
-    "spawn_policy": "conservative",
-    "heartbeat_interval": 1800,
-    "write_permission_mode": "workspace_only",
-    "models": _DEFAULT_MODELS,
-    "vision_models": _DEFAULT_VISION_MODELS,
-    "secondary_model": {"model": "", "name": "", "api_key": "", "base_url": "", "ctx_limit": 0, "max_concurrency": 0},
-    "wechat_notify_scheduled": True,
-    "enabled_tools": _DEFAULT_ENABLED_TOOLS,
-}
-
-
-def _deep_merge(base: dict, override: dict) -> None:
-    """Recursively merge *override* into *base*, preserving nested keys from both."""
-    for key, val in override.items():
-        if key in base and isinstance(base[key], dict) and isinstance(val, dict):
-            _deep_merge(base[key], val)
-        else:
-            base[key] = val
-
-
-def _load() -> dict:
-    if not _SETTINGS_PATH.exists():
-        return copy.deepcopy(_DEFAULTS)
-    try:
-        data = json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        logger.warning("Corrupted web_settings.json, using defaults")
-        return copy.deepcopy(_DEFAULTS)
-    merged = copy.deepcopy(_DEFAULTS)
-    _deep_merge(merged, data)
-    return merged
-
-
-def _save(data: dict) -> None:
-    # Atomic write: write to temp then rename, so a crash mid-write never corrupts the file
-    tmp = _SETTINGS_PATH.with_suffix(".json.tmp")
-    try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(_SETTINGS_PATH)
-    finally:
-        # Clean up orphaned temp file if the rename itself crashed
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except Exception:
-            pass
-
-
-def get(key: str, default=None):
-    """Read a single setting value."""
-    return _load().get(key, default)
-
-
-def set_(key: str, value) -> None:
-    """Write a single setting value."""
-    data = _load()
-    data[key] = value
-    _save(data)
-
-
-def get_all() -> dict:
-    """Return all settings as a flat dict."""
-    return _load()
-
-
-def reset_all() -> None:
-    """Delete the persisted settings file so defaults apply again."""
-    try:
-        if _SETTINGS_PATH.exists():
-            _SETTINGS_PATH.unlink()
-    except Exception:
-        logger.exception("Failed to reset web settings")
-
-
-def get_spawn_policy() -> str:
-    """Return subagent spawn policy normalized to a supported value."""
-    value = str(_load().get("spawn_policy", "conservative") or "conservative").strip().lower()
-    return value if value in {"aggressive", "conservative", "off"} else "conservative"
-
-
-# ---------------------------------------------------------------------------
-# Models helpers
-# ---------------------------------------------------------------------------
-
-
-def get_models() -> list[dict]:
-    """Return the user-managed model list."""
-    return _load().get("models", _DEFAULT_MODELS)
-
-
-def save_models(models: list[dict]) -> None:
-    """Replace the entire models list."""
-    set_("models", models)
-
-
-def get_vision_models() -> list[dict]:
-    """Return the user-managed vision model list."""
-    return _load().get("vision_models", _DEFAULT_VISION_MODELS)
-
-
-def save_vision_models(models: list[dict]) -> None:
-    """Replace the entire vision models list."""
-    set_("vision_models", models)
-
-
-def get_secondary_model() -> dict:
-    """Return the single secondary model config."""
-    return _load().get("secondary_model", {"model": "", "name": "", "api_key": "", "base_url": "", "ctx_limit": 0, "max_concurrency": 0})
-
-
-def save_secondary_model(model: dict) -> None:
-    """Save the single secondary model config."""
-    set_("secondary_model", {
-        "model": str(model.get("model") or "").strip(),
-        "name": str(model.get("name") or str(model.get("model") or "")).strip(),
-        "api_key": str(model.get("api_key") or "").strip(),
-        "base_url": str(model.get("base_url") or "").strip(),
-        "ctx_limit": int(model.get("ctx_limit") or 0),
-        "max_concurrency": int(model.get("max_concurrency") or 0),
-    })
-
-
-# ---------------------------------------------------------------------------
-# Tools helpers
-# ---------------------------------------------------------------------------
-
-
-def is_tool_enabled(name: str) -> bool:
-    """Check if a tool is enabled. Protected tools (quit) are always enabled."""
-    if name in _PROTECTED_TOOLS:
-        return True
-    return _load().get("enabled_tools", _DEFAULT_ENABLED_TOOLS).get(name, True)
-
-
-def get_enabled_tools() -> dict[str, bool]:
-    """Return the full enabled/disabled map for all tools."""
-    return dict(_load().get("enabled_tools", _DEFAULT_ENABLED_TOOLS))
-
-
-def save_enabled_tools(tools: dict[str, bool]) -> None:
-    """Replace the enabled tools map."""
-    # Never persist protected tools
-    clean = {k: v for k, v in tools.items() if k not in _PROTECTED_TOOLS}
-    set_("enabled_tools", clean)
-
-
-# ---------------------------------------------------------------------------
-# Workspace history helpers
-# ---------------------------------------------------------------------------
-
-def get_workspace_history() -> list[str]:
-    """Return list of previously used workspace directories."""
-    return _load().get("workspace_history", [])
-
-
-def add_workspace_to_history(path: str) -> None:
-    """Record a workspace directory in history (most recent first, max 10)."""
-    history = [p for p in get_workspace_history() if p != path]
-    history.insert(0, path)
-    if len(history) > 10:
-        history = history[:10]
-    set_("workspace_history", history)
-
-
-def is_workspace_active() -> bool:
-    """Check if workspace access is granted (filesystem tools allowed to execute)."""
-    return _load().get("workspace_active", True)
-
-
-def set_workspace_active(active: bool) -> None:
-    """Grant or revoke workspace file access."""
-    set_("workspace_active", active)
-
-
-def get_write_permission_mode() -> str:
-    value = str(_load().get("write_permission_mode", "workspace_only") or "workspace_only").strip().lower()
-    return value if value in {"workspace_only", "full_access"} else "workspace_only"
-
-
-def set_write_permission_mode(mode: str) -> None:
-    normalized = str(mode or "workspace_only").strip().lower()
-    if normalized not in {"workspace_only", "full_access"}:
-        normalized = "workspace_only"
-    set_("write_permission_mode", normalized)
-
-
-def is_soul_active() -> bool:
-    """Check if SOUL.md should be loaded into the agent context."""
-    return _load().get("soul_active", True)
-
-
-def set_soul_active(active: bool) -> None:
-    """Enable or disable SOUL.md loading without touching the file content."""
-    set_("soul_active", active)
+from cyrene import config_store as _store
+
+# Re-export for callers that import directly from settings_store
+get = _store.get_setting
+set_ = _store.set_setting
+get_all = _store.get_all_settings
+reset_all = _store.reset_all
+get_spawn_policy = _store.get_spawn_policy
+get_models = _store.get_models
+save_models = _store.save_models
+get_vision_models = _store.get_vision_models
+save_vision_models = _store.save_vision_models
+get_secondary_model = _store.get_secondary_model
+save_secondary_model = _store.save_secondary_model
+is_tool_enabled = _store.is_tool_enabled
+get_enabled_tools = _store.get_enabled_tools
+save_enabled_tools = _store.save_enabled_tools
+get_workspace_history = _store.get_workspace_history
+add_workspace_to_history = _store.add_workspace_to_history
+is_workspace_active = _store.is_workspace_active
+set_workspace_active = _store.set_workspace_active
+get_write_permission_mode = _store.get_write_permission_mode
+set_write_permission_mode = _store.set_write_permission_mode
+is_soul_active = _store.is_soul_active
+set_soul_active = _store.set_soul_active

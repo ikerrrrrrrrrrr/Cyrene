@@ -612,7 +612,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     setArchiveContexts([]);
     setHasMoreArchive(true);
     archiveLoadLock.current = false;
-    compensationPendingRef.current = false;
     initialScrollDoneRef.current = false;
     initialArchiveLoadTriggeredRef.current = false;
     initialPositioningInProgressRef.current = false;
@@ -715,11 +714,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [hasMoreArchive, setHasMoreArchive] = useState(true);
   const archiveLoadLock = useRef(false);
   const contentSentinelRef = useRef(null);
-  const scrollHeightBeforeRef = useRef(0);
-  const compensationPendingRef = useRef(false);
-  const lastArchiveTrigger = useRef(0);
   const initialArchiveLoadTriggeredRef = useRef(false);
   const initialPositioningInProgressRef = useRef(false);
+  const pendingCompensationRef = useRef(null); // { oldH, oldT } or null
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -827,9 +824,36 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     };
   }
 
-  /* Always scroll to the bottom whenever messages change. */
-  useEffect(() => {
-    return scrollChatToBottom(false);
+  function scrollToLatestUserMessage() {
+    var el = scrollRef.current;
+    if (!el) return;
+    if (initialPositioningInProgressRef.current) return;
+    var allMsgEls = el.querySelectorAll('.msg.user');
+    var lastUserEl = null;
+    for (var i = allMsgEls.length - 1; i >= 0; i--) {
+      if (!allMsgEls[i].closest('.archive-container')) {
+        lastUserEl = allMsgEls[i];
+        break;
+      }
+    }
+    if (lastUserEl) {
+      var containerRect = el.getBoundingClientRect();
+      var desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - 56;
+      el.scrollTop = Math.max(0, desired);
+      userAtBottomRef.current = false;
+    }
+  }
+
+  /* When user sends a message: pin it to viewport top.
+     For assistant replies / other changes: scroll to bottom (with userAtBottom guard). */
+  useEffect(function () {
+    var msgs = session.chat.messages;
+    var lastMsg = msgs && msgs.length > 0 ? msgs[msgs.length - 1] : null;
+    if (lastMsg && lastMsg.role === 'user') {
+      scrollToLatestUserMessage();
+    } else if (renderedMessages.length === 0) {
+      return scrollChatToBottom(false);
+    }
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
   /* Also scroll to bottom on mount (messages might render after data arrives). */
@@ -1562,11 +1586,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         });
       });
     }
-    // Main divider that separates all archive context from current session
-    archiveRenderEntries.push({
-      isMainDivider: true,
-      renderKey: "main_arch_div",
-    });
   }
   var hasArchiveContent = archiveRenderEntries.length > 0;
 
@@ -1581,7 +1600,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       setArchiveContexts([]);
       setHasMoreArchive(true);
       archiveLoadLock.current = false;
-      compensationPendingRef.current = false;
       initialArchiveLoadTriggeredRef.current = false;
       initialPositioningInProgressRef.current = false;
       const r = await fetch("/api/sessions", { method: "POST" });
@@ -1605,8 +1623,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (isInitial) {
       initialPositioningInProgressRef.current = true;
     } else {
-      scrollHeightBeforeRef.current = scrollRef.current ? scrollRef.current.scrollHeight : 0;
-      compensationPendingRef.current = true;
+      var elCap = scrollRef.current;
+      if (elCap) {
+        pendingCompensationRef.current = { oldH: elCap.scrollHeight, oldT: elCap.scrollTop };
+      }
     }
     setLoadingArchive(true);
 
@@ -1621,14 +1641,13 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           setHasMoreArchive(data.hasMore);
         } else {
           setHasMoreArchive(false);
+          pendingCompensationRef.current = null;
           if (isInitial) {
             initialPositioningInProgressRef.current = false;
             initialScrollDoneRef.current = false;
             requestAnimationFrame(function () {
               scrollChatToBottom(true);
             });
-          } else {
-            compensationPendingRef.current = false;
           }
         }
         setLoadingArchive(false);
@@ -1637,40 +1656,37 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       .catch(function () {
         setLoadingArchive(false);
         archiveLoadLock.current = false;
+        pendingCompensationRef.current = null;
         if (isInitial) {
           initialPositioningInProgressRef.current = false;
           initialArchiveLoadTriggeredRef.current = false;
           initialScrollDoneRef.current = false;
-        } else {
-          compensationPendingRef.current = false;
         }
       });
   }
 
-  /* Native wheel listener — triggers archive load on scroll-up gesture.
-     Accumulates deltaY so rapid scroll ticks don't over-fire. */
+  /* Wheel listener — at top of loaded archives, trigger next batch.
+     No blocking — just trigger and let scrollHeight compensation handle position. */
   useEffect(function () {
     var el = scrollRef.current;
     if (!el || !isLiveSession) return;
-    var accumulated = 0;
+    var triggered = false;
     function onWheel(e) {
-      if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
-      accumulated += e.deltaY;
-      if (accumulated > 0) accumulated = 0;          // scrolled down → reset
-      if (accumulated <= -160) {                      // scrolled up 160px → trigger
-        accumulated = 0;
+      if (e.deltaY >= 0) { triggered = false; return; }
+      if (!isLiveSession || !hasMoreArchive) return;
+      var cur = scrollRef.current;
+      if (!cur) return;
+      if (cur.scrollTop <= 5 && !triggered && !archiveLoadLock.current) {
+        triggered = true;
         triggerArchiveLoad();
       }
     }
     el.addEventListener('wheel', onWheel, {passive: true});
     return function () { el.removeEventListener('wheel', onWheel); };
-  }, [isLiveSession, loadingArchive, hasMoreArchive, archiveContexts.length]);
+  }, [isLiveSession, hasMoreArchive, archiveContexts.length]);
 
-  /* Scroll compensation — two modes:
-     A) Initial positioning after auto-load: pin sentinel (no messages) or latest user message
-     B) Subsequent loads: sentinel-based compensation to keep viewport stable */
+  /* Initial viewport positioning after auto-loading the first archive batch. */
   _useLayoutEffect(function () {
-    // A) Initial positioning — after first archive batch loads on session entry
     if (initialPositioningInProgressRef.current && archiveContexts.length > 0) {
       var el = scrollRef.current;
       if (!el) { initialPositioningInProgressRef.current = false; return; }
@@ -1692,22 +1708,24 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           }
         }
         if (lastUserEl) {
-          desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop;
+          desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
         }
       } else {
-        // No messages: place divider bottom right at content-area top so it's just out of view
-        var mainDivider = el.querySelector('.main-divider');
-        if (mainDivider) {
-          desired = mainDivider.getBoundingClientRect().bottom - containerRect.top + el.scrollTop - padTop;
+        // No messages: pin sentinel at content-area top (divider & archives above it)
+        var sentinel = contentSentinelRef.current;
+        if (sentinel) {
+          desired = sentinel.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
         }
       }
 
       if (desired > 0) {
         el.scrollTop = desired;
         if (el.scrollTop < desired) {
-          // Content too short — grow bottom padding so desired position is reachable
-          el.style.setProperty('--scroll-pb-extra', (desired - el.scrollTop) + 'px');
-          forceLayout = el.offsetHeight; // force reflow after padding change
+          // Content too short — add minimal extra padding to make position reachable
+          var shortfall = desired - el.scrollTop;
+          if (shortfall > el.clientHeight) shortfall = el.clientHeight;
+          el.style.setProperty('--scroll-pb-extra', shortfall + 'px');
+          forceLayout = el.offsetHeight;
           el.scrollTop = desired;
         }
       }
@@ -1719,16 +1737,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       return;
     }
 
-    // B) Subsequent archive loads — scrollHeight compensation (no spinner DOM change)
-    if (compensationPendingRef.current && archiveContexts.length > 0) {
-      var elB = scrollRef.current;
-      if (elB) {
-        var added = elB.scrollHeight - scrollHeightBeforeRef.current;
-        if (added > 0) {
-          elB.scrollTop += added;
-        }
+    // Subsequent archive loads: compensate using pre-captured scroll state
+    var comp = pendingCompensationRef.current;
+    if (comp && archiveContexts.length > 0) {
+      pendingCompensationRef.current = null;
+      var el2 = scrollRef.current;
+      if (el2) {
+        // Force layout, then compensate
+        el2.offsetHeight;
+        el2.scrollHeight;
+        var added = el2.scrollHeight - comp.oldH;
+        if (added > 0) el2.scrollTop = comp.oldT + added;
       }
-      compensationPendingRef.current = false;
     }
   }, [archiveContexts, renderedMessages]);
 
@@ -1736,14 +1756,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var el = scrollRef.current;
     if (!el) return;
     userAtBottomRef.current = isNearBottom(el, 60);
-    // Don't trigger while compensation is in progress
-    if (compensationPendingRef.current) return;
-    if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
-    if (el.scrollTop > 10) return;
-    var now = Date.now();
-    if (now - lastArchiveTrigger.current < 600) return;
-    lastArchiveTrigger.current = now;
-    triggerArchiveLoad();
   }
 
   var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[c.label]; });
@@ -1805,9 +1817,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             if (entry.isArchiveDivider) {
               return <div key={entry.renderKey} className="context-divider archive-between"><span>{t("chat.earlierConversation") || "↑ 更早的对话"}</span></div>;
             }
-            if (entry.isMainDivider) {
-              return <div key={entry.renderKey} className="context-divider main-divider"><span>{t("chat.historyContext") || "━━━ 历史上下文 ━━━"}</span></div>;
-            }
             return (
               <Message
                 key={entry.renderKey}
@@ -1817,6 +1826,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             );
           })}
           </div>
+          {hasArchiveContent && (
+            <div className="context-divider main-divider"><span>{t("chat.historyContext") || "━━━ 历史上下文 ━━━"}</span></div>
+          )}
           <div ref={contentSentinelRef} style={{height: 0, overflow: 'hidden'}} />
           {renderedMessageEntries.map((entry) => (
             <Message
@@ -2282,8 +2294,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 function Message({ msg, assistantName }) {
   const { t } = useI18n();
 
-  // Archived context — pure read-only rendering
+  // Archived context — read-only, with markdown for agent/system messages
   if (msg.isArchivedContext) {
+    var archAttachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
+    var archBody = (msg.role === "agent" || msg.role === "system") && msg.body
+      ? renderMarkdown(injectAttachmentLinks(msg.body, archAttachments))
+      : msg.body;
     return (
       <div className={"msg " + msg.role + " archived-context"}>
         <div className="msg-meta">
@@ -2294,7 +2310,11 @@ function Message({ msg, assistantName }) {
           </span>
           <span className="msg-time">{msg.time}</span>
         </div>
-        <div className="msg-body">{msg.body}</div>
+        {archBody && archBody !== msg.body ? (
+          <div className="msg-body markdown" dangerouslySetInnerHTML={{__html: archBody}} />
+        ) : (
+          <div className="msg-body">{msg.body}</div>
+        )}
       </div>
     );
   }

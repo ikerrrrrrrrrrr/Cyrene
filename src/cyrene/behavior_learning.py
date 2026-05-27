@@ -3734,6 +3734,14 @@ async def match_active_skill(user_message: str, history: list[dict[str, Any]]) -
     return None
 
 
+def _skill_assistant_content(skill_name: str, lang: str) -> str:
+    """返回已本地化的技能执行提示文案。"""
+    is_zh = lang.lower().startswith("zh") or bool(lang) and any("一" <= c <= "鿿" for c in lang)
+    if is_zh:
+        return f"正在使用已学习的技能 `{skill_name}`。"
+    return f"Using learned skill `{skill_name}`."
+
+
 async def try_route_and_execute_skill(
     *,
     user_message: str,
@@ -3746,6 +3754,7 @@ async def try_route_and_execute_skill(
     effective_system: str,
     client_request_id: str,
     round_id: str,
+    lang: str = "",
 ) -> dict[str, Any] | None:
     match = await match_active_skill(user_message, history)
     if match is None:
@@ -3826,7 +3835,7 @@ async def try_route_and_execute_skill(
         )
     assistant_entry = {
         "role": "assistant",
-        "content": f"Using learned skill `{skill['name']}`.",
+        "content": _skill_assistant_content(skill["name"], lang),
         "tool_calls": tool_calls,
     }
     if round_id:

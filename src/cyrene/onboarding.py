@@ -218,6 +218,23 @@ async def save_and_test_llm_setup(api_key: str, base_url: str, model: str) -> di
         "OPENAI_MODEL": clean_model,
     })
 
+    from cyrene.settings_store import get_models, save_models
+
+    current_models = get_models()
+    model_names = {
+        str(m.get("model") or m.get("name") or m.get("id") or "").strip()
+        for m in (current_models or [])
+    }
+    if clean_model not in model_names:
+        new_entry = {
+            "id": clean_model,
+            "name": clean_model,
+            "desc": "",
+            "ctx": "",
+            "price": "",
+        }
+        save_models([new_entry] + list(current_models or []))
+
     state = load_onboarding_state()
     state["llm"] = {
         "completed_at": _now_iso(),

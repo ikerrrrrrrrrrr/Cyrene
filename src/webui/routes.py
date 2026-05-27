@@ -1860,8 +1860,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.put("/api/settings/models")
     async def api_update_models(request: Request):
-        from cyrene.settings_store import save_models, save_vision_models, save_secondary_model
+        from cyrene.settings_store import save_models, save_vision_models, save_secondary_model, get_secondary_model
         from cyrene.config import DEFAULT_OPENAI_BASE_URL, write_env_keys
+        from cyrene.onboarding import _test_llm_connection
         body = await request.json()
         raw_models = body.get("models")
         raw_vision_models = body.get("vision_models")
@@ -1904,21 +1905,38 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if raw_vision_models is not None and not normalized_vision:
             return JSONResponse({"error": "vision_models must contain at least one valid model"}, status_code=400)
 
+        primary = normalized[0]
+        primary_model = str(primary.get("model") or "").strip()
+        primary_base_url = str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
+        primary_api_key = _strip_wrapping_quotes(str(primary.get("api_key") or "").strip())
+
+        try:
+            await _test_llm_connection(primary_api_key, primary_base_url, primary_model)
+        except httpx.TimeoutException as exc:
+            return JSONResponse(
+                {"error": "upstream model timed out", "detail": str(exc)},
+                status_code=504,
+            )
+        except httpx.HTTPError as exc:
+            return JSONResponse(
+                {"error": "upstream model request failed", "detail": format_httpx_error(exc)},
+                status_code=502,
+            )
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
         save_models(normalized)
         if raw_vision_models is not None:
             save_vision_models(normalized_vision)
         if isinstance(raw_secondary, dict):
             save_secondary_model(raw_secondary)
-        primary = normalized[0]
         write_env_keys(
             {
-                "OPENAI_MODEL": str(primary.get("model") or "").strip(),
-                "OPENAI_BASE_URL": str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
-                "OPENAI_API_KEY": _strip_wrapping_quotes(str(primary.get("api_key") or "").strip()),
+                "OPENAI_MODEL": primary_model,
+                "OPENAI_BASE_URL": primary_base_url,
+                "OPENAI_API_KEY": primary_api_key,
             }
         )
-        # Normalize saved secondary for response
-        from cyrene.settings_store import get_secondary_model
         saved_secondary = get_secondary_model()
         sec_model = str(saved_secondary.get("model") or "").strip()
         ctx_limit = int(saved_secondary.get("ctx_limit") or 0)
@@ -1957,8 +1975,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "vision_candidates": normalized_vision if raw_vision_models is not None else None,
             "secondary_model": normalized_secondary,
             "active": str(primary.get("id") or "candidate-1"),
-            "active_model_name": str(primary.get("model") or "").strip(),
-            "base_url": str(primary.get("base_url") or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+            "active_model_name": primary_model,
+            "base_url": primary_base_url,
         }
 
     @router.get("/api/settings/tools")
