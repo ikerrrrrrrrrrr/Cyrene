@@ -715,7 +715,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const contentSentinelRef = useRef(null);
   const initialArchiveLoadTriggeredRef = useRef(false);
   const initialPositioningInProgressRef = useRef(false);
-  const pendingCompensationRef = useRef(null); // { oldH, oldT } or null
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -1621,11 +1620,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     archiveLoadLock.current = true;
     if (isInitial) {
       initialPositioningInProgressRef.current = true;
-    } else {
-      var elCap = scrollRef.current;
-      if (elCap) {
-        pendingCompensationRef.current = { oldH: elCap.scrollHeight, oldT: elCap.scrollTop };
-      }
     }
     var cursor = archiveContexts.length > 0
       ? archiveContexts[archiveContexts.length - 1].id
@@ -1638,7 +1632,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           setHasMoreArchive(data.hasMore);
         } else {
           setHasMoreArchive(false);
-          pendingCompensationRef.current = null;
           if (isInitial) {
             initialPositioningInProgressRef.current = false;
             initialScrollDoneRef.current = false;
@@ -1651,7 +1644,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       })
       .catch(function () {
         archiveLoadLock.current = false;
-        pendingCompensationRef.current = null;
         if (isInitial) {
           initialPositioningInProgressRef.current = false;
           initialArchiveLoadTriggeredRef.current = false;
@@ -1729,21 +1721,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       initialScrollDoneRef.current = true;
       userAtBottomRef.current = renderedMessages.length > 0 ? false : true;
       initialPositioningInProgressRef.current = false;
-      return;
-    }
-
-    // Subsequent archive loads: compensate synchronously before paint.
-    var comp = pendingCompensationRef.current;
-    if (comp && archiveContexts.length > 0) {
-      var el2 = scrollRef.current;
-      if (el2) {
-        el2.offsetHeight; // force layout
-        var added = el2.scrollHeight - comp.oldH;
-        if (added > 0) {
-          pendingCompensationRef.current = null;
-          el2.scrollTop = comp.oldT + added;
-        }
-      }
     }
   }, [archiveContexts, renderedMessages]);
 

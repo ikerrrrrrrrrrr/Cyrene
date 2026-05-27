@@ -1523,7 +1523,6 @@ button { font-family: inherit; }
 .chat-scroll {
   flex: 1;
   overflow-y: auto;
-  overflow-anchor: none;
   padding: 16px 20px 16px;
 }
 
