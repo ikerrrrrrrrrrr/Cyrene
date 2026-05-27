@@ -8833,8 +8833,20 @@ html[data-theme="dark"] .welcome-range .active {
 
 
 
+.archive-container {
+  width: 100%;
+}
+.archive-container .msg {
+  animation: archive-fade-in 0.3s ease-out both;
+}
+@keyframes archive-fade-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .thread-header,
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-banner,
+.app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-container,
 .app[data-screen-label="Cyrene · chat"] .chat-scroll > .msg {
   width: min(100%, var(--chat-content-max)) !important;
   max-width: var(--chat-content-max) !important;

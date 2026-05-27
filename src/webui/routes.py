@@ -1079,7 +1079,15 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.get("/api/sessions")
     async def api_sessions():
-        return {"sessions": _build_sessions()}
+        from cyrene import db as cy_db
+        try:
+            now_local = datetime.now(timezone.utc).astimezone()
+            day_from = (now_local - timedelta(days=27)).strftime("%Y-%m-%d")
+            day_to = now_local.strftime("%Y-%m-%d")
+            model_stats = await cy_db.get_model_stats_range(_db_path, day_from, day_to)
+        except Exception:
+            model_stats = []
+        return {"sessions": _build_sessions(), "model_stats": model_stats}
 
     @router.post("/api/sessions")
     async def api_create_session():

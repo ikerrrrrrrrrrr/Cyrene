@@ -196,14 +196,22 @@ async function refreshSessions() {
   try {
     const r = await fetch("/api/sessions");
     if (!r.ok) return;
-    const { sessions } = await r.json();
+    const { sessions, model_stats } = await r.json();
     if (seq !== __sessionsRequestSeq) return;
+    var changed = false;
     if (Array.isArray(sessions) && sessions.length) {
       var prev = sessionsFingerprint(DATA.sessions);
       var next = sessionsFingerprint(sessions);
       DATA.sessions = sessions;
-      if (prev !== next) bumpData();
+      if (prev !== next) changed = true;
     }
+    if (Array.isArray(model_stats)) {
+      var prevStats = JSON.stringify(DATA.dashboard.model_stats);
+      var nextStats = JSON.stringify(model_stats);
+      DATA.dashboard.model_stats = model_stats;
+      if (prevStats !== nextStats) changed = true;
+    }
+    if (changed) bumpData();
   } catch (e) { /* swallow */ }
 }
 

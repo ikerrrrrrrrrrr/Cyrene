@@ -1,5 +1,6 @@
 // Chat page — wired to /api/chat with live state and SSE updates
 const { useState, useRef, useEffect } = React;
+var _useLayoutEffect = React.useLayoutEffect;
 
 function escapeHtml(value) {
   return String(value || "")
@@ -699,6 +700,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const archiveLoadLock = useRef(false);
   const scrollHeightBeforeRef = useRef(0);
   const scrollTopAtTriggerRef = useRef(0);
+  const lastArchiveTrigger = useRef(0);
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -1555,6 +1557,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (!confirm(t("chat.confirmNewSession"))) return;
     try {
       resetChatRuntime({ abort: true });
+      setArchiveContexts([]);
+      setHasMoreArchive(true);
+      archiveLoadLock.current = false;
       const r = await fetch("/api/sessions", { method: "POST" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
@@ -1571,6 +1576,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
 
     archiveLoadLock.current = true;
+    scrollHeightBeforeRef.current = scrollRef.current ? scrollRef.current.scrollHeight : 0;
+    scrollTopAtTriggerRef.current = scrollRef.current ? scrollRef.current.scrollTop : 0;
     setLoadingArchive(true);
 
     var cursor = archiveContexts.length > 0
@@ -1604,7 +1611,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
       accumulated += e.deltaY;
       if (accumulated > 0) accumulated = 0;          // scrolled down → reset
-      if (accumulated <= -80) {                       // scrolled up 80px → trigger
+      if (accumulated <= -160) {                      // scrolled up 160px → trigger
         accumulated = 0;
         triggerArchiveLoad();
       }
@@ -1613,10 +1620,36 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     return function () { el.removeEventListener('wheel', onWheel); };
   }, [isLiveSession, loadingArchive, hasMoreArchive, archiveContexts.length]);
 
+  /* Scroll compensation — keeps viewport steady when archive content is added above. */
+  _useLayoutEffect(function () {
+    if (scrollHeightBeforeRef.current > 0 && archiveContexts.length > 0) {
+      var el = scrollRef.current;
+      if (el) {
+        var added = el.scrollHeight - scrollHeightBeforeRef.current;
+        if (added > 0) {
+          el.scrollTop = scrollTopAtTriggerRef.current + added;
+        }
+        scrollHeightBeforeRef.current = 0;
+        scrollTopAtTriggerRef.current = 0;
+      } else {
+        scrollHeightBeforeRef.current = 0;
+        scrollTopAtTriggerRef.current = 0;
+      }
+    }
+  }, [archiveContexts]);
+
   function onChatScroll() {
     var el = scrollRef.current;
     if (!el) return;
     userAtBottomRef.current = isNearBottom(el, 60);
+    // Don't trigger while compensation is in progress
+    if (scrollHeightBeforeRef.current > 0) return;
+    if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
+    if (el.scrollTop > 10) return;
+    var now = Date.now();
+    if (now - lastArchiveTrigger.current < 600) return;
+    lastArchiveTrigger.current = now;
+    triggerArchiveLoad();
   }
 
   var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[c.label]; });
@@ -1673,6 +1706,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               </span>
             </div>
           )}
+          <div className="archive-container">
           {loadingArchive && (
             <div className="archive-loading">{t("chat.loadingArchive") || "loading…"}</div>
           )}
@@ -1691,6 +1725,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               />
             );
           })}
+          </div>
           {renderedMessageEntries.map((entry) => (
             <Message
               key={entry.renderKey}
