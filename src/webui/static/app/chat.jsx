@@ -615,9 +615,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     initialScrollDoneRef.current = false;
     initialArchiveLoadTriggeredRef.current = false;
     initialPositioningInProgressRef.current = false;
-    // Clear any extra bottom padding from previous initial positioning
-    var el = scrollRef.current;
-    if (el) el.style.setProperty('--scroll-pb-extra', '0px');
   }, [session.id]);
 
   /* Auto-load the first archive batch when entering a live session.
@@ -715,6 +712,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const contentSentinelRef = useRef(null);
   const initialArchiveLoadTriggeredRef = useRef(false);
   const initialPositioningInProgressRef = useRef(false);
+  const pendingCompensationRef = useRef(null);
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -826,36 +824,33 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var el = scrollRef.current;
     if (!el) return;
     if (initialPositioningInProgressRef.current) return;
-    var allMsgEls = el.querySelectorAll('.msg.user');
-    var lastUserEl = null;
-    for (var i = allMsgEls.length - 1; i >= 0; i--) {
-      if (!allMsgEls[i].closest('.archive-container')) {
-        lastUserEl = allMsgEls[i];
-        break;
-      }
-    }
-    if (lastUserEl) {
-      var containerRect = el.getBoundingClientRect();
-      var desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - 56;
-      // Ensure enough scrollable space so desired position is reachable
-      if (desired > el.scrollHeight - el.clientHeight) {
-        el.style.setProperty('--scroll-pb-extra', (desired - (el.scrollHeight - el.clientHeight)) + 'px');
+    // Pin the sentinel at viewport top — this keeps the divider hidden
+    // and the messages (below sentinel) visible. The latest user message
+    // naturally appears near the top since it's right after the sentinel.
+    var sentinel = contentSentinelRef.current;
+    if (sentinel) {
+      // Only clear extra padding when there are actual messages (not during session transitions)
+      if (renderedMessages.length > 0) {
+        el.style.setProperty('--scroll-pb-extra', '0px');
         el.offsetHeight;
       }
-      el.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+      var containerRect = el.getBoundingClientRect();
+      var desired = sentinel.getBoundingClientRect().top - containerRect.top + el.scrollTop - 56 + 4;
+      el.scrollTo({ top: Math.max(0, Math.min(desired, el.scrollHeight - el.clientHeight)), behavior: 'smooth' });
       userAtBottomRef.current = false;
     }
   }
 
-  /* When user sends a message: pin it to viewport top.
-     For assistant replies / other changes: scroll to bottom (with userAtBottom guard). */
+  /* When user sends a message: pin sentinel to viewport top so divider stays hidden.
+     Check renderedMessages (includes pending) so we catch the first render, not just SSE update. */
   useEffect(function () {
-    var msgs = session.chat.messages;
-    var lastMsg = msgs && msgs.length > 0 ? msgs[msgs.length - 1] : null;
-    if (lastMsg && lastMsg.role === 'user') {
-      scrollToLatestUserMessage();
-    } else if (renderedMessages.length === 0) {
+    if (renderedMessages.length === 0) {
       return scrollChatToBottom(false);
+    }
+    // Check if the last rendered message is from user (includes pending)
+    var lastRendered = renderedMessages[renderedMessages.length - 1];
+    if (lastRendered && lastRendered.role === 'user') {
+      scrollToLatestUserMessage();
     }
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
@@ -1599,18 +1594,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   async function newSession() {
     if (!confirm(t("chat.confirmNewSession"))) return;
     try {
-      resetChatRuntime({ abort: true });
-      setArchiveContexts([]);
-      setHasMoreArchive(true);
-      archiveLoadLock.current = false;
-      initialArchiveLoadTriggeredRef.current = false;
-      initialPositioningInProgressRef.current = false;
+      initialPositioningInProgressRef.current = true;
       const r = await fetch("/api/sessions", { method: "POST" });
       if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
       if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
+      resetChatRuntime({ abort: true });
       onSelectSession && onSelectSession(null);
     } catch (e) {
+      initialPositioningInProgressRef.current = false;
       alert(t("chat.failedToCreate") + ": " + e.message);
     }
   }
@@ -1625,6 +1617,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     archiveLoadLock.current = true;
     if (isInitial) {
       initialPositioningInProgressRef.current = true;
+    } else {
+      var s = contentSentinelRef.current;
+      if (s) pendingCompensationRef.current = s.getBoundingClientRect().top;
     }
     var cursor = archiveContexts.length > 0
       ? archiveContexts[archiveContexts.length - 1].id
@@ -1675,7 +1670,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     el.addEventListener('wheel', onWheel, {passive: true});
     return function () { el.removeEventListener('wheel', onWheel); };
-  }, [isLiveSession, hasMoreArchive, archiveContexts.length]);
+  }, [isLiveSession, hasMoreArchive, archiveContexts.length, session.id]);
 
   /* Initial viewport positioning after auto-loading the first archive batch. */
   _useLayoutEffect(function () {
@@ -1683,6 +1678,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       var el = scrollRef.current;
       if (!el) { initialPositioningInProgressRef.current = false; return; }
 
+      // Reset any leftover extra padding from previous session before measuring
+      el.style.setProperty('--scroll-pb-extra', '0px');
       // Force synchronous layout so measurements are correct
       var forceLayout = el.offsetHeight;
       var containerRect = el.getBoundingClientRect();
@@ -1726,6 +1723,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       initialScrollDoneRef.current = true;
       userAtBottomRef.current = renderedMessages.length > 0 ? false : true;
       initialPositioningInProgressRef.current = false;
+      return;
+    }
+
+    // Subsequent loads: sentinel-based compensation
+    var prevTop = pendingCompensationRef.current;
+    if (prevTop != null && archiveContexts.length > 0) {
+      pendingCompensationRef.current = null;
+      var s2 = contentSentinelRef.current;
+      if (s2) {
+        var delta = s2.getBoundingClientRect().top - prevTop;
+        if (delta > 0) scrollRef.current.scrollTop += delta;
+      }
     }
   }, [archiveContexts, renderedMessages]);
 
@@ -1942,6 +1951,19 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               <div className="msg-body">{visibleNotice}</div>
             </div>
           )}
+          {isLiveSession && pendingQuestion && (
+            <QuestionPanel
+              pendingQuestion={pendingQuestion}
+              draft={questionDraft}
+              onDraftChange={setQuestionDraft}
+              onOptionSelect={function (label) { submitQuestionAnswer({ selectedOption: label }); }}
+              onSubmit={function () { submitQuestionAnswer(); }}
+              onKeyDown={onQuestionKey}
+              answering={answeringQuestion}
+              sending={sending}
+              optionCount={questionOptionCount}
+            />
+          )}
         </div>
 
         {!isLiveSession && (
@@ -1951,19 +1973,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                   onClick={function () { onSelectSession && onSelectSession(null); }}>{t("chat.liveSessionLink")}</a>{t("chat.toSendMessages")}
             </div>
           </div>
-        )}
-        {isLiveSession && pendingQuestion && (
-          <QuestionPanel
-            pendingQuestion={pendingQuestion}
-            draft={questionDraft}
-            onDraftChange={setQuestionDraft}
-            onOptionSelect={function (label) { submitQuestionAnswer({ selectedOption: label }); }}
-            onSubmit={function () { submitQuestionAnswer(); }}
-            onKeyDown={onQuestionKey}
-            answering={answeringQuestion}
-            sending={sending}
-            optionCount={questionOptionCount}
-          />
         )}
         {isLiveSession && (
         <div className="composer" ref={composerRef}>

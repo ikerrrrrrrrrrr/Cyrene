@@ -454,6 +454,43 @@ async def _run_main_agent(
         await _save_session_messages(_session_messages_to_save(messages))
         return "Stopped after hitting the tool loop limit."
 
+    # Deep research first round: if LLM output text instead of calling ask_user, retry
+    if _deep_research_first_round.get() and not ask_user_call and not use_tools_call:
+        retry_messages = [
+            *phase1_messages,
+            {
+                **_assistant_entry_from_response(response, round_id="", include_tool_calls=False),
+                "content": _assistant_text(response) or (response.get("content") or ""),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "You replied with text. You MUST call the `ask_user` function. "
+                    "Call `ask_user` with text=\"请选择报告篇幅\" and "
+                    "options=[\"长（30+页）\", \"中（20+页）\", \"短（10+页）\"]."
+                ),
+            },
+        ]
+        response = await _call_llm(retry_messages, tools=phase1_tools)
+        for tc in (response.get("tool_calls") or []):
+            if tc.get("function", {}).get("name") == "ask_user":
+                ask_user_call = tc
+                break
+        if ask_user_call:
+            try:
+                args = json.loads(ask_user_call["function"].get("arguments") or "{}")
+                result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None)
+            except Exception as exc:
+                result = f"Tool failed: {exc}"
+            tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": ask_user_call["id"], "content": _truncate(result)}
+            if round_id:
+                tool_entry["round_id"] = round_id
+            messages.append(tool_entry)
+            if _tool_result_requests_user_input(result):
+                return _AWAITING_USER_SENTINEL
+            await _save_session_messages(_session_messages_to_save(messages))
+            return (await _ensure_text_reply(response, messages, fallback=str(result)))
+
     # Chat-only path (no tools)
     event = {"type": "phase_transition", "from": "phase1_decision", "to": "chat_only"}
     if not suppress_initial_detail:

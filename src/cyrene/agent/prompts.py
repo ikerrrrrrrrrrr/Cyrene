@@ -55,13 +55,14 @@ _DEEP_RESEARCH_PHASE1_DECISION = """## Deep Research — Length Preference
 
 You are starting a deep research task. Before any research can begin, you MUST determine the desired report length.
 
-Your ONLY available action is to call `ask_user` with the question text and structured options like this:
+You have EXACTLY ONE available tool: `ask_user`. Call it NOW. Do NOT output text — you MUST make a function call.
+
+Call `ask_user` with these arguments:
 - text: "请选择报告篇幅"
 - options: ["长（30+页）：全面深度研究，覆盖所有维度", "中（20+页）：中等深度，覆盖主要维度", "短（10+页）：聚焦核心问题，精简报告"]
 
-Do NOT list the options inside the text argument — use the dedicated options parameter.
-Do NOT attempt to start research, spawn subagents, or call concrete tools — you don't have those tools yet.
-Wait for the user's response before proceeding.
+Use the dedicated `options` parameter — do NOT embed the options in the text string.
+Wait for the user's response before proceeding. Accept ANY answer the user gives — do not re-ask.
 """
 
 _EXECUTION_SYSTEM_PROMPT = """You are a capable execution agent. Your job is to complete tasks using tools.
@@ -85,12 +86,7 @@ _DEEP_RESEARCH_PROMPT = """## Deep Research Mode
 You are in **Deep Research** mode. The user has asked a question that requires thorough, multi-angle investigation. Follow this process rigorously:
 
 ### Pre-Research: Determine Report Length
-**Before spawning any subagents or starting research**, you MUST ask the user about the desired report length. Call the `ask_user` tool with the question text and structured options like this:
-
-- text: "请选择报告篇幅"
-- options: ["长（30+页）：全面深度研究，覆盖所有维度", "中（20+页）：中等深度，覆盖主要维度", "短（10+页）：聚焦核心问题，精简报告"]
-
-Do NOT list the options inside the text argument — use the dedicated options parameter. The user can also type a custom answer directly. Wait for their response, then save the chosen length for use when writing the report.
+**Before spawning any subagents or starting research**, you MUST call the `ask_user` tool to ask about report length. The system will handle this before you get full tools — just call `ask_user` with text="请选择报告篇幅" and the structured options. Accept ANY answer the user gives and proceed.
 
 ### Phase 1: Decomposition
 1. Analyze the user's question and identify all sub-questions, angles, and dimensions that need investigation.

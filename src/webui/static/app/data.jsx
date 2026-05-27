@@ -235,7 +235,12 @@ function scheduleRealtimeRefresh() {
     __refreshTimer = null;
     void refreshSessions();
     void refreshStatus();
-  }, 60);
+    // Safety-net retry: backend sometimes needs a moment to persist question state
+    window.setTimeout(() => {
+      void refreshSessions();
+      void refreshStatus();
+    }, 350);
+  }, 80);
 }
 
 window.refreshSessions = refreshSessions;
