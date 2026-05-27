@@ -710,7 +710,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [welcomeRange, setWelcomeRange] = useState("all");
   const [showInputToken, setShowInputToken] = useState(Math.random() > 0.5);
   const [archiveContexts, setArchiveContexts] = useState([]);   // loaded newest-first
-  const [loadingArchive, setLoadingArchive] = useState(false);
   const [hasMoreArchive, setHasMoreArchive] = useState(true);
   const archiveLoadLock = useRef(false);
   const contentSentinelRef = useRef(null);
@@ -1615,7 +1614,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   // ── Archive context loading (scroll up to reveal older sessions) ──
 
   function triggerArchiveLoad(options) {
-    if (!isLiveSession || loadingArchive || !hasMoreArchive || archiveLoadLock.current) return;
+    if (!isLiveSession || !hasMoreArchive || archiveLoadLock.current) return;
 
     var isInitial = options && options.initialLoad;
 
@@ -1628,8 +1627,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         pendingCompensationRef.current = { oldH: elCap.scrollHeight, oldT: elCap.scrollTop };
       }
     }
-    setLoadingArchive(true);
-
     var cursor = archiveContexts.length > 0
       ? archiveContexts[archiveContexts.length - 1].id
       : "";
@@ -1650,11 +1647,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             });
           }
         }
-        setLoadingArchive(false);
         archiveLoadLock.current = false;
       })
       .catch(function () {
-        setLoadingArchive(false);
         archiveLoadLock.current = false;
         pendingCompensationRef.current = null;
         if (isInitial) {
@@ -1737,17 +1732,17 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       return;
     }
 
-    // Subsequent archive loads: compensate using pre-captured scroll state
+    // Subsequent archive loads: compensate synchronously before paint.
     var comp = pendingCompensationRef.current;
     if (comp && archiveContexts.length > 0) {
-      pendingCompensationRef.current = null;
       var el2 = scrollRef.current;
       if (el2) {
-        // Force layout, then compensate
-        el2.offsetHeight;
-        el2.scrollHeight;
+        el2.offsetHeight; // force layout
         var added = el2.scrollHeight - comp.oldH;
-        if (added > 0) el2.scrollTop = comp.oldT + added;
+        if (added > 0) {
+          pendingCompensationRef.current = null;
+          el2.scrollTop = comp.oldT + added;
+        }
       }
     }
   }, [archiveContexts, renderedMessages]);
