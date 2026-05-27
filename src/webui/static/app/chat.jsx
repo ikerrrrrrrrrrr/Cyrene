@@ -1670,8 +1670,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (isInitial) {
       initialPositioningInProgressRef.current = true;
     } else {
-      var s = contentSentinelRef.current;
-      if (s) pendingCompensationRef.current = s.getBoundingClientRect().top;
+      // Record archive container height so the layout effect can compensate
+      // exactly for the added content without any jump.
+      var archiveEl = scrollRef.current && scrollRef.current.querySelector('.archive-container');
+      if (archiveEl) pendingCompensationRef.current = archiveEl.scrollHeight;
     }
     var cursor = archiveContexts.length > 0
       ? archiveContexts[archiveContexts.length - 1].id
@@ -1781,14 +1783,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       return;
     }
 
-    // Subsequent loads: sentinel-based compensation
-    var prevTop = pendingCompensationRef.current;
-    if (prevTop != null && archiveContexts.length > 0) {
+    // Subsequent loads: compensate scroll position by the exact height of
+    // newly added archive content, keeping the visible area stable.
+    var prevHeight = pendingCompensationRef.current;
+    if (prevHeight != null && archiveContexts.length > 0) {
       pendingCompensationRef.current = null;
-      var s2 = contentSentinelRef.current;
-      if (s2) {
-        var delta = s2.getBoundingClientRect().top - prevTop;
-        if (delta > 0) scrollRef.current.scrollTop += delta;
+      var archiveEl2 = scrollRef.current && scrollRef.current.querySelector('.archive-container');
+      if (archiveEl2) {
+        var addedHeight = archiveEl2.scrollHeight - prevHeight;
+        if (addedHeight > 0) scrollRef.current.scrollTop += addedHeight;
       }
     }
   }, [archiveContexts, renderedMessages]);
