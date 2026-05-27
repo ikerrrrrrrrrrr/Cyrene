@@ -747,6 +747,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const fileInputRef = useRef(null);
   const userAtBottomRef = useRef(true);
   const initialScrollDoneRef = useRef(false);
+  // When true, scrollChatToBottom is suppressed — used while the latest user
+  // message is animating to the top of the viewport.  Cleared by user wheel.
+  const pinnedMessageRef = useRef(false);
   const sending = runtimeState.sending;
   const pendingMessages = runtimeState.pendingMessages;
   const prunedRetainedMessages = isLiveSession
@@ -786,6 +789,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function isNearBottom(el, threshold) {
     if (!el) return true;
+    // When content is too short to overflow, the user cannot be "at the
+    // bottom" in a meaningful sense — every position is near the bottom.
+    if (el.scrollHeight <= el.clientHeight) return false;
     return el.scrollHeight - el.scrollTop - el.clientHeight <= (threshold || 60);
   }
 
@@ -794,6 +800,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (!el) return function () {};
     // Don't scroll while initial archive positioning is in progress
     if (initialPositioningInProgressRef.current) return function () {};
+    // Don't override a pinned user message — scrollToLatestUserMessage is
+    // animating it to the top and we must not fight the animation.
+    if (pinnedMessageRef.current) return function () {};
     // After initial mount, only scroll if user is actually near bottom
     if (initialScrollDoneRef.current && !isNearBottom(el, 60)) {
       userAtBottomRef.current = false;
@@ -822,35 +831,64 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function scrollToLatestUserMessage() {
     var el = scrollRef.current;
-    if (!el) return;
-    if (initialPositioningInProgressRef.current) return;
-    // Pin the sentinel at viewport top — this keeps the divider hidden
-    // and the messages (below sentinel) visible. The latest user message
-    // naturally appears near the top since it's right after the sentinel.
-    var sentinel = contentSentinelRef.current;
-    if (sentinel) {
-      // Only clear extra padding when there are actual messages (not during session transitions)
-      if (renderedMessages.length > 0) {
-        el.style.setProperty('--scroll-pb-extra', '0px');
-        el.offsetHeight;
+    if (!el) { console.log('[scrollToLatestUserMessage] no scrollRef'); return; }
+    // If already animating a user message to the top, skip — calling scrollTo
+    // again would cancel the in-progress smooth animation.
+    if (pinnedMessageRef.current) { console.log('[scrollToLatestUserMessage] already pinned, skip'); return; }
+    // Find the latest user message element (outside of archive containers)
+    var allUserEls = el.querySelectorAll('.msg.user');
+    console.log('[scrollToLatestUserMessage] found .msg.user count:', allUserEls.length);
+    var lastUserEl = null;
+    for (var i = allUserEls.length - 1; i >= 0; i--) {
+      if (!allUserEls[i].closest('.archive-container')) {
+        lastUserEl = allUserEls[i];
+        break;
       }
-      var containerRect = el.getBoundingClientRect();
-      var desired = sentinel.getBoundingClientRect().top - containerRect.top + el.scrollTop - 56 + 4;
-      el.scrollTo({ top: Math.max(0, Math.min(desired, el.scrollHeight - el.clientHeight)), behavior: 'smooth' });
-      userAtBottomRef.current = false;
     }
+    if (!lastUserEl) { console.log('[scrollToLatestUserMessage] no user el found'); return; }
+    // Clear extra padding so measurements are accurate
+    el.style.setProperty('--scroll-pb-extra', '0px');
+    el.offsetHeight;
+    var containerRect = el.getBoundingClientRect();
+    var padTop = 56;
+    var desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
+    var maxScroll = el.scrollHeight - el.clientHeight;
+    console.log('[scrollToLatestUserMessage] desired:', desired, 'maxScroll:', maxScroll, 'scrollTop was:', el.scrollTop);
+    // If content below the user message is too short to let it reach the
+    // viewport top, add temporary bottom padding (same strategy as the
+    // initial-positioning layout effect).
+    if (desired > maxScroll) {
+      var shortfall = desired - maxScroll;
+      if (shortfall > el.clientHeight) shortfall = el.clientHeight;
+      console.log('[scrollToLatestUserMessage] shortfall:', shortfall);
+      el.style.setProperty('--scroll-pb-extra', shortfall + 'px');
+      el.offsetHeight; // force layout recalc
+      maxScroll = el.scrollHeight - el.clientHeight;
+      desired = Math.min(desired, maxScroll);
+    }
+    // Pin the message and animate it to the top.  pinnedMessageRef prevents
+    // scrollChatToBottom from fighting the animation while the reply streams.
+    pinnedMessageRef.current = true;
+    el.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+    userAtBottomRef.current = false;
   }
 
-  /* When user sends a message: pin sentinel to viewport top so divider stays hidden.
-     Check renderedMessages (includes pending) so we catch the first render, not just SSE update. */
+  /* When user sends a message: scroll the user message to viewport top so the agent
+     reply can unfold below it. Checks renderedMessages (includes pending) so we catch
+     the first render, not just SSE updates. */
   useEffect(function () {
+    console.log('[scroll-effect-1] fire. renderedMessages:', renderedMessages.length, 'last role:', renderedMessages.length ? renderedMessages[renderedMessages.length-1].role : 'n/a');
     if (renderedMessages.length === 0) {
+      console.log('[scroll-effect-1] empty → scrollChatToBottom');
       return scrollChatToBottom(false);
     }
     // Check if the last rendered message is from user (includes pending)
     var lastRendered = renderedMessages[renderedMessages.length - 1];
     if (lastRendered && lastRendered.role === 'user') {
+      console.log('[scroll-effect-1] last is user → scrollToLatestUserMessage');
       scrollToLatestUserMessage();
+    } else {
+      console.log('[scroll-effect-1] last is', lastRendered && lastRendered.role, '→ skip');
     }
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
@@ -1588,8 +1626,22 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   var hasArchiveContent = archiveRenderEntries.length > 0;
 
   useEffect(function () {
+    // When the latest message is from the user, keep it pinned at the top
+    // instead of scrolling to bottom — scrollToLatestUserMessage handles this case.
+    var lastRendered = renderedMessages[renderedMessages.length - 1];
+    if (lastRendered && lastRendered.role === 'user') return;
     return scrollChatToBottom(!visibleSending);
   }, [renderedMessageSignature, visibleSending]);
+
+  // Release pinnedMessageRef when the agent finishes replying, and clear the
+  // temporary extra bottom padding (no longer needed once reply content exists).
+  useEffect(function () {
+    if (!visibleSending && pinnedMessageRef.current) {
+      pinnedMessageRef.current = false;
+      var el = scrollRef.current;
+      if (el) el.style.setProperty('--scroll-pb-extra', '0px');
+    }
+  }, [visibleSending]);
 
   async function newSession() {
     if (!confirm(t("chat.confirmNewSession"))) return;
@@ -1659,6 +1711,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (!el || !isLiveSession) return;
     var triggered = false;
     function onWheel(e) {
+      // Any user wheel scroll releases the pinned message — the user is
+      // taking control, so auto-scrolling can resume.
+      if (pinnedMessageRef.current) pinnedMessageRef.current = false;
       if (e.deltaY >= 0) { triggered = false; return; }
       if (!isLiveSession || !hasMoreArchive) return;
       var cur = scrollRef.current;
