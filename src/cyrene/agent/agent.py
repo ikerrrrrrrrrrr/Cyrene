@@ -383,8 +383,9 @@ async def _run_main_agent(
                     else:
                         quiet_ticks = 0
                 if interrupted:
+                    # Don't return early — proceed to summary phase with whatever
+                    # results the subagents have produced so far.
                     await _save_session_messages(_session_messages_to_save(messages))
-                    return "[Sub-agents are still working in the background. You can continue the conversation.]"
                 await asyncio.sleep(2)
                 await _publish_runtime_event({
                     "type": "phase_transition", "from": "subagent_monitoring", "to": "synthesis",
@@ -427,10 +428,20 @@ async def _run_main_agent(
                             )
                         references_accumulated, dedup_mapping = _deduplicate_references(references_accumulated)
                         final_text = _assemble_report(sections_written, references_accumulated, outline, dedup_mapping=dedup_mapping)
-                    synthesis_entry = {"role": "assistant", "content": final_text, "deep_research_report": True}
+                    # Add a brief concluding message after the report
+                    if lang and lang != "en":
+                        closing_note = "\n\n---\n\n✅ **深度研究报告已生成完成。**"
+                    else:
+                        closing_note = "\n\n---\n\n✅ **Deep research report has been generated.**"
                     pdf_attachment = _deep_research_pdf_attachment(round_id, user_message, final_text)
                     if pdf_attachment:
+                        pdf_name = pdf_attachment.get("name", "deep-research-report.pdf")
+                        pdf_url = pdf_attachment.get("url", "")
+                        if pdf_url:
+                            closing_note += f"\n\n📎 [{pdf_name}]({pdf_url})"
                         synthesis_entry["attachments"] = [pdf_attachment]
+                    final_text = final_text.rstrip() + closing_note
+                    synthesis_entry = {"role": "assistant", "content": final_text, "deep_research_report": True}
                 else:
                     final_text = summary_result
                     synthesis_entry = {"role": "assistant", "content": final_text}

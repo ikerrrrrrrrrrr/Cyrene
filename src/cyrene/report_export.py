@@ -126,6 +126,11 @@ def _prepare_styles():
     }
 
 
+def _strip_html(text: str) -> str:
+    """Remove HTML tags from text — LLM output may contain <br> or other artifacts."""
+    return re.sub(r"<[^>]+>", "", text)
+
+
 def _escape(text: str) -> str:
     return (
         str(text or "")
@@ -211,7 +216,7 @@ def write_report_pdf(path: str | Path, title: str, body: str) -> Path:
 
     # ---- Title block ----
     story.append(Spacer(1, 40 * mm))
-    story.append(Paragraph(_inline_markup(f"<b>{title}</b>"), styles["title"]))
+    story.append(Paragraph(f"<b>{_inline_markup(_strip_html(title))}</b>", styles["title"]))
     story.append(Spacer(1, 6))
     story.append(Paragraph("Deep Research Report", styles["subtitle"]))
     story.append(Spacer(1, 20 * mm))
@@ -240,13 +245,13 @@ def write_report_pdf(path: str | Path, title: str, body: str) -> Path:
 
         # h3 — subsection
         if stripped.startswith("### "):
-            story.append(Paragraph(_inline_markup(stripped[4:]), styles["h2"]))
+            story.append(Paragraph(_inline_markup(_strip_html(stripped[4:])), styles["h2"]))
             i += 1
             continue
 
         # h2 — section
         if stripped.startswith("## "):
-            story.append(Paragraph(_inline_markup(stripped[3:]), styles["h1"]))
+            story.append(Paragraph(_inline_markup(_strip_html(stripped[3:])), styles["h1"]))
             i += 1
             continue
 
@@ -258,18 +263,18 @@ def write_report_pdf(path: str | Path, title: str, body: str) -> Path:
         # Bullet list
         if re.match(r"^[-*]\s+", stripped):
             text = re.sub(r"^[-*]\s+", "", stripped)
-            story.append(Paragraph("• " + _inline_markup(text), styles["bullet"]))
+            story.append(Paragraph("• " + _inline_markup(_strip_html(text)), styles["bullet"]))
             i += 1
             continue
 
         # Reference line [N] ... → render in small font
         if re.match(r"^\[\d+\]", stripped):
-            story.append(Paragraph(_inline_markup(stripped), styles["ref"]))
+            story.append(Paragraph(_inline_markup(_strip_html(stripped)), styles["ref"]))
             i += 1
             continue
 
         # Regular paragraph
-        story.append(Paragraph(_inline_markup(stripped).replace("\n", "<br/>"), styles["body"]))
+        story.append(Paragraph(_inline_markup(_strip_html(stripped)).replace("\n", "<br/>"), styles["body"]))
         i += 1
 
     doc.build(story)

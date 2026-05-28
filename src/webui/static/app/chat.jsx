@@ -3200,7 +3200,7 @@ function AgentGroupChat({ roundId, subagents, session }) {
         var userMsg = event.message;
         if (userMsg) {
           setMessages(function (prev) {
-            if (prev.some(function (m) { return m.id === userMsg.id; })) return prev;
+            if (_msgDup(userMsg, prev)) return prev;
             return prev.concat([userMsg]);
           });
         }

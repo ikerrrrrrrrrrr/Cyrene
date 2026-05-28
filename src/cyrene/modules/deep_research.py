@@ -374,8 +374,8 @@ def deep_research_pdf_attachment(round_id: str, user_message: str, final_text: s
     from cyrene.attachments import build_public_attachment_payload, register_generated_attachment
 
     title_match = re.search(r"^#\s+(.+)$", str(final_text or ""), re.MULTILINE)
-    title = (title_match.group(1).strip() if title_match
-             else str(user_message or "").strip() or "Deep Research Report")
+    title = title_match.group(1).strip() if title_match else str(user_message or "").strip() or "Deep Research Report"
+    title = re.sub(r"<[^>]+>", "", title).strip()
     export_name = report_export_filename(round_id or "deep-research-report", fallback="deep-research-report")
     target = Path(DATA_DIR) / "generated_reports" / export_name
     try:
