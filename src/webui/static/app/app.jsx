@@ -60,8 +60,8 @@ function SetupWizard({ theme, onToggleTheme }) {
   const [notice, setNotice] = useStateApp("");
   const [llmForm, setLlmForm] = useStateApp({
     api_key: "",
-    base_url: onboarding.llm?.baseUrl || "https://api.deepseek.com/v1",
-    model: onboarding.llm?.model || "deepseek-chat",
+    base_url: onboarding.llm?.baseUrl || "",
+    model: onboarding.llm?.model || "",
   });
   const [mode, setMode] = useStateApp(onboarding.personality?.mode || "name");
   const [personalityName, setPersonalityName] = useStateApp(onboarding.personality?.label || "");
@@ -71,8 +71,8 @@ function SetupWizard({ theme, onToggleTheme }) {
     setStep(onboarding.activeStep || "done");
     setLlmForm({
       api_key: "",
-      base_url: onboarding.llm?.baseUrl || "https://api.deepseek.com/v1",
-      model: onboarding.llm?.model || "deepseek-chat",
+      base_url: onboarding.llm?.baseUrl || "",
+      model: onboarding.llm?.model || "",
     });
     setMode(onboarding.personality?.mode || "name");
     setPersonalityName(onboarding.personality?.label || "");

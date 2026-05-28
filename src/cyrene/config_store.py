@@ -104,19 +104,9 @@ _DEFAULT_ENV: dict[str, str] = {
     "WEB_PORT": "4242",
 }
 
-_DEFAULT_MODELS = [
-    {"id": "deepseek-chat", "name": "deepseek-chat", "desc": "DeepSeek default",
-     "ctx": "64k", "price": "low"},
-    {"id": "haiku45", "name": "claude-haiku-4-5", "desc": "Fast, capable",
-     "ctx": "200k", "price": "$0.25 / $1.25"},
-    {"id": "sonnet45", "name": "claude-sonnet-4-5", "desc": "Heavy reasoning",
-     "ctx": "200k", "price": "$3.00 / $15.00"},
-]
+_DEFAULT_MODELS: list[dict[str, str]] = []
 
-_DEFAULT_VISION_MODELS = [
-    {"id": "vision-1", "name": "gpt-4.1-mini", "desc": "Vision fallback default",
-     "ctx": "128k", "price": "medium"},
-]
+_DEFAULT_VISION_MODELS: list[dict[str, str]] = []
 
 _DEFAULT_ENABLED_TOOLS: dict[str, bool] = {
     "Read": True, "Write": True, "Edit": True, "Glob": True, "Grep": True,

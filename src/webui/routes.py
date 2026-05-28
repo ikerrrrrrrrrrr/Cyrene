@@ -57,8 +57,6 @@ from cyrene.config import (
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
     DB_PATH,
-    OPENAI_BASE_URL,
-    OPENAI_MODEL,
     PATTERNS_DIR,
     SEARXNG_HOST,
     SEARXNG_PORT,
@@ -109,6 +107,16 @@ def _live_llm_config() -> tuple[str, str]:
     from cyrene import config as cy_config
 
     return cy_config.OPENAI_MODEL, cy_config.OPENAI_BASE_URL
+
+
+def _get_model() -> str:
+    from cyrene import config as cy_config
+    return cy_config.OPENAI_MODEL
+
+
+def _get_base_url() -> str:
+    from cyrene import config as cy_config
+    return cy_config.OPENAI_BASE_URL
 
 
 def _remove_path(path: Path) -> None:
@@ -2579,7 +2587,7 @@ def _build_current_session() -> dict | None:
         "archiveSessionId": str(state.get("archive_session_id", "")).strip(),
         "dur": duration,
         "preview": (last_msg["body"][:80] + "…") if last_msg and last_msg.get("body") else "—",
-        "model": OPENAI_MODEL,
+        "model": _get_model(),
         "currentRoundId": current_round_id,
         "currentRoundTitle": current_round_title,
         "pendingQuestion": pending_question,
@@ -2659,7 +2667,7 @@ def _build_archive_sessions(
                 "started": date_str,
                 "dur": "—",
                 "preview": preview,
-                "model": OPENAI_MODEL,
+                "model": _get_model(),
                 "currentRoundId": current_round_id,
                 "currentRoundTitle": current_round_title,
                 "summary": {
@@ -3071,12 +3079,12 @@ def _build_simple_flow(messages: list[dict]) -> dict:
                 "title": f"main agent · {ASSISTANT_NAME}",
                 "subtitle": "archive",
                 "status": "done",
-                "model": OPENAI_MODEL,
+                "model": _get_model(),
                 "detail": {
                     "systemPrompt": f"You are {ASSISTANT_NAME}, an AI companion. Use SOUL.md to maintain persona.",
                     "reasoning": "Loaded session from archive — no live reasoning trace.",
                     "tokensIn": 0, "tokensOut": 0,
-                    "model": OPENAI_MODEL, "temp": 0.2,
+                    "model": _get_model(), "temp": 0.2,
                 },
             },
             {
@@ -3537,7 +3545,7 @@ def _build_live_flow_round(
             "title": f"main agent · {ASSISTANT_NAME}",
             "subtitle": latest_phase["to"] if latest_phase and latest_phase.get("to") else "orchestrator",
             "status": main_status,
-            "model": OPENAI_MODEL,
+            "model": _get_model(),
             "detail": {
                 "systemPrompt": (
                     f"You are {ASSISTANT_NAME}. Two-phase loop: lightweight tool decision, "
@@ -3554,7 +3562,7 @@ def _build_live_flow_round(
                 ),
                 "tokensIn": main_usage.get("prompt_tokens") if main_usage.get("prompt_tokens") is not None else "—",
                 "tokensOut": main_usage.get("completion_tokens") if main_usage.get("completion_tokens") is not None else "—",
-                "model": OPENAI_MODEL, "temp": 0.2,
+                "model": _get_model(), "temp": 0.2,
             },
         },
     ]
@@ -3609,7 +3617,7 @@ def _build_live_flow_round(
                 "spawnedAt": sa.get("createdAt", "—"),
                 "tokensIn": sub_usage.get("prompt_tokens") if sub_usage.get("prompt_tokens") is not None else "—",
                 "tokensOut": sub_usage.get("completion_tokens") if sub_usage.get("completion_tokens") is not None else "—",
-                "model": OPENAI_MODEL,
+                "model": _get_model(),
                 "reasoning": latest_subassistant.get("reasoning_content") if latest_subassistant else "",
                 "result": sa.get("result", ""),
             },
@@ -3691,7 +3699,7 @@ def _empty_session() -> dict:
         "started": "—",
         "dur": "—",
         "preview": "Send a message to start a session.",
-        "model": OPENAI_MODEL,
+        "model": _get_model(),
         "summary": {"tokens": "0", "spend": "$0.00", "toolCalls": 0},
         "chat": {
             "contextChips": _build_context_chips(),
@@ -3706,12 +3714,12 @@ def _empty_session() -> dict:
                     "id": "n_main", "kind": "main", "x": 200, "y": 80,
                     "title": f"main agent · {ASSISTANT_NAME}",
                     "subtitle": "idle", "status": "queued",
-                    "model": OPENAI_MODEL,
+                    "model": _get_model(),
                     "detail": {
                         "systemPrompt": f"You are {ASSISTANT_NAME}.",
                         "reasoning": "Waiting for user input.",
                         "tokensIn": 0, "tokensOut": 0,
-                        "model": OPENAI_MODEL, "temp": 0.2,
+                        "model": _get_model(), "temp": 0.2,
                     },
                 }
             ],
@@ -3735,8 +3743,8 @@ async def _build_status() -> dict:
         "workers": [],
         "logs": [],
         "services": [],
-        "model": OPENAI_MODEL,
-        "base_url": OPENAI_BASE_URL,
+        "model": _get_model(),
+        "base_url": _get_base_url(),
         "short_term_entries": 0,
         "session_messages": 0,
         "scheduled_tasks": 0,
@@ -4513,7 +4521,7 @@ def _fmt_tok(n: int) -> str:
 
 def _model_pricing() -> dict[str, float] | None:
     """Return token pricing metadata for known models, or None."""
-    model_lower = OPENAI_MODEL.lower()
+    model_lower = _get_model().lower()
     if "opus-4" in model_lower or "claude-opus-4" in model_lower:
         return {"input": 15.0, "output": 75.0}
     if "sonnet-4" in model_lower or "claude-sonnet-4" in model_lower:
