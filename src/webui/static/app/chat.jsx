@@ -2615,6 +2615,27 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
 
       {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
         <SideTokenRing tokens={session.summary.tokens} />
+        {(() => {
+          var total = session.summary.total_tokens;
+          var limit = session.ctx_limit || 0;
+          if (limit > 0 && total != null) {
+            var pct = Math.min(Math.round(total / limit * 100), 100);
+            var barColor = pct > 90 ? "#e74c3c" : pct > 70 ? "#f39c12" : "#4caf50";
+            var fmt = function (n) {
+              return n >= 1000000 ? (n / 1000000).toFixed(1) + "m" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+            };
+            return (
+              <div className="ctx-bar-overview">
+                <span className="ctx-bar-overview-label">上下文</span>
+                <span className="ctx-bar-overview-track">
+                  <span className="ctx-bar-overview-fill" style={{ width: pct + "%", background: barColor }}></span>
+                </span>
+                <span className="ctx-bar-overview-nums">{fmt(total)} / {fmt(limit)}</span>
+              </div>
+            );
+          }
+          return null;
+        })()}
         <div className="side-head">{t("chat.runSummary")}</div>
         <div className="side-overview-kv">
           <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
@@ -2878,9 +2899,10 @@ function GroupChatMessage({ msg, prevFrom }) {
   );
 }
 
-function GroupChatMessages({ messages }) {
+function GroupChatMessages({ messages, agentsActive }) {
   var scrollRef = React.useRef(null);
-  var userAtBottom = React.useRef(true);
+  var userAtBottom = React.useRef(false);
+  var initialRenderDone = React.useRef(false);
 
   // Track user's scroll position via onScroll (measures BEFORE new content)
   function handleScroll() {
@@ -2893,13 +2915,28 @@ function GroupChatMessages({ messages }) {
   React.useEffect(function () {
     var el = scrollRef.current;
     if (!el) return;
+    // On initial render, measure actual scroll position instead of forcing to bottom.
+    // This prevents scroll-jacking when refreshing with existing messages.
+    if (!initialRenderDone.current) {
+      initialRenderDone.current = true;
+      userAtBottom.current = (el.scrollTop + el.clientHeight >= el.scrollHeight - 40);
+      return;
+    }
     if (userAtBottom.current) {
       el.scrollTop = el.scrollHeight;
     }
   }, [messages]);
 
   if (messages.length === 0) {
-    return <div className="agent-chat-messages"><div className="agent-chat-empty">暂无 subagent 对话</div></div>;
+    return (
+      <div className="agent-chat-messages">
+        <div className="agent-chat-empty">
+          {agentsActive
+            ? <span className="agent-chat-waiting">subagent 运行中...</span>
+            : "暂无 subagent 对话"}
+        </div>
+      </div>
+    );
   }
 
   var rows = [];
@@ -2971,7 +3008,7 @@ function GroupChatComposer({ agents, chatEnded, onSend }) {
   // Autosize textarea
   function syncHeight() {
     var ta = taRef.current;
-    if (ta) { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 80) + "px"; }
+    if (ta) { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; }
   }
 
   function handleChange(e) {
@@ -3129,6 +3166,7 @@ function AgentGroupChat({ roundId, subagents, session }) {
 
   // Track current round to discard stale fetch responses
   var fetchRoundRef = React.useRef("");
+  var subagentFetchTimerRef = React.useRef(null);
 
   // Fetch initial messages
   React.useEffect(function () {
@@ -3205,36 +3243,55 @@ function AgentGroupChat({ roundId, subagents, session }) {
           });
         }
       } else if (event.type === "subagent_update" && event.round_id === roundId) {
-        // Refresh agents list and check if all done
-        var _fetchRound = roundId;
-        fetch("/api/chat/agent-chat-messages?round_id=" + encodeURIComponent(roundId))
-          .then(function (r) {
-            if (!r.ok) throw new Error("HTTP " + r.status);
-            return r.json();
-          })
-          .then(function (data) {
-            if (fetchRoundRef.current !== _fetchRound) return;
-            setMessages(function (existing) {
-              var fetched = data.messages || [];
-              var merged = fetched.slice();
-              existing.forEach(function (em) {
-                if (!_msgDup(em, merged)) merged.push(em);
+        // Debounce re-fetch: multiple rapid subagent updates (e.g. save_messages
+        // called frequently) should only trigger one fetch.
+        if (subagentFetchTimerRef.current) clearTimeout(subagentFetchTimerRef.current);
+        subagentFetchTimerRef.current = setTimeout(function () {
+          subagentFetchTimerRef.current = null;
+          var _fetchRound = roundId;
+          fetch("/api/chat/agent-chat-messages?round_id=" + encodeURIComponent(roundId))
+            .then(function (r) {
+              if (!r.ok) throw new Error("HTTP " + r.status);
+              return r.json();
+            })
+            .then(function (data) {
+              if (fetchRoundRef.current !== _fetchRound) return;
+              setMessages(function (existing) {
+                var fetched = data.messages || [];
+                // Fast path: if lengths match and IDs overlap, skip re-render
+                if (existing.length === fetched.length) {
+                  var same = true;
+                  for (var ei = 0; ei < existing.length; ei++) {
+                    if (!_msgDup(existing[ei], fetched)) { same = false; break; }
+                  }
+                  if (same) return existing;
+                }
+                var merged = fetched.slice();
+                existing.forEach(function (em) {
+                  if (!_msgDup(em, merged)) merged.push(em);
+                });
+                merged.sort(function (a, b) { return (a.timestamp || "") < (b.timestamp || "") ? -1 : 1; });
+                return merged;
               });
-              merged.sort(function (a, b) { return (a.timestamp || "") < (b.timestamp || "") ? -1 : 1; });
-              return merged;
-            });
-            setAgents(data.agents || []);
-            var all = data.agents || [];
-            var allDone = all.length > 0 && all.every(function (a) {
-              return a.status === "done" || a.status === "timeout";
-            });
-            if (allDone) setChatEnded(true);
-          })
-          .catch(function () {});
+              setAgents(data.agents || []);
+              var all = data.agents || [];
+              var allDone = all.length > 0 && all.every(function (a) {
+                return a.status === "done" || a.status === "timeout";
+              });
+              if (allDone) setChatEnded(true);
+            })
+            .catch(function () {});
+        }, 300);
       }
     }
     window.__sseHandlers.add(handler);
-    return function () { window.__sseHandlers.delete(handler); };
+    return function () {
+      window.__sseHandlers.delete(handler);
+      if (subagentFetchTimerRef.current) {
+        clearTimeout(subagentFetchTimerRef.current);
+        subagentFetchTimerRef.current = null;
+      }
+    };
   }, [roundId]);
 
   // When subagents prop changes, merge agent info (status, tokens, etc.)
@@ -3321,7 +3378,7 @@ function AgentGroupChat({ roundId, subagents, session }) {
         onToggleSettings={function () { setSettingsOpen(!settingsOpen); }}
         onShowAgents={function () { setSettingsOpen(false); setModalOpen(true); }}
         onStop={handleStop} />
-      <GroupChatMessages messages={messages} />
+      <GroupChatMessages messages={messages} agentsActive={agents.some(function (a) { return a.status === "running" || a.status === "waiting"; })} />
       <GroupChatComposer agents={agents} chatEnded={chatEnded} onSend={handleSend} />
       {modalOpen && <AgentListModal agents={agents}
         onClose={function () { setModalOpen(false); }} />}

@@ -1159,6 +1159,7 @@ async def _run_subagent(
                     await _save_if_registered()
                     continue
 
+            fresh_inbox = False
             for tc in tcs:
                 name = tc["function"]["name"]
                 if not is_tool_allowed_for_actor(name, "subagent"):
@@ -1175,11 +1176,19 @@ async def _run_subagent(
                 except Exception as e:
                     result = f"Tool {name} failed: {e}"
                 messages.append({"role": "tool", "tool_call_id": tc["id"], "content": _truncate(result)})
+                # 每执行完一个工具检查 inbox，用户引导时能更快响应
+                inbox_text = _get_inbox(agent_id)
+                if inbox_text:
+                    fresh_inbox = True
+                    break
                 # 如果刚执行的是通讯类工具，重置检查点计数器（已满足协调要求）
                 if name in ("send_agent_message", "broadcast_agent_message"):
                     tool_calls_since_checkpoint = 0
                 else:
                     tool_calls_since_checkpoint += 1
+            if fresh_inbox:
+                await _save_if_registered()
+                continue
             if tcs:
                 await _save_if_registered()
         else:

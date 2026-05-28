@@ -29,7 +29,8 @@ const DATA = {
       dur: "—",
       preview: "Fetching session data from backend…",
       model: "—",
-      summary: { tokens: "—", spend: "—", toolCalls: 0 },
+      ctx_limit: 0,
+      summary: { tokens: "—", spend: "—", toolCalls: 0, total_tokens: 0 },
       chat: {
         contextChips: [{ icon: "⌛", label: "loading" }],
         messages: [],

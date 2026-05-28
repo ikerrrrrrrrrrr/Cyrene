@@ -39,6 +39,7 @@ from cyrene.agent.state import (
     _DEEP_RESEARCH_LIGHT_TOOL_DEFS,
     _deep_research_first_round,
     _deep_research_mode,
+    _emit_reply_stream_event,
     _interrupt_event,
     _LIGHT_TOOL_DEFS,
     _MAX_TOOL_ROUNDS,
@@ -116,6 +117,10 @@ async def _run_main_agent(
             if isinstance(message, dict)
         )
         if text and not (has_tool_results and _is_placeholder_reply(text)):
+            if _streaming_reply_requested():
+                await _emit_reply_stream_event({"type": "reply_start"})
+                await _emit_reply_stream_event({"type": "reply_delta", "delta": text})
+                await _emit_reply_stream_event({"type": "reply_done", "response": text})
             return text
         if has_tool_results:
             final_user_text = (await _final_user_reply_from_history(base_messages, max_tokens=None)).strip()

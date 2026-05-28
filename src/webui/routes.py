@@ -119,6 +119,61 @@ def _get_base_url() -> str:
     return cy_config.OPENAI_BASE_URL
 
 
+def _parse_ctx_limit(ctx_str: str) -> int:
+    """Parse human-readable context limit like '128K', '1M', '200K' to int."""
+    ctx_str = (ctx_str or "").strip().upper()
+    if not ctx_str:
+        return 0
+    try:
+        if ctx_str.endswith("M"):
+            return int(float(ctx_str[:-1]) * 1_000_000)
+        if ctx_str.endswith("K"):
+            return int(float(ctx_str[:-1]) * 1_000)
+        return int(ctx_str)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _get_current_model_ctx_limit() -> int:
+    """Look up the current model's context window limit from settings."""
+    from cyrene.config_store import get_models, get_vision_models
+    model_name = _get_model()
+    ctx_limit = 0
+
+    for model in get_models() or []:
+        if model.get("model") == model_name or model.get("name") == model_name:
+            ctx_limit = _parse_ctx_limit(model.get("ctx", ""))
+            break
+
+    if not ctx_limit:
+        for model in get_vision_models() or []:
+            if model.get("model") == model_name or model.get("name") == model_name:
+                ctx_limit = _parse_ctx_limit(model.get("ctx", ""))
+                break
+
+    # Fallback: known model context windows when not explicitly configured
+    if not ctx_limit:
+        model_lower = model_name.lower()
+        if any(x in model_lower for x in ("claude-opus-4", "opus-4")):
+            ctx_limit = 200_000
+        elif any(x in model_lower for x in ("claude-sonnet-4", "sonnet-4")):
+            ctx_limit = 200_000
+        elif any(x in model_lower for x in ("claude-haiku-4", "haiku-4")):
+            ctx_limit = 200_000
+        elif "gpt-4" in model_lower or "gpt-4o" in model_lower:
+            ctx_limit = 128_000
+        elif "gpt-3.5" in model_lower:
+            ctx_limit = 16_000
+        elif "deepseek" in model_lower:
+            ctx_limit = 128_000
+        elif "qwen" in model_lower:
+            ctx_limit = 128_000
+        elif "gemini" in model_lower:
+            ctx_limit = 1_000_000
+
+    return ctx_limit
+
+
 def _remove_path(path: Path) -> None:
     if not path.exists():
         return
@@ -344,9 +399,18 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
                 yield _ndjson_line({"type": "awaiting_user", "awaiting_user": True, "pending_question": get_pending_question()})
                 return
 
-            # Signal done once the agent has finished its reply
-            await debug.publish_event({"type": "session_update", "status": "done"})
+            # Stream the response text FIRST — before any I/O (archive_exchange)
+            # or SSE events, so the frontend gets reply_delta events without delay
+            # and avoids the race where refreshSessions() clears pending messages
+            # before the stream completes.
+            if not saw_reply_events:
+                yield _ndjson_line({"type": "reply_start"})
+                for chunk in _reply_stream_chunks(response):
+                    yield _ndjson_line({"type": "reply_delta", "delta": chunk})
+                yield _ndjson_line({"type": "reply_done", "response": response})
 
+            # Archive the exchange after streaming — file I/O must not delay
+            # response delivery to the frontend.
             labels = get_session_labels()
             await archive_exchange(
                 user_message,
@@ -357,11 +421,10 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
                 round_id=labels.get("round_id", ""),
                 archive_session_id=labels.get("archive_session_id", ""),
             )
-            if not saw_reply_events:
-                yield _ndjson_line({"type": "reply_start"})
-                for chunk in _reply_stream_chunks(response):
-                    yield _ndjson_line({"type": "reply_delta", "delta": chunk})
-                yield _ndjson_line({"type": "reply_done", "response": response})
+
+            # Signal done last, so the SSE-triggered refreshSessions() call
+            # runs after the NDJSON stream has already delivered reply_done.
+            await debug.publish_event({"type": "session_update", "status": "done"})
         finally:
             if not task.done():
                 task.cancel()
@@ -917,11 +980,25 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         sent_to: list[str] = []
         first_msg_id = ""
         for target in targets:
+            info = _sub_reg.get(target)
+            is_done_timeout = info and str(info.get("status", "")).strip() in ("done", "timeout")
+
+            if is_done_timeout:
+                wrapped = f"User sent you a new task. This is a round — complete it and report your result via quit.\n\n{full_text}"
+            else:
+                wrapped = (
+                    f"[DIRECT_MESSAGE]\n"
+                    f"The user has sent you guidance. This takes priority over your current approach — "
+                    f"adjust your work accordingly. Use send_message_to_user ONCE to acknowledge and "
+                    f"briefly say what you will change. Then continue working with the adjusted approach.\n\n"
+                    f"User guidance:\n{full_text}"
+                )
+
             msg_id = await _send_inbox(
                 from_agent="user",
                 to_agent=target,
                 msg_type="guidance",
-                content=full_text,
+                content=wrapped,
                 round_id=round_id,
             )
             if msg_id:
@@ -929,8 +1006,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 if not first_msg_id:
                     first_msg_id = msg_id
                 # Handle DONE/TIMEOUT agents: reactivate + spawn new task
-                info = _sub_reg.get(target)
-                if info and str(info.get("status", "")).strip() in ("done", "timeout"):
+                if is_done_timeout:
                     from cyrene.subagent import (
                         reactivate as _reactivate,
                         get_raw_messages as _get_raw,
@@ -2427,6 +2503,7 @@ def _build_summary(raw_msgs: list[dict]) -> dict:
         "spend": _calc_spend(usage),
         "toolCalls": _count_tool_calls(raw_msgs),
         "requests": usage["requests"],
+        "total_tokens": usage["total_tokens"],
     }
 
 
@@ -2572,6 +2649,7 @@ def _build_current_session() -> dict | None:
             _count_tool_calls(info.get("messages", []))
             for info in subagent_registry.values()
         )
+        live_summary["total_tokens"] = combined_live_usage.get("total_tokens")
 
     # Set timestamp filter so CC preview only shows entries from this session
     set_cc_since(started_at)
@@ -2588,6 +2666,7 @@ def _build_current_session() -> dict | None:
         "dur": duration,
         "preview": (last_msg["body"][:80] + "…") if last_msg and last_msg.get("body") else "—",
         "model": _get_model(),
+        "ctx_limit": _get_current_model_ctx_limit(),
         "currentRoundId": current_round_id,
         "currentRoundTitle": current_round_title,
         "pendingQuestion": pending_question,
