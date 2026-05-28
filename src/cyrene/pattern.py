@@ -212,6 +212,20 @@ async def _tool_learn_patterns(
     )
 
 
+async def _tool_learn_skill(
+    args: dict[str, Any],
+    _bot: Any,
+    _chat_id: int,
+    _db_path: str,
+    _notify_state: dict | None,
+) -> str:
+    result = await _behavior.learn_skill_from_current_turn(
+        name=str(args.get("name", "")),
+        description=str(args.get("description", "")),
+    )
+    return result
+
+
 _PATTERN_TOOL_DEFS = [
     {
         "type": "function",
@@ -276,6 +290,27 @@ _PATTERN_TOOL_DEFS = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "LearnSkill",
+            "description": "Capture the current turn's tool call sequence as a reusable learned skill. "
+                           "Call this when the user asks you to save, remember, or learn a sequence of operations as a skill.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Optional name for the skill. If not provided, one will be auto-generated.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional description for the skill.",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 _PATTERN_HANDLERS = {
@@ -284,6 +319,7 @@ _PATTERN_HANDLERS = {
     "ApproveScript": _tool_approve_script,
     "RejectScript": _tool_reject_script,
     "LearnPatterns": _tool_learn_patterns,
+    "LearnSkill": _tool_learn_skill,
 }
 
 

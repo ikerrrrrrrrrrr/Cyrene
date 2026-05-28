@@ -370,6 +370,14 @@ _TOOL_ACTION_MAP: dict[str, tuple[str, str, str, int]] = {
     "fetch_web_page": ("external_information_query", "retrieve_external_knowledge", "fetch_web_page", 0),
 }
 
+# Internal messaging tools — not useful for workflow pattern matching
+_INTERNAL_TOOLS: frozenset[str] = frozenset({
+    "spawn_subagent",
+    "send_agent_message",
+    "broadcast_agent_message",
+    "LearnSkill",
+})
+
 _CORRECTION_TERMS = (
     "不对", "不行", "错", "重来", "改一下", "重新", "fix", "wrong", "retry", "instead",
 )
@@ -1619,6 +1627,8 @@ async def build_turn_fingerprint(turn_id: str) -> dict[str, Any]:
     deterministic_actions = []
     deterministic_entities: list[str] = []
     for row in action_rows:
+        if row["tool_name"] in _INTERNAL_TOOLS:
+            continue
         raw_args = (row.get("metadata_json") or {}).get("raw_args") or {}
         deterministic_entities.extend(_normalize_entities(list(raw_args.values())))
         action_summary.append(
@@ -1950,6 +1960,68 @@ Similarity breakdown:
     return bool(result.get("should_merge"))
 
 
+def _is_internal_tool_action(action: dict[str, Any]) -> bool:
+    """Check if an action_sequence item is an internal messaging tool."""
+    return str(action.get("raw_description") or "") in _INTERNAL_TOOLS
+
+
+async def _llm_workflow_merge(
+    turn_id: str,
+    turn_fp: dict[str, Any],
+    pattern_id: str,
+    pattern_fp: dict[str, Any],
+    total_sim: float,
+) -> bool:
+    """Ask LLM whether two turns with tool calls represent the same workflow."""
+    turn_actions = await _action_rows_for_turn(turn_id)
+    member_turn_ids = await _member_turn_ids(pattern_id)
+    example_turns = await _fetch_turn_rows(member_turn_ids[:_MAX_PATTERN_EXAMPLES])
+
+    def _fmt_action(a: dict[str, Any]) -> str:
+        inp = a.get("input_summary", "")
+        tn = a["tool_name"]
+        return f"  {tn} → {inp[:200]}" if inp else f"  {tn}"
+
+    def _fmt_action_seq(fp: dict[str, Any]) -> str:
+        seq = fp.get("action_sequence") or []
+        filtered = [a for a in seq if not _is_internal_tool_action(a)]
+        if filtered:
+            items = [
+                f"  {a.get('raw_description', '?')} ({a.get('type', '')}/{a.get('subtype', '')})"
+                for a in filtered
+            ]
+            return "\n".join(items[:12])
+        return "  (no tool calls)"
+
+    _turn_tool_lines = [_fmt_action(a) for a in turn_actions if a["tool_name"] not in _INTERNAL_TOOLS]
+    _ex_lines = [
+        f"  - \"{str(et.get('user_message') or '')[:100]}\""
+        for et in example_turns
+    ]
+    _turn_tools_str = "\n".join(_turn_tool_lines[:15])
+    _ex_str = "\n".join(_ex_lines[:8]) if _ex_lines else "  (no example requests available)"
+    _action_seq_str = _fmt_action_seq(pattern_fp)
+
+    prompt = f"""You are comparing two AI agent interactions to decide if they represent the same type of workflow.
+
+Turn A (new, user said: "{str(turn_fp.get('intent', {}).get('raw_description', ''))[:200]}"):
+Tool calls ({len(_turn_tool_lines)}):
+{_turn_tools_str}
+
+Pattern B (existing, example requests:):
+{_ex_str}
+Tool call type signature:
+{_action_seq_str}
+
+These interactions have a low fingerprint match (similarity={total_sim:.2f}) but may still be the same workflow.
+Focus on whether they follow the same general pattern of tool usage — same sequence of tool types serving the same purpose.
+
+Return JSON: {{"same_workflow": true|false, "reason": "..."}}
+"""
+    result = await _call_llm_json(prompt, caller="workflow_merger")
+    return bool(result.get("same_workflow"))
+
+
 async def _fingerprint_for_turn(turn_id: str) -> dict[str, Any]:
     async with _conn() as conn:
         cursor = await conn.execute(
@@ -2067,6 +2139,7 @@ async def _compute_pattern_stats(turn_ids: list[str], prototype: dict[str, Any])
         "effective_count": round(effective_count, 4),
         "action_stability": round(sum(action_stability_values) / len(action_stability_values), 4) if action_stability_values else 0.0,
         "io_stability": round(sum(io_stability_values) / len(io_stability_values), 4) if io_stability_values else 0.0,
+        "total_actions": sum(len(fp.get("action_sequence") or []) for fp in fingerprints),
         "last_seen_at": last_seen,
     }
 
@@ -2074,11 +2147,12 @@ async def _compute_pattern_stats(turn_ids: list[str], prototype: dict[str, Any])
 def _pattern_skillability(stats: dict[str, Any], prototype: dict[str, Any]) -> dict[str, Any]:
     effective = float(stats.get("effective_count") or 0)
     llm_dependency = str(prototype.get("llm_dependency") or "medium")
+    has_actions = int(stats.get("total_actions") or 0) > 0
     return {
-        "draft": effective >= 2,
-        "workflow": effective >= 3,
-        "parameterized": effective >= 5,
-        "deterministic": effective >= 8 and llm_dependency in {"low", "none"},
+        "draft": has_actions and effective >= 2,
+        "workflow": has_actions and effective >= 3,
+        "parameterized": has_actions and effective >= 5,
+        "deterministic": has_actions and effective >= 8 and llm_dependency in {"low", "none"},
     }
 
 
@@ -2164,6 +2238,14 @@ async def _merge_turn_into_pattern(turn_id: str, fingerprint: dict[str, Any]) ->
             should_merge = True
         else:
             should_merge = await _llm_should_merge(fingerprint, best_prototype, best_similarity)
+    if not should_merge and best_pattern_id and not best_similarity["hard_fail"]:
+        _turn_actions = fingerprint.get("action_sequence") or []
+        _pat_actions = best_prototype.get("action_sequence") or []
+        _turn_has_real = any(not _is_internal_tool_action(a) for a in _turn_actions)
+        _pat_has_real = any(not _is_internal_tool_action(a) for a in _pat_actions)
+        _total = float(best_similarity["total"])
+        if _turn_has_real and _pat_has_real and _total >= 0.40:
+            should_merge = await _llm_workflow_merge(turn_id, fingerprint, best_pattern_id, best_prototype, _total)
     if not should_merge:
         pattern_id = _new_id("pattern")
         now = _now_iso()
@@ -2214,6 +2296,8 @@ async def _derive_parameter_templates(turn_ids: list[str]) -> tuple[list[dict[st
     for turn_id in turn_ids[:_MAX_PATTERN_EXAMPLES]:
         group: list[dict[str, Any]] = []
         for action in await _action_rows_for_turn(turn_id):
+            if action["tool_name"] in _INTERNAL_TOOLS:
+                continue
             metadata = action.get("metadata_json") or {}
             group.append(
                 {
@@ -2225,13 +2309,16 @@ async def _derive_parameter_templates(turn_ids: list[str]) -> tuple[list[dict[st
             )
         if group:
             compressed_group: list[dict[str, Any]] = []
-            previous_signature: tuple[str, str] | None = None
             for item in group:
                 signature = (str(item.get("action_type") or ""), str(item.get("action_subtype") or ""))
-                if signature == previous_signature:
-                    continue
-                compressed_group.append(item)
-                previous_signature = signature
+                if compressed_group and compressed_group[-1].get("_agg_signature") == signature:
+                    # Same tool repeated — aggregate args instead of discarding
+                    existing = compressed_group[-1]
+                    merged_items = existing.setdefault("_items", [dict(existing.get("args") or {})])
+                    merged_items.append(dict(item.get("args") or {}))
+                else:
+                    item["_agg_signature"] = signature
+                    compressed_group.append(item)
             action_groups.append(compressed_group)
     if not action_groups:
         return [], []
@@ -2251,39 +2338,44 @@ async def _derive_parameter_templates(turn_ids: list[str]) -> tuple[list[dict[st
     schema_reuse: dict[tuple[str, str, tuple[str, ...]], str] = {}
     param_index = 1
     for step_index, template in enumerate(template_group):
-        args_template = dict(template.get("args") or {})
-        for key, value in list(args_template.items()):
-            observed_values = [
-                group[step_index].get("args", {}).get(key)
-                for group in action_groups
-                if step_index < len(group)
-            ]
-            values = {json.dumps(item, ensure_ascii=False) for item in observed_values}
-            if len(values) > 1 and _should_parameterize_arg(key, observed_values):
-                examples = []
-                for item in sorted(values):
-                    try:
-                        examples.append(str(json.loads(item)))
-                    except Exception:
-                        examples.append(str(item))
-                param_type = "path" if _arg_value_family(value) == "file_path" else ("url" if _arg_value_family(value) == "url" else "text")
-                reuse_key = (_safe_slug(key), param_type, tuple(examples[:6]))
-                param_name = schema_reuse.get(reuse_key, "")
-                if not param_name:
-                    param_name = f"param_{_safe_slug(key)}_{param_index}"
-                    param_index += 1
-                    schema_reuse[reuse_key] = param_name
-                    schema[param_name] = {
-                        "parameter_name": param_name,
-                        "type": param_type,
-                        "required": True,
-                        "default_value": str(value) if value is not None else "",
-                        "default_strategy": "use_first_observed",
-                        "validation_rule": "",
-                        "examples": examples[:6],
-                        "aliases": [key],
-                    }
-                args_template[key] = f"{{{{{param_name}}}}}"
+        items = template.get("_items")
+        if items:
+            # Aggregated step — multiple arg sets for the same tool, use as-is
+            args_template: dict[str, Any] = {"_items": list(items)}
+        else:
+            args_template = dict(template.get("args") or {})
+            for key, value in list(args_template.items()):
+                observed_values = [
+                    group[step_index].get("args", {}).get(key)
+                    for group in action_groups
+                    if step_index < len(group)
+                ]
+                values = {json.dumps(item, ensure_ascii=False) for item in observed_values}
+                if len(values) > 1 and _should_parameterize_arg(key, observed_values):
+                    examples = []
+                    for item in sorted(values):
+                        try:
+                            examples.append(str(json.loads(item)))
+                        except Exception:
+                            examples.append(str(item))
+                    param_type = "path" if _arg_value_family(value) == "file_path" else ("url" if _arg_value_family(value) == "url" else "text")
+                    reuse_key = (_safe_slug(key), param_type, tuple(examples[:6]))
+                    param_name = schema_reuse.get(reuse_key, "")
+                    if not param_name:
+                        param_name = f"param_{_safe_slug(key)}_{param_index}"
+                        param_index += 1
+                        schema_reuse[reuse_key] = param_name
+                        schema[param_name] = {
+                            "parameter_name": param_name,
+                            "type": param_type,
+                            "required": True,
+                            "default_value": str(value) if value is not None else "",
+                            "default_strategy": "use_first_observed",
+                            "validation_rule": "",
+                            "examples": examples[:6],
+                            "aliases": [key],
+                        }
+                    args_template[key] = f"{{{{{param_name}}}}}"
         steps.append(
             {
                 "step_id": f"step_{step_index + 1}",
@@ -2625,7 +2717,7 @@ async def _insert_replay_tests(conn: aiosqlite.Connection, skill_id: str, turn_i
     return created_ids
 
 
-async def _create_skill(pattern_id: str) -> str | None:
+async def _create_skill(pattern_id: str, *, force: bool = False) -> str | None:
     async with _conn() as conn:
         cursor = await conn.execute(
             "SELECT statistics_json FROM behavior_patterns WHERE pattern_id = ?",
@@ -2634,9 +2726,10 @@ async def _create_skill(pattern_id: str) -> str | None:
         pattern_row = await cursor.fetchone()
         if pattern_row is None:
             return None
-        stats = _json_loads(pattern_row["statistics_json"], {})
-        if float(stats.get("effective_count") or 0) < 2:
-            return None
+        if not force:
+            stats = _json_loads(pattern_row["statistics_json"], {})
+            if float(stats.get("effective_count") or 0) < 2:
+                return None
         cursor = await conn.execute(
             "SELECT skill_id FROM learned_skills WHERE pattern_id = ?",
             (pattern_id,),
@@ -3821,18 +3914,30 @@ async def try_route_and_execute_skill(
             continue
         tool_name = str(reference.get("tool_name") or "")
         args_template = reference.get("args_template") or {}
-        call_id = _new_id("tc")
-        resolved_args = _resolve_value_template(args_template, params)
-        tool_calls.append(
-            {
-                "id": call_id,
-                "type": "function",
-                "function": {
-                    "name": tool_name,
-                    "arguments": _json_dumps(resolved_args),
-                },
-            }
-        )
+        items = args_template.get("_items")
+        if isinstance(items, list) and items:
+            # Aggregated multi-arg step — expand into one tool_call per item
+            for item_args in items:
+                resolved = _resolve_value_template(item_args, params)
+                call_id = _new_id("tc")
+                tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": _json_dumps(resolved)},
+                })
+        else:
+            call_id = _new_id("tc")
+            resolved_args = _resolve_value_template(args_template, params)
+            tool_calls.append(
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": _json_dumps(resolved_args),
+                    },
+                }
+            )
     assistant_entry = {
         "role": "assistant",
         "content": _skill_assistant_content(skill["name"], lang),
@@ -3841,45 +3946,59 @@ async def try_route_and_execute_skill(
     if round_id:
         assistant_entry["round_id"] = round_id
     messages.append(_apply_assistant_meta(assistant_entry))
-    for call, step in zip(tool_calls, [step for step in skill["steps"] if bool(step.get("enabled", True)) and str((step.get("implementation_reference") or {}).get("tool_name") or "")]):
-        tool_name = str(call["function"]["name"])
-        try:
-            resolved_args = json.loads(call["function"]["arguments"])
-            result = await _execute_tool(tool_name, resolved_args, bot, chat_id, db_path, None)
-            tool_success = not str(result).lower().startswith("tool failed:")
-            failure_reason = "" if tool_success else str(result)
-        except Exception as exc:
-            result = f"Tool failed: {exc}"
-            tool_success = False
-            failure_reason = str(exc)
-        tool_entry = {"role": "tool", "tool_call_id": call["id"], "content": _truncate_text(result, 6000)}
-        if round_id:
-            tool_entry["round_id"] = round_id
-        messages.append(tool_entry)
-        if not tool_success:
-            run_id = _new_id("skill_run")
-            async with _conn() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO learned_skill_runs
-                    (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
-                     fallback_used, user_feedback, dry_run, consistency_score, created_at)
-                    VALUES (?, ?, ?, ?, ?, 'complete', 'failure', ?, 1, '', 0, 0, ?)
-                    """,
-                    (
-                        run_id,
-                        skill["skill_id"],
-                        skill["version"],
-                        current_turn,
-                        float(similarity["total"]),
-                        failure_reason or f"{tool_name} failed",
-                        _now_iso(),
-                    ),
-                )
-                await conn.commit()
-            await _update_skill_run_stats(skill["skill_id"], execution_status="failure")
-            await _maybe_propose_patch(skill["skill_id"], int(skill["version"]), failure_reason or f"{tool_name}_failed")
-            return None
+    _enabled_steps = [
+        step for step in skill["steps"]
+        if bool(step.get("enabled", True))
+        and str((step.get("implementation_reference") or {}).get("tool_name") or "")
+    ]
+    _call_idx = 0
+    for step in _enabled_steps:
+        _ref = step.get("implementation_reference") or {}
+        _items = (_ref.get("args_template") or {}).get("_items")
+        _sub_calls = len(_items) if (isinstance(_items, list) and _items) else 1
+        for _ in range(_sub_calls):
+            if _call_idx >= len(tool_calls):
+                break
+            call = tool_calls[_call_idx]
+            _call_idx += 1
+            tool_name = str(call["function"]["name"])
+            try:
+                resolved_args = json.loads(call["function"]["arguments"])
+                result = await _execute_tool(tool_name, resolved_args, bot, chat_id, db_path, None)
+                tool_success = not str(result).lower().startswith("tool failed:")
+                failure_reason = "" if tool_success else str(result)
+            except Exception as exc:
+                result = f"Tool failed: {exc}"
+                tool_success = False
+                failure_reason = str(exc)
+            tool_entry = {"role": "tool", "tool_call_id": call["id"], "content": _truncate_text(result, 6000)}
+            if round_id:
+                tool_entry["round_id"] = round_id
+            messages.append(tool_entry)
+            if not tool_success:
+                run_id = _new_id("skill_run")
+                async with _conn() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO learned_skill_runs
+                        (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
+                         fallback_used, user_feedback, dry_run, consistency_score, created_at)
+                        VALUES (?, ?, ?, ?, ?, 'complete', 'failure', ?, 1, '', 0, 0, ?)
+                        """,
+                        (
+                            run_id,
+                            skill["skill_id"],
+                            skill["version"],
+                            current_turn,
+                            float(similarity["total"]),
+                            failure_reason or f"{tool_name} failed",
+                            _now_iso(),
+                        ),
+                    )
+                    await conn.commit()
+                await _update_skill_run_stats(skill["skill_id"], execution_status="failure")
+                await _maybe_propose_patch(skill["skill_id"], int(skill["version"]), failure_reason or f"{tool_name}_failed")
+                return None
     final_text = await _final_user_reply_from_history(messages, max_tokens=None)
     final_entry = {"role": "assistant", "content": final_text}
     if client_request_id:
@@ -4492,12 +4611,23 @@ async def run_learned_skill(skill_id: str, param_overrides: dict[str, Any] | Non
         if str(step.get("implementation_kind") or "") != "tool_call":
             continue
         tool_name = str(reference.get("tool_name") or "")
-        resolved_args = _resolve_value_template(reference.get("args_template") or {}, extraction["params"])
-        try:
-            result = await _execute_tool(tool_name, resolved_args, None, 0, "", None)
-        except Exception as exc:
-            result = f"Tool failed: {exc}"
-        results.append(f"{tool_name}: {_truncate_text(result, 500)}")
+        args_template = reference.get("args_template") or {}
+        items = args_template.get("_items")
+        if isinstance(items, list) and items:
+            for item_args in items:
+                resolved = _resolve_value_template(item_args, extraction["params"])
+                try:
+                    result = await _execute_tool(tool_name, resolved, None, 0, "", None)
+                except Exception as exc:
+                    result = f"Tool failed: {exc}"
+                results.append(f"{tool_name}: {_truncate_text(result, 500)}")
+        else:
+            resolved_args = _resolve_value_template(args_template, extraction["params"])
+            try:
+                result = await _execute_tool(tool_name, resolved_args, None, 0, "", None)
+            except Exception as exc:
+                result = f"Tool failed: {exc}"
+            results.append(f"{tool_name}: {_truncate_text(result, 500)}")
     return "\n".join(results) if results else f"Skill '{skill_id}' has no executable steps."
 
 
@@ -4523,3 +4653,97 @@ async def list_compat_scripts(status: str = "all") -> list[dict[str, Any]]:
         }
         for item in learned
     ]
+
+
+async def learn_skill_from_current_turn(*, name: str = "", description: str = "") -> str:
+    """Create a learned skill from the current turn's tool calls.
+
+    Called by the LearnSkill tool when the agent actively saves a workflow.
+    """
+    turn_id = current_turn_id()
+    if not turn_id:
+        return "No active turn found."
+
+    actions = await _action_rows_for_turn(turn_id)
+    # Filter out internal tools — they won't be in the learned skill
+    actions = [a for a in actions if a["tool_name"] not in _INTERNAL_TOOLS]
+    if not actions:
+        return "No tool calls recorded in the current turn."
+
+    # Create a single-turn pattern
+    pattern_id = _new_id("pattern")
+    now = _now_iso()
+    async with _conn() as conn:
+        await conn.execute(
+            """INSERT INTO behavior_patterns
+               (pattern_id, description, prototype_fingerprint, statistics_json, skillability_json,
+                status, linked_skill_list, created_at, updated_at)
+               VALUES (?, '', '{}', '{}', '{}', 'linked_to_skill', '[]', ?, ?)""",
+            (pattern_id, now, now),
+        )
+        await conn.execute(
+            """INSERT INTO behavior_pattern_turns (pattern_id, turn_id, similarity, created_at)
+               VALUES (?, ?, 1.0, ?)""",
+            (pattern_id, turn_id, now),
+        )
+
+    # Build fingerprint for the turn
+    fp = await _fingerprint_for_turn(turn_id)
+    if not fp:
+        fp = {}
+
+    # Build trigger from fingerprint
+    trigger = _skill_trigger_from_prototype(fp, [])
+    stats = {
+        "frequency": 1,
+        "success_count": 1.0,
+        "partial_success_count": 0.0,
+        "failure_count": 0.0,
+        "correction_count": 0.0,
+        "success_rate": 1.0,
+        "effective_count": 2.0,  # override to pass _create_skill guard
+        "action_stability": 1.0,
+        "io_stability": 1.0,
+        "total_actions": len(fp.get("action_sequence") or []),
+        "last_seen_at": now,
+    }
+    skillability = _pattern_skillability(stats, fp)
+    async with _conn() as conn:
+        await conn.execute(
+            """UPDATE behavior_patterns
+               SET prototype_fingerprint = ?, statistics_json = ?, skillability_json = ?,
+                   updated_at = ?
+               WHERE pattern_id = ?""",
+            (_json_dumps(fp), _json_dumps(stats), _json_dumps(skillability), now, pattern_id),
+        )
+        await conn.commit()
+
+    skill_id = await _create_skill(pattern_id, force=True)
+    if not skill_id:
+        return "Failed to create skill."
+
+    if name or description:
+        async with _conn() as conn:
+            _sets: list[str] = []
+            _vals: list[Any] = []
+            if name:
+                _sets.append("name = ?")
+                _vals.append(name)
+            if description:
+                _sets.append("description = ?")
+                _vals.append(description)
+            _now = _now_iso()
+            _vals.extend([_now, skill_id])
+            await conn.execute(
+                f"UPDATE learned_skills SET {', '.join(_sets)}, updated_at = ? WHERE skill_id = ?",
+                _vals,
+            )
+            await conn.commit()
+
+    skill = await get_learned_skill(skill_id)
+    skill_name = skill["name"] if skill else skill_id
+    step_count = len(skill.get("steps") or []) if skill else 0
+    return (
+        f"Learned skill `{skill_name}` ({skill_id}) created with {step_count} step(s). "
+        f"It will replay the {len(actions)} tool call(s) from this turn."
+    )
