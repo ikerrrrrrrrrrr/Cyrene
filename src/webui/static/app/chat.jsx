@@ -617,6 +617,59 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     initialPositioningInProgressRef.current = false;
   }, [session.id]);
 
+  /* Restore runtime trace state on page refresh if the session is still running.
+     Also clear the restored state when the session finishes. */
+  useEffect(function () {
+    if (!isLiveSession) {
+      restoredRef.current = false;
+      return;
+    }
+    const runtime = getChatRuntime();
+    if (session.status === "running" && !runtime.sending) {
+      // Session is running but runtime state was lost (page refresh).
+      // Show the runtime trace panel and subscribe to SSE for live progress.
+      restoredRef.current = true;
+      updateChatRuntime({
+        sending: true,
+        startedAt: Date.now(),
+        liveProgress: [],
+        activeRequest: {
+          id: "restored_" + Date.now(),
+          message: "",
+          guideRoundId: "",
+          guideRoundTitle: "",
+          guideRequestId: "",
+          guidanceAccepted: false,
+          finalTraceAnchorKey: "",
+        },
+        watchRequestId: "restored_" + Date.now(),
+      });
+      ensureChatRuntimeSseSubscription();
+    } else if (restoredRef.current && session.status !== "running") {
+      // Session finished running — clear the restored runtime state.
+      restoredRef.current = false;
+      const r = getChatRuntime();
+      if (r.sending && r.watchRequestId && r.watchRequestId.startsWith("restored_")) {
+        const frozenFinalTrace = snapshotRuntimeTrace(r, {
+          attachToAssistantReplyForRequestId: r.watchRequestId,
+        });
+        delete r.requests[r.watchRequestId];
+        updateChatRuntime({
+          sending: false,
+          liveProgress: [],
+          startedAt: 0,
+          activeRequest: null,
+          watchRequestId: "",
+          pendingMessages: [],
+          retainedMessages: frozenFinalTrace
+            ? r.retainedMessages.concat([frozenFinalTrace])
+            : r.retainedMessages.slice(),
+        });
+        clearChatRuntimeSseSubscription();
+      }
+    }
+  }, [isLiveSession, session.status, session.id]);
+
   /* Auto-load the first archive batch when entering a live session.
      The layout effect positions the viewport after archives render. */
   useEffect(function () {
@@ -722,6 +775,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const initialArchiveLoadTriggeredRef = useRef(false);
   const initialPositioningInProgressRef = useRef(false);
   const pendingCompensationRef = useRef(null);
+  const restoredRef = useRef(false);
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -1469,14 +1523,22 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     const runtime = getChatRuntime();
     const requestId = runtime.watchRequestId;
     const requestMeta = requestId ? runtime.requests[requestId] : null;
-    if (!requestId || !requestMeta) return;
-    requestMeta.controller.abort();
+    if (!requestId) return;
+    if (requestMeta) {
+      requestMeta.controller.abort();
+      delete runtime.requests[requestId];
+      setDraft(requestMeta.message || "");
+      setAttachments([]);
+      setSelectedGuideRoundId(requestMeta.guideRoundId || "");
+      setSelectedGuideRoundTitle(requestMeta.guideRoundTitle || "");
+    } else {
+      // Restored mode (page refresh): no local requestMeta, just clear state
+      setDraft("");
+      setAttachments([]);
+      setSelectedGuideRoundId("");
+      setSelectedGuideRoundTitle("");
+    }
     releaseWatchedRequest("", { retainMessages: false });
-    delete runtime.requests[requestId];
-    setDraft(requestMeta.message || "");
-    setAttachments([]);
-    setSelectedGuideRoundId(requestMeta.guideRoundId || "");
-    setSelectedGuideRoundTitle(requestMeta.guideRoundTitle || "");
     setContextPickerOpen(false);
     setNotice(t("chat.stoppedRequest"));
     window.requestAnimationFrame(function () {

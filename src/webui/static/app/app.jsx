@@ -294,7 +294,10 @@ function App() {
   const [selectedSessionId, setSelectedSessionId] = useStateApp(readStoredSessionId);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-left-sidebar-collapsed", false); });
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-right-sidebar-collapsed", false); });
-  const [rightSidebarView, setRightSidebarView] = useStateApp("overview");
+  const [rightSidebarView, setRightSidebarView] = useStateApp(function () {
+    try { return localStorage.getItem("cyrene-right-sidebar-view") || "overview"; }
+    catch (e) { return "overview"; }
+  });
   const [searchOpen, setSearchOpen] = useStateApp(false);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
@@ -428,6 +431,12 @@ function App() {
       localStorage.setItem("cyrene-right-sidebar-collapsed", rightSidebarCollapsed ? "1" : "0");
     } catch (e) {}
   }, [rightSidebarCollapsed]);
+
+  useEffectApp(function () {
+    try {
+      localStorage.setItem("cyrene-right-sidebar-view", rightSidebarView);
+    } catch (e) {}
+  }, [rightSidebarView]);
 
   useEffectApp(function () {
     if (selectedSessionId && !DATA.sessions.some(function (session) { return session.id === selectedSessionId; })) {

@@ -1074,10 +1074,15 @@ async def _run_subagent(
             if registry_ctx:
                 messages.append({"role": "user", "content": registry_ctx})
             if inbox_text:
-                messages.append({"role": "user", "content": f"[收件箱]\n{inbox_text}"})
-                # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
-                await _mark_inbox_read(agent_id)
-                _direct_message_mode.set("[DIRECT_MESSAGE]" in inbox_text)
+                if _direct_message_mode.get():
+                    # 正在处理用户引导：丢弃所有 inbox 消息（含 agent 间通信），
+                    # 让 subagent 专注执行用户指令不被干扰。
+                    await _mark_inbox_read(agent_id)
+                else:
+                    messages.append({"role": "user", "content": f"[收件箱]\n{inbox_text}"})
+                    # 注入后立即标记为已读 —— 避免下一轮重复展示同一批消息
+                    await _mark_inbox_read(agent_id)
+                    _direct_message_mode.set("[DIRECT_MESSAGE]" in inbox_text)
 
             # 定期注入协调检查点，鼓励 subagent 之间主动沟通
             if tool_calls_since_checkpoint >= _COORDINATION_CHECKPOINT_INTERVAL:
