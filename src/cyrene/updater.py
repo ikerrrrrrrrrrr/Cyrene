@@ -1,6 +1,7 @@
 """应用内更新检查器 — 通过 GitHub Releases API 检查、下载、安装更新。"""
 
 import asyncio
+import hashlib
 import logging
 import os
 import shlex
@@ -131,6 +132,9 @@ async def download_update(
     dest = Path(tempfile.gettempdir()) / "Cyrene_update" / Path(url).name
     dest.parent.mkdir(parents=True, exist_ok=True)
 
+    hasher = hashlib.sha256()
+    downloaded = 0
+
     async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
         async with client.stream("GET", url) as resp:
             total = int(resp.headers.get("content-length", 0))
@@ -139,11 +143,17 @@ async def download_update(
             with open(dest, "wb") as f:
                 async for chunk in resp.aiter_bytes(65536):
                     f.write(chunk)
+                    hasher.update(chunk)
                     downloaded += len(chunk)
                     if progress_callback and total > 0:
                         progress_callback(downloaded, total)
 
-    logger.info("Downloaded update to %s (%d bytes)", dest, downloaded)
+    checksum = hasher.hexdigest()
+    size_mb = downloaded / (1024 * 1024)
+    logger.info(
+        "Downloaded update: %s (%d bytes / %.1f MB), SHA256=%s",
+        dest, downloaded, size_mb, checksum,
+    )
     return dest
 
 
@@ -221,28 +231,44 @@ def _restart_script_macos(dmg_path: Path) -> str:
 
 
 def _restart_script_windows(exe_path: Path) -> str:
-    """Windows: 运行 NSIS 安装程序（静默模式）覆盖安装，重启。
+    """Windows: 以管理员权限运行 NSIS 安装程序（静默模式）覆盖安装，重启。
 
-    重启目标使用 Electron 传入的真实启动路径。
+    使用 PowerShell 的 Start-Process -Verb RunAs 请求 UAC 提升，
+    解决 DETACHED_PROCESS 无法弹出 UAC 提示导致安装静默失败的问题。
     """
     app_exe = _current_app_executable() or Path(r"%LOCALAPPDATA%\Programs\Cyrene\Cyrene.exe")
     return f"""@echo off
 setlocal
 :: Cyrene updater — Windows
->>"%TEMP%\\cyrene_update.log" echo === Cyrene update %date% %time% ===
->>"%TEMP%\\cyrene_update.log" echo EXE: {exe_path}
->>"%TEMP%\\cyrene_update.log" echo TARGET: {app_exe}
-timeout /t 2 /nobreak >nul
-echo Installing update...
-start /wait "" "{exe_path}" /S
+set LOG="%TEMP%\\cyrene_update.log"
+>>%LOG% echo === Cyrene update %date% %time% ===
+>>%LOG% echo EXE: {exe_path}
+>>%LOG% echo TARGET: {app_exe}
+>>%LOG% echo STARTED: %date% %time%
+
+:: 等待主进程完全退出释放文件锁
+timeout /t 3 /nobreak >nul
+
+>>%LOG% echo Launching elevated installer via PowerShell...
+:: PowerShell Start-Process -Verb RunAs 会正确弹出 UAC 提升提示
+:: -Wait 让脚本等待安装完成再继续
+powershell -Command "Start-Process -FilePath '{exe_path}' -ArgumentList '/S' -Verb RunAs -Wait -WindowStyle Hidden"
 set RC=%errorlevel%
->>"%TEMP%\\cyrene_update.log" echo NSIS exit code: %RC%
+>>%LOG% echo PowerShell exit code: %RC%
+>>%LOG% echo UPDATED: %date% %time%
+
 if %RC% equ 0 (
-    >>"%TEMP%\\cyrene_update.log" echo Update complete, restarting...
+    >>%LOG% echo Update installer completed, verifying...
+    :: 额外等待确保文件写入完成
+    timeout /t 1 /nobreak >nul
+    >>%LOG% echo App start: {app_exe}
     start "" "{app_exe}"
     del "{exe_path}"
 ) else (
-    >>"%TEMP%\\cyrene_update.log" echo Update failed (error %RC%)
+    >>%LOG% echo Update failed (error %RC%) — possible causes:
+    >>%LOG% echo   - UAC elevation was cancelled by user
+    >>%LOG% echo   - Installer failed to write to target directory
+    >>%LOG% echo   - Antivirus blocked the installer
     timeout /t 5 /nobreak >nul
 )
 endlocal

@@ -9212,7 +9212,7 @@ html[data-theme="dark"] .welcome-range .active {
 }
 
 /* ============================================================
-   Scheduled Tasks page
+   Plans page
    ============================================================ */
 .tasks-page {
   padding: 20px 24px;
@@ -9232,6 +9232,11 @@ html[data-theme="dark"] .welcome-range .active {
   color: var(--text);
 }
 .tasks-add-btn {
+  width: auto;
+  height: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 13px;
   padding: 6px 16px;
   border-radius: var(--r-m);
@@ -9241,6 +9246,7 @@ html[data-theme="dark"] .welcome-range .active {
   cursor: pointer;
   font-family: inherit;
   font-weight: 500;
+  white-space: nowrap;
 }
 .tasks-add-btn:hover {
   filter: brightness(1.1);
@@ -9265,6 +9271,12 @@ html[data-theme="dark"] .welcome-range .active {
   font-size: 15px;
   color: var(--text);
   margin-bottom: 4px;
+}
+.tasks-form-head button {
+  width: 28px;
+  height: 28px;
+  font-size: 16px;
+  line-height: 1;
 }
 .tasks-form-field {
   display: flex;
@@ -9311,6 +9323,17 @@ html[data-theme="dark"] .welcome-range .active {
   justify-content: flex-end;
   margin-top: 4px;
 }
+.tasks-form-actions button {
+  width: auto;
+  height: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 16px;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
 .tasks-form-submit {
   background: var(--accent);
   color: var(--accent-text);
@@ -9339,7 +9362,7 @@ html[data-theme="dark"] .welcome-range .active {
 }
 .tasks-list-header {
   display: grid;
-  grid-template-columns: 50px 1fr 160px 80px 120px;
+  grid-template-columns: 50px 1fr 160px 90px 150px;
   gap: 8px;
   padding: 10px 14px;
   background: var(--bg-2);
@@ -9352,7 +9375,7 @@ html[data-theme="dark"] .welcome-range .active {
 }
 .tasks-row {
   display: grid;
-  grid-template-columns: 50px 1fr 160px 80px 120px;
+  grid-template-columns: 50px 1fr 160px 90px 150px;
   gap: 8px;
   padding: 10px 14px;
   align-items: center;
@@ -9387,7 +9410,35 @@ html[data-theme="dark"] .welcome-range .active {
 }
 .tasks-col-actions {
   display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.tasks-action-btn {
+  width: auto;
+  height: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: nowrap;
+  border-radius: var(--r-s);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.tasks-action-btn:hover {
+  background: var(--bg-3);
+  color: var(--text);
+}
+.tasks-action-delete:hover {
+  color: #e87070;
+  border-color: #e87070;
 }
 .tasks-status-dot {
   display: inline-block;
@@ -9403,25 +9454,6 @@ html[data-theme="dark"] .welcome-range .active {
 .tasks-status-dot.status-paused {
   background: var(--text-4);
 }
-.tasks-action-btn {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--r-s);
-  padding: 3px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  color: var(--text-2);
-  font-family: inherit;
-}
-.tasks-action-btn:hover {
-  background: var(--bg-3);
-  color: var(--text);
-}
-.tasks-action-delete:hover {
-  color: #e87070;
-  border-color: #e87070;
-}
-
 /* States */
 .tasks-loading,
 .tasks-empty,

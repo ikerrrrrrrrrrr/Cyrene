@@ -1,4 +1,4 @@
-// Scheduled Tasks page — list, create, edit, delete
+// Plans page — list, create, edit, delete
 const { useState: useStateT, useEffect: useEffectT, useRef: useRefT } = React;
 
 const SCHEDULE_LABELS = {

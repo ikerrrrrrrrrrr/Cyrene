@@ -2116,14 +2116,33 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.post("/api/tasks")
     async def api_create_task(request: Request):
         from cyrene import db as cy_db
+        from croniter import croniter
+        from datetime import datetime, timezone, timedelta
         body = await request.json()
+        stype = body["schedule_type"]
+        svalue = body["schedule_value"]
+
+        # Compute next_run if not provided by the frontend
+        next_run = body.get("next_run", "")
+        if not next_run:
+            now_dt = datetime.now(timezone.utc)
+            try:
+                if stype == "cron":
+                    next_run = croniter(svalue, now_dt).get_next(datetime).isoformat()
+                elif stype == "interval":
+                    next_run = (now_dt + timedelta(seconds=int(svalue))).isoformat()
+                elif stype == "once":
+                    next_run = now_dt.isoformat()
+            except Exception:
+                next_run = now_dt.isoformat()
+
         task_id = await cy_db.create_task(
             _db_path,
             chat_id=body.get("chat_id", _CHAT_ID),
             prompt=body["prompt"],
-            schedule_type=body["schedule_type"],
-            schedule_value=body["schedule_value"],
-            next_run=body.get("next_run", ""),
+            schedule_type=stype,
+            schedule_value=svalue,
+            next_run=next_run,
         )
         tasks = await cy_db.get_all_tasks(_db_path)
         return {"ok": True, "id": task_id, "tasks": tasks}
@@ -2131,10 +2150,28 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.put("/api/tasks/{task_id}")
     async def api_update_task(task_id: str, request: Request):
         from cyrene import db as cy_db
+        from croniter import croniter
+        from datetime import datetime, timezone, timedelta
         body = await request.json()
         # Build SET clause dynamically from provided fields
         sets = []
         vals = []
+
+        # If schedule_type or schedule_value changed, recalculate next_run
+        stype = body.get("schedule_type")
+        svalue = body.get("schedule_value")
+        if stype and svalue and "next_run" not in body:
+            now_dt = datetime.now(timezone.utc)
+            try:
+                if stype == "cron":
+                    body["next_run"] = croniter(svalue, now_dt).get_next(datetime).isoformat()
+                elif stype == "interval":
+                    body["next_run"] = (now_dt + timedelta(seconds=int(svalue))).isoformat()
+                elif stype == "once":
+                    body["next_run"] = now_dt.isoformat()
+            except Exception:
+                pass
+
         for field in ("prompt", "schedule_type", "schedule_value", "next_run", "status"):
             if field in body:
                 sets.append(f"{field} = ?")
@@ -2244,7 +2281,6 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                         _sp.Popen(
                             ["cmd", "/c", str(script_path)],
                             creationflags=(
-                                0x00000010 |  # CREATE_NEW_CONSOLE
                                 0x00000200 |  # CREATE_NEW_PROCESS_GROUP
                                 0x00000008    # DETACHED_PROCESS
                             ),
