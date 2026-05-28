@@ -774,10 +774,19 @@ async def build_group_chat_messages(round_id: str) -> dict[str, Any]:
                     "round_id": round_id,
                 })
 
-    # 4. Sort by timestamp (empty timestamps sort last within their group)
-    messages.sort(key=lambda m: str(m.get("timestamp") or ""))
+    # 4. Dedup by (from + content) — avoids duplicate user messages from broadcast to multiple agents
+    seen_keys: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+    for m in messages:
+        key = (str(m.get("from", "") or "").strip(), str(m.get("content", "") or "").strip())
+        if key not in seen_keys:
+            seen_keys.add(key)
+            deduped.append(m)
 
-    return {"messages": messages, "agents": agents_list}
+    # 5. Sort by timestamp (empty timestamps sort last within their group)
+    deduped.sort(key=lambda m: str(m.get("timestamp") or ""))
+
+    return {"messages": deduped, "agents": agents_list}
 
 
 async def build_round_summary_transcript(round_id: str, exclude_ids: set[str] | None = None) -> str:

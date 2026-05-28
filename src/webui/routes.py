@@ -316,6 +316,9 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
         task = asyncio.create_task(run_coro_factory())
         _reply_stream_writer.reset(token)
 
+        # Broadcast running status so the topbar status light updates in real-time
+        await debug.publish_event({"type": "session_update", "status": "running"})
+
         try:
             while True:
                 if task.done() and queue.empty():
@@ -332,6 +335,9 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
             if response == _AWAITING_USER_SENTINEL:
                 yield _ndjson_line({"type": "awaiting_user", "awaiting_user": True, "pending_question": get_pending_question()})
                 return
+
+            # Signal done once the agent has finished its reply
+            await debug.publish_event({"type": "session_update", "status": "done"})
 
             labels = get_session_labels()
             await archive_exchange(
@@ -351,6 +357,8 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
         finally:
             if not task.done():
                 task.cancel()
+            # Ensure "done" is published even on cancellation/error
+            await debug.publish_event({"type": "session_update", "status": "done"})
 
     return StreamingResponse(
         event_stream(),
@@ -1471,12 +1479,23 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if system != "Darwin":
             return JSONResponse({"ok": False, "error": f"Skill picker not supported on {system}"}, status_code=400)
 
-        result = subprocess.run(
-            ["osascript", "-e", 'POSIX path of (choose file or folder with prompt "Select skill file, folder, or zip")'],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            result = subprocess.run(
+                ["osascript", "-e",
+                 'POSIX path of (choose folder with prompt "Select skill folder containing SKILL.md")'],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            return JSONResponse({"ok": False, "error": "Picker timed out — please try again"}, status_code=400)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"Picker error: {e}"}, status_code=400)
+
+        stderr = (result.stderr or "").strip()
+        if stderr and "User cancelled" not in stderr:
+            return JSONResponse({"ok": False, "error": f"Picker error: {stderr}"}, status_code=400)
+
         selected = result.stdout.strip()
         if not selected:
             return {"ok": False, "cancelled": True}
@@ -2086,6 +2105,58 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         await _start_mcp()
         return {"ok": True}
 
+    # ---- Scheduled tasks ----
+
+    @router.get("/api/tasks")
+    async def api_list_tasks():
+        from cyrene import db as cy_db
+        tasks = await cy_db.get_all_tasks(_db_path)
+        return {"tasks": tasks}
+
+    @router.post("/api/tasks")
+    async def api_create_task(request: Request):
+        from cyrene import db as cy_db
+        body = await request.json()
+        task_id = await cy_db.create_task(
+            _db_path,
+            chat_id=body.get("chat_id", _CHAT_ID),
+            prompt=body["prompt"],
+            schedule_type=body["schedule_type"],
+            schedule_value=body["schedule_value"],
+            next_run=body.get("next_run", ""),
+        )
+        tasks = await cy_db.get_all_tasks(_db_path)
+        return {"ok": True, "id": task_id, "tasks": tasks}
+
+    @router.put("/api/tasks/{task_id}")
+    async def api_update_task(task_id: str, request: Request):
+        from cyrene import db as cy_db
+        body = await request.json()
+        # Build SET clause dynamically from provided fields
+        sets = []
+        vals = []
+        for field in ("prompt", "schedule_type", "schedule_value", "next_run", "status"):
+            if field in body:
+                sets.append(f"{field} = ?")
+                vals.append(body[field])
+        if sets:
+            import aiosqlite
+            async with aiosqlite.connect(_db_path) as db:
+                await db.execute(
+                    f"UPDATE scheduled_tasks SET {', '.join(sets)} WHERE id = ?",
+                    (*vals, task_id),
+                )
+                await db.commit()
+        tasks = await cy_db.get_all_tasks(_db_path)
+        return {"ok": True, "tasks": tasks}
+
+    @router.delete("/api/tasks/{task_id}")
+    async def api_delete_task(task_id: str):
+        from cyrene import db as cy_db
+        await cy_db.delete_task(_db_path, task_id)
+        tasks = await cy_db.get_all_tasks(_db_path)
+        return {"ok": True, "tasks": tasks}
+
     @router.post("/api/shutdown")
     async def api_shutdown():
         """Shutdown the daemon."""
@@ -2421,7 +2492,27 @@ def _build_current_session() -> dict | None:
     elif is_empty:
         live_status = "idle"  # nothing happening yet — fresh session
     else:
-        live_status = "done"
+        # Check if the main agent is actively processing (no live_rounds exist
+        # during Phase 1/2 of the main agent loop)
+        recent = debug.get_recent_events(200)
+        now_ts = datetime.now(timezone.utc)
+        cutoff_ts = now_ts - timedelta(seconds=30)
+        active_events = 0
+        for e in recent:
+            if e.get("type") not in ("phase_transition", "llm_call", "tool_call"):
+                continue
+            ts = e.get("timestamp")
+            if not ts:
+                continue
+            try:
+                if datetime.fromisoformat(ts) > cutoff_ts:
+                    active_events += 1
+            except (ValueError, TypeError):
+                pass
+        if active_events:
+            live_status = "running"
+        else:
+            live_status = "done"
 
     live_summary = _build_summary(raw_msgs)
     subagent_usage = _merge_usage_totals(*[

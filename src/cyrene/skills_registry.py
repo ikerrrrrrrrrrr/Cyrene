@@ -30,8 +30,10 @@ def _is_probably_text(raw: bytes) -> bool:
     sample = raw[:4096]
     printable = 0
     for byte in sample:
-        if byte in (9, 10, 13) or 32 <= byte <= 126:
-            printable += 1
+        # ASCII control chars (excluding whitespace) or DEL
+        if byte < 32 and byte not in (9, 10, 13) or byte == 127:
+            continue
+        printable += 1
     return (printable / max(1, len(sample))) >= 0.85
 
 
@@ -125,7 +127,16 @@ def save_skill_settings_records(records: list[dict[str, Any]]) -> None:
 
 
 def slugify_skill_id(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    value = str(value or "").strip()
+    if not value:
+        return "skill"
+    # Replace runs of non-word characters (whitespace, punctuation, separators)
+    # with a single dash. \w with re.UNICODE preserves CJK and other Unicode letters.
+    slug = re.sub(r"[^\w]+", "-", value, flags=re.UNICODE).strip("-")
+    # For pure ASCII, lowercase as standard; for mixed content (e.g. Chinese + English),
+    # keep original case since ASCII part is short enough to be readable.
+    if all(ord(c) < 128 for c in slug):
+        slug = slug.lower()
     return slug or "skill"
 
 

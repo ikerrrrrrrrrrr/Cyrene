@@ -19,7 +19,7 @@ const ACCENT_PRESETS = {
   dark:  ["#4fd1a0", "#6dbde0", "#b8a2e0", "#e8ae5c", "#e87070"],
   light: ["#2da873", "#3b90c8", "#7858b0", "#c88520", "#d04848"],
 };
-const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "memory", "evolution", "settings"]);
+const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "memory", "evolution", "settings", "tasks"]);
 
 function readStoredUiPage() {
   try {
@@ -298,6 +298,44 @@ function App() {
   const [searchOpen, setSearchOpen] = useStateApp(false);
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
+  // ── SSE-driven real-time status for the topbar status light ──
+  const [realtimeStatus, setRealtimeStatus] = useStateApp(null);
+  const realtimeStatusTimerRef = React.useRef(null);
+
+  useEffectApp(function () {
+    if (typeof window.__sseHandlers === "undefined") return;
+    const PROCESSING_TYPES = ["phase_transition", "tool_call", "llm_call"];
+
+    function handler(event) {
+      var newStatus = null;
+      if (PROCESSING_TYPES.indexOf(event.type) !== -1) {
+        newStatus = "running";
+      } else if (event.type === "chat_message") {
+        newStatus = "done";
+      } else if (event.type === "session_update" && event.status) {
+        newStatus = event.status === "err" ? "error" : event.status;
+      }
+      if (newStatus) {
+        setRealtimeStatus(newStatus);
+      }
+      // Auto-clear after 30 s of no SSE events to avoid stale "running"
+      if (realtimeStatusTimerRef.current) {
+        clearTimeout(realtimeStatusTimerRef.current);
+      }
+      realtimeStatusTimerRef.current = setTimeout(function () {
+        setRealtimeStatus(null);
+      }, 30000);
+    }
+
+    window.__sseHandlers.add(handler);
+    return function () {
+      window.__sseHandlers.delete(handler);
+      if (realtimeStatusTimerRef.current) {
+        clearTimeout(realtimeStatusTimerRef.current);
+      }
+    };
+  }, []);
+
   const activeSession = useMemoApp(function () {
     return (selectedSessionId
       ? DATA.sessions.find(function (session) { return session.id === selectedSessionId; })
@@ -432,6 +470,7 @@ function App() {
           theme={t.theme}
           onToggleTheme={toggleTheme}
           activeSession={activeSession}
+          realtimeStatus={realtimeStatus}
           setPage={setPage}
           leftSidebarCollapsed={leftSidebarCollapsed}
           onToggleLeftSidebar={function () { setLeftSidebarCollapsed(function (value) { return !value; }); }}
@@ -460,6 +499,10 @@ function App() {
                                   }} />}
         {page === "memory"   && <MemoryPage />}
         {page === "evolution" && <EvolutionPage />}
+        {page === "tasks" && React.createElement(
+          window.ScheduledTasksPage || (function () { return React.createElement("div", { className: "page" }, "Loading tasks..."); }),
+          {}
+        )}
         {page === "settings" && (
           <SettingsPage
             tweaks={t}
@@ -484,17 +527,17 @@ function App() {
 function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed, onToggleCollapsed, onOpenSearch }) {
   useDataVersion();
   const { t } = useI18n();
-  const [skillsOpen, setSkillsOpen] = useStateApp(true);
   const sessionCount = (DATA.sessions || []).length;
   const activeRecentSessionId = selectedSessionId || DATA.sessions[0]?.id || null;
   const items = [
     { id: "dashboard", label: t("nav.dashboard"), icon: "◫", key: "1" },
     { id: "chat",     label: t("nav.chat"),     icon: "▸", key: "2" },
     { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "3" },
-    { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "4", badge: sessionCount > 0 ? String(sessionCount) : null },
-    { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "5" },
-    { id: "evolution", label: t("nav.evolution"), icon: "⟁", key: "6", cssClass: "evo-icon" },
-    { id: "settings", label: t("nav.settings"), icon: "✱", key: "7" },
+    { id: "tasks",    label: t("nav.tasks"),    icon: "◎", key: "4" },
+    { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "5", badge: sessionCount > 0 ? String(sessionCount) : null },
+    { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "6" },
+    { id: "evolution", label: t("nav.evolution"), icon: "⟁", key: "7", cssClass: "evo-icon" },
+    { id: "settings", label: t("nav.settings"), icon: "✱", key: "8" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
@@ -535,21 +578,6 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
 
       {!collapsed && (
         <>
-          {(DATA.skills || []).length > 0 && (
-            <>
-              <div className="nav-section nav-section-collapsible"
-                   onClick={() => setSkillsOpen(!skillsOpen)}>
-                <span className="nav-section-chevron">{skillsOpen ? "▾" : "▸"}</span>
-                <span>Skills</span>
-                <span className="nav-section-link"
-                      onClick={(e) => { e.stopPropagation(); setPage("evolution"); }}>
-                  {t("nav.manage")}
-                </span>
-              </div>
-              {skillsOpen && <SkillsRail onOpenPage={() => setPage("evolution")} />}
-            </>
-          )}
-
           <div className="nav-section nav-section-collapsible" style={{ cursor: "default" }}>
             <span>{t("nav.recentSessions")}</span>
             <span className="nav-section-link"
@@ -643,6 +671,7 @@ function Topbar({
   theme,
   onToggleTheme,
   activeSession,
+  realtimeStatus,
   setPage,
   leftSidebarCollapsed,
   onToggleLeftSidebar,
@@ -654,7 +683,9 @@ function Topbar({
   const { t } = useI18n();
   const session = activeSession || { title: "—", subagents: [] };
   const runningSubagents = (session.subagents || []).filter((s) => s.status === "running").length;
-  const status = session.status === "err" ? "error" : (session.status || "idle");
+  const fallbackStatus = session.status === "err" ? "error" : (session.status || "idle");
+  // SSE-driven realtime override takes precedence when set
+  const status = realtimeStatus || fallbackStatus;
   const title =
     page === "dashboard" ? <>{t("topbar.dashboard")}<span className="crumb-sep">/</span><b>{t("topbar.home")}</b></> :
     page === "chat" ? <>{t("topbar.chat")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
@@ -662,6 +693,7 @@ function Topbar({
     page === "sessions" ? <>{t("topbar.sessions")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "memory" ? <>{t("topbar.memory")}<span className="crumb-sep">/</span><b>{t("topbar.pipeline")}</b></> :
     page === "evolution" ? <>{t("topbar.evolution")}<span className="crumb-sep">/</span><b>evolve</b></> :
+    page === "tasks" ? <>{t("nav.tasks")}<span className="crumb-sep">/</span><b>{t("tasks.title")}</b></> :
     <>{t("topbar.settings")}<span className="crumb-sep">/</span><b>{t("topbar.workspace")}</b></>;
   return (
     <div className="topbar">

@@ -9,7 +9,7 @@ function EvolutionPage() {
   const [learnedSkills, setLearnedSkills] = useStateSet([]);
   const [ccData, setCcData] = useStateSet(null);
   const [installedSkills, setInstalledSkills] = useStateSet([]);
-  const [loading, setLoading] = useStateSet(true);
+  const [loading, setLoading] = useStateSet(false);
   const [query, setQuery] = useStateSet("");
   const [selectedSkillId, setSelectedSkillId] = useStateSet("");
   const [skillError, setSkillError] = useStateSet("");
@@ -30,7 +30,6 @@ function EvolutionPage() {
   const [skillForm, setSkillForm] = useStateSet(emptySkillForm());
 
   const fetchOverview = async () => {
-    setLoading(true);
     try {
       const [evRes, skillsRes] = await Promise.all([
         fetch("/api/evolution").then((r) => r.json()),
@@ -448,6 +447,22 @@ function EvolutionPage() {
                   {t("skills.installed")}
                   <span className="skills-tab-count">{installedSkills.length}</span>
                 </div>
+                <div className="skills-tab-action">
+                  <div className="install-menu-wrap" style={{ position: "relative" }}>
+                    <button className="skills-install-btn" onClick={handleInstall} disabled={skillBusy}>{t("skills.installSkill")}</button>
+                    {showInstallMenu && (
+                      <div style={{
+                        position: "absolute", top: "100%", right: 0, zIndex: 100,
+                        background: "var(--bg-2)", border: "1px solid var(--border)",
+                        borderRadius: 6, boxShadow: "0 4px 12px rgba(0,0,0,.15)",
+                        minWidth: 130, overflow: "hidden", marginTop: 2,
+                      }} onClick={(e) => e.stopPropagation()}>
+                        <div className="install-menu-item" onClick={handleInstallFile}>{t("skills.installFile")}</div>
+                        <div className="install-menu-item" onClick={handleInstallFolder}>{t("skills.installFolder")}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
               <div className="skills-search">
                 <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -484,20 +499,6 @@ function EvolutionPage() {
                   <div style={{ flex: 1 }}>
                     <h1 className="skill-detail-title">{t("skills.emptyTitle")}</h1>
                     <p className="skill-detail-desc">{t("skills.emptyDesc")}</p>
-                  </div>
-                  <div className="install-menu-wrap" style={{ position: "relative" }}>
-                    <button className="btn primary" onClick={handleInstall} disabled={skillBusy}>{t("skills.installSkill")}</button>
-                    {showInstallMenu && (
-                      <div style={{
-                        position: "absolute", top: "100%", right: 0, zIndex: 100,
-                        background: "var(--bg-2)", border: "1px solid var(--border)",
-                        borderRadius: 6, boxShadow: "0 4px 12px rgba(0,0,0,.15)",
-                        minWidth: 130, overflow: "hidden", marginTop: 2,
-                      }} onClick={(e) => e.stopPropagation()}>
-                        <div className="install-menu-item" onClick={handleInstallFile}>{t("skills.installFile")}</div>
-                        <div className="install-menu-item" onClick={handleInstallFolder}>{t("skills.installFolder")}</div>
-                      </div>
-                    )}
                   </div>
                 </div>
               ) : (

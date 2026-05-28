@@ -1128,7 +1128,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     setAttachments([]);
     setCommand("");
     setMentionedAgents([]);
-    syncTextareaHeight(taRef.current);
+    if (taRef.current) taRef.current.style.height = "";
 
     let keepWatching = false;
     try {
@@ -2795,7 +2795,7 @@ function ShellCard({ shell, ccStatus, onOpenCCModal }) {
 // Dedup helper: match by id OR by from+content (handles SSE vs API ID mismatch)
 function _msgDup(m, existing) {
   return existing.some(function (e) {
-    return e.id === m.id || (m.from !== "user" && e.from === m.from && e.content === m.content);
+    return e.id === m.id || (e.from === m.from && e.content === m.content);
   });
 }
 
@@ -3060,7 +3060,7 @@ function GroupChatComposer({ agents, chatEnded, onSend }) {
     onSend({ text: trimmed, mentions: mentionIds, attachments: attachments });
     setText("");
     setAttachments([]);
-    syncHeight();
+    if (taRef.current) taRef.current.style.height = "";
   }
 
   var inputRow = (
