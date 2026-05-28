@@ -3063,8 +3063,9 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
 
 /* Composer */
 .agent-chat-composer  { border-top: 1px solid var(--line); padding: 8px 10px 10px; flex-shrink: 0; }
-.agent-chat-input-row { display: flex; align-items: center; gap: 6px;
-  position: relative; padding: 6px 8px; border: 1px solid var(--material-border);
+.agent-chat-input-row { display: flex; align-items: stretch; gap: 5px;
+  position: relative; padding: 6px 8px; min-height: 38px;
+  border: 1px solid var(--material-border);
   border-radius: var(--r-xl); background: var(--surface-2);
   box-shadow: 0 14px 28px color-mix(in srgb, var(--surface-shadow-soft) 80%, transparent);
   transition: border-color 120ms, box-shadow 120ms; }
@@ -3075,19 +3076,19 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
     0 18px 34px color-mix(in srgb, var(--surface-shadow) 42%, transparent);
 }
 .agent-chat-input-row textarea {
-  flex: 1; font-size: 13px; resize: none; min-height: 20px; max-height: 120px;
-  border: none; background: transparent; padding: 5px 6px;
+  flex: 1; font-size: 13px; resize: none; min-height: 24px; max-height: 120px;
+  border: none; background: transparent; padding: 7px 6px 3px;
   color: var(--text); outline: none; font-family: var(--sans);
   font-weight: 500; line-height: 1.5;
 }
-.agent-chat-input-row .send { border: 0; border-radius: var(--r-m); padding: 6px 14px;
+.agent-chat-input-row .send { border: 0; border-radius: var(--r-m); padding: 8px 14px;
   background: var(--accent); color: var(--accent-text); font-size: 12px; cursor: pointer;
   font-weight: 760; line-height: 1.5; white-space: nowrap; flex-shrink: 0; }
 .agent-chat-input-row .send:disabled { background: var(--bg-3); color: var(--text-4); cursor: not-allowed; }
 .agent-chat-composer.ended .agent-chat-input-row textarea { background: transparent; color: var(--text-4); cursor: not-allowed; }
-.agent-chat-input-row .iconbtn { width: 32px; height: 32px; border: none; background: transparent;
+.agent-chat-input-row .iconbtn { width: 38px; height: auto; border: none; background: transparent;
   box-shadow: none; border-radius: var(--r-m); flex-shrink: 0; display: flex;
-  align-items: center; justify-content: center; }
+  align-items: center; justify-content: center; min-height: 0; }
 .agent-chat-input-row .iconbtn:hover { background: var(--bg-3); }
 
 /* Attachments chips */
@@ -7408,6 +7409,26 @@ html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer texta
 
 html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer {
   background: linear-gradient(180deg, rgba(17,17,17,0), #111111 20%, #111111 100%);
+}
+
+/* Dark mode: fix composer send buttons hover turning white */
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send:not(:disabled):hover {
+  background: var(--bg-3);
+  border-color: var(--line-2);
+  color: var(--text);
+}
+
+/* Dark mode: keep stop button identifiable red (normal + hover) */
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send.stop {
+  background: rgba(201, 120, 120, 0.14);
+  color: var(--err);
+  border-color: rgba(201, 120, 120, 0.32);
+}
+
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .composer-actions .send.stop:not(:disabled):hover {
+  background: rgba(201, 120, 120, 0.25);
+  color: var(--err);
+  border-color: rgba(201, 120, 120, 0.45);
 }
 
 /* End-of-file precedence fixes. */

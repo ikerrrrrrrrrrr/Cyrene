@@ -3032,12 +3032,16 @@ function GroupChatComposer({ agents, chatEnded, onSend }) {
   function selectMention(agentId) {
     var val = text;
     var lastAt = val.lastIndexOf("@");
-    if (lastAt < 0) return;
-    var before = val.slice(0, lastAt);
-    var after = val.slice(lastAt + 1);
-    var spaceIdx = after.search(/[\s\n]/);
-    var rest = spaceIdx >= 0 ? after.slice(spaceIdx) : "";
-    setText(before + "@" + agentId + rest + " ");
+    if (lastAt < 0) {
+      // Menu was opened via @ button (no @ in text yet)
+      setText("@" + agentId + " ");
+    } else {
+      var before = val.slice(0, lastAt);
+      var after = val.slice(lastAt + 1);
+      var spaceIdx = after.search(/[\s\n]/);
+      var rest = spaceIdx >= 0 ? after.slice(spaceIdx) : "";
+      setText(before + "@" + agentId + rest + " ");
+    }
     setMentionOpen(false);
     syncHeight();
     setTimeout(function () { if (taRef.current) taRef.current.focus(); }, 0);
