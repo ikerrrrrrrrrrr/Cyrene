@@ -294,18 +294,20 @@ _PATTERN_TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "LearnSkill",
-            "description": "Capture the current turn's tool call sequence as a reusable learned skill. "
-                           "Call this when the user asks you to save, remember, or learn a sequence of operations as a skill.",
+            "description": "Save the current turn's repetitive, deterministic tool call sequence as a "
+                           "reusable learned skill that can accept parameters. The system identifies "
+                           "varying arguments (queries, file paths, URLs, etc.) and turns them into "
+                           "inputs you can pass each time you run the skill. Best for workflows with "
+                           "less LLM involvement — repeated tool calls with a consistent pattern where "
+                           "only the arguments change. NOT for creative or one-shot tasks. The system "
+                           "also auto-detects patterns in the background. Call this proactively after "
+                           "finishing a reusable workflow.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Optional name for the skill. If not provided, one will be auto-generated.",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Optional description for the skill.",
+                        "description": "Optional short name for the skill. If omitted, one is auto-generated.",
                     },
                 },
             },
