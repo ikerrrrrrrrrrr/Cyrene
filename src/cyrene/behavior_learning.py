@@ -378,6 +378,15 @@ _INTERNAL_TOOLS: frozenset[str] = frozenset({
     "LearnSkill",
 })
 
+# Tools that should not trigger skill creation when used alone — they're interactive
+# or informational, not "production" tool calls that form a reusable workflow.
+_TRIVIAL_SKILL_TOOLS: frozenset[str] = frozenset({
+    "ask_user",
+    "send_message",
+    "send_message_to_user",
+    "query_round",
+})
+
 _CORRECTION_TERMS = (
     "不对", "不行", "错", "重来", "改一下", "重新", "fix", "wrong", "retry", "instead",
 )
@@ -2148,11 +2157,19 @@ def _pattern_skillability(stats: dict[str, Any], prototype: dict[str, Any]) -> d
     effective = float(stats.get("effective_count") or 0)
     llm_dependency = str(prototype.get("llm_dependency") or "medium")
     has_actions = int(stats.get("total_actions") or 0) > 0
+    # Must have at least one non-trivial tool call — interactive-only workflows
+    # (ask_user, send_message, etc.) are not worth learning as skills.
+    proto_actions = prototype.get("action_sequence") or []
+    has_real_tools = any(
+        a.get("raw_description", "") not in _TRIVIAL_SKILL_TOOLS
+        for a in proto_actions
+    )
+    skillable = has_actions and has_real_tools
     return {
-        "draft": has_actions and effective >= 2,
-        "workflow": has_actions and effective >= 3,
-        "parameterized": has_actions and effective >= 5,
-        "deterministic": has_actions and effective >= 8 and llm_dependency in {"low", "none"},
+        "draft": skillable and effective >= 2,
+        "workflow": skillable and effective >= 3,
+        "parameterized": skillable and effective >= 5,
+        "deterministic": skillable and effective >= 8 and llm_dependency in {"low", "none"},
     }
 
 
@@ -2720,7 +2737,7 @@ async def _insert_replay_tests(conn: aiosqlite.Connection, skill_id: str, turn_i
 async def _create_skill(pattern_id: str, *, force: bool = False) -> str | None:
     async with _conn() as conn:
         cursor = await conn.execute(
-            "SELECT statistics_json FROM behavior_patterns WHERE pattern_id = ?",
+            "SELECT statistics_json, skillability_json FROM behavior_patterns WHERE pattern_id = ?",
             (pattern_id,),
         )
         pattern_row = await cursor.fetchone()
@@ -2729,6 +2746,9 @@ async def _create_skill(pattern_id: str, *, force: bool = False) -> str | None:
         if not force:
             stats = _json_loads(pattern_row["statistics_json"], {})
             if float(stats.get("effective_count") or 0) < 2:
+                return None
+            skillability = _json_loads(pattern_row["skillability_json"], {})
+            if not bool(skillability.get("draft")):
                 return None
         cursor = await conn.execute(
             "SELECT skill_id FROM learned_skills WHERE pattern_id = ?",
@@ -4669,6 +4689,9 @@ async def learn_skill_from_current_turn(*, name: str = "", description: str = ""
     actions = [a for a in actions if a["tool_name"] not in _INTERNAL_TOOLS]
     if not actions:
         return "No tool calls recorded in the current turn."
+    # Require at least one non-trivial tool — interactive-only is not skill-worthy
+    if not any(a["tool_name"] not in _TRIVIAL_SKILL_TOOLS for a in actions):
+        return "Tool calls in this turn are all interactive (ask_user, send_message, etc.) and not suitable for a learned skill."
 
     # Create a single-turn pattern
     pattern_id = _new_id("pattern")
