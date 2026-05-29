@@ -1096,10 +1096,11 @@ async def _run_subagent(
 - Your final text is collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
 
 ## Inter-Agent Coordination
+- **One person OR broadcast — never both, never multiple.** Each turn you may send at most ONE communication message, and it must be EITHER a targeted `send_agent_message` to ONE specific agent OR a `broadcast_agent_message` to ALL. Do NOT send multiple individual messages in the same turn. If something concerns everyone, broadcast once. If it concerns one peer, message them directly.
+- **Avoid broadcast when possible.** Broadcast interrupts all peers and fills inboxes with noise. Default to targeted `send_agent_message` — only broadcast when EVERY peer genuinely needs the information (e.g. a shared source URL).
 - **Share findings directly.** When you find something another sub-agent needs, `send_agent_message` them directly with the key info. Keep it brief — a few sentences max.
 - **Ask for help.** If you're stuck or need data another agent may have, just ask via `send_agent_message`. A short question is fine.
-- **Read peer messages.** When another sub-agent sends you something, take a moment to consider it. Respond briefly if needed.
-- **Avoid broadcast.** Default to targeted `send_agent_message` — only broadcast when EVERY peer genuinely needs the information (e.g. a shared source URL). Broadcast interrupts all peers and fills inboxes with noise, so use it sparingly or not at all.
+- **Read peer messages.** When another sub-agent sends you something, take a moment to consider it. Respond briefly if needed — remember the one-person-or-broadcast rule applies to your reply too.
 - **No handshake or readiness checks.** NEVER send messages like "ready", "waiting for moderator", "standing by", or "received". These waste tokens. Jump straight into substantive work or content.
 """
     )
@@ -1110,7 +1111,8 @@ async def _run_subagent(
 You are the **moderator** of this discussion. Your responsibilities:
 1. **Start immediately.** Your FIRST message must announce the topic and kick off the discussion. Do NOT wait for participants to confirm readiness — they are already listening.
 2. **Drive the discussion.** Call on participants by name, pose questions, redirect off-topic threads, and keep things moving.
-3. **Summarize and close.** When the discussion has covered enough ground, synthesize key points and wrap up.
+3. **Address one participant per turn.** Each turn, talk to ONE specific participant via `send_agent_message`. Do NOT address multiple participants in the same message — if something concerns everyone, use `broadcast_agent_message` instead.
+4. **Summarize and close.** When the discussion has covered enough ground, synthesize key points and wrap up.
 
 CRITICAL: Do NOT ask "is everyone ready?" or wait for confirmations. All participants are live and listening from the moment you speak. Begin the discussion in your very first turn.
 """
@@ -1120,8 +1122,9 @@ CRITICAL: Do NOT ask "is everyone ready?" or wait for confirmations. All partici
 You are a **participant** in this discussion. Rules:
 1. **No readiness announcements.** Do NOT send "ready", "waiting", "standing by", or any greeting/confirmation. These are prohibited.
 2. **Respond substantively.** When the moderator or another participant addresses you, reply with actual content — arguments, evidence, opinions. Never reply with just an acknowledgment.
-3. **Engage proactively.** If you have something relevant to say, speak up via `send_agent_message`. Don't wait to be called on for every point.
-4. **Stay in character.** Focus on delivering value through the substance of your contributions.
+3. **One person per reply.** Reply to ONE agent per turn via `send_agent_message`. If your point truly concerns everyone, use `broadcast_agent_message` instead. Do not send multiple individual replies.
+4. **Engage proactively.** If you have something relevant to say, speak up via `send_agent_message`. Don't wait to be called on for every point.
+5. **Stay in character.** Focus on delivering value through the substance of your contributions.
 """
 
     if resume_messages:
@@ -1178,8 +1181,8 @@ You are a **participant** in this discussion. Rules:
                     "role": "user",
                     "content": (
                         "[Coordination Checkpoint]\n"
-                        "Any updates worth telling other sub-agents? If so, drop a short message.\n"
-                        "Any new messages from peers? Read and respond if needed. Keep it brief."
+                        "Any updates worth sharing? Talk to ONE peer via `send_agent_message`, or broadcast to ALL via `broadcast_agent_message`. Not both, not multiple.\n"
+                        "Any new messages from peers? Read and respond if needed — one person or broadcast."
                     ),
                 })
                 tool_calls_since_checkpoint = 0
