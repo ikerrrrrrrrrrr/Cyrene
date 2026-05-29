@@ -751,7 +751,6 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   return (
     <div className="settings-layout">
       <div className="settings-nav">
-        <div className="nav-section">{t("nav.settings")}</div>
         {sections.map(function (item) {
           return (
             <div
