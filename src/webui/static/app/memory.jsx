@@ -66,13 +66,22 @@ function MemoryPage() {
 
   if (!mem) return null;
 
+  const fmtTok = (n) => {
+    n = n || 0;
+    if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 1) + "M";
+    if (n >= 1000) return (n / 1000).toFixed(n >= 100000 ? 0 : 1) + "K";
+    return String(n);
+  };
+
   const pipelineLayers = [
     {
       label: t("memory.contextWindow"),
-      desc: mem.context_window.messages + " / " + mem.context_window.max + t("memory.msgs"),
+      desc: mem.context_window.ctx_limit
+        ? fmtTok(mem.context_window.tokens) + " / " + fmtTok(mem.context_window.ctx_limit) + t("memory.tok")
+        : mem.context_window.messages + t("memory.msgs"),
       icon: "◷",
       color: "var(--accent)",
-      detail: t("memory.ctxDetail", {max: mem.context_window.max}),
+      detail: t("memory.ctxDetail"),
     },
     {
       label: t("memory.shortTerm"),
@@ -292,10 +301,10 @@ function MemoryPage() {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "8px 0" }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: "var(--text-3)", fontSize: 13 }}>{t("memory.messages")}</span>
+                <span style={{ color: "var(--text-3)", fontSize: 13 }}>{t("memory.tokensLabel")}</span>
                 <span style={{ fontFamily: "var(--mono)", fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
-                  {mem.context_window.messages}
-                  <span style={{ fontSize: 13, color: "var(--text-4)", fontWeight: 500 }}> / {mem.context_window.max}</span>
+                  {fmtTok(mem.context_window.tokens)}
+                  <span style={{ fontSize: 13, color: "var(--text-4)", fontWeight: 500 }}> / {fmtTok(mem.context_window.ctx_limit)}</span>
                 </span>
               </div>
               <div style={{
@@ -304,12 +313,16 @@ function MemoryPage() {
               }}>
                 <div style={{
                   height: "100%", borderRadius: 3,
-                  width: Math.min(100, (mem.context_window.messages / mem.context_window.max) * 100) + "%",
-                  background: mem.context_window.messages >= mem.context_window.max ? "var(--warn)" : "var(--accent)",
+                  width: Math.min(100, mem.context_window.ctx_limit ? (mem.context_window.tokens / mem.context_window.ctx_limit) * 100 : 0) + "%",
+                  background: (mem.context_window.trigger_tokens && mem.context_window.tokens >= mem.context_window.trigger_tokens) ? "var(--warn)" : "var(--accent)",
                   transition: "width 0.4s ease",
                 }}></div>
               </div>
-              {mem.context_window.messages >= mem.context_window.max && (
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--text-4)", fontFamily: "var(--mono)" }}>
+                <span>{mem.context_window.messages} {t("memory.messages").toLowerCase()}</span>
+                <span>{mem.context_window.compacted_blocks || 0} {t("memory.compactedBlocks")}</span>
+              </div>
+              {mem.context_window.trigger_tokens > 0 && mem.context_window.tokens >= mem.context_window.trigger_tokens && (
                 <div style={{ fontSize: 12.5, color: "var(--warn)", fontFamily: "var(--mono)" }}>
                   {t("memory.atCapacity")}
                 </div>
@@ -330,7 +343,7 @@ function MemoryPage() {
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ color: "var(--text-3)" }}>{t("memory.compressionTrigger")}</span>
-                <span style={{ color: "var(--text)" }}>{mem.context_window.max + 5} {t("memory.messages").toLowerCase()}</span>
+                <span style={{ color: "var(--text)" }}>{mem.context_window.trigger_tokens ? fmtTok(mem.context_window.trigger_tokens) + t("memory.tok") + " (60%)" : "—"}</span>
               </div>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ color: "var(--text-3)" }}>{t("memory.clearedOn")}</span>

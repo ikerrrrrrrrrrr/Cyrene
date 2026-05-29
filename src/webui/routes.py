@@ -2677,6 +2677,7 @@ def _build_current_session() -> dict | None:
         "pendingQuestion": pending_question,
         "summary": live_summary,
         "main_agent_total_tokens": main_agent_total_tokens,
+        "main_agent_context_tokens": _last_request_context_tokens(raw_msgs),
         "chat": {
             "contextChips": _build_context_chips(),
             "messages": messages,
@@ -2900,8 +2901,15 @@ def _is_hidden_internal_message(message: dict[str, Any]) -> bool:
 def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
     """Convert state.json raw messages → UI message format."""
     out = []
+    compacted_marker_emitted = False
     for i, m in enumerate(raw_msgs):
         if _is_hidden_internal_message(m):
+            continue
+        if isinstance(m, dict) and m.get("compacted_block"):
+            if not compacted_marker_emitted:
+                cid = str(m.get("message_id", "")).strip() or ("compacted" + str(i))
+                out.append({"id": cid, "messageId": cid, "role": "system", "kind": "compacted", "compacted": True})
+                compacted_marker_emitted = True
             continue
         role = m.get("role", "")
         if role not in ("user", "assistant"):
@@ -3889,9 +3897,16 @@ async def _build_memory() -> dict:
             session_msgs = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("messages", [])
         except Exception:
             session_msgs = []
+    from cyrene.config_store import get_current_ctx_limit
+    from cyrene.call_llm import _message_token_estimate
+    _ctx_limit = get_current_ctx_limit()
     context_window = {
         "messages": len(session_msgs),
         "max": 40,
+        "tokens": sum(_message_token_estimate(m) for m in session_msgs) if session_msgs else 0,
+        "ctx_limit": _ctx_limit,
+        "trigger_tokens": int(_ctx_limit * 0.6) if _ctx_limit else 0,
+        "compacted_blocks": sum(1 for m in session_msgs if isinstance(m, dict) and m.get("compacted_block")),
     }
 
     # --- Conversation archive ---
@@ -4553,6 +4568,26 @@ def _usage_totals(raw_messages: list[dict]) -> dict[str, int | None]:
     if not totals["total_tokens"] and (totals["prompt_tokens"] or totals["completion_tokens"]):
         totals["total_tokens"] = int(totals["prompt_tokens"] or 0) + int(totals["completion_tokens"] or 0)
     return totals
+
+
+def _last_request_context_tokens(raw_msgs: list[dict]) -> int | None:
+    """Tokens of the most recent LLM request — approximates current context occupancy.
+
+    Unlike _usage_totals (which sums every request in the session), this returns the
+    last request's own token count, so it reflects how full the context window is now.
+    """
+    for msg in reversed(raw_msgs):
+        usage = msg.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        total = usage.get("total_tokens")
+        if isinstance(total, int) and total > 0:
+            return total
+        prompt = usage.get("prompt_tokens")
+        if isinstance(prompt, int) and prompt > 0:
+            completion = usage.get("completion_tokens")
+            return prompt + (completion if isinstance(completion, int) else 0)
+    return None
 
 
 def _merge_usage_totals(*usage_items: dict[str, int | None]) -> dict[str, int | None]:

@@ -121,7 +121,7 @@ LOTTERY_MAX = float(_store.get_env("LOTTERY_MAX", "0.85"))
 # === 搜索配置 ===
 SEARCH_PROXY = _store.get_env("SEARCH_PROXY", "")
 SEARXNG_URL = _store.get_env("SEARXNG_URL", "")
-SEARXNG_AUTO_START = _store.get_env("SEARXNG_AUTO_START", "1") not in ("0", "false", "no")
+SEARXNG_AUTO_START = (os.environ.get("SEARXNG_AUTO_START") or _store.get_env("SEARXNG_AUTO_START", "1")) not in ("0", "false", "no")
 SEARXNG_PORT = int(_store.get_env("SEARXNG_PORT", "8888"))
 SEARXNG_HOST = _store.get_env("SEARXNG_HOST", "127.0.0.1")
 
@@ -131,7 +131,7 @@ STEWARD_INTERVAL = int(_store.get_env("STEWARD_INTERVAL", "1800"))
 PATTERN_DETECTION_INTERVAL = int(_store.get_env("PATTERN_DETECTION_INTERVAL", "600"))
 
 # Web UI
-WEB_PORT = int(_store.get_env("WEB_PORT", "4242"))
+WEB_PORT = int(os.environ.get("WEB_PORT") or _store.get_env("WEB_PORT", "4242"))
 
 
 # 可在 Web UI 中编辑的 key 白名单

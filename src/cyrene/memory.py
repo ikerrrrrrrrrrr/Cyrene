@@ -5,10 +5,9 @@ the Steward Agent can read, write, and evolve over time.
 """
 
 import logging
-from datetime import datetime, timezone
 
 from cyrene.config import WORKSPACE_DIR
-from cyrene.conversations import CONVERSATIONS_DIR, ensure_conversations_dir
+from cyrene.conversations import ensure_conversations_dir
 from cyrene.short_term import get_context as get_short_term_context
 from cyrene.soul import ensure_soul, read_shallow_memory
 
@@ -63,18 +62,6 @@ def get_memory_context(include_short_term: bool = True) -> str:
                 parts.append(short_term)
         except Exception:
             logger.exception("Failed to read short-term memory")
-
-    # 3. Today's conversation summary
-    try:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        today_file = CONVERSATIONS_DIR / f"{today}.md"
-        if today_file.exists():
-            raw = today_file.read_text(encoding="utf-8")
-            exchange_count = raw.count("## ") - 1  # subtract the file-level H1
-            if exchange_count > 0:
-                parts.append(f"---\nToday's conversation has {exchange_count} exchange(s) so far.")
-    except Exception:
-        logger.debug("Could not read today's conversation file", exc_info=True)
 
     result = "\n\n".join(parts).strip()
     logger.debug("Memory context assembled (%d chars)", len(result))

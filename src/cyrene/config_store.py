@@ -411,6 +411,49 @@ def get_vision_models() -> list[dict]:
     return get_setting("vision_models", _DEFAULT_VISION_MODELS)
 
 
+def _parse_ctx_str(ctx_str: str) -> int:
+    """Parse '128K' / '1M' / '200000' into an int token count. 0 if unknown."""
+    s = str(ctx_str or "").strip().upper()
+    if not s:
+        return 0
+    try:
+        if s.endswith("M"):
+            return int(float(s[:-1]) * 1_000_000)
+        if s.endswith("K"):
+            return int(float(s[:-1]) * 1_000)
+        return int(float(s))
+    except ValueError:
+        return 0
+
+
+def get_current_ctx_limit() -> int:
+    """Context-window size (in tokens) of the active primary model. 0 if unknown."""
+    from cyrene import config
+    model_name = str(getattr(config, "OPENAI_MODEL", "") or "").strip()
+    for model in (get_models() or []):
+        if model.get("model") == model_name or model.get("name") == model_name:
+            limit = _parse_ctx_str(model.get("ctx", ""))
+            if limit:
+                return limit
+    for model in (get_vision_models() or []):
+        if model.get("model") == model_name or model.get("name") == model_name:
+            limit = _parse_ctx_str(model.get("ctx", ""))
+            if limit:
+                return limit
+    ml = model_name.lower()
+    if "claude" in ml or any(x in ml for x in ("opus-4", "sonnet-4", "haiku-4")):
+        return 200_000
+    if "gpt-4" in ml:
+        return 128_000
+    if "gpt-3.5" in ml:
+        return 16_000
+    if any(x in ml for x in ("deepseek", "qwen")):
+        return 128_000
+    if "gemini" in ml:
+        return 1_000_000
+    return 0
+
+
 def save_vision_models(models: list[dict]) -> None:
     set_setting("vision_models", list(models))
 

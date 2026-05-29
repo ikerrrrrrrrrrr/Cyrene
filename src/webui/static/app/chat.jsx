@@ -2473,6 +2473,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 function Message({ msg, assistantName }) {
   const { t } = useI18n();
 
+  if (msg.kind === "compacted") {
+    return (
+      <div className="context-divider main-divider compacted-divider">
+        <span>{t("chat.compactedContext") || "━━ 较早上下文已压缩 ━━"}</span>
+      </div>
+    );
+  }
+
   // Archived context — read-only, with markdown for agent/system messages
   if (msg.isArchivedContext) {
     var archAttachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
@@ -2735,7 +2743,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
       {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
         <SideTokenRing tokens={session.summary.tokens} />
         {(() => {
-          var total = session.main_agent_total_tokens != null ? session.main_agent_total_tokens : session.summary.total_tokens;
+          var total = session.main_agent_context_tokens != null ? session.main_agent_context_tokens : (session.main_agent_total_tokens != null ? session.main_agent_total_tokens : session.summary.total_tokens);
           var limit = session.ctx_limit || 0;
           if (limit > 0 && total != null) {
             var pct = Math.min(Math.round(total / limit * 100), 100);

@@ -97,8 +97,6 @@ def test_get_memory_context_includes_short_term_by_default(tmp_path, monkeypatch
         }
     ])
     monkeypatch.setattr(memory, "read_shallow_memory", lambda: "## SELF:IDENTITY\n- test memory")
-    monkeypatch.setattr(memory, "CONVERSATIONS_DIR", tmp_path / "conversations")
-
     context = memory.get_memory_context()
 
     assert "SELF:IDENTITY" in context
@@ -122,8 +120,6 @@ def test_get_memory_context_can_skip_short_term(tmp_path, monkeypatch):
         }
     ])
     monkeypatch.setattr(memory, "read_shallow_memory", lambda: "## SELF:BELIEFS\n- test belief")
-    monkeypatch.setattr(memory, "CONVERSATIONS_DIR", tmp_path / "conversations")
-
     context = memory.get_memory_context(include_short_term=False)
 
     assert "SELF:BELIEFS" in context

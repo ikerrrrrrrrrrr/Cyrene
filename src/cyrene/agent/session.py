@@ -115,6 +115,224 @@ def _trim_session_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 # ---------------------------------------------------------------------------
+# Token-budget compaction (append-only immutable compacted blocks)
+# ---------------------------------------------------------------------------
+
+_COMPACT_TRIGGER_RATIO = 0.6
+_COMPACT_RECENT_RATIO = 0.3
+_COMPACT_BLOCK_PREFIX = "[Compacted earlier context]"
+
+
+def _is_compacted_block(message: dict[str, Any]) -> bool:
+    return isinstance(message, dict) and bool(message.get("compacted_block"))
+
+
+def _strip_tool_episode_text(messages: list[dict[str, Any]]) -> list[str]:
+    """Render messages as compact text lines, stripping tool noise.
+
+    Tool calls are reduced to ``[tool] name(args)``; tool *results* (role=="tool")
+    are dropped entirely — we keep what was attempted, not the bulky output.
+    """
+    lines: list[str] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            continue  # tool result body stripped
+        content = str(m.get("content") or "").strip()
+        if role == "user":
+            if content:
+                lines.append(f"User: {content[:500]}")
+        elif role == "assistant":
+            if content:
+                lines.append(f"{ASSISTANT_NAME}: {content[:500]}")
+            for tc in (m.get("tool_calls") or []):
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                name = str(fn.get("name") or "").strip()
+                args = str(fn.get("arguments") or "").strip()
+                if name:
+                    lines.append(f"  [tool] {name}({args[:200]})")
+        elif role == "system":
+            if content:
+                lines.append(content[:300])
+    return lines
+
+
+def _safe_recent_start(live: list[dict[str, Any]], idx: int) -> int:
+    """Move boundary forward so ``live[idx:]`` never starts on a tool result."""
+    n = len(live)
+    i = max(0, min(idx, n))
+    while i < n and live[i].get("role") == "tool":
+        i += 1
+    return i
+
+
+def _compact_messages_for_storage(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Token-budget compaction with an immutable, append-only compacted-block chain.
+
+    - At or below 60% of the model context window: return unchanged (append-only
+      → stable prefix → prompt-cache hits).
+    - Above 60%: mechanically fold the older live messages into ONE new compacted
+      block (tool results stripped, calls reduced to name+args), appended AFTER any
+      existing compacted blocks (which are never rewritten). Recent messages are
+      kept verbatim within ~30% of the window.
+
+    Falls back to the count-based ``_trim_session_messages`` when the context
+    window is unknown.
+    """
+    from cyrene.config_store import get_current_ctx_limit
+    from cyrene.call_llm import _message_token_estimate
+
+    ctx_limit = get_current_ctx_limit()
+    if ctx_limit <= 0:
+        return _trim_session_messages(messages)
+
+    total = sum(_message_token_estimate(m) for m in messages)
+    if total <= int(ctx_limit * _COMPACT_TRIGGER_RATIO):
+        return messages
+
+    head_blocks: list[dict[str, Any]] = []
+    i = 0
+    while i < len(messages) and _is_compacted_block(messages[i]):
+        head_blocks.append(messages[i])
+        i += 1
+    live = messages[i:]
+
+    recent_budget = int(ctx_limit * _COMPACT_RECENT_RATIO)
+    acc = 0
+    cut = 0
+    for j in range(len(live) - 1, -1, -1):
+        acc += _message_token_estimate(live[j])
+        if acc > recent_budget:
+            cut = j + 1
+            break
+    cut = _safe_recent_start(live, cut)
+
+    to_compact = live[:cut]
+    recent = live[cut:]
+    if not to_compact:
+        return messages
+
+    block_lines = _strip_tool_episode_text(to_compact)
+    if not block_lines:
+        return messages
+    block: dict[str, Any] = {
+        "role": "system",
+        "content": _COMPACT_BLOCK_PREFIX + "\n" + "\n".join(block_lines),
+        "compacted_block": True,
+    }
+    _ensure_message_identity([block])
+    return [*head_blocks, block, *recent]
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 — background LLM distillation of mechanical compacted blocks
+# ---------------------------------------------------------------------------
+
+_pending_distill_task: asyncio.Task | None = None
+
+_COMPACT_DISTILL_PROMPT = (
+    "You are compressing archived conversation context into a dense, durable summary.\n"
+    "Preserve: concrete facts about the user and their goals/preferences; decisions and "
+    "their rationale; open threads / unfinished tasks; key tool actions taken (keep the "
+    "[tool] name(args) lines that matter).\n"
+    "Drop: filler, pleasantries, redundant restatements, raw tool output.\n"
+    "Output a compact summary only — no preamble, no markdown headers. Be terse but complete.\n\n"
+    "Archived context to compress:\n"
+)
+
+
+def _has_pending_compacted_block(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(m, dict) and m.get("compacted_block") and not m.get("llm_compacted")
+        for m in messages
+    )
+
+
+def _schedule_compaction_distill() -> None:
+    global _pending_distill_task
+    if _pending_distill_task is not None and not _pending_distill_task.done():
+        return
+    _pending_distill_task = asyncio.create_task(_distill_pending_compacted_blocks())
+    _pending_compressors.add(_pending_distill_task)
+    _pending_distill_task.add_done_callback(_pending_compressors.discard)
+
+
+async def _distill_pending_compacted_blocks() -> None:
+    """Background: LLM-distill mechanical compacted blocks into denser ones.
+
+    The LLM call runs WITHOUT holding the session lock; the result is swapped in
+    by message_id (compacted blocks are immutable, so the id is a stable anchor
+    even if new messages were appended meanwhile). A session-epoch guard prevents
+    writing stale content into a session that was reset mid-distillation.
+    """
+    while True:
+        async with _session_state_lock:
+            snapshot_epoch = _state._session_epoch
+            state = _load_session_state()
+            messages = state.get("messages", [])
+            if not isinstance(messages, list):
+                return
+            target = next(
+                (
+                    m for m in messages
+                    if isinstance(m, dict) and m.get("compacted_block")
+                    and not m.get("llm_compacted") and str(m.get("message_id", "")).strip()
+                ),
+                None,
+            )
+            if target is None:
+                return
+            target_id = str(target["message_id"]).strip()
+            raw_content = str(target.get("content") or "")
+
+        body = raw_content
+        if body.startswith(_COMPACT_BLOCK_PREFIX):
+            body = body[len(_COMPACT_BLOCK_PREFIX):].lstrip("\n")
+
+        distilled = ""
+        token = _caller_type.set("compactor")
+        try:
+            response = await _call_llm(
+                [
+                    {"role": "system", "content": "You compress conversation context. Be terse and faithful."},
+                    {"role": "user", "content": _COMPACT_DISTILL_PROMPT + body},
+                ],
+                tools=None,
+                max_tokens=1500,
+                secondary=True,
+            )
+            distilled = (_assistant_text(response) or "").strip()
+        except Exception:
+            logger.warning("Compaction distillation failed", exc_info=True)
+        finally:
+            _caller_type.reset(token)
+
+        async with _session_state_lock:
+            if _state._session_epoch != snapshot_epoch:
+                return  # session was reset mid-distillation
+            state = _load_session_state()
+            messages = state.get("messages", [])
+            if not isinstance(messages, list):
+                return
+            updated = False
+            for m in messages:
+                if (
+                    isinstance(m, dict)
+                    and str(m.get("message_id", "")).strip() == target_id
+                    and m.get("compacted_block")
+                ):
+                    if distilled:
+                        m["content"] = _COMPACT_BLOCK_PREFIX + "\n" + distilled
+                    m["llm_compacted"] = True  # mark done even on failure → no retry storm
+                    updated = True
+                    break
+            if not updated:
+                return
+            state["messages"] = messages
+            _write_session_state(state)
+
+
+# ---------------------------------------------------------------------------
 # Report reference helpers
 # ---------------------------------------------------------------------------
 
@@ -295,7 +513,7 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
     messages = _compress_report_messages_for_storage(messages)
     messages = _ensure_message_identity(messages)
     messages = _dedupe_messages_by_id(messages)
-    trimmed = _trim_session_messages(messages)
+    trimmed = _compact_messages_for_storage(messages)
     state["messages"] = trimmed
     if not str(state.get("session_title", "")).strip():
         state.pop("session_title", None)
@@ -309,6 +527,9 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
 
     if len(messages) >= _MAX_HISTORY_MESSAGES + 5:
         _schedule_memory_compression(messages)
+
+    if _has_pending_compacted_block(trimmed):
+        _schedule_compaction_distill()
 
 
 async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
