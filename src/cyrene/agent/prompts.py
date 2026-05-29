@@ -91,9 +91,6 @@ _DEEP_RESEARCH_PROMPT = """## Deep Research Mode
 
 You are in **Deep Research** mode. The user has asked a question that requires thorough, multi-angle investigation. Follow this process rigorously:
 
-### Pre-Research: Determine Report Length
-**Before spawning any subagents or starting research**, you MUST call the `ask_user` tool to ask about report length. The system will handle this before you get full tools — just call `ask_user` with text="请选择报告篇幅" and the structured options. Accept ANY answer the user gives and proceed.
-
 ### Phase 1: Decomposition
 1. Analyze the user's question and identify all sub-questions, angles, and dimensions that need investigation.
 2. Break the question down into 3–8 independent research tracks. Each track should be a self-contained research question.
