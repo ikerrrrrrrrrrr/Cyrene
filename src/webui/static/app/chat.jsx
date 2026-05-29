@@ -2015,6 +2015,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               assistantName={DATA.assistantName}
             />
           ))}
+          {visibleSending && (
+            <div className="agent-loading-spinner">
+              <div className="spinner"></div>
+              <span>{t("chat.agentThinking")}</span>
+            </div>
+          )}
           {renderedMessages.length === 0 && (
             <div className="chat-welcome">
               <h1><span className="welcome-mark"></span>{t("chat.welcomeTitle")}</h1>

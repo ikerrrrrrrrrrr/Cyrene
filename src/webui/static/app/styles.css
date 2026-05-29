@@ -1643,6 +1643,31 @@ button { font-family: inherit; }
 .msg-body.markdown > :last-child {
   margin-bottom: 0;
 }
+/* ── Agent loading spinner ── */
+.agent-loading-spinner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0 2px 24px;
+  color: var(--text-4);
+  font-size: 12px;
+  font-family: var(--mono);
+  user-select: none;
+}
+.agent-loading-spinner .spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line-2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  animation: agent-spin 0.7s linear infinite;
+}
+@keyframes agent-spin {
+  to { transform: rotate(360deg); }
+}
+
 @keyframes cyrene-stream-caret {
   50% { opacity: 0; }
 }
