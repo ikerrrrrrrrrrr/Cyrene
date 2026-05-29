@@ -2639,6 +2639,8 @@ def _build_current_session() -> dict | None:
             live_status = "done"
 
     live_summary = _build_summary(raw_msgs)
+    # Save main-agent-only total_tokens BEFORE merging subagent usage
+    main_agent_total_tokens = live_summary.get("total_tokens")
     subagent_usage = _merge_usage_totals(*[
         _usage_totals(info.get("messages", []))
         for info in subagent_registry.values()
@@ -2674,6 +2676,7 @@ def _build_current_session() -> dict | None:
         "currentRoundTitle": current_round_title,
         "pendingQuestion": pending_question,
         "summary": live_summary,
+        "main_agent_total_tokens": main_agent_total_tokens,
         "chat": {
             "contextChips": _build_context_chips(),
             "messages": messages,

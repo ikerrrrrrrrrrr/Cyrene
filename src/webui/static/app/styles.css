@@ -2896,7 +2896,7 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
 .shell-card-body {
   padding: 8px 10px;
   color: var(--text-2);
-  max-height: 120px;
+  max-height: 300px;
   overflow: auto;
   white-space: pre;
   line-height: 1.55;

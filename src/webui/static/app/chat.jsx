@@ -775,6 +775,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const initialArchiveLoadTriggeredRef = useRef(false);
   const initialPositioningInProgressRef = useRef(false);
   const pendingCompensationRef = useRef(null);
+  // True during the first ~second after mount.  Ensures scroll-to-latest-user-
+  // message uses instant scroll instead of smooth, which is fragile during the
+  // mounting phase when layout is still settling (padding, archive loading).
+  const mountingRef = useRef(true);
   const restoredRef = useRef(false);
 
   var ALL_COMMANDS = [
@@ -802,6 +806,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   }
   const [ccStatus, setCcStatus] = useState(null);
   const [ccModal, setCcModal] = useState(null);
+  const [shellModal, setShellModal] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const taRef = useRef(null);
@@ -928,8 +933,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     // Pin the message and animate it to the top.  pinnedMessageRef prevents
     // scrollChatToBottom from fighting the animation while the reply streams.
+    // During mount, jump instantly instead of smooth-scrolling — layout is
+    // still settling (archive loading, --scroll-pb) and smooth can land wrong.
     pinnedMessageRef.current = true;
-    el.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+    if (mountingRef.current) {
+      el.scrollTop = Math.max(0, desired);
+    } else {
+      el.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+    }
     userAtBottomRef.current = false;
   }
 
@@ -946,9 +957,39 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
 
-  /* Also scroll to bottom on mount (messages might render after data arrives). */
-  useEffect(function () {
-    return scrollChatToBottom(true);
+  /* Set --scroll-pb before paint and position the viewport in a single layout
+     cycle, so the first paint already shows the correct scroll position (no
+     flash of the conversation top before effects kick in).  The timeout releases
+     pinnedMessageRef after mount settles, allowing later corrections if archive
+     loading shifted the layout. */
+  _useLayoutEffect(function () {
+    // 1. Sync --scroll-pb so initial height is correct
+    var el = scrollRef.current;
+    var composer = composerRef.current;
+    if (el && composer) {
+      el.style.setProperty("--scroll-pb", composer.offsetHeight + "px");
+    }
+    // 2. Scroll to latest user message or to bottom (before paint)
+    mountingRef.current = true;
+    if (renderedMessages.length > 0) {
+      var lastRendered = renderedMessages[renderedMessages.length - 1];
+      if (lastRendered && lastRendered.role === 'user') {
+        scrollToLatestUserMessage();
+      }
+    }
+    var cleanup = scrollChatToBottom(true);
+    // 3. Release pinnedMessageRef after settling
+    var timer = setTimeout(function () {
+      mountingRef.current = false;
+      if (pinnedMessageRef.current) {
+        pinnedMessageRef.current = false;
+        scrollChatToBottom(true);
+      }
+    }, 600);
+    return function () {
+      cleanup();
+      clearTimeout(timer);
+    };
   }, []);
 
   /* Keep .chat-scroll bottom padding in sync with the fixed composer height,
@@ -959,9 +1000,16 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (!el || !composer) return;
     function sync() {
       el.style.setProperty("--scroll-pb", composer.offsetHeight + "px");
-      // Re-scroll when padding changes if user was at bottom
       var scrollEl = scrollRef.current;
-      if (scrollEl && userAtBottomRef.current) {
+      if (!scrollEl) return;
+      // If scrollTop is past the content (e.g. padding shrank after a
+      // scroll-to-bottom), clamp it back to the valid range.  This prevents
+      // the viewport from showing empty background ("going black") until
+      // the user manually scrolls.
+      var maxScroll = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+      if (scrollEl.scrollTop > maxScroll) {
+        scrollEl.scrollTop = maxScroll;
+      } else if (userAtBottomRef.current) {
         scrollEl.scrollTop = scrollEl.scrollHeight;
       }
     }
@@ -1906,9 +1954,17 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               if (typeof window.refreshStatus === "function") window.refreshStatus();
             }}
           />
+        ) : shellModal ? (
+          <ShellTerminalPanel
+            shell={shellModal}
+            onClose={function () { setShellModal(null); }}
+            onRefresh={function () {
+              if (typeof window.refreshSessions === "function") window.refreshSessions();
+            }}
+          />
         ) : (
         <>
-        <div className="chat-scroll" ref={scrollRef} onScroll={onChatScroll} style={{overflowAnchor: 'none'}}>
+        <div className="chat-scroll" ref={scrollRef} onScroll={onChatScroll}>
           <div className="thread-header">
             <span className={"sa-dot " + session.status} style={{ marginTop: 0, width: 6, height: 6 }}></span>
             <span>{session.title}</span>
@@ -2405,6 +2461,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             .catch(function () {});
         }}
         onOpenCCModal={function (info) { setCcModal(info); }}
+        onOpenShellModal={function (shell) { setShellModal(shell); }}
         view={rightSidebarView}
         onViewChange={setRightSidebarView}
         roundId={session.currentRoundId}
@@ -2633,7 +2690,7 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, view = "overview", onViewChange, roundId }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId }) {
   const { t } = useI18n();
   const viewOptions = [
     { id: "overview", label: t("chat.side.overview") },
@@ -2660,7 +2717,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
         })}
       </div>
 
-      {showShells && <div className="side-section" style={{ maxHeight: "40%", overflowY: "auto" }}>
+      {showShells && <div className="side-section" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
         <div className="side-head">
           {t("chat.activeShells")}
           <span className="count">{session.shells.length}</span>
@@ -2668,7 +2725,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
         {session.shells.length === 0 && (
           <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
         )}
-        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} />)}
+        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} onOpenShellModal={onOpenShellModal} />)}
       </div>}
 
       {showAgents && <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
@@ -2678,7 +2735,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
       {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
         <SideTokenRing tokens={session.summary.tokens} />
         {(() => {
-          var total = session.summary.total_tokens;
+          var total = session.main_agent_total_tokens != null ? session.main_agent_total_tokens : session.summary.total_tokens;
           var limit = session.ctx_limit || 0;
           if (limit > 0 && total != null) {
             var pct = Math.min(Math.round(total / limit * 100), 100);
@@ -2824,19 +2881,21 @@ function SideModelUsage() {
   );
 }
 
-function ShellCard({ shell, ccStatus, onOpenCCModal }) {
+function ShellCard({ shell, ccStatus, onOpenCCModal, onOpenShellModal }) {
   const { t } = useI18n();
   const isCC = shell.kind === "cc" && shell.tmuxSession;
 
   if (!isCC) {
     return (
       <div className="shell-card">
-        <div className="shell-card-head">
+        <div className="shell-card-head shell-card-head--clickable" onClick={function () {
+          onOpenShellModal && onOpenShellModal(shell);
+        }}>
           <span>▣</span>
           <span>{shell.title || t("chat.independentShell")}</span>
           <span className="cwd">{shell.cwd}</span>
           <span className={"pill " + (shell.status === "running" ? "running" : shell.status === "err" ? "err" : "")}>{shell.status}</span>
-          <span className="pid">pid {shell.pid}</span>
+          <span className="pid">{t("chat.ccExpand")}</span>
         </div>
         <div className="shell-card-body">
           {shell.lines.map((l, i) => (
@@ -2927,6 +2986,55 @@ function AgentListModal({ agents, onClose }) {
       </div>
     </div>,
     document.body
+  );
+}
+
+function ShellTerminalPanel({ shell, onClose, onRefresh }) {
+  var bodyRef = useRef(null);
+  // Auto-scroll to bottom when lines update
+  useEffect(function () {
+    if (bodyRef.current) {
+      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    }
+  }, [shell.lines]);
+  return (
+    <div className="cc-terminal cc-terminal--expanded cc-terminal--modal">
+      <div className="cc-terminal__panel">
+        <div className="cc-terminal__header">
+          <div className="cc-terminal__titleRow">
+            <span className="cc-terminal__title">{shell.title || "Terminal"}</span>
+            <span className={"cc-terminal__status cc-terminal__status--" + (shell.status === "running" ? "running" : "offline")}>
+              {shell.status === "running" ? "live" : shell.status}
+            </span>
+            <span className="cc-terminal__esc" style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>
+              pid {shell.pid} · {shell.cwd || ""}
+            </span>
+          </div>
+          <div className="cc-terminal__actions">
+            <button className="cc-terminal__button" onClick={onRefresh}>
+              Refresh
+            </button>
+            <button className="cc-terminal__button cc-terminal__button--accent" onClick={onClose}>
+              Close
+            </button>
+          </div>
+        </div>
+
+        <div className="cc-terminal__surface">
+          <div ref={bodyRef} className="cc-terminal__viewport" style={{ overflow: "auto", whiteSpace: "pre", background: "var(--bg-0)" }}>
+            {shell.lines.map(function (l, i) {
+              return <div key={i} className={"shell-" + l.kind}>{l.text}</div>;
+            })}
+          </div>
+        </div>
+
+        <div className="cc-terminal__footer">
+          <div className="cc-terminal__meta">
+            {shell.elapsed || "—"} · {shell.updatedAt || "—"}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
