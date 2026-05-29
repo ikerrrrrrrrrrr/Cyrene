@@ -302,7 +302,7 @@ async def _run_main_agent(
                 if awaiting_user:
                     skipped_tool_entry: dict[str, Any] = {
                         "role": "tool", "tool_call_id": t["id"],
-                        "content": "Skipped because ask_user paused the round until the user answers.",
+                        "content": "Skipped because a previous tool already paused the round until the user answers.",
                     }
                     if round_id:
                         skipped_tool_entry["round_id"] = round_id
@@ -317,7 +317,7 @@ async def _run_main_agent(
                 if round_id:
                     tool_entry["round_id"] = round_id
                 messages.append(tool_entry)
-                if tool_name == "ask_user" and _tool_result_requests_user_input(str(result)):
+                if _tool_result_requests_user_input(str(result)):
                     awaiting_user = True
                 if tool_name == "spawn_subagent":
                     spawned = True

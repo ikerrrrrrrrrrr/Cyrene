@@ -2025,6 +2025,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           )}
           <div ref={contentSentinelRef} style={{height: 0, overflow: 'hidden'}} />
           {renderedMessageEntries.map((entry, index) => {
+            if (pendingQuestion && entry.msg.questionPrompt) return null;
             let retryData = null;
             if ((entry.msg.role === "agent" || entry.msg.role === "system") && entry.msg.body) {
               for (let i = index - 1; i >= 0; i--) {
