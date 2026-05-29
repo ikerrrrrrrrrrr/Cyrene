@@ -1634,6 +1634,15 @@ button { font-family: inherit; }
 .msg-trace + .msg-body {
   margin-top: 16px;
 }
+.msg.agent.meta-in-summary .msg-trace {
+  margin-top: 0;
+}
+.msg.agent.meta-in-summary .msg-trace-body {
+  max-width: fit-content;
+}
+.msg.agent.meta-in-summary .msg-trace-summary .msg-role {
+  font-size: 13px;
+}
 .msg-body.markdown {
   white-space: normal;
 }
@@ -1647,17 +1656,12 @@ button { font-family: inherit; }
 .agent-loading-spinner {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 0 2px 24px;
-  color: var(--text-4);
-  font-size: 12px;
-  font-family: var(--mono);
-  user-select: none;
+  padding: 6px 0 6px 24px;
 }
 .agent-loading-spinner .spinner {
-  width: 12px;
-  height: 12px;
-  border: 2px solid var(--line-2);
+  width: 16px;
+  height: 16px;
+  border: 2.5px solid color-mix(in srgb, var(--accent) 30%, transparent);
   border-top-color: var(--accent);
   border-radius: 50%;
   box-sizing: border-box;
@@ -1797,13 +1801,10 @@ html[data-theme="light"] .msg.user .msg-body {
 
 .msg-trace {
   margin: 12px 0 0;
-  border: 1px solid var(--line);
   border-radius: var(--r-m);
-  background: var(--bg-1);
   overflow: hidden;
   overflow-anchor: none;
   order: 1;
-  box-shadow: var(--surface-gloss), var(--shadow-sm);
 }
 .msg-trace.only-trace {
   margin-top: 8px;
@@ -1811,14 +1812,31 @@ html[data-theme="light"] .msg.user .msg-body {
 .runtime-trace {
   margin-top: 4px;
 }
+.runtime-trace .msg-trace-summary {
+  font-size: 10.5px;
+  padding: 3px 10px;
+  color: var(--text-4);
+}
+.runtime-trace .msg-trace-summary .trace-summary-fade {
+  opacity: 0.65;
+}
+.runtime-trace[open] .msg-trace-summary {
+  color: var(--text-2);
+}
+.runtime-trace[open] .trace-summary-fade {
+  opacity: 1;
+}
+.msg-trace[open] .msg-trace-summary {
+  color: var(--text-2);
+}
 .msg-trace-summary {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 5px 10px;
   font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--text-2);
+  font-size: 11px;
+  color: var(--text-4);
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -1827,7 +1845,6 @@ html[data-theme="light"] .msg.user .msg-body {
   display: none;
 }
 .msg-trace[open] .msg-trace-summary {
-  border-bottom: 1px solid var(--line);
 }
 .msg-trace-caret {
   color: var(--text-4);
@@ -1845,8 +1862,7 @@ html[data-theme="light"] .msg.user .msg-body {
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--text-3);
-  border-left: 3px solid var(--line-2);
-  border-radius: 0 var(--r-s) var(--r-s) 0;
+  border-radius: var(--r-s);
   padding: 8px 14px;
   margin: 10px 0;
   white-space: pre-wrap;

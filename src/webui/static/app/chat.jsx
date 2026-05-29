@@ -2015,12 +2015,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               assistantName={DATA.assistantName}
             />
           ))}
-          {visibleSending && (
-            <div className="agent-loading-spinner">
-              <div className="spinner"></div>
-              <span>{t("chat.agentThinking")}</span>
-            </div>
-          )}
           {renderedMessages.length === 0 && (
             <div className="chat-welcome">
               <h1><span className="welcome-mark"></span>{t("chat.welcomeTitle")}</h1>
@@ -2112,19 +2106,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             </div>
           )}
           {visibleSending && !runtimeAttachedToLastMessage && (
-            <div className="msg agent">
-              <div className="msg-meta">
-                <span className="msg-role agent">● {DATA.assistantName}</span>
-                <span className="msg-time">{activeTraceDescriptor.timeLabel}</span>
-              </div>
+            <div className="msg agent meta-in-summary">
               <details className="msg-trace only-trace runtime-trace">
                 <summary className="msg-trace-summary">
-                  <span className="msg-trace-caret">▸</span>
-                  <span>{activeTraceDescriptor.summary} · {liveElapsed}</span>
+                  <span className="msg-role agent">● {DATA.assistantName}</span>
+                  <span className="msg-trace-caret" style={{marginLeft: 4}}>▸</span>
+                  <span className="trace-summary-fade">{activeTraceDescriptor.summary} · {liveElapsed}</span>
                 </summary>
                 <div className="msg-trace-body">
                   <div className="thinking">
-                    <div className="thinking-head">{activeTraceDescriptor.head}</div>
                     {watchingGuidance && (
                       <div className="progress-entry">
                         <span className="progress-icon">↳</span>
@@ -2161,6 +2151,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               sending={sending}
               optionCount={questionOptionCount}
             />
+          )}
+          {visibleSending && (
+            <div className="agent-loading-spinner">
+              <div className="spinner"></div>
+            </div>
           )}
         </div>
 
@@ -2529,27 +2524,33 @@ function Message({ msg, assistantName }) {
   const runtimeSuffix = attachedRuntime && hasOwnTrace
     ? " · " + attachedRuntime.summary.replace(/^details\s·\s/, "") + " · " + attachedRuntime.elapsed
     : "";
+  const onlyTraceMsg = !msg.body;
+  const metaInSummary = hasTrace && msg.role === "agent";
+  const roleLabel = msg.role === "user" ? "▸ " + t("chat.you") :
+    msg.role === "agent" ? "● " + (assistantName || "agent") :
+    msg.role;
+  const timeLabel = attachedRuntime ? attachedRuntime.timeLabel : msg.time;
   return (
-    <div className={"msg " + msg.role}>
-      <div className="msg-meta">
-        <span className={"msg-role " + msg.role}>
-          {msg.role === "user" ? "▸ " + t("chat.you") :
-           msg.role === "agent" ? "● " + (assistantName || "agent") :
-           msg.role}
-        </span>
-        <span className="msg-time">{attachedRuntime ? attachedRuntime.timeLabel : msg.time}</span>
-      </div>
+    <div className={"msg " + msg.role + (metaInSummary ? " meta-in-summary" : "")}>
+      {!metaInSummary && (
+        <div className="msg-meta">
+          <span className={"msg-role " + msg.role}>{roleLabel}</span>
+          <span className="msg-time">{timeLabel}</span>
+        </div>
+      )}
 
       {hasTrace && (
         <details className={"msg-trace" + (!msg.body ? " only-trace" : "") + (isRuntimeTrace ? " runtime-trace" : "")}>
           <summary className="msg-trace-summary">
+            {metaInSummary && (
+              <span className={"msg-role " + msg.role}>{roleLabel}</span>
+            )}
             <span className="msg-trace-caret">▸</span>
-            <span>{traceLabel + runtimeSuffix}</span>
+            <span className="trace-summary-fade">{traceLabel + runtimeSuffix}</span>
           </summary>
           <div className="msg-trace-body">
             {isRuntimeTrace && (
               <div className="thinking">
-                <div className="thinking-head">{msg.traceHead || "processing"}</div>
                 {(msg.traceEntries || []).map(function (entry, index) {
                   return (
                     <div key={index} className="progress-entry">
@@ -2569,7 +2570,6 @@ function Message({ msg, assistantName }) {
             {!isRuntimeTrace && msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
             {attachedRuntime && (
               <div className="thinking">
-                <div className="thinking-head">{attachedRuntime.head}</div>
                 {attachedRuntime.entries.map(function (entry, index) {
                   return (
                     <div key={index} className="progress-entry">
