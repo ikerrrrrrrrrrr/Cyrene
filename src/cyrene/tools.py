@@ -280,8 +280,21 @@ async def _tool_send_message_to_user(args: dict[str, Any], _bot: Any, _chat_id: 
             "user message via @mention. Use quit with your result for normal rounds."
         )
 
-    from cyrene.agent.session import append_system_message
-    await append_system_message(text)
+    from cyrene.agent.state import _current_agent_id, _current_round_id
+    from cyrene import debug as _debug_module
+    agent_id = _current_agent_id.get() or "subagent"
+    round_id = str(_current_round_id.get() or "").strip()
+    await _debug_module.publish_event({
+        "type": "agent_comm",
+        "from": agent_id,
+        "to": "user",
+        "content": text,
+        "summary": text[:100].replace("\n", " ").strip() + ("..." if len(text) > 100 else ""),
+        "msg_type": "reply",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "round_id": round_id,
+        "message_id": f"reply_{agent_id}_{int(time.time() * 1000)}",
+    })
     if _notify_state is not None:
         _notify_state["sent"] = True
     _direct_message_mode.set(False)
@@ -884,15 +897,19 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
     agent_id = str(args.get("agent_id", ""))
     task = str(args.get("task", ""))
     use_secondary = bool(args.get("use_secondary", False))
+    role = str(args.get("role", ""))
+    if role and role not in ("moderator", "participant"):
+        role = ""
     if not agent_id or not task:
         return "Error: agent_id and task are required."
     from cyrene.agent.state import _current_agent_id, _current_round_id
     if _current_agent_id.get() != "main":
         return "Only the main agent can spawn subagents."
-    await _reg_subagent(agent_id, task, round_id=_current_round_id.get())
-    _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path, use_secondary=use_secondary), agent_id)
+    await _reg_subagent(agent_id, task, round_id=_current_round_id.get(), role=role)
+    _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path, use_secondary=use_secondary, role=role), agent_id)
     suffix = " (secondary model)" if use_secondary else ""
-    return f"Sub-agent '{agent_id}' spawned{suffix}. Task: {task[:80]}"
+    role_suffix = f" [role={role}]" if role else ""
+    return f"Sub-agent '{agent_id}' spawned{suffix}{role_suffix}. Task: {task[:80]}"
 
 
 async def _tool_query_round(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -1514,6 +1531,7 @@ TOOL_DEFS = [
                     "agent_id": {"type": "string", "description": "Unique ID for the sub-agent"},
                     "task": {"type": "string", "description": "The task for the sub-agent to complete"},
                     "use_secondary": {"type": "boolean", "description": "Route this sub-agent to the secondary (local small) model for simple tasks that don't need the main model's full reasoning."},
+                    "role": {"type": "string", "enum": ["moderator", "participant"], "description": "Optional role for multi-agent discussions. 'moderator' speaks first and drives the discussion; 'participant' waits for the moderator then contributes substantively."},
                 },
                 "required": ["agent_id", "task"],
             },

@@ -88,8 +88,12 @@ async def _publish_registry_event(agent_id: str) -> None:
     })
 
 
-async def register(agent_id: str, task: str, round_id: str = "") -> None:
-    """注册一个子 agent。"""
+async def register(agent_id: str, task: str, round_id: str = "", role: str = "") -> None:
+    """注册一个子 agent。
+
+    *role* 可选，目前支持 "moderator"（主持人）/ "participant"（参与者），
+    用于多 agent 讨论时区分谁负责开场、谁负责等待发言。
+    """
     from cyrene.inbox import clear_inbox
 
     await clear_inbox(agent_id)
@@ -105,6 +109,8 @@ async def register(agent_id: str, task: str, round_id: str = "") -> None:
         }
         if round_id:
             _registry[agent_id]["round_id"] = round_id
+        if role:
+            _registry[agent_id]["role"] = role
     await _publish_registry_event(agent_id)
 
 
@@ -187,6 +193,23 @@ async def get_round_id(agent_id: str) -> str:
     async with _lock:
         entry = _registry.get(agent_id)
         return str(entry.get("round_id", "")) if entry else ""
+
+
+async def get_role(agent_id: str) -> str:
+    """获取 agent 的讨论角色（moderator / participant / 空）。"""
+    async with _lock:
+        entry = _registry.get(agent_id)
+        return str(entry.get("role", "")) if entry else ""
+
+
+async def round_has_moderator(round_id: str = "", exclude: str = "") -> bool:
+    """本轮是否存在主持人（除 *exclude* 之外）。"""
+    async with _lock:
+        return any(
+            info.get("role") == "moderator" and aid != exclude
+            for aid, info in _registry.items()
+            if _matches_round(info, round_id)
+        )
 
 
 async def set_waiting(agent_id: str, result: str = "") -> None:
@@ -312,7 +335,8 @@ async def get_context(exclude: str = "", round_id: str = "") -> str:
         for aid, info in entries:
             marker = "-> " if aid == exclude else "  "
             st = {"running": "工作中", "waiting": "活干完了等大家", "resumed": "恢复工作", "done": "已完成", "timeout": "超时"}.get(info["status"], info["status"])
-            lines.append(f"  {marker}{aid}: {info['task'][:50]} [{st}]")
+            role_tag = {"moderator": "（主持人）", "participant": "（参与者）"}.get(info.get("role", ""), "")
+            lines.append(f"  {marker}{aid}{role_tag}: {info['task'][:50]} [{st}]")
         return "\n".join(lines)
 
 
@@ -702,18 +726,25 @@ async def build_group_chat_messages(round_id: str) -> dict[str, Any]:
                 if not isinstance(fn, dict):
                     continue
                 name = str(fn.get("name", "") or "").strip()
-                if name not in ("send_agent_message", "broadcast_agent_message"):
+                if name not in ("send_agent_message", "broadcast_agent_message", "send_message_to_user"):
                     continue
                 try:
                     args = json.loads(fn.get("arguments", "{}"))
                 except (json.JSONDecodeError, TypeError):
                     continue
-                content = str(args.get("content", "") or "").strip()
+                # send_message_to_user uses "text"; others use "content"
+                content = str(args.get("content", "") or args.get("text", "") or "").strip()
                 if not content:
                     continue
 
                 is_broadcast = name == "broadcast_agent_message"
-                target = "all" if is_broadcast else str(args.get("to", "") or "").strip()
+                is_user_reply = name == "send_message_to_user"
+                if is_user_reply:
+                    target = "user"
+                elif is_broadcast:
+                    target = "all"
+                else:
+                    target = str(args.get("to", "") or "").strip()
                 display_content = f"@{target} {content}" if target else content
 
                 # Generate a per-message timestamp from agent_created + offset
@@ -1009,6 +1040,7 @@ async def _run_subagent(
     db_path: str,
     resume_messages: list | None = None,
     use_secondary: bool = False,
+    role: str = "",
 ) -> str:
     """Run a sub-agent in its own loop.
 
@@ -1068,8 +1100,29 @@ async def _run_subagent(
 - **Ask for help.** If you're stuck or need data another agent may have, just ask via `send_agent_message`. A short question is fine.
 - **Read peer messages.** When another sub-agent sends you something, take a moment to consider it. Respond briefly if needed.
 - **Avoid broadcast.** Default to targeted `send_agent_message` — only broadcast when EVERY peer genuinely needs the information (e.g. a shared source URL). Broadcast interrupts all peers and fills inboxes with noise, so use it sparingly or not at all.
+- **No handshake or readiness checks.** NEVER send messages like "ready", "waiting for moderator", "standing by", or "received". These waste tokens. Jump straight into substantive work or content.
 """
     )
+
+    if role == "moderator":
+        subagent_prompt += """
+## Your Role: Moderator
+You are the **moderator** of this discussion. Your responsibilities:
+1. **Start immediately.** Your FIRST message must announce the topic and kick off the discussion. Do NOT wait for participants to confirm readiness — they are already listening.
+2. **Drive the discussion.** Call on participants by name, pose questions, redirect off-topic threads, and keep things moving.
+3. **Summarize and close.** When the discussion has covered enough ground, synthesize key points and wrap up.
+
+CRITICAL: Do NOT ask "is everyone ready?" or wait for confirmations. All participants are live and listening from the moment you speak. Begin the discussion in your very first turn.
+"""
+    elif role == "participant":
+        subagent_prompt += """
+## Your Role: Participant
+You are a **participant** in this discussion. Rules:
+1. **No readiness announcements.** Do NOT send "ready", "waiting", "standing by", or any greeting/confirmation. These are prohibited.
+2. **Respond substantively.** When the moderator or another participant addresses you, reply with actual content — arguments, evidence, opinions. Never reply with just an acknowledgment.
+3. **Engage proactively.** If you have something relevant to say, speak up via `send_agent_message`. Don't wait to be called on for every point.
+4. **Stay in character.** Focus on delivering value through the substance of your contributions.
+"""
 
     if resume_messages:
         # 被唤醒：从已有历史续跑，注入一条提示让 LLM 知道发生了什么

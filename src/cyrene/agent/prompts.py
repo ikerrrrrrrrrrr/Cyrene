@@ -242,12 +242,9 @@ _EXPANSION_PROMPT = """You are reviewing a draft research report to identify sec
 ## Completed Report
 {final_report}
 
-## Research Materials
-{source_material}
-
 ## Instructions
 1. Read the draft carefully. Identify any section that feels too thin, underdeveloped, or lacking in detail.
-2. For each such section, write an expanded version that is at least 500 words and incorporates more data points, quotes, and analysis from the research materials.
+2. For each such section, write an expanded version that is at least 500 words. Elaborate on existing analysis, deepen the argumentation, and draw out implications already present in the draft.
 3. Output the expanded sections with headers matching the originals that should be REPLACED.
 4. If all sections are already substantive, output nothing."""
 

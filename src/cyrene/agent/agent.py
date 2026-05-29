@@ -434,7 +434,7 @@ async def _run_main_agent(
                         expand_threshold = {"short": 4000, "medium": 8000, "long": 15000}.get(length_pref, 8000)
                         if total_len < expand_threshold:
                             sections_written = await _expansion_pass(
-                                source_material, outline, sections_written, references_accumulated, lang,
+                                outline, sections_written, references_accumulated, lang,
                             )
                         references_accumulated, dedup_mapping = _deduplicate_references(references_accumulated)
                         final_text = _assemble_report(sections_written, references_accumulated, outline, dedup_mapping=dedup_mapping)

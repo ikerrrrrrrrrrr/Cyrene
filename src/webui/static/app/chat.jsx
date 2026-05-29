@@ -3155,11 +3155,13 @@ function GroupChatMessages({ messages, agentsActive }) {
   React.useEffect(function () {
     var el = scrollRef.current;
     if (!el) return;
-    // On initial render, measure actual scroll position instead of forcing to bottom.
-    // This prevents scroll-jacking when refreshing with existing messages.
+    // On the first real render (messages just arrived), scroll to the bottom so
+    // the user sees the latest messages. Subsequent updates only auto-scroll when
+    // the user is already near the bottom (tracked by handleScroll).
     if (!initialRenderDone.current) {
       initialRenderDone.current = true;
-      userAtBottom.current = (el.scrollTop + el.clientHeight >= el.scrollHeight - 40);
+      el.scrollTop = el.scrollHeight;
+      userAtBottom.current = true;
       return;
     }
     if (userAtBottom.current) {

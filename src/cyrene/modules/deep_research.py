@@ -333,7 +333,6 @@ async def write_section(
 
 
 async def expansion_pass(
-    source_material: str,
     outline: dict,
     sections_written: list[str],
     references: list[str],
@@ -346,7 +345,6 @@ async def expansion_pass(
     combined = "\n\n".join(sections_written)
     prompt = (
         _EXPANSION_PROMPT.replace("{final_report}", combined)
-        .replace("{source_material}", source_material)
         .replace("{lang}", lang)
     )
     messages = [
