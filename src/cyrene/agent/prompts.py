@@ -200,20 +200,16 @@ _OUTLINE_GENERATION_PROMPT = """You are planning a deep research report. Based o
   ...
 ]}}"""
 
-_SECTION_WRITE_PROMPT = """You are writing unit {unit_no}/{total_units} of a deep research report.
-
-## Report Outline
-{outline_json}
+_SECTION_WRITE_PROMPT = """You are a deep research report section writer.
 
 ## Research Materials
 {source_material}
 
+## Report Outline
+{outline_json}
+
 ## Report Structure (All Sections)
 {all_sections_preview}
-
-## Current Unit
-{unit_heading}
-{brief}
 
 ## Writing Instructions
 1. Write this unit in {lang}. Write in the style of a professional research report — formal, precise, and data-driven.

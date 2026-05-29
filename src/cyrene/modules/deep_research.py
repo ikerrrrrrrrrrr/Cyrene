@@ -305,24 +305,23 @@ async def write_section(
         for u in all_units
     )
 
-    prompt = (
-        _SECTION_WRITE_PROMPT.replace("{unit_no}", str(unit_no))
-        .replace("{total_units}", str(total_units))
-        .replace("{outline_json}", json.dumps(outline, ensure_ascii=False))
+    # Build system prompt with SHARED content only (for DeepSeek KV cache efficiency)
+    system_prompt = (
+        _SECTION_WRITE_PROMPT.replace("{outline_json}", json.dumps(outline, ensure_ascii=False))
         .replace("{source_material}", source_material)
         .replace("{all_sections_preview}", all_sections_preview)
-        .replace("{unit_heading}", unit_def.get("heading", ""))
-        .replace("{brief}", unit_def.get("brief", "") or unit_def.get("prompt", ""))
         .replace("{lang}", lang)
         .replace("{min_words}", str(min_words))
+        .replace("{total_units}", str(total_units))
     )
 
+    # Build user message with UNIT-SPECIFIC content
     user_msg = (
         f"Write unit {unit_no}/{total_units}: {unit_def.get('heading', '')}\n\n"
         f"{unit_def.get('brief', '') or unit_def.get('prompt', '')}"
     )
     messages = [
-        {"role": "system", "content": prompt},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_msg},
     ]
     try:
