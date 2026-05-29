@@ -976,6 +976,8 @@ const TRANSLATIONS = {
     "chat.compactedContext": "━━ earlier context compacted ━━",
     "chat.earlierConversation": "↑ earlier conversation",
     "chat.loadingArchive": "loading…",
+    "chat.copyAction": "Copy",
+    "chat.retryAction": "Retry",
   },
 
   zh: {
@@ -1934,6 +1936,8 @@ const TRANSLATIONS = {
     "chat.compactedContext": "━━ 较早上下文已压缩 ━━",
     "chat.earlierConversation": "↑ 更早的对话",
     "chat.loadingArchive": "加载中…",
+    "chat.copyAction": "复制",
+    "chat.retryAction": "重试",
   },
 };
 

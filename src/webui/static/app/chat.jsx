@@ -1178,9 +1178,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   async function send(options) {
     const preserveProgress = Boolean(options && options.preserveProgress);
-    const text = draft.trim();
+    const text = (options && options.text !== undefined) ? options.text : draft.trim();
+    const curAttachments = (options && options.attachments !== undefined) ? options.attachments : attachments;
+    const curGuideRoundId = (options && options.guideRoundId !== undefined) ? options.guideRoundId : selectedGuideRoundId;
     const runtime = getChatRuntime();
-    if (!text && attachments.length === 0) return;
+    if (!text && curAttachments.length === 0) return;
     if (pendingQuestion) {
       setNotice(t("chat.answerPendingWarning"));
       return;
@@ -1196,7 +1198,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     const requestMeta = {
       id: requestId,
       message: text,
-      guideRoundId: selectedGuideRoundId || "",
+      guideRoundId: curGuideRoundId || "",
       guideRoundTitle: currentGuideRoundTitle,
       controller,
     };
@@ -1205,8 +1207,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       id: "pending_user_" + Date.now(),
       role: "user", time: new Date().toLocaleTimeString(),
       body: text,
-      attachments: attachments.slice(),
-      roundId: selectedGuideRoundId || "",
+      attachments: curAttachments.slice(),
+      roundId: curGuideRoundId || "",
       clientRequestId: requestId,
     };
     updateChatRuntime({
@@ -1226,8 +1228,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       watchRequestId: requestId,
     });
     ensureChatRuntimeSseSubscription();
-    setDraft("");
-    setAttachments([]);
+    if (!options || options.text === undefined) {
+      setDraft("");
+      setAttachments([]);
+    }
     setCommand("");
     setMentionedAgents([]);
     if (taRef.current) taRef.current.style.height = "";
@@ -1240,8 +1244,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         signal: controller.signal,
         body: JSON.stringify({
           message: text,
-          attachments: attachments,
-          guide_round_id: selectedGuideRoundId || undefined,
+          attachments: curAttachments,
+          guide_round_id: curGuideRoundId || undefined,
           client_request_id: requestId,
           stream: true,
           lang: lang,
@@ -2008,13 +2012,30 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             <div className="context-divider main-divider"><span>{t("chat.historyContext") || "━━━ 历史上下文 ━━━"}</span></div>
           )}
           <div ref={contentSentinelRef} style={{height: 0, overflow: 'hidden'}} />
-          {renderedMessageEntries.map((entry) => (
-            <Message
-              key={entry.renderKey}
-              msg={entry.msg}
-              assistantName={DATA.assistantName}
-            />
-          ))}
+          {renderedMessageEntries.map((entry, index) => {
+            let retryData = null;
+            if (entry.msg.role === "agent" && entry.msg.body) {
+              for (let i = index - 1; i >= 0; i--) {
+                const prev = renderedMessageEntries[i].msg;
+                if (prev.role === "user" && prev.body) {
+                  retryData = {
+                    text: prev.body,
+                    attachments: prev.attachments || [],
+                    roundId: prev.roundId || "",
+                  };
+                  break;
+                }
+              }
+            }
+            return (
+              <Message
+                key={entry.renderKey}
+                msg={entry.msg}
+                assistantName={DATA.assistantName}
+                onRetry={retryData ? function () { send({ text: retryData.text, attachments: retryData.attachments, guideRoundId: retryData.roundId }); } : null}
+              />
+            );
+          })}
           {renderedMessages.length === 0 && (
             <div className="chat-welcome">
               <h1><span className="welcome-mark"></span>{t("chat.welcomeTitle")}</h1>
@@ -2471,7 +2492,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   );
 }
 
-function Message({ msg, assistantName }) {
+function Message({ msg, assistantName, onRetry }) {
   const { t } = useI18n();
 
   if (msg.kind === "compacted") {
@@ -2588,6 +2609,18 @@ function Message({ msg, assistantName }) {
         (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
           ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
           : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
+      )}
+      {msg.role === "agent" && msg.body && !msg.streamingReply && (
+        <div className="msg-actions">
+          <button className="msg-action-btn" onClick={function () { navigator.clipboard.writeText(msg.body); }} title={t("chat.copyAction") || "复制"}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </button>
+          {onRetry && (
+            <button className="msg-action-btn" onClick={onRetry} title={t("chat.retryAction") || "重试"}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+          )}
+        </div>
       )}
       {attachments.length > 0 && (
         <div className="msg-attachments">

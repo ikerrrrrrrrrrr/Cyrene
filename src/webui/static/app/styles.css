@@ -1760,6 +1760,39 @@ html[data-theme="light"] .msg.user .msg-body {
   border-color: var(--accent-dim);
 }
 
+/* message action buttons (copy, retry) */
+.msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  margin-left: 4px;
+  opacity: 0.35;
+  transition: opacity 0.15s ease;
+  order: 3;
+}
+.msg:hover .msg-actions {
+  opacity: 1;
+}
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.msg-action-btn:hover {
+  color: var(--text);
+  background: var(--bg-2);
+  border-color: var(--text-4);
+}
+
 /* inline tool-call card */
 .tool-card {
   margin: 8px 0;
