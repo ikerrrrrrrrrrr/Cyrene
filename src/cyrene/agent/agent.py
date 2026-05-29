@@ -335,6 +335,7 @@ async def _run_main_agent(
                     _run_subagent, _spawn_subagent_task,
                     build_deep_research_source as _build_deep_research_source,
                     build_flow_snapshot as _build_subagent_flow_snapshot,
+                    cancel_subagent_tasks as _cancel_subagent_tasks,
                     clear as _sub_clear, get_snapshot as _sub_snapshot,
                     get_raw_messages as _sub_raw_msgs, reactivate as _sub_reactivate,
                     run_summary_subagent as _run_summary_subagent,
@@ -357,7 +358,7 @@ async def _run_main_agent(
                 quiet_ticks = 0
                 for _ in range(120):
                     try:
-                        await asyncio.wait_for(_interrupt_event.wait(), timeout=5)
+                        await asyncio.wait_for(_interrupt_event.wait(), timeout=0.5)
                         _interrupt_event.clear()
                         interrupted = True
                         break
@@ -388,10 +389,12 @@ async def _run_main_agent(
                     else:
                         quiet_ticks = 0
                 if interrupted:
-                    # Don't return early — proceed to summary phase with whatever
-                    # results the subagents have produced so far.
                     await _save_session_messages(_session_messages_to_save(messages))
-                await asyncio.sleep(2)
+                    # Cancel running subagents immediately and mark them done so
+                    # the summary phase can start right away.
+                    await _cancel_subagent_tasks(round_id=round_id)
+                else:
+                    await asyncio.sleep(2)
                 await _publish_runtime_event({
                     "type": "phase_transition", "from": "subagent_monitoring", "to": "synthesis",
                     "detail": "All subagents done, starting summary subagent",

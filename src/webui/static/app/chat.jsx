@@ -3562,14 +3562,14 @@ function AgentGroupChat({ roundId, subagents, session }) {
       .then(function () {
         setChatEnded(true);
         setSettingsOpen(false);
-        // Add "对话已结束" system message
+        // Show that summarization is starting
         setMessages(function (prev) {
           var endMsg = {
             id: "chat_ended_" + Date.now(),
             type: "agent_result",
             from: "system",
             to: "",
-            content: "━ 对话已结束 ━",
+            content: "━ 正在总结… ━",
             timestamp: new Date().toISOString(),
             round_id: roundId,
           };

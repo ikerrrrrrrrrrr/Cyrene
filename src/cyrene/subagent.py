@@ -58,6 +58,9 @@ _registry: dict[str, dict] = {}
 _lock = asyncio.Lock()
 _direct_message_mode: ContextVar[bool] = ContextVar("_direct_message_mode", default=False)
 
+# 已生成子 agent 的 asyncio 任务，用于中断时取消
+_subagent_tasks: dict[str, asyncio.Task] = {}
+
 
 def _matches_round(entry: dict[str, Any], round_id: str = "") -> bool:
     """Return True when *entry* belongs to the requested round filter."""
@@ -955,7 +958,40 @@ def _spawn_subagent_task(coro, agent_id: str) -> asyncio.Task:
     """
     task = asyncio.create_task(coro)
     task.add_done_callback(lambda t: _log_task_exception(t, agent_id))
+    task.add_done_callback(lambda t: _subagent_tasks.pop(agent_id, None))
+    _subagent_tasks[agent_id] = task
     return task
+
+
+async def cancel_subagent_tasks(round_id: str) -> None:
+    """Cancel all running subagent tasks for *round_id* and mark them done immediately.
+
+    This is called when the user hits "stop" — subagents stop whatever they are
+    doing (the asyncio task is cancelled) and their registry entry flips to
+    ``done`` so the UI updates in real time and the summary phase sees a
+    consistent snapshot.
+    """
+    cancelled_ids: list[str] = []
+    async with _lock:
+        for agent_id, info in list(_registry.items()):
+            if not _matches_round(info, round_id):
+                continue
+            if agent_id.startswith(_SUMMARY_AGENT_PREFIX):
+                continue
+            if info.get("status") in ("done", "timeout"):
+                continue
+            _registry[agent_id]["status"] = DONE
+            _registry[agent_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            cancelled_ids.append(agent_id)
+
+    for agent_id in cancelled_ids:
+        await _publish_registry_event(agent_id)
+        task = _subagent_tasks.get(agent_id)
+        if task is not None and not task.done():
+            task.cancel()
+
+    if cancelled_ids:
+        await asyncio.sleep(0.1)  # brief yield so CancelledError can propagate
 
 
 def _log_task_exception(task: asyncio.Task, agent_id: str) -> None:
