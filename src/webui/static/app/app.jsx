@@ -546,7 +546,6 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
     { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "5", badge: sessionCount > 0 ? String(sessionCount) : null },
     { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "6" },
     { id: "evolution", label: t("nav.evolution"), icon: "⟁", key: "7", cssClass: "evo-icon" },
-    { id: "settings", label: t("nav.settings"), icon: "✱", key: "8" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
@@ -630,6 +629,20 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
           {DATA.user.name}
           <small>@{DATA.user.handle} · {DATA.appVersion || "—"}</small>
         </div>
+        <button className="windowbar-btn" type="button" title={t("nav.settings")} style={{ marginLeft: "auto" }} onClick={() => setPage("settings")}>
+          <svg width="21" height="21" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="9" cy="9" r="4" />
+            <rect x="7.5" y="2.5" width="3" height="2.5" rx="0.5" />
+            <rect x="7.5" y="13" width="3" height="2.5" rx="0.5" />
+            <rect x="2.5" y="7.5" width="2.5" height="3" rx="0.5" />
+            <rect x="13" y="7.5" width="2.5" height="3" rx="0.5" />
+            <rect x="7.5" y="2.5" width="3" height="2.5" rx="0.5" transform="rotate(45 9 9)" />
+            <rect x="7.5" y="2.5" width="3" height="2.5" rx="0.5" transform="rotate(135 9 9)" />
+            <rect x="7.5" y="2.5" width="3" height="2.5" rx="0.5" transform="rotate(225 9 9)" />
+            <rect x="7.5" y="2.5" width="3" height="2.5" rx="0.5" transform="rotate(315 9 9)" />
+            <circle cx="9" cy="9" r="2" />
+          </svg>
+        </button>
       </div>
     </div>
   );
