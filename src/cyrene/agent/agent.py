@@ -412,16 +412,18 @@ async def _run_main_agent(
                         final_text = source_material
                         synthesis_entry = {"role": "assistant", "content": final_text}
                     else:
-                        sections_written: list[str] = []
-                        references_accumulated: list[str] = []
-                        for unit_no, unit_def in enumerate(units, 1):
-                            section_text = await _write_section(
+                        sections_raw = await asyncio.gather(*[
+                            _write_section(
                                 source_material=source_material, outline=outline,
-                                report_so_far="\n\n".join(sections_written),
-                                references_so_far="\n".join(references_accumulated),
-                                unit_def=unit_def, unit_no=unit_no, total_units=len(units),
+                                unit_def=unit_def, unit_no=unit_no,
+                                total_units=len(units), all_units=units,
                                 lang=lang, length_pref=length_pref,
                             )
+                            for unit_no, unit_def in enumerate(units, 1)
+                        ])
+                        sections_written: list[str] = []
+                        references_accumulated: list[str] = []
+                        for section_text in sections_raw:
                             body, new_refs = _extract_new_references(section_text)
                             sections_written.append(body)
                             references_accumulated.extend(new_refs)

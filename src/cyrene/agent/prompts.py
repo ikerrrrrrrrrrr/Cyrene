@@ -208,11 +208,8 @@ _SECTION_WRITE_PROMPT = """You are writing unit {unit_no}/{total_units} of a dee
 ## Research Materials
 {source_material}
 
-## Report Written So Far
-{report_so_far}
-
-## References Already Used
-{references_so_far}
+## Report Structure (All Sections)
+{all_sections_preview}
 
 ## Current Unit
 {unit_heading}
@@ -222,7 +219,7 @@ _SECTION_WRITE_PROMPT = """You are writing unit {unit_no}/{total_units} of a dee
 1. Write this unit in {lang}. Write in the style of a professional research report — formal, precise, and data-driven.
 2. BE THOROUGH. This unit must be a substantive deep-dive, not a summary. Cover every relevant data point, quote, and finding from the research materials for this topic. If the materials contain rich information, cover ALL of it.
 3. Minimum {min_words} words for this unit. If the material justifies more, write more. There is no upper limit.
-4. Use [N] for citations (e.g. "market grew 27% in 2024 [1]"). BEFORE assigning a new number, check "References Already Used" above — if the source already exists there, REUSE its number. If citing a NEW source not yet in that list, assign the next available number.
+4. Use [N] for citations (e.g. "market grew 27% in 2024 [1]"). Number each new source starting from [1]. Don't worry about number collisions with other sections — they will be unified later.
 5. **REFERENCE OUTPUT — STRICT FORMAT. Follow this exactly.**
 
 After the unit body, IF you introduced any new sources, add this exact line:
@@ -234,13 +231,13 @@ Then list each new source on its own line in this format:
 
 Example:
 ## New References
-[3] Market Research Inc, "Global AI Report 2024", 2024, https://example.com
-[4] Tech Analysis Corp, "AI Trends", 2025, https://example.com
+[1] Market Research Inc, "Global AI Report 2024", 2024, https://example.com
+[2] Tech Analysis Corp, "AI Trends", 2025, https://example.com
 
 ### STRICT RULES (violations will produce a broken report):
 - The marker MUST be exactly "## New References". NOT "###", NOT "References", NOT "## 参考文献", NOT "## Sources". ONLY "## New References".
 - The marker MUST be at the very end of your output. Nothing after it.
-- Every [N] you use in the body MUST have a matching entry in either "References Already Used" or "## New References". No orphan citations.
+- Every [N] you use in the body MUST have a matching entry under "## New References". No orphan citations.
 - One source per line. No blank lines between sources.
 - If you cited ZERO new sources, do NOT include "## New References" at all. Just end after the section body."""
 

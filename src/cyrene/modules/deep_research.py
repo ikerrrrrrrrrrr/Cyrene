@@ -276,15 +276,19 @@ async def generate_deep_research_outline(
 async def write_section(
     source_material: str,
     outline: dict,
-    report_so_far: str,
-    references_so_far: str,
     unit_def: dict,
     unit_no: int,
     total_units: int,
+    all_units: list[dict],
     lang: str,
     length_pref: str = "medium",
 ) -> str:
-    """Write one section unit and return the full LLM output."""
+    """Write one section unit and return the full LLM output.
+
+    All sections can be written in parallel — each writer sees the full
+    outline + all section headings for context, without depending on prior
+    sections' actual text.
+    """
     from cyrene.agent.state import _call_llm
     from cyrene.llm import _assistant_text
 
@@ -295,13 +299,18 @@ async def write_section(
     else:
         min_words = 500
 
+    # Build a preview of ALL sections (not just the current one)
+    all_sections_preview = "\n".join(
+        f"- {u.get('heading', '')}: {u.get('brief', '') or u.get('prompt', '')}"
+        for u in all_units
+    )
+
     prompt = (
         _SECTION_WRITE_PROMPT.replace("{unit_no}", str(unit_no))
         .replace("{total_units}", str(total_units))
         .replace("{outline_json}", json.dumps(outline, ensure_ascii=False))
         .replace("{source_material}", source_material)
-        .replace("{report_so_far}", report_so_far)
-        .replace("{references_so_far}", references_so_far)
+        .replace("{all_sections_preview}", all_sections_preview)
         .replace("{unit_heading}", unit_def.get("heading", ""))
         .replace("{brief}", unit_def.get("brief", "") or unit_def.get("prompt", ""))
         .replace("{lang}", lang)
