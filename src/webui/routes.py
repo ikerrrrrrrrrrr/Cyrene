@@ -1293,11 +1293,13 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_evolution():
         """Aggregated data for the Evolution page."""
         from cyrene import pattern as _pattern
-        status = await _build_status()
-        scripts = await _pattern.list_scripts("all")
-        patterns = await _pattern.list_patterns("all")
-        learned_skills = await _pattern.list_learned_skills()
-        cc_learning = await _build_cc_learning_snapshot()
+        status, scripts, patterns, learned_skills, cc_learning = await asyncio.gather(
+            _build_status(),
+            _pattern.list_scripts("all"),
+            _pattern.list_patterns("all"),
+            _pattern.list_learned_skills(),
+            _build_cc_learning_snapshot(),
+        )
         return {
             "phase": status.get("phase", ""),
             "state": status.get("state", ""),
