@@ -772,6 +772,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [archiveContexts, setArchiveContexts] = useState([]);   // loaded newest-first
   const [hasMoreArchive, setHasMoreArchive] = useState(true);
   const archiveLoadLock = useRef(false);
+  const archiveEpochRef = useRef(0);
   const contentSentinelRef = useRef(null);
   const initialArchiveLoadTriggeredRef = useRef(false);
   const initialPositioningInProgressRef = useRef(false);
@@ -1785,6 +1786,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       initialScrollDoneRef.current = false;
       initialArchiveLoadTriggeredRef.current = true;
       pendingCompensationRef.current = null;
+      archiveEpochRef.current += 1;
       archiveLoadLock.current = false;
       setArchiveContexts([]);
       setHasMoreArchive(true);
@@ -1813,12 +1815,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var isInitial = options && options.initialLoad;
 
     archiveLoadLock.current = true;
+    var loadEpoch = archiveEpochRef.current;
     var cursor = archiveContexts.length > 0
       ? archiveContexts[archiveContexts.length - 1].id
       : "";
     fetch("/api/sessions/archive-context?cursor=" + encodeURIComponent(cursor))
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        if (archiveEpochRef.current !== loadEpoch) { archiveLoadLock.current = false; return; }
         if (data.messages && data.messages.length > 0) {
           // Record archive-container bottom in scroll coordinates (viewport-
           // relative + scrollTop) so user scroll during fetch doesn't skew it.
