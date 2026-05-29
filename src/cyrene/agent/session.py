@@ -578,34 +578,29 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
         await _write_session_messages_locked(state, effective_messages)
 
 
-async def _remove_last_exchange() -> None:
-    """Remove the last user→assistant exchange from session messages.
+async def _remove_messages_by_request_id(request_id: str) -> None:
+    """Remove all session messages matching the given client_request_id.
 
-    Used by the retry/regenerate feature to replace the previous exchange
-    with a new one. Safe to call even when there is no exchange to remove.
+    Used by the retry/regenerate feature: the frontend sends the original
+    ``client_request_id`` of the user message to retry, and this function
+    removes both the user message and any assistant response (or partial
+    reply) that share that request id.  Safe to call even when the request
+    id does not exist in the session.
     """
+    if not request_id or not request_id.strip():
+        return
+    request_id = request_id.strip()
     async with _session_state_lock:
         state = _load_session_state()
         saved_epoch = state.get("_session_epoch")
         if saved_epoch is not None and saved_epoch != _state._session_epoch:
             return
         messages = state.get("messages", [])
-        if not isinstance(messages, list) or len(messages) < 2:
+        if not isinstance(messages, list) or not messages:
             return
-        msgs = list(messages)
-        assistant_idx = None
-        user_idx = None
-        for i in range(len(msgs) - 1, -1, -1):
-            role = str(msgs[i].get("role", "")).strip()
-            if role == "assistant" and assistant_idx is None:
-                assistant_idx = i
-            elif role == "user" and user_idx is None and assistant_idx is not None and i < assistant_idx:
-                user_idx = i
-                break
-        if user_idx is not None and assistant_idx is not None:
-            del msgs[assistant_idx]
-            del msgs[user_idx]
-            await _write_session_messages_locked(state, msgs)
+        filtered = [m for m in messages if str(m.get("client_request_id", "")).strip() != request_id]
+        if len(filtered) != len(messages):
+            await _write_session_messages_locked(state, filtered)
 
 
 async def _append_session_message(entry: dict[str, Any]) -> None:

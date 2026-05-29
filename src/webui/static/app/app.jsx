@@ -392,7 +392,7 @@ function App() {
   useEffectApp(function () {
     if (t.theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    function onChange() { setTweak("theme", "system"); }
+    function onChange() { document.documentElement.dataset.theme = resolveActualTheme("system"); }
     mq.addEventListener("change", onChange);
     return function () { mq.removeEventListener("change", onChange); };
   }, [t.theme]);

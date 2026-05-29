@@ -39,7 +39,7 @@ from cyrene.agent import (
     _append_session_message,
     _call_llm,
     _publish_runtime_event,
-    _remove_last_exchange,
+    _remove_messages_by_request_id,
     _reply_stream_writer,
     answer_pending_question,
     append_system_message,
@@ -621,8 +621,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         command = str(body.get("command") or "").strip()
         mentions = body.get("mentions") if isinstance(body.get("mentions"), list) else []
         retry = bool(body.get("retry"))
-        if retry:
-            await _remove_last_exchange()
+        retry_request_id = str(body.get("retry_request_id") or "").strip()
+        if retry and retry_request_id:
+            await _remove_messages_by_request_id(retry_request_id)
         normalized_attachments = [
             {
                 "id": str(item.get("id") or "").strip(),
