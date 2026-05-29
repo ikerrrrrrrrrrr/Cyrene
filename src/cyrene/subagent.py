@@ -1102,6 +1102,7 @@ async def _run_subagent(
 - **Ask for help.** If you're stuck or need data another agent may have, just ask via `send_agent_message`. A short question is fine.
 - **Read peer messages.** When another sub-agent sends you something, take a moment to consider it. Respond briefly if needed — remember the one-person-or-broadcast rule applies to your reply too.
 - **No handshake or readiness checks.** NEVER send messages like "ready", "waiting for moderator", "standing by", or "received". These waste tokens. Jump straight into substantive work or content.
+- **Know when to leave.** When your task is done, call `quit` immediately. No farewells, no confirmations, no waiting for permission. If you feel you're done, you're done.
 """
     )
 
