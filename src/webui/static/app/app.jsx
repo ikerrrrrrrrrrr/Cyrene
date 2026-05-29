@@ -551,7 +551,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
   return (
     <div className={"sidebar" + (collapsed ? " collapsed" : "")}>
       <div className="sidebar-tools">
-        <div className="sidebar-brand-inline" title={brandName}>
+        <div className="sidebar-brand-inline" title={brandName} onClick={() => { try { localStorage.setItem("cyrene-settings-section", "about"); } catch(e) {} setPage("settings"); }} style={{ cursor: "pointer" }}>
           <div className="brand-mark"></div>
           <div className="brand-name">{brandName}</div>
         </div>

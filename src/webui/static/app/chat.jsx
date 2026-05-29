@@ -430,6 +430,7 @@ function getChatRuntime() {
       requests: {},
       listeners: new Set(),
       sseHandler: null,
+      retiredRequestIds: [],
     };
   }
   return window.__chatRuntime;
@@ -1249,6 +1250,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           client_request_id: requestId,
           stream: true,
           lang: lang,
+          retry: options && options.retry || undefined,
           command: command || undefined,
           mentions: mentionedAgents.length > 0 ? mentionedAgents : undefined,
         }),
@@ -1358,6 +1360,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         });
       }
     } finally {
+      if (options && options.retryRequestId) {
+        var _rt = getChatRuntime();
+        var _ridx = _rt.retiredRequestIds.indexOf(options.retryRequestId);
+        if (_ridx !== -1) {
+          var _newIds = _rt.retiredRequestIds.slice();
+          _newIds.splice(_ridx, 1);
+          updateChatRuntime({ retiredRequestIds: _newIds });
+        }
+      }
       if (!keepWatching) {
         delete runtime.requests[requestId];
         if (getChatRuntime().watchRequestId === requestId) {
@@ -2022,17 +2033,27 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                     text: prev.body,
                     attachments: prev.attachments || [],
                     roundId: prev.roundId || "",
+                    requestId: prev.clientRequestId || "",
                   };
                   break;
                 }
               }
             }
+            const runtime = getChatRuntime();
+            const isRetired = entry.msg.clientRequestId && runtime.retiredRequestIds.indexOf(entry.msg.clientRequestId) !== -1;
+            if (isRetired) return null;
             return (
               <Message
                 key={entry.renderKey}
                 msg={entry.msg}
                 assistantName={DATA.assistantName}
-                onRetry={retryData ? function () { send({ text: retryData.text, attachments: retryData.attachments, guideRoundId: retryData.roundId }); } : null}
+                onRetry={retryData && retryData.requestId ? function () {
+                  var _runtime = getChatRuntime();
+                  if (_runtime.retiredRequestIds.indexOf(retryData.requestId) === -1) {
+                    updateChatRuntime({ retiredRequestIds: _runtime.retiredRequestIds.concat([retryData.requestId]) });
+                  }
+                  send({ text: retryData.text, attachments: retryData.attachments, guideRoundId: retryData.roundId, retry: true, retryRequestId: retryData.requestId });
+                } : null}
               />
             );
           })}

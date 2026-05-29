@@ -184,11 +184,9 @@ function UpdateSection({ compact }) {
         {compact ? (
           <div className="settings-update-compact-head">
             <strong>{info && info.update_available ? t("settings.updateToVersion", { version: latestVersionLabel }) : t("settings.checkForUpdates")}</strong>
-            <small>
-              {info
-                ? (info.update_available ? t("settings.updateAvailable") : t("settings.upToDate"))
-                : t("settings.updateChecking")}
-            </small>
+            {info && info.update_available ? (
+              <small>{t("settings.updateAvailable")}</small>
+            ) : null}
           </div>
         ) : (
           <div className="label">
@@ -202,6 +200,10 @@ function UpdateSection({ compact }) {
         )}
 
         {error ? <div className="hint" style={{ color: "var(--red)" }}>{error}</div> : null}
+
+        {info && !info.update_available ? (
+          <span className="hint" style={{ fontSize: 12, color: "var(--text-3)" }}>{t("settings.updateLatest")}</span>
+        ) : null}
 
         <button className="btn" disabled={primaryAction.disabled} onClick={primaryAction.onClick || undefined}>
           {primaryAction.label}
@@ -229,10 +231,6 @@ function UpdateSection({ compact }) {
           <span className="hint">
             {t("settings.updateAsset", { name: info.asset_name, size: fmtSize(info.asset_size) })}
           </span>
-        ) : null}
-
-        {info && !info.update_available ? (
-          <span className="hint">{t("settings.updateLatest")}</span>
         ) : null}
       </div>
     </div>
@@ -1615,32 +1613,44 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
             <h2>{t("settings.about")}</h2>
             <p className="subtitle">{t("settings.aboutSubtitle")}</p>
 
-            <div className="settings-about-hero">
-              <div>
-                <div className="settings-about-eyebrow">Cyrene</div>
-                <h3>{t("settings.aboutHeroTitle")}</h3>
-                <p>{t("settings.aboutHeroCopy")}</p>
-              </div>
-              <div className="settings-about-actions">
-                <button className="btn" onClick={() => openExternal(REPO_URL)}>{t("settings.openGithub")}</button>
-                <button className="btn primary" onClick={() => openExternal(REPO_ISSUES_URL)}>{t("settings.reportIssue")}</button>
-              </div>
-            </div>
+	            <div className="settings-about-hero">
+	              <div>
+	                <div className="settings-about-eyebrow" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+	                  <div className="brand-mark" style={{ width: 16, height: 16, flex: "0 0 auto" }}></div>
+	                  Cyrene
+	                </div>
+	                <h3>{t("settings.aboutHeroTitle")}</h3>
+	                <p>{t("settings.aboutHeroCopy")}</p>
+	              </div>
+	            </div>
 
             <div className="settings-about-grid">
-              <div className="settings-about-card">
+              <div className="settings-about-card" style={{ display: "flex", flexDirection: "column" }}>
                 <span>{t("settings.projectName")}</span>
                 <strong>Cyrene</strong>
                 <small>{t("settings.projectNameHint")}</small>
+                <div style={{ marginTop: "auto", paddingTop: 12 }}>
+                  <button className="btn" onClick={() => openExternal(REPO_URL)}>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                    </svg>
+                    {t("settings.openGithub")}
+                  </button>
+                </div>
               </div>
-              <div className="settings-about-card">
+              <div className="settings-about-card" style={{ display: "flex", flexDirection: "column" }}>
                 <span>{t("settings.version")}</span>
                 <strong>{DATA.appVersion || "—"}</strong>
                 <small>{t("settings.versionHint")}</small>
+                <div style={{ marginTop: "auto", paddingTop: 12 }}>
+                  <button className="btn primary" onClick={() => openExternal(REPO_ISSUES_URL)}>{t("settings.reportIssue")}</button>
+                </div>
               </div>
-              <div className="settings-about-card">
+              <div className="settings-about-card" style={{ display: "flex", flexDirection: "column" }}>
                 <span>{t("settings.updates")}</span>
-                <UpdateSection compact />
+                <div style={{ marginTop: "auto", paddingTop: 12 }}>
+                  <UpdateSection compact />
+                </div>
               </div>
             </div>
           </div>

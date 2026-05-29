@@ -113,6 +113,7 @@ from cyrene.agent.session import (
     _normalize_pending_question,
     _pending_question_resume_context,
     _refresh_session_labels,
+    _remove_last_exchange,
     _report_reference_stub,
     _report_title_from_text,
     _restore_pending_question,
