@@ -8,8 +8,8 @@ function EvolutionPage() {
   const [patterns, setPatterns] = useStateSet([]);
   const [learnedSkills, setLearnedSkills] = useStateSet([]);
   const [ccData, setCcData] = useStateSet(null);
-  const [installedSkills, setInstalledSkills] = useStateSet([]);
-  const [loading, setLoading] = useStateSet(false);
+  const [installedSkills, setInstalledSkills] = useStateSet(window.DATA?.skills || []);
+  const [loading, setLoading] = useStateSet((window.DATA?.skills?.length || 0) === 0);
   const [query, setQuery] = useStateSet("");
   const [selectedSkillId, setSelectedSkillId] = useStateSet("");
   const [skillError, setSkillError] = useStateSet("");
@@ -712,11 +712,15 @@ function EvolutionPage() {
                         </FormField>
                       </div>
 
+                      <MiniPanel title={t("evolution.steps")}>
+                        <StepViewer steps={learnedSkillDetail.steps} />
+                        <JsonField label={t("evolution.editStepsRaw")} value={skillForm.steps_json} onChange={(value) => setSkillForm((s) => ({ ...s, steps_json: value }))} />
+                      </MiniPanel>
+
                       <div className="evolution-editor-grid single">
                         <JsonField label="trigger" value={skillForm.trigger_json} onChange={(value) => setSkillForm((s) => ({ ...s, trigger_json: value }))} />
                         <JsonField label="input_schema" value={skillForm.input_schema_json} onChange={(value) => setSkillForm((s) => ({ ...s, input_schema_json: value }))} />
                         <JsonField label="parameter_extractor" value={skillForm.parameter_extractor_json} onChange={(value) => setSkillForm((s) => ({ ...s, parameter_extractor_json: value }))} />
-                        <JsonField label="steps" value={skillForm.steps_json} onChange={(value) => setSkillForm((s) => ({ ...s, steps_json: value }))} />
                         <JsonField label="guards" value={skillForm.guards_json} onChange={(value) => setSkillForm((s) => ({ ...s, guards_json: value }))} />
                         <JsonField label="fallback_policy" value={skillForm.fallback_policy_json} onChange={(value) => setSkillForm((s) => ({ ...s, fallback_policy_json: value }))} />
                         <FormField label={t("evolution.editReason")}>
@@ -947,6 +951,92 @@ function buildSkillUpdatePayload(form) {
 
 function prettyJson(value) {
   return JSON.stringify(value ?? null, null, 2);
+}
+
+function StepViewer({ steps }) {
+  if (!steps || steps.length === 0) return null;
+  return (
+    <div className="evolution-step-viewer">
+      {steps.map((step, index) => (
+        <StepCard key={step.step_id || index} step={step} index={index} />
+      ))}
+    </div>
+  );
+}
+
+function StepCard({ step, index }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const ref = step.implementation_reference || {};
+  const toolName = ref.tool_name || step.type || "?";
+  const args = ref.args_template || {};
+  const hasItems = args._items && Array.isArray(args._items) && args._items.length > 0;
+  const isComplex = hasItems || Object.keys(args).length > 4;
+  return (
+    <div className={"evolution-step-card" + (expanded ? " expanded" : "")}>
+      <div className="evolution-step-top" onClick={() => isComplex && setExpanded(!expanded)}>
+        <span className="evolution-step-num">{index + 1}</span>
+        <span className="evolution-step-tool">{toolName}</span>
+        {step.description && step.description !== `${toolName} via learned pattern` && (
+          <span className="evolution-step-desc">{step.description}</span>
+        )}
+        {step.requires_llm && <span className="evolution-step-llm-badge">LLM</span>}
+        <div className="evolution-step-meta">
+          {step.failure_policy && <span className="evolution-step-pill">{step.failure_policy}</span>}
+          {step.enabled === false && <span className="evolution-step-pill disabled">disabled</span>}
+        </div>
+        {hasItems && <span className="evolution-step-count">{args._items.length} calls</span>}
+        {isComplex && (
+          <span className={"evolution-step-expand" + (expanded ? " open" : "")}>
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 3 L5 7 L8 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+          </span>
+        )}
+      </div>
+      <div className="evolution-step-args">
+        {hasItems ? (
+          <div className="evolution-step-items">
+            {args._items.map((item, i) => (
+              <div key={i} className="evolution-step-item">
+                <span className="evolution-step-item-num">{i + 1}</span>
+                <ArgList args={item} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <ArgList args={args} />
+        )}
+        {expanded && (
+          <pre className="evolution-step-raw">{JSON.stringify(step, null, 2)}</pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ArgList({ args }) {
+  const entries = Object.entries(args).filter(([k]) => k !== "_items");
+  if (entries.length === 0) return <span className="evolution-step-noargs">—</span>;
+  return (
+    <div className="evolution-step-arg-list">
+      {entries.map(([key, val]) => (
+        <div key={key} className="evolution-step-arg">
+          <span className="evolution-step-arg-key">{key}</span>
+          <span className={"evolution-step-arg-val" + (isParam(val) ? " param" : "")}>
+            {isParam(val) ? val : truncateArg(val)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function isParam(val) {
+  return typeof val === "string" && /^\{\{.*\}\}$/.test(val.trim());
+}
+
+function truncateArg(val) {
+  if (val === null || val === undefined) return "—";
+  const s = typeof val === "object" ? JSON.stringify(val) : String(val);
+  return s.length > 120 ? s.slice(0, 120) + "…" : s;
 }
 
 function safeParseJson(raw, fallback) {

@@ -1783,10 +1783,21 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       pinnedMessageRef.current = false;
       initialPositioningInProgressRef.current = false;
       initialScrollDoneRef.current = false;
-      initialArchiveLoadTriggeredRef.current = false;
+      initialArchiveLoadTriggeredRef.current = true;
       pendingCompensationRef.current = null;
+      archiveLoadLock.current = false;
+      setArchiveContexts([]);
+      setHasMoreArchive(true);
+      setDraft("");
+      setAttachments([]);
+      setCommand("");
+      setMentionedAgents([]);
+      setNotice("");
       var scrollEl = scrollRef.current;
-      if (scrollEl) scrollEl.style.setProperty('--scroll-pb-extra', '0px');
+      if (scrollEl) {
+        scrollEl.style.setProperty('--scroll-pb-extra', '0px');
+        scrollEl.scrollTop = 0;
+      }
       onSelectSession && onSelectSession(null);
     } catch (e) {
       initialPositioningInProgressRef.current = false;
@@ -3413,6 +3424,11 @@ function AgentGroupChat({ roundId, subagents, session }) {
   // Track current round to discard stale fetch responses
   var fetchRoundRef = React.useRef("");
   var subagentFetchTimerRef = React.useRef(null);
+  // Mirror of chatEnded so the roundId effect can read it synchronously
+  var chatEndedRef = React.useRef(false);
+
+  // Keep chatEndedRef in sync with chatEnded state
+  React.useEffect(function () { chatEndedRef.current = chatEnded; }, [chatEnded]);
 
   // Fetch initial messages
   React.useEffect(function () {
@@ -3420,10 +3436,20 @@ function AgentGroupChat({ roundId, subagents, session }) {
       setLoading(false);
       setMessages([]);
       setAgents([]);
+      chatEndedRef.current = false;
       return;
     }
     fetchRoundRef.current = roundId;
-    setLoading(true);
+    // Only clear messages when the previous round was actually finished.
+    // If the old round is still running and the user starts a new round in
+    // parallel, keep the existing chat visible until the new round's data loads.
+    var wasEnded = chatEndedRef.current;
+    chatEndedRef.current = false;
+    if (wasEnded) {
+      setMessages([]);
+      setAgents([]);
+      setLoading(true);
+    }
     setError(null);
     setChatEnded(false);
     fetch("/api/chat/agent-chat-messages?round_id=" + encodeURIComponent(roundId))
@@ -3558,6 +3584,16 @@ function AgentGroupChat({ roundId, subagents, session }) {
       });
     }
   }, [subagents]);
+
+  // Sync chatEnded whenever agents state changes — catches the case where
+  // agent status arrives via the subagents prop rather than a direct fetch.
+  React.useEffect(function () {
+    if (agents.length === 0 || chatEnded) return;
+    var allDone = agents.every(function (a) {
+      return a.status === "done" || a.status === "timeout";
+    });
+    if (allDone) setChatEnded(true);
+  }, [agents]);
 
   function handleStop() {
     fetch("/api/chat/interrupt", { method: "POST" })
