@@ -1027,12 +1027,11 @@ async def _run_subagent(
 - Active sub-agents and inbox context may be injected as separate user messages before each turn.
 - Your final text is collected by the parent agent. Do not invent a separate coordinator or try to send the final answer to a non-existent agent such as "main" or "danny".
 
-## Inter-Agent Coordination (REQUIRED)
-- **Chat naturally.** Talk to other sub-agents like in a real group chat — short, conversational messages. No need to report everything.
-- **Share useful findings.** When you find something another sub-agent needs, `send_agent_message` them directly with the key info. Keep it brief — a few sentences max.
+## Inter-Agent Coordination
+- **Share findings directly.** When you find something another sub-agent needs, `send_agent_message` them directly with the key info. Keep it brief — a few sentences max.
 - **Ask for help.** If you're stuck or need data another agent may have, just ask via `send_agent_message`. A short question is fine.
 - **Read peer messages.** When another sub-agent sends you something, take a moment to consider it. Respond briefly if needed.
-- **Minimum bar:** Send at least 2-3 messages during your work via `send_agent_message` or `broadcast_agent_message`. Say it simply — like a coworker in a group chat.
+- **Avoid broadcast.** Default to targeted `send_agent_message` — only broadcast when EVERY peer genuinely needs the information (e.g. a shared source URL). Broadcast interrupts all peers and fills inboxes with noise, so use it sparingly or not at all.
 """
     )
 

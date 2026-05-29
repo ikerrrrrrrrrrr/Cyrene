@@ -1493,7 +1493,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "broadcast_agent_message",
-            "description": "Broadcast a message to ALL peer sub-agents simultaneously. Use this to share progress updates, draft findings, or ask all peers a question at once. This is the preferred way to keep the team coordinated.",
+            "description": "CAUTION: Broadcast a message to ALL peer sub-agents simultaneously — use SPARINGLY. Every broadcast interrupts every peer. Only broadcast information that EVERY peer genuinely needs (e.g. a shared source URL, a critical deadline). For targeted coordination, use send_agent_message instead.",
             "parameters": {
                 "type": "object",
                 "properties": {
