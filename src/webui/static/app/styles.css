@@ -1765,6 +1765,25 @@ html[data-theme="light"] .msg.user .msg-body {
   border-color: var(--accent-dim);
 }
 
+/* Caption bubble shown for messages that have only attachments and no text */
+.msg-body-attach-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.attach-caption-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.attach-caption-item svg {
+  opacity: 0.65;
+  flex-shrink: 0;
+}
+.attach-caption-name {
+  overflow-wrap: anywhere;
+}
+
 /* message action buttons (copy, retry) */
 .msg-actions {
   display: flex;
@@ -1773,7 +1792,7 @@ html[data-theme="light"] .msg.user .msg-body {
   margin-left: 4px;
   opacity: 0.35;
   transition: opacity 0.15s ease;
-  order: 3;
+  order: 4;
 }
 .msg:hover .msg-actions {
   opacity: 1;
@@ -2498,6 +2517,10 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   flex-direction: column;
   gap: 6px;
   margin-top: 8px;
+}
+.msg.agent .msg-attachments,
+.msg.system .msg-attachments {
+  order: 3;
 }
 .msg-attachment {
   width: fit-content;

@@ -19,6 +19,13 @@ EXPORTS_DIR = DATA_DIR / "webui_exports"
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"}
 _PDF_EXTENSIONS = {".pdf"}
+_MAP_EXTENSIONS = {".geojson", ".topojson"}
+_MAP_CONTENT_TYPES = {"application/geo+json", "application/vnd.geo+json"}
+_CODE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".json", ".md", ".yaml", ".yml",
+    ".toml", ".xml", ".sql", ".sh", ".bash", ".rs", ".go", ".java", ".c", ".cpp",
+    ".h", ".rb", ".php", ".swift", ".kt", ".txt", ".csv", ".ini", ".cfg", ".env",
+}
 _MULTIMODAL_MODEL_HINTS = (
     "gpt-4o",
     "gpt-4.1",
@@ -89,6 +96,10 @@ def attachment_kind_from_meta(content_type: str, filename: str) -> str:
         return "image"
     if normalized_type == "application/pdf" or suffix in _PDF_EXTENSIONS:
         return "pdf"
+    if normalized_type in _MAP_CONTENT_TYPES or suffix in _MAP_EXTENSIONS:
+        return "map"
+    if suffix in _CODE_EXTENSIONS or (normalized_type.startswith("text/") and normalized_type not in {"text/html", "application/xhtml+xml"}):
+        return "code"
     return "file"
 
 

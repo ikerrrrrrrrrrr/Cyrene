@@ -2037,6 +2037,17 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     setRightSidebarView("ppt");
   }
 
+  function handleShowMap() {
+    setRightSidebarView("map");
+  }
+
+  function handleShowCode(url, name) {
+    fetch(url).then(function(r) { return r.text(); }).then(function(code) {
+      setEditorData({ code: code, language: "", filePath: name || "" });
+      setRightSidebarView("code-editor");
+    }).catch(function() {});
+  }
+
   var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[contextKey(c)]; });
   var visibleKeys = visibleChips.map(function (c) { return contextKey(c); });
   var addableContexts = [];
@@ -2112,6 +2123,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                 onShowHtml={handleShowHtml}
                 onShowPdf={handleShowPdf}
                 onShowPpt={handleShowPpt}
+                onShowMap={handleShowMap}
+                onShowCode={handleShowCode}
               />
             );
           })}
@@ -2155,6 +2168,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                 onShowHtml={handleShowHtml}
                 onShowPdf={handleShowPdf}
                 onShowPpt={handleShowPpt}
+                onShowMap={handleShowMap}
+                onShowCode={handleShowCode}
               />
             );
           })}
@@ -2624,7 +2639,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   );
 }
 
-function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt }) {
+function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt, onShowMap, onShowCode }) {
   const { t } = useI18n();
 
   if (msg.kind === "compacted") {
@@ -2770,6 +2785,17 @@ function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt
               })}</div>;
             })()
           : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
+      ) : attachments.length > 0 ? (
+        <div className="msg-body msg-body-attach-caption">
+          {attachments.map(function (file, idx) {
+            return (
+              <span className="attach-caption-item" key={file.id || (file.name + "_" + idx)}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                <span className="attach-caption-name">{file.name || "file"}</span>
+              </span>
+            );
+          })}
+        </div>
       ) : null}
       {(msg.role === "agent" || msg.role === "system") && msg.body && !msg.streamingReply && (
         <div className="msg-actions">
@@ -2790,6 +2816,10 @@ function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt
             var isPdf = String(file.content_type || "") === "application/pdf";
             var isPpt = String(file.content_type || "") === "application/vnd.ms-powerpoint" || String(file.content_type || "") === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
             var isHtml = String(file.content_type || "") === "text/html" || String(file.content_type || "") === "application/xhtml+xml";
+            var isMap = file.kind === "map" || String(file.content_type || "") === "application/geo+json" || String(file.content_type || "") === "application/vnd.geo+json";
+            var _codeExts = new Set(["py","js","ts","jsx","tsx","css","json","md","yaml","yml","toml","xml","sql","sh","bash","rs","go","java","c","cpp","h","rb","php","swift","kt","txt","csv","ini","cfg","env"]);
+            var _fileExt = String(file.name || "").split(".").pop().toLowerCase();
+            var isCode = file.kind === "code" || (_codeExts.has(_fileExt) && !isImage && !isPdf && !isPpt && !isHtml && !isMap);
             var label = String(file.name || "file");
             var kind = String(file.kind || "file").toUpperCase();
             return (
@@ -2823,6 +2853,19 @@ function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt
                       }).catch(function() {});
                     }}>
                       {t("chat.html.showBtn")}
+                    </button>
+                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                  </div>
+                ) : isMap ? (
+                  <button className="html-show-btn" onClick={function() { onShowMap && onShowMap(); }}>
+                    {t("chat.map.showBtn")}
+                  </button>
+                ) : isCode && file.url ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button className="html-show-btn" onClick={function() { onShowCode && onShowCode(file.url, file.name); }}>
+                      {t("chat.code.showBtn")}
                     </button>
                     <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>

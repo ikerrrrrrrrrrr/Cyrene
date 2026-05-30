@@ -31,11 +31,15 @@ async function build() {
       jsx: 'transform',
     })
 
+    // Change top-level const to var to avoid redeclaration errors
+    // across separate <script> tags (Babel standalone isolated per file)
+    let code = result.code.replace(/^const /gm, 'var ')
+
     // Preserve subdirectory structure relative to APP_DIR
     const rel = relative(APP_DIR, file).replace(/\.jsx$/, '.js')
     const outFile = join(OUT_DIR, rel)
     mkdirSync(dirname(outFile), { recursive: true })
-    writeFileSync(outFile, result.code)
+    writeFileSync(outFile, code)
     console.log(`✓ ${relative(APP_DIR, file)} → compiled/${rel}`)
   }
 

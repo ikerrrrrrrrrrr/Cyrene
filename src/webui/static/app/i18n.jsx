@@ -524,6 +524,12 @@ const TRANSLATIONS = {
     "chat.ppt.sideTitle": "PPT",
     "chat.ppt.noContent": "No PPT selected",
 
+    // ── Map Attachment ────────────────────────────────────────────────────
+    "chat.map.showBtn": "Show Map",
+
+    // ── Code Attachment ───────────────────────────────────────────────────
+    "chat.code.showBtn": "Show Code",
+
     // ── Agents Page ──────────────────────────────────────────────────────
     "agents.rounds": "Rounds",
     "agents.noRounds": "No rounds yet.",
@@ -1605,6 +1611,12 @@ const TRANSLATIONS = {
     "chat.ppt.showBtn": "查看 PPT",
     "chat.ppt.sideTitle": "PPT",
     "chat.ppt.noContent": "暂无 PPT",
+
+    // ── 地图附件 ─────────────────────────────────────────────────────────
+    "chat.map.showBtn": "显示地图",
+
+    // ── 代码附件 ─────────────────────────────────────────────────────────
+    "chat.code.showBtn": "显示代码",
 
     // ── 代理流程页 ──────────────────────────────────────────────────────
     "agents.rounds": "轮次",
