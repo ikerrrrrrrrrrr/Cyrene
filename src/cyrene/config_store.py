@@ -83,6 +83,7 @@ _DEFAULT_ENV: dict[str, str] = {
     "TELEGRAM_BOT_TOKEN": "",
     "WECHAT_BOT_TOKEN": "",
     "WECHAT_OWNER_ID": "",
+    "AMAP_API_KEY": "",
     "ASSISTANT_NAME": "Cyrene",
     "MAX_TOOL_ROUNDS": "15",
     "MAX_HISTORY_MESSAGES": "40",
@@ -139,7 +140,7 @@ _DEFAULT_SETTINGS: dict = {
 
 _EDITABLE_ENV_KEYS = {
     "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
-    "TELEGRAM_BOT_TOKEN", "WECHAT_BOT_TOKEN",
+    "TELEGRAM_BOT_TOKEN", "WECHAT_BOT_TOKEN", "AMAP_API_KEY",
 }
 
 # ---------------------------------------------------------------------------
@@ -343,6 +344,7 @@ def get_editable_env_meta() -> list[dict]:
         {"key": "OPENAI_MODEL", "label": "Model Name", "masked": False},
         {"key": "TELEGRAM_BOT_TOKEN", "label": "Telegram Token", "masked": True},
         {"key": "WECHAT_BOT_TOKEN", "label": "WeChat Token", "masked": True},
+        {"key": "AMAP_API_KEY", "label": "高德地图 Key", "masked": True},
     ]
     result = []
     for m in meta:

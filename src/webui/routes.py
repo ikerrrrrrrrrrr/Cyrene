@@ -26,6 +26,7 @@ from cyrene.cc_learner import analyze_session, learn_from_session
 from cyrene.cc_terminal import CCTerminalSession
 from cyrene import debug
 from webui.routes_map import register_map_routes
+from webui.routes_amap import register_amap_routes
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
     EXPORTS_DIR as _EXPORTS_DIR,
@@ -536,6 +537,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     router = APIRouter()
     register_map_routes(router)
+    register_amap_routes(router)
 
     # ---- SPA root ----
 

@@ -308,6 +308,11 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [desktopSettingsSaved, setDesktopSettingsSaved] = useStateSet("");
   const [telegramToken, setTelegramToken] = useStateSet("");
   const [telegramTokenSaved, setTelegramTokenSaved] = useStateSet("");
+  const [amapKey, setAmapKey] = useStateSet("");
+  const [amapKeySaved, setAmapKeySaved] = useStateSet("");
+  const [mapProvider, setMapProvider] = useStateSet(function () {
+    try { return localStorage.getItem("cyrene-tweak-map-provider") || "direct"; } catch (e) { return "direct"; }
+  });
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useStateSet(readStoredDesktopNotificationsEnabled);
   const [desktopNotificationStatus, setDesktopNotificationStatus] = useStateSet("");
   const [toolsExpanded, setToolsExpanded] = useStateSet(false);
@@ -429,6 +434,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     fetch("/api/settings/keys").then((r) => r.json()).then((payload) => {
       const tokenMeta = (payload.keys || []).find(function (item) { return item.key === "TELEGRAM_BOT_TOKEN"; });
       setTelegramToken(tokenMeta && tokenMeta.value ? tokenMeta.value : "");
+      const amapMeta = (payload.keys || []).find(function (item) { return item.key === "AMAP_API_KEY"; });
+      setAmapKey(amapMeta && amapMeta.value ? amapMeta.value : "");
     }).catch(() => {});
     if (window.cyrene && typeof window.cyrene.getDesktopSettings === "function") {
       window.cyrene.getDesktopSettings().then((payload) => {
@@ -648,6 +655,35 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     }
   }
 
+  async function saveAmapKey() {
+    if (!amapKey || amapKey.startsWith("••")) {
+      setAmapKeySaved(t("settings.noChanges"));
+      setTimeout(function () { setAmapKeySaved(""); }, 1500);
+      return;
+    }
+    setAmapKeySaved(t("settings.saving"));
+    try {
+      const response = await fetch("/api/settings/keys", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ AMAP_API_KEY: amapKey }),
+      });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const verifyResp = await fetch("/api/amap/verify");
+      const verifyData = await verifyResp.json();
+      if (verifyData.valid) {
+        setAmapKeySaved(t("settings.amapKeySaved"));
+        localStorage.setItem("cyrene-tweak-map-provider", "amap");
+      } else {
+        setAmapKeySaved(t("settings.amapKeyVerifyFail") + " " + (verifyData.error || ""));
+      }
+      setTimeout(function () { setAmapKeySaved(""); }, 3000);
+    } catch (e) {
+      setAmapKeySaved(t("settings.error") + ": " + e.message);
+      setTimeout(function () { setAmapKeySaved(""); }, 3000);
+    }
+  }
+
   async function saveMcpServers() {
     setMcpSaved(t("settings.saving"));
     try {
@@ -819,6 +855,25 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                   <button className={"seg-btn " + (lang === "zh" ? "active" : "")} onClick={() => setLang("zh")}>中文</button>
                 </div>
               </div>
+
+              <div className="field field--compact">
+                <div className="label">{t("settings.mapProvider")}<small>{t("settings.mapProviderHint")}</small></div>
+                <div className="seg">
+                  <button className={"seg-btn " + (mapProvider === "direct" ? "active" : "")} onClick={function () { setMapProvider("direct"); localStorage.setItem("cyrene-tweak-map-provider", "direct"); }}>{t("settings.mapProviderDirect")}</button>
+                  <button className={"seg-btn " + (mapProvider === "amap" ? "active" : "")} onClick={function () { setMapProvider("amap"); }}>{t("settings.mapProviderAmap")}</button>
+                </div>
+              </div>
+
+              {mapProvider === "amap" && (
+                <div className="field field--compact">
+                  <div className="label">{t("settings.amapKey")}<small>{t("settings.amapKeyHint")}</small></div>
+                  <div className="settings-channel-input-row">
+                    <input className="input mono settings-channel-input" type="password" value={amapKey} onChange={function (e) { setAmapKey(e.target.value); }} placeholder="高德 Web 服务 Key" />
+                    <button className="btn primary" onClick={saveAmapKey}>{t("settings.saveNotification")}</button>
+                  </div>
+                  {amapKeySaved ? <span className="settings-saved-msg">{amapKeySaved}</span> : null}
+                </div>
+              )}
             </div>
 
             <div className="settings-actions">

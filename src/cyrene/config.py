@@ -86,6 +86,9 @@ OWNER_ID = int(os.environ["OWNER_ID"]) if os.environ.get("OWNER_ID") else None
 WECHAT_BOT_TOKEN = _store.get_env("WECHAT_BOT_TOKEN", "")
 WECHAT_OWNER_ID = _store.get_env("WECHAT_OWNER_ID", "")
 
+# === 高德地图 ===
+AMAP_API_KEY = _store.get_env("AMAP_API_KEY", "")
+
 # === LLM 配置 ===
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_OPENAI_MODEL = "deepseek-v4-flash"
@@ -141,6 +144,7 @@ _EDITABLE_KEYS = {
     "OPENAI_MODEL":      {"label": "Model Name",    "masked": False},
     "TELEGRAM_BOT_TOKEN": {"label": "Telegram Token","masked": True},
     "WECHAT_BOT_TOKEN":  {"label": "WeChat Token",  "masked": True},
+    "AMAP_API_KEY":      {"label": "高德地图 Key",  "masked": True},
 }
 
 
@@ -183,6 +187,8 @@ def _apply_env_updates(updates: dict[str, str]) -> None:
             _mod.WECHAT_BOT_TOKEN = value
         elif key == "WECHAT_OWNER_ID":
             _mod.WECHAT_OWNER_ID = value
+        elif key == "AMAP_API_KEY":
+            _mod.AMAP_API_KEY = value
 
 
 def get_env_keys_meta() -> list[dict]:
