@@ -92,6 +92,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
+    # 使用 agent_lock 防止与用户聊天并发执行
+    if _agent_lock.locked():
+        return ""
+    async with _agent_lock:
+        _interrupt_event.clear()
+        return await _run_execution_agent_locked(task, bot, chat_id, db_path, notify_state)
+
+
+async def _run_execution_agent_locked(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     _caller_type.set("execution_agent")
     messages = [
         {"role": "system", "content": _EXECUTION_SYSTEM_PROMPT},
@@ -385,6 +394,7 @@ async def _run_chat_agent(
         _state._active_main_round_prompt = ""
         _state._active_main_round_public_prompt = ""
         _state._active_main_round_started_at = 0.0
+        _state._temporary_full_access.set(False)
         _current_round_id.reset(round_token)
 
 

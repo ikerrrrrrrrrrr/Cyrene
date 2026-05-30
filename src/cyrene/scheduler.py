@@ -433,10 +433,17 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
     task_id = task["id"]
     task_chat_id = task["chat_id"]
     prompt = task["prompt"]
+    permission_mode = str(task.get("permission_mode") or "workspace_only").strip().lower()
     logger.info(
-        "Executing task %s for chat %s: %s",
-        task_id, task_chat_id, prompt[:80],
+        "Executing task %s for chat %s (permission: %s): %s",
+        task_id, task_chat_id, permission_mode, prompt[:80],
     )
+
+    # Apply stored permission_mode: temporarily elevate write permissions via ContextVar
+    from cyrene.agent.state import _temporary_full_access as _tmp_wpm
+    if permission_mode == "full_access":
+        _tmp_wpm.set(True)
+        logger.info("Temporarily elevated write permissions to full_access for task %s", task_id)
 
     wrapped_prompt = (
         "You are executing a scheduled task. "
@@ -473,6 +480,11 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
             db_path, task_id, duration_ms, "error", error=str(e),
         )
         result = f"Error: {e}"
+    finally:
+        # Restore original permission mode after task execution
+        if permission_mode == "full_access":
+            _tmp_wpm.set(False)
+            logger.info("Restored write permissions after task %s", task_id)
 
     # Calculate next_run based on schedule type
     stype = task["schedule_type"]

@@ -939,12 +939,21 @@ async def _handle_write_permission_answer(
 ) -> str:
     from cyrene.agent.coordinator import _run_chat_agent
     from cyrene.settings_store import set_write_permission_mode
+    from cyrene.agent.state import _temporary_full_access
 
     normalized = str(answer_text or "").strip().lower()
-    if normalized in {"仅这次允许", "始终允许", "allow once", "always allow", "allow", "always", "同意", "允许", "可以", "yes", "ok"}:
+    # "仅这次允许" —— 只在此 round 内有效，round 结束时自动清理
+    if normalized in {"仅这次允许", "allow once", "仅此次", "这次", "once"}:
+        _temporary_full_access.set(True)
+        system = (
+            "The user granted elevated write/delete permission for this round only. "
+            "Retry the blocked action if it is still required."
+        )
+    # "始终允许" —— 全局永久生效
+    elif normalized in {"始终允许", "always allow", "always", "永久允许", "allow"}:
         set_write_permission_mode("full_access")
         system = (
-            "The user granted elevated write/delete permission outside the workspace. "
+            "The user granted permanent elevated write/delete permission. "
             "Retry the blocked action if it is still required."
         )
     else:

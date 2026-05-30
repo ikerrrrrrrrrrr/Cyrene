@@ -2227,6 +2227,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         body = await request.json()
         stype = body["schedule_type"]
         svalue = body["schedule_value"]
+        # REST API 端不允许创建 full_access 任务 ——
+        # 用户需通过 chat agent 的 schedule_task 工具创建（会弹出确认对话框）
+        permission_mode = "workspace_only"
 
         # Compute next_run if not provided by the frontend
         next_run = body.get("next_run", "")
@@ -2249,6 +2252,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             schedule_type=stype,
             schedule_value=svalue,
             next_run=next_run,
+            permission_mode=permission_mode,
         )
         tasks = await cy_db.get_all_tasks(_db_path)
         return {"ok": True, "id": task_id, "tasks": tasks}
@@ -2278,6 +2282,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             except Exception:
                 pass
 
+        # permission_mode 不可通过 REST API 修改 ——
+        # 需通过 chat agent 的 schedule_task 工具重新创建（会弹出确认对话框）
         for field in ("prompt", "schedule_type", "schedule_value", "next_run", "status"):
             if field in body:
                 sets.append(f"{field} = ?")

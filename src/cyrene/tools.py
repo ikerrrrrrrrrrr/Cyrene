@@ -77,7 +77,13 @@ def _resolve_workspace_path(path_str: str) -> Path:
     resolved = path.resolve()
     workspace = WORKSPACE_DIR.resolve()
     if resolved != workspace and workspace not in resolved.parents:
-        raise ValueError(f"Path escapes workspace: {path_str}")
+        raise ValueError(
+            f"⛔ 已禁止：路径超出 workspace 范围。\n"
+            f"  请求路径：{path_str}\n"
+            f"  完整路径：{resolved}\n"
+            f"  Workspace：{workspace}\n"
+            f"  Agent 没有访问此路径的权限。"
+        )
     return resolved
 
 
@@ -86,8 +92,9 @@ def _workspace_permission_error() -> str:
 
 
 def _resolve_workspace_write_target(path_str: str) -> Path:
+    from cyrene.agent.state import _temporary_full_access
     from cyrene.settings_store import get_write_permission_mode
-    if get_write_permission_mode() == "full_access":
+    if get_write_permission_mode() == "full_access" or _temporary_full_access.get():
         candidate = Path(path_str)
         path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
         return path.resolve()
@@ -97,12 +104,28 @@ def _resolve_workspace_write_target(path_str: str) -> Path:
         raise ValueError(_workspace_permission_error()) from exc
 
 
-async def _request_write_elevation(
+async def _request_scope_elevation(
     *,
     tool_name: str,
     path_hint: str,
+    operation: str,
     reason: str = "",
+    permission_kind: str = "scope_elevation",
+    options: list[str] | None = None,
 ) -> str:
+    """Request the user's permission for an operation outside the workspace.
+
+    Creates a pending question in the WebUI.  The agent loop detects the
+    "awaiting_user" status and pauses until the user answers.
+
+    Args:
+        tool_name: The tool being used (e.g. "Read", "Write").
+        path_hint: The target path the agent wants to access.
+        operation: Human-readable description of the operation.
+        reason: Why the agent needs to access this path.
+        permission_kind: Meta field to identify the permission type.
+        options: Custom options for the question UI.
+    """
     from cyrene.agent.state import (
         _current_agent_id,
         _current_client_request_id,
@@ -114,102 +137,312 @@ async def _request_write_elevation(
         get_session_labels,
     )
     if _current_agent_id.get() != "main":
-        return _workspace_permission_error()
+        return (
+            f"⛔ 已禁止：{operation} 超出 workspace 范围。\n"
+            f"Subagent 无权申请权限提升，请向主 agent 报告。"
+        )
     round_id = str(_current_round_id.get() or "").strip()
     if not round_id:
-        return _workspace_permission_error()
+        return (
+            f"⛔ 已禁止：{operation} 超出 workspace 范围。\n"
+            f"当前不在活动对话轮次中，无法申请权限。"
+        )
     labels = get_session_labels(round_id)
-    detail = f"\n目标路径：{path_hint}" if path_hint else ""
-    why = f"\n原因：{reason}" if reason else ""
+    detail = f"\n📂 目标路径：{path_hint}" if path_hint else ""
+    why = f"\n💡 原因：{reason}" if reason else ""
+    effective_options = options or ["允许这次", "拒绝"]
     question = await _upsert_pending_question({
-        "text": f"这个操作需要当前 workspace 之外的写入/删除权限。是否允许提升权限？{detail}{why}",
+        "text": (
+            f"⚠️ **Agent 尝试执行 workspace 之外的 {operation}**\n\n"
+            f"工具：{tool_name}{detail}{why}\n\n"
+            f"请确认是否允许此操作。如果不允许，Agent 将仅能在当前 workspace 内工作。"
+        ),
         "round_id": round_id,
         "round_title": labels.get("round_title", ""),
         "client_request_id": str(_current_client_request_id.get() or "").strip(),
-        "options": ["仅这次允许", "始终允许", "保持仅限 workspace"],
+        "options": effective_options,
         "allow_custom": True,
         "meta": {
-            "kind": "write_permission_request",
+            "kind": permission_kind,
             "tool_name": tool_name,
             "path_hint": path_hint,
             "reason": reason,
+            "operation": operation,
             "command": _current_command.get() or "",
         },
     })
     return _json_result({
         "status": "awaiting_user",
         "question_id": question.get("id", ""),
-        "permission": "write_elevation",
+        "permission": permission_kind,
+        "tool": tool_name,
+        "path": path_hint,
+        "operation": operation,
     })
 
 
-def _shell_command_requires_write_guard(command: str) -> bool:
-    lowered = str(command or "").lower()
-    return any(
-        token in lowered
-        for token in (
-            " rm ",
-            "rm -",
-            "mv ",
-            "cp ",
-            "mkdir ",
-            "touch ",
-            "tee ",
-            "sed -i",
-            "truncate ",
-            "install ",
-            "rmdir ",
-            "unlink ",
-            ">",
-        )
+async def _request_write_elevation(
+    *,
+    tool_name: str,
+    path_hint: str,
+    reason: str = "",
+) -> str:
+    return await _request_scope_elevation(
+        tool_name=tool_name,
+        path_hint=path_hint,
+        operation="写入/删除操作",
+        reason=reason,
+        permission_kind="write_permission_request",
+        options=["仅这次允许", "始终允许", "保持仅限 workspace"],
     )
+
+
+async def _request_read_elevation(
+    *,
+    tool_name: str,
+    path_hint: str,
+    reason: str = "",
+) -> str:
+    return await _request_scope_elevation(
+        tool_name=tool_name,
+        path_hint=path_hint,
+        operation="读取操作",
+        reason=reason,
+        permission_kind="read_elevation",
+        options=["允许这次读取", "拒绝"],
+    )
+
+
+def _command_is_file_deletion(command: str) -> bool:
+    """Check if a shell command includes file deletion operations."""
+    raw = str(command or "").strip()
+    if not raw:
+        return False
+    # Extract the first command word (handles /bin/rm, 'rm', \rm, etc.)
+    first = _extract_first_command(raw)
+    if first in ("rm", "rmdir"):
+        return True
+    # Also detect rm$IFS and rm${IFS} (word splitting tricks)
+    if re.search(r'(?:^|\s)(?:rm|rmdir)\$IFS', raw):
+        return True
+    if re.search(r'(?:^|\s)(?:rm|rmdir)\$\{IFS\}', raw):
+        return True
+    return False
+
+
+async def _request_delete_confirmation(
+    *,
+    tool_name: str,
+    command: str,
+) -> str:
+    """Request user confirmation before a destructive file operation in the workspace."""
+    cmd_preview = command[:240]
+    return await _request_scope_elevation(
+        tool_name=tool_name,
+        path_hint="",
+        operation="文件删除操作",
+        reason=f"Agent 尝试删除 workspace 中的文件。\n命令：{cmd_preview}",
+        permission_kind="delete_confirmation",
+        options=["允许删除", "拒绝"],
+    )
+
+
+def _extract_first_command(raw: str) -> str:
+    """Extract the first command word, stripping quotes and path prefixes.
+
+    Handles: rm, /bin/rm, 'rm', "rm", \rm, 'rm' -rf, etc.
+    """
+    raw = str(raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        first = shlex.split(raw, posix=True)[0]
+    except Exception:
+        first = raw.split()[0] if raw.split() else ""
+    # Strip leading path: /bin/rm → rm
+    first = re.sub(r'^.*/', '', first)
+    # Strip leading backslash or quotes
+    first = first.lstrip("\\").lstrip("'").lstrip('"').rstrip("'").rstrip('"')
+    return first.lower()
+
+
+def _shell_command_requires_write_guard(command: str) -> bool:
+    raw = str(command or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    # Quick substring check first (fast path)
+    if any(token in lowered for token in (
+        " rm ", "rm -", "mv ", "cp ", "mkdir ", "touch ", "tee ",
+        "sed -i", "truncate ", "install ", "rmdir ", "unlink ", ">",
+    )):
+        return True
+    # Check normalized first command word
+    first = _extract_first_command(raw)
+    WRITE_COMMANDS = {"rm", "mv", "cp", "mkdir", "touch", "tee", "truncate", "install", "rmdir", "unlink", "dd", "sed", "ln"}
+    if first in WRITE_COMMANDS:
+        return True
+    # Check for IFS variants: dd$IFS, rm$IFS, etc.
+    if re.search(r'\b(?:rm|mv|cp|dd|tee)\$IFS\b', lowered):
+        return True
+    if re.search(r'\b(?:rm|mv|cp|dd|tee)\$\{IFS\}', lowered):
+        return True
+    # Check for ln -f / ln --force
+    if " ln -f " in lowered or " ln --force " in lowered:
+        return True
+    return False
+
+
+def _is_dangerous_subshell(command: str) -> bool:
+    """Shell 命令替换 ($(...) 或反引号) 的路径无法静态预测，必须拦截并询问用户。"""
+    raw = str(command or "").strip()
+    if re.search(r'\$\(', raw):
+        return True
+    if '`' in raw:
+        return True
+    return False
+
+
+def _check_command_substitution(command: str) -> None:
+    """Raise ValueError with clear message if command contains unpredictable shell substitution."""
+    if _is_dangerous_subshell(command):
+        raise ValueError(
+            f"⛔ 已禁止：Shell 命令包含命令替换 ($(...) 或反引号)。\n"
+            f"  命令：{command[:240]}\n"
+            f"  命令替换的路径无法提前验证，请使用明确的路径。"
+        )
+
+
+def _expand_shell_path(token: str) -> str:
+    """Expand $VAR, ~, and ~user in a path token so the workspace guard sees the real path."""
+    expanded = os.path.expandvars(token)
+    expanded = os.path.expanduser(expanded)
+    return expanded
+
+
+def _extract_stderr_redirect_targets(raw: str) -> list[str]:
+    """Detect stderr redirects like 2>/path, 2>>/path, &>/path."""
+    targets: list[str] = []
+    # 2>/path or 2>>/path
+    for m in re.finditer(r'(?:^|\s)(\d*)>>?\s*(\S+)', raw):
+        prefix = m.group(1)  # empty or digit
+        target = m.group(2)
+        # If prefix is empty or a digit like 2, and target doesn't start with & (like &1)
+        if (not prefix or prefix.isdigit()) and not target.startswith("&"):
+            targets.append(target)
+    # &>/path (redirect both stdout and stderr)
+    for m in re.finditer(r'(?:^|\s)&\s*>\s*(\S+)', raw):
+        targets.append(m.group(1))
+    return targets
 
 
 def _guard_shell_command_workspace_write(command: str) -> None:
     raw = str(command or "").strip()
     if not raw or not _shell_command_requires_write_guard(raw):
         return
+    # 命令替换无法预测展开后的路径，直接拦截
+    _check_command_substitution(raw)
     try:
         tokens = shlex.split(raw, posix=True)
     except Exception:
-        raise ValueError(_workspace_permission_error())
-    write_cmds = {"rm", "mv", "cp", "mkdir", "touch", "tee", "truncate", "install", "rmdir", "unlink"}
+        raise ValueError(
+            f"⛔ 已禁止：Shell 命令可能包含写入操作，但无法解析。\n"
+            f"  命令：{command[:200]}\n"
+            f"  写入权限限定在 workspace 范围内。"
+        )
+    write_cmds = {"rm", "mv", "cp", "mkdir", "touch", "tee", "truncate", "install", "rmdir", "unlink", "dd", "ln"}
     cd_cmds = {"cd", "pushd"}
+    separators = {"&&", "||", "|", ";"}
     path_like_tokens: list[str] = []
-    previous = ""
+    active_command: str = ""  # Persists across arguments until a separator
+
     for token in tokens:
         stripped = token.strip()
         if not stripped:
-            previous = stripped
             continue
-        if previous in write_cmds | cd_cmds:
-            path_like_tokens.append(stripped)
-        elif previous in {"-o", "--output"}:
-            path_like_tokens.append(stripped)
-        elif stripped in write_cmds | cd_cmds:
-            previous = stripped
+        # Separator resets command context
+        if stripped in separators:
+            active_command = ""
             continue
-        elif stripped.startswith((">", ">>")):
+        # Detect new write command
+        if stripped in write_cmds:
+            active_command = stripped
+            continue
+        if stripped in cd_cmds:
+            active_command = stripped
+            continue
+        # Handle -o / --output flag (for tee, sed, etc.)
+        if stripped in {"-o", "--output"}:
+            path_like_tokens.append(stripped)
+            continue
+        # Redirect token: >path or >>path (may be attached like ">/path" or separate like "> /path")
+        if stripped.startswith((">", ">>")):
             candidate = stripped.lstrip(">").strip()
             if candidate:
                 path_like_tokens.append(candidate)
-        elif stripped not in {"&&", "||", "|", ";"} and (
-            stripped.startswith("/")
-            or stripped.startswith("./")
-            or stripped.startswith("../")
-            or "/" in stripped
-            or re.search(r"\.[A-Za-z0-9]{1,8}$", stripped)
-        ):
-            if previous in write_cmds:
+            active_command = ""
+            continue
+        if active_command in write_cmds:
+            # Skip flags (start with -)
+            if stripped.startswith("-"):
+                continue
+            # Path-like token: starts with / ./, contains /, or has file extension
+            if (stripped.startswith("/") or stripped.startswith("./") or stripped.startswith("../")
+                    or "/" in stripped or re.search(r"\.[A-Za-z0-9]{1,8}$", stripped)):
+                # For cp/mv: only the last non-flag argument is the destination
+                if active_command in ("cp", "mv"):
+                    path_like_tokens.append(stripped)
+                else:
+                    path_like_tokens.append(stripped)
+            # For cp/mv with all remaining args as dest, collect them all
+            elif active_command in ("cp", "mv"):
+                # This could be a dest without path chars (e.g. "cp a b" where "b" is relative dest)
                 path_like_tokens.append(stripped)
-        previous = stripped
+        elif active_command in cd_cmds:
+            # cd destination — resolve from workspace
+            if not stripped.startswith("-"):
+                path_like_tokens.append(stripped)
+
+    # Detect stderr redirects (2>/path, &>/path) that the loop may have missed
+    stderr_targets = _extract_stderr_redirect_targets(raw)
+    path_like_tokens.extend(stderr_targets)
+
+    # Fallback: detect > redirects not caught by the loop (e.g. 2>/path where 2 is separate)
     if ">" in raw or ">>" in raw:
         redirection_targets = re.findall(r"(?:^|[^\d])>>?\s*([^\s;&|]+)", raw)
-        path_like_tokens.extend(redirection_targets)
+        for target in redirection_targets:
+            if target not in path_like_tokens:
+                path_like_tokens.append(target)
+
+    # For cp/mv, only keep the LAST path-like token (the destination)
+    # Scan from right to find the last non-flag path token
+    cp_mv_dest = ""
+    for token in reversed(path_like_tokens):
+        if token.startswith("-"):
+            continue
+        cp_mv_dest = token
+        break
+
+    blocked_paths: list[str] = []
     for token in path_like_tokens:
         if token.startswith("-"):
             continue
-        _resolve_workspace_write_target(token)
+        try:
+            # Expand $VAR and ~ before checking workspace boundary
+            expanded = _expand_shell_path(token)
+            if expanded != token:
+                _resolve_workspace_write_target(expanded)
+            else:
+                _resolve_workspace_write_target(token)
+        except ValueError:
+            blocked_paths.append(token)
+    if blocked_paths:
+        raise ValueError(
+            f"⛔ 已禁止：Shell 命令试图写入 workspace 之外的路径。\n"
+            f"  命令：{command[:200]}\n"
+            f"  被阻止的路径：{', '.join(blocked_paths[:5])}\n"
+            f"  如需操作外部文件，请通过 WebUI 申请权限。"
+        )
 
 
 def _json_result(payload: Any) -> str:
@@ -534,6 +767,9 @@ async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_
     stype = str(args["schedule_type"])
     svalue = str(args["schedule_value"])
     now = datetime.now(timezone.utc)
+    permission_mode = str(args.get("permission_mode", "workspace_only") or "workspace_only").strip().lower()
+    if permission_mode not in ("workspace_only", "full_access"):
+        permission_mode = "workspace_only"
 
     if stype == "cron":
         next_run = croniter(svalue, now).get_next(datetime).isoformat()
@@ -545,15 +781,34 @@ async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_
     else:
         raise ValueError(f"Unknown schedule_type: {stype}")
 
-    task_id = await db.create_task(db_path, chat_id, str(args["prompt"]), stype, svalue, next_run)
-    return f"Task {task_id} scheduled. Next run: {next_run}"
+    # 如果任务需要 full_access 权限，先向用户申请
+    if permission_mode == "full_access":
+        prompt_preview = str(args.get("prompt", ""))[:120]
+        elevation_result = await _request_scope_elevation(
+            tool_name="schedule_task",
+            path_hint="",
+            operation="定时任务的外部文件访问权限",
+            reason=f"此定时任务可能在执行时需要读写 workspace 之外的文件。\n任务内容：{prompt_preview}",
+            permission_kind="task_permission_request",
+            options=["仅此任务允许 full_access", "拒绝，保持 workspace_only"],
+        )
+        status = json.loads(elevation_result)
+        if str(status.get("status", "")).strip() == "awaiting_user":
+            return elevation_result
+
+    task_id = await db.create_task(db_path, chat_id, str(args["prompt"]), stype, svalue, next_run, permission_mode=permission_mode)
+    return f"Task {task_id} scheduled. Next run: {next_run} 权限模式：{permission_mode}"
 
 
 async def _tool_list_tasks(_args: dict[str, Any], _bot: Any, _chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
     tasks = await db.get_all_tasks(db_path)
     if not tasks:
         return "No scheduled tasks."
-    lines = [f"- [{t['id']}] {t['status']} | {t['schedule_type']}({t['schedule_value']}) | {t['prompt'][:60]}" for t in tasks]
+    lines = []
+    for t in tasks:
+        perm = str(t.get("permission_mode") or "workspace_only")
+        tag = " 🔓" if perm == "full_access" else ""
+        lines.append(f"- [{t['id']}]{tag} {t['status']} | {t['schedule_type']}({t['schedule_value']}) | {t['prompt'][:60]}")
     return "\n".join(lines)
 
 
@@ -579,7 +834,14 @@ async def _tool_read(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     from cyrene.settings_store import is_workspace_active
     if not is_workspace_active():
         return "Workspace access is disabled. Ask the user to add workspace via '+ add context' in the chat input, or set a workspace directory in Settings."
-    path = _resolve_tool_path(str(args["path"]))
+    try:
+        path = _resolve_tool_path(str(args["path"]))
+    except ValueError:
+        return await _request_read_elevation(
+            tool_name="Read",
+            path_hint=str(args.get("path", "")),
+            reason=f"Agent 想要读取此文件。",
+        )
     return _truncate(path.read_text(encoding="utf-8"))
 
 
@@ -622,7 +884,14 @@ async def _tool_edit(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
 
 
 async def _tool_analyze_attachment(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
-    path = _resolve_tool_path(str(args["path"]))
+    try:
+        path = _resolve_tool_path(str(args["path"]))
+    except ValueError:
+        return await _request_read_elevation(
+            tool_name="AnalyzeAttachment",
+            path_hint=str(args.get("path", "")),
+            reason="Agent 想要分析此文件内容。",
+        )
     prompt = str(args.get("prompt", "") or "")
     force_refresh = bool(args.get("force_refresh", False))
     result = await analyze_attachment(str(path), prompt=prompt, force_refresh=force_refresh)
@@ -665,10 +934,26 @@ async def _tool_grep(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
 
 async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     command = str(args["command"])
+    # 命令替换无法提前验证路径，先拦截并询问用户
+    if _is_dangerous_subshell(command):
+        return await _request_scope_elevation(
+            tool_name="Bash",
+            path_hint="",
+            operation="包含命令替换的 Shell 操作",
+            reason=f"命令包含 $() 或反引号，其展开路径无法静态验证。\n命令：{command[:240]}",
+            permission_kind="subshell_elevation",
+            options=["允许执行", "拒绝"],
+        )
     try:
         _guard_shell_command_workspace_write(command)
     except ValueError:
         return await _request_write_elevation(tool_name="Bash", path_hint="", reason=command[:240])
+    # 即使是 workspace 内的文件删除操作，也需要用户确认
+    if _command_is_file_deletion(command):
+        delete_result = await _request_delete_confirmation(tool_name="Bash", command=command)
+        status = json.loads(delete_result)
+        if str(status.get("status", "")).strip() == "awaiting_user":
+            return delete_result
     timeout_ms = int(args.get("timeout_ms", 120000))
     timeout_sec = timeout_ms / 1000
     shell = os.environ.get("SHELL") or "/bin/sh"
@@ -974,10 +1259,24 @@ async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
     cwd = str(_resolve_workspace_path(str(args.get("cwd", ".") or ".")))
     command = str(args.get("command", "") or "")
     if command:
+        if _is_dangerous_subshell(command):
+            return await _request_scope_elevation(
+                tool_name="StartShell",
+                path_hint="",
+                operation="包含命令替换的 Shell 操作",
+                reason=f"命令包含 $() 或反引号，其展开路径无法静态验证。\n命令：{command[:240]}",
+                permission_kind="subshell_elevation",
+                options=["允许执行", "拒绝"],
+            )
         try:
             _guard_shell_command_workspace_write(command)
         except ValueError:
             return await _request_write_elevation(tool_name="StartShell", path_hint=cwd, reason=command[:240])
+        if _command_is_file_deletion(command):
+            delete_result = await _request_delete_confirmation(tool_name="StartShell", command=command)
+            status = json.loads(delete_result)
+            if str(status.get("status", "")).strip() == "awaiting_user":
+                return delete_result
     snap = await _start_shell_session(
         command=command,
         cwd=cwd,
@@ -994,10 +1293,24 @@ async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
 
 async def _tool_send_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     command = str(args.get("command", ""))
+    if _is_dangerous_subshell(command):
+        return await _request_scope_elevation(
+            tool_name="SendShell",
+            path_hint="",
+            operation="包含命令替换的 Shell 操作",
+            reason=f"命令包含 $() 或反引号，其展开路径无法静态验证。\n命令：{command[:240]}",
+            permission_kind="subshell_elevation",
+            options=["允许执行", "拒绝"],
+        )
     try:
         _guard_shell_command_workspace_write(command)
     except ValueError:
         return await _request_write_elevation(tool_name="SendShell", path_hint="", reason=command[:240])
+    if _command_is_file_deletion(command):
+        delete_result = await _request_delete_confirmation(tool_name="SendShell", command=command)
+        status = json.loads(delete_result)
+        if str(status.get("status", "")).strip() == "awaiting_user":
+            return delete_result
     snap = await _send_shell_session(
         str(args.get("shell_id", "")),
         command,
@@ -1056,9 +1369,10 @@ async def _tool_install_skill(args: dict[str, Any], _bot: Any, _chat_id: int, _d
     path_str = str(args.get("path", "")).strip()
     if not path_str:
         return json.dumps({"ok": False, "error": "path is required"}, ensure_ascii=False)
-    source = Path(path_str)
-    if not source.is_absolute():
-        source = WORKSPACE_DIR / source
+    try:
+        source = _resolve_tool_path(path_str)
+    except ValueError:
+        return json.dumps({"ok": False, "error": "skill source must be within workspace"}, ensure_ascii=False)
     source = source.resolve()
     if not source.exists():
         return json.dumps({"ok": False, "error": f"path does not exist: {source}"}, ensure_ascii=False)
@@ -1348,13 +1662,18 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "schedule_task",
-            "description": "Schedule a task. schedule_type must be cron, interval, or once.",
+            "description": "Schedule a task. schedule_type must be cron, interval, or once. Use permission_mode=\"full_access\" only when the task MUST read/write files outside the workspace (the user will be asked to confirm at creation time).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string"},
                     "schedule_type": {"type": "string"},
                     "schedule_value": {"type": "string"},
+                    "permission_mode": {
+                        "type": "string",
+                        "enum": ["workspace_only", "full_access"],
+                        "description": "Permission scope. 'workspace_only' (default) restricts all file access to the workspace. 'full_access' allows reading/writing anywhere — the user must confirm before the task is created.",
+                    },
                 },
                 "required": ["prompt", "schedule_type", "schedule_value"],
             },

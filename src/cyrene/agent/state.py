@@ -65,6 +65,9 @@ _active_main_round_id = ""
 _active_main_round_prompt = ""
 _active_main_round_public_prompt = ""
 _active_main_round_started_at = 0.0
+# 临时 full_access 标记 —— "仅这次允许" 时由 guidance 设置，round 结束时清理
+# 使用 ContextVar 确保 asyncio 任务间隔离
+_temporary_full_access: ContextVar[bool] = ContextVar("_temporary_full_access", default=False)
 
 _MAIN_INBOX_AGENT_ID = "main"
 _AWAITING_USER_SENTINEL = "[[cyrene.awaiting_user]]"

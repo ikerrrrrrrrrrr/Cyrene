@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
     last_run TEXT,
     last_result TEXT,
     status TEXT DEFAULT 'active',
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    permission_mode TEXT DEFAULT 'workspace_only'
 );
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run);
 CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_status ON scheduled_tasks(status);
@@ -160,6 +161,11 @@ _TOPIC_STOPWORDS = {
 async def init_db(db_path: str) -> None:
     async with aiosqlite.connect(db_path) as db:
         await db.executescript(_CREATE_TABLES)
+        # Migration: add permission_mode column to existing tables
+        try:
+            await db.execute("ALTER TABLE scheduled_tasks ADD COLUMN permission_mode TEXT DEFAULT 'workspace_only'")
+        except Exception:
+            pass  # Column already exists
         await db.commit()
     await _maybe_backfill_analytics(db_path)
 
@@ -658,12 +664,12 @@ async def _maybe_backfill_analytics(db_path: str) -> None:
 
 # --- Task CRUD ---
 
-async def create_task(db_path: str, chat_id: int, prompt: str, schedule_type: str, schedule_value: str, next_run: str) -> str:
+async def create_task(db_path: str, chat_id: int, prompt: str, schedule_type: str, schedule_value: str, next_run: str, permission_mode: str = "workspace_only") -> str:
     task_id = uuid.uuid4().hex[:8]
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule_type, schedule_value, next_run, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (task_id, chat_id, prompt, schedule_type, schedule_value, next_run, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule_type, schedule_value, next_run, created_at, permission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, chat_id, prompt, schedule_type, schedule_value, next_run, datetime.now(timezone.utc).isoformat(), permission_mode),
         )
         await db.commit()
     return task_id

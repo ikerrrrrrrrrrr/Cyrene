@@ -1,12 +1,6 @@
 // Plans page — list, create, edit, delete
 const { useState: useStateT, useEffect: useEffectT, useRef: useRefT } = React;
 
-const SCHEDULE_LABELS = {
-  cron: "Cron",
-  interval: "Interval",
-  once: "Once",
-};
-
 function ScheduledTasksPage() {
   useDataVersion();
   const { t } = useI18n();
@@ -172,7 +166,7 @@ function TaskRow({ task, onDelete, onToggle, onEdit }) {
   }
 
   function formatSchedule(task) {
-    const label = SCHEDULE_LABELS[task.schedule_type] || task.schedule_type;
+    var label = t("tasks." + task.schedule_type) || task.schedule_type;
     return label + ": " + task.schedule_value;
   }
 
@@ -182,14 +176,17 @@ function TaskRow({ task, onDelete, onToggle, onEdit }) {
         <span className={"tasks-status-dot " + statusClass} title={statusLabel}></span>
       </span>
       <span className="tasks-col-prompt" title={task.prompt}>{task.prompt}</span>
-      <span className="tasks-col-schedule">{formatSchedule(task)}</span>
+      <span className="tasks-col-schedule">
+        {formatSchedule(task)}
+        {task.permission_mode === "full_access" ? <span className="tasks-perm-badge" title={t("tasks.fullAccessBadge")}>🔓</span> : null}
+      </span>
       <span className="tasks-col-next">{formatNextRun(task.next_run)}</span>
       <span className="tasks-col-actions">
-        <button className="iconbtn tasks-action-btn" onClick={onEdit} title="Edit">{t("tasks.edit")}</button>
-        <button className="iconbtn tasks-action-btn" onClick={onToggle} title={task.status === "active" ? "Pause" : "Resume"}>
+        <button className="iconbtn tasks-action-btn" onClick={onEdit} title={t("tasks.edit")}>{t("tasks.edit")}</button>
+        <button className="iconbtn tasks-action-btn" onClick={onToggle} title={task.status === "active" ? t("tasks.pause") : t("tasks.resume")}>
           {task.status === "active" ? "⏸" : "▶"}
         </button>
-        <button className="iconbtn tasks-action-btn tasks-action-delete" onClick={onDelete} title="Delete">{t("tasks.delete")}</button>
+        <button className="iconbtn tasks-action-btn tasks-action-delete" onClick={onDelete} title={t("tasks.delete")}>{t("tasks.delete")}</button>
       </span>
     </div>
   );
@@ -201,6 +198,7 @@ function TaskForm({ task, onSave, onCancel }) {
   const [scheduleType, setScheduleType] = useStateT(task ? task.schedule_type : "cron");
   const [scheduleValue, setScheduleValue] = useStateT(task ? task.schedule_value : "");
   const [nextRun, setNextRun] = useStateT(task ? task.next_run || "" : "");
+  const [permissionMode, setPermissionMode] = useStateT(task ? (task.permission_mode || "workspace_only") : "workspace_only");
   const [saving, setSaving] = useStateT(false);
   const promptRef = useRefT(null);
   const { t } = useI18n();
@@ -216,6 +214,7 @@ function TaskForm({ task, onSave, onCancel }) {
         prompt: prompt.trim(),
         schedule_type: scheduleType,
         schedule_value: scheduleValue.trim(),
+        permission_mode: permissionMode,
       };
       if (nextRun.trim()) payload.next_run = nextRun.trim();
       await onSave(payload);
@@ -251,7 +250,7 @@ function TaskForm({ task, onSave, onCancel }) {
         <label className="tasks-form-field">
           <span>{t("tasks.scheduleType")}</span>
           <select value={scheduleType} onChange={(e) => setScheduleType(e.target.value)}>
-            <option value="cron">Cron</option>
+            <option value="cron">{t("tasks.cron")}</option>
             <option value="interval">{t("tasks.interval")}</option>
             <option value="once">{t("tasks.once")}</option>
           </select>
@@ -277,6 +276,22 @@ function TaskForm({ task, onSave, onCancel }) {
           />
         </label>
       )}
+      <div className="tasks-form-field">
+        <span>{t("tasks.permissionMode")}</span>
+        <div className="seg" style={{ marginTop: 4 }}>
+          <button type="button" className={"seg-btn " + (permissionMode === "workspace_only" ? "active" : "")}
+            onClick={() => setPermissionMode("workspace_only")}>
+            {t("tasks.workspaceOnly")}
+          </button>
+          <button type="button" className={"seg-btn " + (permissionMode === "full_access" ? "active" : "")}
+            onClick={() => setPermissionMode("full_access")}>
+            {t("tasks.fullAccess")}
+          </button>
+        </div>
+        <small className="hint" style={{ marginTop: 4, display: "block" }}>
+          {permissionMode === "full_access" ? t("tasks.fullAccessHint") : t("tasks.workspaceOnlyHint")}
+        </small>
+      </div>
       <div className="tasks-form-actions">
         <button type="submit" className="iconbtn tasks-form-submit" disabled={saving || !prompt.trim() || !scheduleValue.trim()}>
           {saving ? t("tasks.saving") : (isEdit ? t("tasks.save") : t("tasks.create"))}
