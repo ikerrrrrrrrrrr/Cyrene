@@ -774,8 +774,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
 
   const sections = [
     { id: "general", label: t("section.general") },
-    { id: "channels", label: t("section.channels") },
     { id: "models", label: t("section.models") },
+    { id: "channels", label: t("section.channels") },
     { id: "agents", label: t("section.agents") },
     { id: "appearance", label: t("section.appearance") },
     { id: "capabilities", label: t("section.capabilities") },
@@ -869,7 +869,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                   <div className="label">{t("settings.amapKey")}<small>{t("settings.amapKeyHint")}</small></div>
                   <div className="settings-channel-input-row">
                     <input className="input mono settings-channel-input" type="password" value={amapKey} onChange={function (e) { setAmapKey(e.target.value); }} placeholder="高德 Web 服务 Key" />
-                    <button className="btn primary" onClick={saveAmapKey}>{t("settings.saveNotification")}</button>
+                    <button className="btn primary" onClick={saveAmapKey}>保存</button>
                   </div>
                   {amapKeySaved ? <span className="settings-saved-msg">{amapKeySaved}</span> : null}
                 </div>
