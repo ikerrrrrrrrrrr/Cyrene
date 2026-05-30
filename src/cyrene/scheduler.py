@@ -602,9 +602,9 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
     is then delivered to the bot AND written to session state so it appears
     in the Web UI chat history.
     """
-    if OWNER_ID is None:
-        logger.debug("OWNER_ID not configured, skipping proactive check")
-        return
+    # In web-only mode OWNER_ID is not set — use 0 as a placeholder chat_id.
+    # The session-state delivery path does not rely on chat_id at all.
+    owner_id = OWNER_ID if OWNER_ID is not None else 0
 
     try:
         _load_lottery_state()
@@ -650,7 +650,7 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             + _build_proactive_user_prompt(context, silence_h)
         )
         text = await asyncio.wait_for(
-            run_heartbeat_agent(proactive_prompt, bot, OWNER_ID, db_path),
+            run_heartbeat_agent(proactive_prompt, bot, owner_id, db_path),
             timeout=120.0,
         )
 
@@ -659,6 +659,13 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             return
 
         logger.info("Proactive message sent via main agent loop: %s", str(text)[:100])
+
+        # Desktop / SSE notification so the user is alerted even when the
+        # Web UI tab is in the background.
+        try:
+            await notify(title="Cyrene", body=str(text)[:120], channel="auto")
+        except Exception:
+            logger.debug("Proactive notification delivery failed", exc_info=True)
 
     except asyncio.TimeoutError:
         logger.warning("Proactive message generation timed out")
