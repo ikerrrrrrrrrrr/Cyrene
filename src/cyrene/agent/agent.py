@@ -449,9 +449,10 @@ async def _run_main_agent(
                         pdf_url = pdf_attachment.get("url", "")
                         if pdf_url:
                             closing_note += f"\n\n📎 [{pdf_name}]({pdf_url})"
-                        synthesis_entry["attachments"] = [pdf_attachment]
                     final_text = final_text.rstrip() + closing_note
                     synthesis_entry = {"role": "assistant", "content": final_text, "deep_research_report": True}
+                    if pdf_attachment:
+                        synthesis_entry["attachments"] = [pdf_attachment]
                 else:
                     final_text = summary_result
                     synthesis_entry = {"role": "assistant", "content": final_text}
