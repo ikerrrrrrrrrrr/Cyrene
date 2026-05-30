@@ -3,9 +3,9 @@ const { useState: useStateC } = React;
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
-function buildTasksByDate(tasks) {
+function buildTasksByDate(tasks, entities) {
   var map = {};
-  tasks.forEach(function (task) {
+  (tasks || []).forEach(function (task) {
     if (!task.next_run) return;
     var d = new Date(task.next_run);
     if (isNaN(d.getTime())) return;
@@ -20,6 +20,20 @@ function buildTasksByDate(tasks) {
       isRecurring: task.schedule_type === "cron" || task.schedule_type === "interval",
       status: task.status,
       next_run: task.next_run,
+    });
+  });
+  // 追加事务 due_date
+  (entities || []).forEach(function (entity) {
+    if (!entity.due_date) return;
+    var key = entity.due_date.slice(0, 10);  // YYYY-MM-DD
+    if (!map[key]) map[key] = [];
+    map[key].push({
+      id: entity.id,
+      prompt: entity.title,
+      schedule_type: "entity",
+      isEntity: true,
+      entityType: entity.type,
+      status: entity.status,
     });
   });
   return map;
@@ -92,13 +106,13 @@ function scheduleLabel(task) {
 
 /* ── CalendarView ────────────────────────────────────────────────────── */
 
-function CalendarView({ tasks, onEdit, onToggle, onDelete }) {
+function CalendarView({ tasks, entities, onEdit, onToggle, onDelete }) {
   var now = new Date();
   var [year, setYear] = useStateC(now.getFullYear());
   var [month, setMonth] = useStateC(now.getMonth());
   var [selectedKey, setSelectedKey] = useStateC(null);
 
-  var tasksByDate = buildTasksByDate(tasks);
+  var tasksByDate = buildTasksByDate(tasks, entities);
   var todayK = todayKey();
   var cells = buildMonthGrid(year, month);
 
@@ -295,6 +309,7 @@ function DayCell({ day, isOther, isToday, isSelected, tasks, onSelect }) {
     dotCls += task.status === "active" ? " tasks-cal-task-dot--active"
       : " tasks-cal-task-dot--paused";
     if (task.isRecurring) dotCls += " tasks-cal-task-dot--recurring";
+    if (task.isEntity) dotCls += " tasks-cal-entity-dot";
     return React.createElement("span", { key: i, className: dotCls });
   });
   var overflow = tasks.length > 3
@@ -321,6 +336,16 @@ function DayPopover({ dateKey, tasks, onClose, onEdit, onToggle, onDelete }) {
 
   var items = tasks.length > 0
     ? tasks.map(function (task) {
+        if (task.isEntity) {
+          var entityTypeLabel = t("entityType." + task.entityType) || task.entityType;
+          return React.createElement("div", { key: task.id, className: "tasks-cal-popover-item" },
+            React.createElement("div", { className: "tasks-cal-popover-item-prompt" },
+              React.createElement("span", { className: "tasks-status-dot", style: { background: "var(--warn)" } }),
+              React.createElement("span", { className: "tasks-cal-popover-item-text" }, task.prompt),
+              React.createElement("span", { className: "entity-type-badge", style: { marginLeft: 6 } }, entityTypeLabel)
+            )
+          );
+        }
         var dotCls = "tasks-status-dot";
         dotCls += task.status === "active" ? " status-active" : " status-paused";
         var timeStr = formatTime(task.next_run);

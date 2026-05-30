@@ -420,13 +420,55 @@ async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str)
 
 
 async def run_steward_agent(conversation_text: str, soulmd_content: str, bot: Any, chat_id: int, db_path: str) -> str:
-    steward_prompt = f"""You are a memory steward. Your job is to update Cyrene's SOUL.md based on recent conversations.
+    # Query existing entity titles for LLM-level deduplication
+    _existing_entity_hint = ""
+    try:
+        from cyrene.entities import list_entities
+        _existing = await list_entities(db_path, limit=200)
+        if _existing:
+            _lines = [f"- [{e['type']}] {e['title']}" for e in _existing]
+            _existing_entity_hint = "\n".join(_lines[:50])  # cap at 50 to keep prompt reasonable
+    except Exception:
+        pass
 
+    steward_prompt = f"""You are a memory steward and entity extractor. Your job is twofold:
+
+1. Update Cyrene's SOUL.md based on recent conversations (existing).
+2. Extract entities (事务) from the conversation for background tracking.
+
+Supported entity types: task, project, decision, knowledge, relationship, event, resource, idea, problem, habit.
+
+### Part 1: SOUL.md updates
 Read the recent conversation and current SOUL.md, then output:
-- APPEND: what new information to add
+- APPEND: what new information to add to SOUL.md
 - ERASE: what old information to remove
 - MERGE: what to consolidate
 - Or SKIP if nothing important
+
+### Part 2: Entity extraction
+From the conversation, extract entities the user mentioned. Only extract when you are confident the user is talking about something real — not hypotheticals, jokes, or casual remarks.
+
+CRITICAL: Check the existing entities list below. If the conversation mentions something semantically equivalent to an existing entity (same topic, same intent, different wording), SKIP it — do NOT output a duplicate. Use meaning, not just exact string match.
+
+For each entity, output ENTITY with these fields:
+ENTITY type="task" title="Buy groceries" confidence="0.85" content="User mentioned needing to buy groceries this weekend"
+
+Confidence guidelines:
+- ≥ 0.8: Clear actionable mention with specifics (dates, names, concrete actions)
+- 0.5-0.7: Possible mention but lacks detail
+- 0.2-0.5: Vague mention, store as low-confidence candidate
+- < 0.2: Do not output (ignore)
+
+Do NOT extract:
+- Pure emotional expressions ("I'm so tired")
+- Casual chit-chat ("I ate noodles")
+- Hypothetical scenarios ("if I went to Mars")
+- Anything semantically equivalent to an already-existing entity in the list below
+
+### Existing entities (do NOT extract duplicates):
+{_existing_entity_hint if _existing_entity_hint else "(none yet)"}
+
+Output BOTH parts inline. Start with SOUL.md updates (APPEND/ERASE/MERGE/SKIP), then entity lines (ENTITY ...).
 
 SOUL.md:
 {soulmd_content}
@@ -434,5 +476,5 @@ SOUL.md:
 Recent conversation:
 {conversation_text}
 
-Output only the modifications needed, one per line, prefixed with APPEND/ERASE/MERGE/SKIP."""
+Output only the modifications needed, one per line, prefixed with APPEND/ERASE/MERGE/SKIP/ENTITY."""
     return await _run_execution_agent(steward_prompt, bot, chat_id, db_path)

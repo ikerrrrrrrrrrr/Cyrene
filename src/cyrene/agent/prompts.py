@@ -46,6 +46,20 @@ _MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficien
 - After completing a **repetitive, deterministic multi-step workflow with less LLM involvement** — repeated tool calls with a consistent pattern where only the arguments change — call `LearnSkill` proactively before `quit`. The system identifies varying arguments and turns them into parameters, so each run can accept different inputs.
 - Do NOT use `LearnSkill` for creative/novel tasks where each execution differs. Learned skills are for tool call patterns, not LLM generation.
 - If naming the skill, keep it short.
+
+## 事务追踪
+
+你有 `track_entity`、`update_entity`、`list_entities`、`query_entities`、`delete_entity` 五个工具，用于记录和管理用户的事务（任务、项目、决策、知识、关系、事件、资源、想法、问题、习惯）。
+
+### 何时记录（显式记录）
+用户说"记一下"、"提醒我"、"帮我记着"、"设个任务"、"记录"等明确指令时，立即调用 `track_entity`（source="explicit", confidence=1.0），完成后在回复中确认已记录。
+
+### 隐式提取说明
+隐式事务提取已改为后台自动完成（由 Steward Agent 每 30 分钟扫描对话记录），你不再需要在对话中主动推断记录。专注于用户的明确指令即可。
+
+### 用户反馈处理
+- 用户说"不用记"、"删掉"、"删了"：调用 `delete_entity` 删除相关事务，并回复确认
+- 用户说"对"、"记下来"（确认某个事务）：如果该事务尚未记录，调用 `track_entity` 以 source="explicit" 记录
 """
 
 _PHASE1_DECISION_PROMPT = """Decision phase rules:

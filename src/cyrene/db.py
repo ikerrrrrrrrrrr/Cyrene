@@ -101,6 +101,49 @@ CREATE TABLE IF NOT EXISTS token_usage (
 CREATE INDEX IF NOT EXISTS idx_token_usage_created_at ON token_usage(created_at);
 CREATE INDEX IF NOT EXISTS idx_token_usage_model ON token_usage(model);
 CREATE INDEX IF NOT EXISTS idx_token_usage_round_id ON token_usage(round_id);
+
+CREATE TABLE IF NOT EXISTS entities (
+    id                  TEXT PRIMARY KEY,
+    type                TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    content             TEXT DEFAULT '',
+    status              TEXT DEFAULT 'active',
+    tags                TEXT DEFAULT '[]',
+    priority            TEXT DEFAULT 'medium',
+    effort              TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    last_referenced_at  TEXT NOT NULL,
+    due_date            TEXT,
+    parent_id           TEXT REFERENCES entities(id),
+    linked_ids          TEXT DEFAULT '[]',
+    people              TEXT DEFAULT '[]',
+    source              TEXT DEFAULT 'extracted',
+    source_round_id     TEXT,
+    confidence          REAL DEFAULT 1.0,
+    metadata            TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_entities_type   ON entities(type);
+CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status);
+CREATE INDEX IF NOT EXISTS idx_entities_due    ON entities(due_date);
+
+CREATE TABLE IF NOT EXISTS entity_candidates (
+    id              TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    content         TEXT DEFAULT '',
+    confidence      REAL NOT NULL,
+    source_round_id TEXT,
+    raw_text        TEXT,
+    created_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS entity_type_confidence (
+    type         TEXT PRIMARY KEY,
+    adjustment   REAL DEFAULT 0.0,
+    sample_count INTEGER DEFAULT 0,
+    updated_at   TEXT NOT NULL
+);
 """
 
 _TOPIC_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[a-z][a-z0-9_-]{2,}")

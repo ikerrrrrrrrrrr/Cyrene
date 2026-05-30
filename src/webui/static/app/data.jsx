@@ -300,6 +300,9 @@ function connectEvents() {
           "agent_comm",
           "agent_chat_user_message",
           "assistant_message",
+          "entity_created",
+          "entity_updated",
+          "entity_deleted",
         ].includes(data.type)) {
           scheduleRealtimeRefresh();
         }

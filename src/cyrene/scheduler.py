@@ -235,7 +235,7 @@ def _silence_hours() -> float | None:
 # ---------------------------------------------------------------------------
 
 
-async def _assemble_proactive_context() -> str:
+async def _assemble_proactive_context(db_path: str = "") -> str:
     """Gather memory, conversation, and personality context for a proactive
     message so the agent can reference real events.
 
@@ -308,6 +308,40 @@ async def _assemble_proactive_context() -> str:
             "Could not read conversations for proactive context",
             exc_info=True,
         )
+
+    # 4. Active entities — due soon, stale, open decisions
+    if db_path:
+        try:
+            from datetime import timedelta
+            from cyrene.entities import list_entities, query_entities
+
+            now_dt = datetime.now(timezone.utc)
+            due_cutoff = (now_dt + timedelta(hours=24)).isoformat()
+            stale_cutoff = (now_dt - timedelta(days=7)).isoformat()
+
+            due_soon = await query_entities(db_path, due_before=due_cutoff, status="active")
+            all_active = await list_entities(db_path, status="active", limit=200)
+            stale = [e for e in all_active if e.get("last_referenced_at", "") < stale_cutoff]
+            open_dec = [
+                e for e in all_active
+                if e["type"] == "decision" and not (
+                    e["metadata"].get("outcome") if isinstance(e["metadata"], dict) else False
+                )
+            ]
+
+            entity_lines: list[str] = []
+            if due_soon:
+                titles = "、".join(e["title"] for e in due_soon[:3])
+                entity_lines.append(f"- 即将到期（24h内）：{titles}")
+            if stale:
+                entity_lines.append(f"- 长时间未提及：{stale[0]['title']}")
+            if open_dec:
+                entity_lines.append(f"- 待跟进的决策：{open_dec[0]['title']}")
+
+            if entity_lines:
+                parts.append("## 需要关注的事务\n" + "\n".join(entity_lines))
+        except Exception:
+            logger.debug("Could not load entity context for proactive message", exc_info=True)
 
     return "\n\n".join(parts).strip()
 
@@ -623,7 +657,7 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             return
 
         # -------- Generate proactive reply via the full main-agent loop --------
-        context = await _assemble_proactive_context()
+        context = await _assemble_proactive_context(db_path)
         proactive_prompt = (
             "This is a scheduler-initiated proactive check-in.\n"
             "Decide whether to send the user a brief, useful message right now.\n"
@@ -744,7 +778,7 @@ async def _run_steward_if_needed(bot, db_path: str) -> None:
         )
 
         result_stripped = (result or "").strip()
-        if result_stripped.upper().startswith("SKIP"):
+        if result_stripped.upper().startswith("SKIP") and "ENTITY" not in result_stripped:
             logger.info("Steward returned SKIP -- no changes to SOUL.md")
         elif result_stripped:
             changes = apply_soul_update(result)
@@ -753,6 +787,47 @@ async def _run_steward_if_needed(bot, db_path: str) -> None:
             )
         else:
             logger.info("Steward returned empty result, no changes applied")
+
+        # 解析 Steward 提取的实体（ENTITY 行）
+        try:
+            from cyrene.entities import add_candidate, has_similar_entity
+            for line in result_stripped.splitlines():
+                line = line.strip()
+                if not line.upper().startswith("ENTITY "):
+                    continue
+                # Parse: ENTITY type="task" title="..." confidence="0.85" content="..."
+                import re as _re2
+                e_type = _re2.search(r'type="([^"]*)"', line)
+                e_title = _re2.search(r'title="([^"]*)"', line)
+                e_conf = _re2.search(r'confidence="([^"]*)"', line)
+                e_content = _re2.search(r'content="([^"]*)"', line)
+                if e_type and e_title and e_conf:
+                    entity_type = e_type.group(1)
+                    entity_title = e_title.group(1)
+                    # 去重检查：同类型+相似标题的实体或候选已存在时跳过
+                    if await has_similar_entity(db_path, entity_type, entity_title):
+                        logger.debug("Skipping duplicate entity: %s / %s", entity_type, entity_title)
+                        continue
+                    candidate_id = await add_candidate(
+                        db_path,
+                        type=entity_type,
+                        title=entity_title,
+                        content=e_content.group(1) if e_content else "",
+                        confidence=float(e_conf.group(1)),
+                        raw_text=line,
+                    )
+                    logger.info("Steward extracted entity candidate %s: %s", candidate_id[:8], entity_title)
+        except Exception:
+            logger.exception("Failed to parse steward entity extractions")
+
+        # 处理置信度 >= 0.8 的候选事务，自动提升为正式事务
+        try:
+            from cyrene.entities import process_candidates
+            promoted = await process_candidates(db_path)
+            if promoted:
+                logger.info("Steward promoted %d candidate entity/entities", len(promoted))
+        except Exception:
+            logger.exception("process_candidates failed during steward run")
 
         _save_steward_run(now)
 

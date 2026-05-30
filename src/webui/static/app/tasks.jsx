@@ -11,6 +11,7 @@ function ScheduledTasksPage() {
   useDataVersion();
   const { t } = useI18n();
   const [tasks, setTasks] = useStateT([]);
+  const [entities, setEntities] = useStateT(DATA.entities || []);
   const [loading, setLoading] = useStateT(true);
   const [error, setError] = useStateT(null);
   const [editingId, setEditingId] = useStateT(null);
@@ -23,6 +24,12 @@ function ScheduledTasksPage() {
       const r = await fetch("/api/tasks");
       const data = await r.json();
       setTasks(data.tasks || []);
+      // 同时加载有截止日期的事务
+      const re = await fetch("/api/entities?has_due_date=true");
+      if (re.ok) {
+        const entityData = await re.json();
+        setEntities(entityData);
+      }
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -104,6 +111,7 @@ function ScheduledTasksPage() {
         <div className="tasks-loading">{t("tasks.loading")}</div>
       ) : viewMode === "calendar" ? React.createElement(window.TaskCalendarView, {
         tasks: tasks,
+        entities: entities,
         onEdit: function(task) { setEditingId(task.id); setShowForm(true); },
         onToggle: handleToggleStatus,
         onDelete: handleDelete,

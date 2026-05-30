@@ -27,6 +27,7 @@ from cyrene.cc_terminal import CCTerminalSession
 from cyrene import debug
 from webui.routes_map import register_map_routes
 from webui.routes_amap import register_amap_routes
+from webui.routes_entities import register_entity_routes
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
     EXPORTS_DIR as _EXPORTS_DIR,
@@ -539,6 +540,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     router = APIRouter()
     register_map_routes(router)
     register_amap_routes(router)
+    register_entity_routes(router, db_path)
 
     # ---- SPA root ----
 
@@ -2443,7 +2445,18 @@ async def _build_ui_data(tz_name: str = "") -> dict:
         "skills": _build_skills(),
         "settings": _build_settings_meta(),
         "onboarding": get_onboarding_status(),
+        "entities": await _build_entities_summary(),
     }
+
+
+async def _build_entities_summary() -> list:
+    """Return active entities for the SPA bootstrap payload."""
+    try:
+        from cyrene.entities import list_entities
+        return await list_entities(_db_path, status="active", limit=100)
+    except Exception:
+        logger.exception("Failed to build entities summary")
+        return []
 
 
 def _build_user() -> dict:

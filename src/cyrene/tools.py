@@ -1204,6 +1204,68 @@ async def _tool_send_notification(args: dict[str, Any], _bot: Any, _chat_id: int
     return f"Notification failed: {'; '.join(errors)}"
 
 
+async def _tool_track_entity(args, bot, chat_id, db_path, notify_state):
+    from cyrene.entities import create_entity
+    entity = await create_entity(
+        db_path,
+        type=args.get("type", "task"),
+        title=args["title"],
+        content=args.get("content", ""),
+        priority=args.get("priority", "medium"),
+        due_date=args.get("due_date"),
+        people=args.get("people", []),
+        tags=args.get("tags", []),
+        source=args.get("source", "extracted"),
+        confidence=args.get("confidence", 1.0),
+        source_round_id=args.get("source_round_id"),
+    )
+    return f"已记录事务：{entity['title']}（ID: {entity['id'][:8]}）"
+
+
+async def _tool_update_entity(args, bot, chat_id, db_path, notify_state):
+    from cyrene.entities import update_entity
+    field = args["field"]
+    value = args["value"]
+    entity = await update_entity(db_path, args["id"], **{field: value})
+    if entity is None:
+        return f"未找到事务 {args['id']}"
+    return f"已更新事务 {entity['title']} 的 {field}"
+
+
+async def _tool_list_entities(args, bot, chat_id, db_path, notify_state):
+    from cyrene.entities import list_entities
+    entities = await list_entities(
+        db_path,
+        type=args.get("type"),
+        status=args.get("status", "active"),
+        limit=args.get("limit", 50),
+    )
+    if not entities:
+        return "没有找到符合条件的事务。"
+    lines = [f"- [{e['type']}] {e['title']}（{e['status']}）{' 截止：'+e['due_date'] if e.get('due_date') else ''}" for e in entities]
+    return f"找到 {len(entities)} 条事务：\n" + "\n".join(lines)
+
+
+async def _tool_query_entities(args, bot, chat_id, db_path, notify_state):
+    from cyrene.entities import query_entities
+    entities = await query_entities(
+        db_path,
+        q=args.get("q", ""),
+        type=args.get("type"),
+        due_before=args.get("due_before"),
+    )
+    if not entities:
+        return "没有找到匹配的事务。"
+    lines = [f"- [{e['type']}] {e['title']}" for e in entities]
+    return f"找到 {len(entities)} 条事务：\n" + "\n".join(lines)
+
+
+async def _tool_delete_entity(args, bot, chat_id, db_path, notify_state):
+    from cyrene.entities import delete_entity
+    success = await delete_entity(db_path, args["id"], permanent=args.get("permanent", False))
+    return "已删除事务。" if success else f"未找到事务 {args['id']}"
+
+
 # ---------------------------------------------------------------------------
 # TOOL_DEFS
 # ---------------------------------------------------------------------------
@@ -1734,6 +1796,91 @@ TOOL_DEFS = [
             },
         },
     },
+    # ---- Entity / 事务 tools ----
+    {
+        "type": "function",
+        "function": {
+            "name": "track_entity",
+            "description": "Track an entity (task, project, decision, knowledge, relationship, event, resource, idea, problem, habit). Used for explicit recording or implicit extraction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["task","project","decision","knowledge","relationship","event","resource","idea","problem","habit"], "description": "Entity type"},
+                    "title": {"type": "string", "description": "Brief title"},
+                    "content": {"type": "string", "description": "Detailed description"},
+                    "priority": {"type": "string", "enum": ["high","medium","low"], "description": "Priority level"},
+                    "due_date": {"type": "string", "description": "Due date in ISO 8601 format"},
+                    "people": {"type": "array", "items": {"type": "string"}, "description": "Related people"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags"},
+                    "source": {"type": "string", "enum": ["explicit","extracted"], "description": "Source type"},
+                    "confidence": {"type": "number", "description": "Confidence 0-1"},
+                    "source_round_id": {"type": "string", "description": "Source round ID"},
+                },
+                "required": ["type", "title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_entity",
+            "description": "Update an entity field.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Entity ID"},
+                    "field": {"type": "string", "enum": ["status","priority","due_date","content","tags","people","title","effort","metadata"], "description": "Field to update"},
+                    "value": {"description": "New value"},
+                },
+                "required": ["id", "field", "value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_entities",
+            "description": "List entities with optional filtering by type and status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "description": "Filter by type"},
+                    "status": {"type": "string", "enum": ["active","paused","done","archived","abandoned"], "description": "Filter by status"},
+                    "limit": {"type": "integer", "description": "Max results, default 50"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_entities",
+            "description": "Search entities by keyword and filter by due date.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string", "description": "Search keyword"},
+                    "type": {"type": "string", "description": "Filter by type"},
+                    "due_before": {"type": "string", "description": "Due before this date (ISO 8601)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_entity",
+            "description": "Delete or archive an entity. Default is soft delete (archived).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Entity ID"},
+                    "permanent": {"type": "boolean", "description": "true=permanent delete, false=archive"},
+                },
+                "required": ["id"],
+            },
+        },
+    },
 ]
 
 
@@ -1780,6 +1927,11 @@ TOOL_HANDLERS: dict[str, Any] = {
     "browser_click": _tool_browser_click,
     "browser_type": _tool_browser_type,
     "send_notification": _tool_send_notification,
+    "track_entity": _tool_track_entity,
+    "update_entity": _tool_update_entity,
+    "list_entities": _tool_list_entities,
+    "query_entities": _tool_query_entities,
+    "delete_entity": _tool_delete_entity,
 }
 
 # Register map pin tool (deferred import to avoid circular dependency).
