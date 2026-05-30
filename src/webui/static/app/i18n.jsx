@@ -48,6 +48,13 @@ const TRANSLATIONS = {
     "tasks.create": "Create",
     "tasks.cancel": "Cancel",
     "tasks.saving": "Saving...",
+    "tasks.viewList": "List",
+    "tasks.viewCalendar": "Calendar",
+    "tasks.calendar.today": "Today",
+    "tasks.calendar.repeats": "Repeats",
+    "tasks.calendar.noTasks": "No tasks this day",
+    "tasks.calendar.schedule": "Schedule",
+    "tasks.calendar.status": "Status",
 
     // ── Topbar ───────────────────────────────────────────────────────────
     "topbar.dashboard": "Dashboard",
@@ -1053,6 +1060,13 @@ const TRANSLATIONS = {
     "tasks.create": "创建",
     "tasks.cancel": "取消",
     "tasks.saving": "保存中...",
+    "tasks.viewList": "列表",
+    "tasks.viewCalendar": "日程",
+    "tasks.calendar.today": "今天",
+    "tasks.calendar.repeats": "重复",
+    "tasks.calendar.noTasks": "当日无任务",
+    "tasks.calendar.schedule": "调度",
+    "tasks.calendar.status": "状态",
 
     // ── 顶栏 ───────────────────────────────────────────────────────────
     "topbar.dashboard": "仪表盘",

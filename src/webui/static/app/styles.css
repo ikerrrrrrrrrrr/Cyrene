@@ -9739,6 +9739,8 @@ html[data-theme="dark"] .welcome-range .active {
   padding: 20px 24px;
   gap: 16px;
   overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 .tasks-page .page-head {
   display: flex;
@@ -9986,4 +9988,400 @@ html[data-theme="dark"] .welcome-range .active {
 }
 .tasks-error {
   color: #e87070;
+}
+
+/* ============================================================
+   Plans page — Calendar view
+   ============================================================ */
+.tasks-view-toggle {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  overflow: hidden;
+}
+.tasks-view-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-family: var(--mono);
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.tasks-view-btn:not(:last-child) {
+  border-right: 1px solid var(--line);
+}
+.tasks-view-btn:hover {
+  color: var(--text);
+  background: var(--bg-2);
+}
+.tasks-view-btn.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* Calendar container */
+.tasks-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Navigation bar */
+.tasks-cal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.tasks-cal-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tasks-cal-nav-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-m);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 18px;
+  transition: background 120ms, border-color 120ms;
+}
+.tasks-cal-nav-btn:hover {
+  background: var(--bg-2);
+  border-color: var(--line);
+}
+.tasks-cal-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 180px;
+  text-align: center;
+  font-family: var(--sans);
+}
+.tasks-cal-today-btn {
+  padding: 4px 14px;
+  font-size: 12px;
+  font-family: var(--mono);
+  border-radius: var(--r-m);
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+.tasks-cal-today-btn:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+
+/* Grid layout */
+.tasks-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: auto repeat(6, 1fr);
+  border: 1px solid var(--line);
+  border-radius: var(--r-l);
+  overflow: hidden;
+  flex: 1;
+}
+.tasks-cal-day-header {
+  padding: 8px 4px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+
+/* Day cells */
+.tasks-cal-day {
+  min-height: 0;
+  padding: 4px 6px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+  cursor: pointer;
+  transition: background 120ms;
+  position: relative;
+}
+.tasks-cal-day:nth-child(7n) {
+  border-right: none;
+}
+.tasks-cal-day:hover {
+  background: var(--bg-2);
+}
+.tasks-cal-day--other {
+  background: var(--bg);
+}
+.tasks-cal-day--today {
+  background: var(--accent-faint);
+}
+.tasks-cal-day--selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.tasks-cal-day--today .tasks-cal-day-num {
+  color: var(--accent);
+  font-weight: 700;
+}
+.tasks-cal-day-num {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  font-family: var(--sans);
+}
+.tasks-cal-day--other .tasks-cal-day-num {
+  color: var(--text-4);
+}
+
+/* Task indicator dots */
+.tasks-cal-task-dots {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+  padding: 0 2px;
+}
+.tasks-cal-task-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tasks-cal-task-dot--active {
+  background: var(--accent);
+}
+.tasks-cal-task-dot--paused {
+  background: var(--text-4);
+}
+.tasks-cal-task-dot--recurring {
+  box-shadow: 0 0 0 1px var(--info);
+}
+.tasks-cal-task-more {
+  font-size: 9px;
+  color: var(--text-4);
+  font-family: var(--mono);
+}
+
+/* Day popover (modal pattern) */
+.tasks-cal-popover-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 15vh;
+}
+.tasks-cal-popover {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  min-width: 300px;
+  max-width: 420px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.tasks-cal-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+}
+.tasks-cal-popover-head button {
+  background: none;
+  border: none;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--r-s);
+}
+.tasks-cal-popover-head button:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+.tasks-cal-popover-item {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tasks-cal-popover-item:last-child {
+  border-bottom: none;
+}
+.tasks-cal-popover-item-prompt {
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tasks-cal-popover-item-prompt .tasks-status-dot {
+  margin-left: 0;
+}
+.tasks-cal-popover-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tasks-cal-popover-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-3);
+}
+.tasks-cal-popover-item-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+.tasks-cal-popover-item-actions button {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: var(--r-s);
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms, color 120ms;
+}
+.tasks-cal-popover-item-actions button:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+.tasks-cal-popover-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+/* Recurring badge */
+.tasks-cal-recurring-badge {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--info);
+  color: var(--bg-1);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-family: var(--mono);
+}
+
+/* Month/year picker */
+.tasks-cal-title-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: var(--r-s);
+  transition: background 120ms;
+}
+.tasks-cal-title-btn:hover {
+  background: var(--bg-2);
+}
+.tasks-cal-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.2);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.tasks-cal-picker {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 240px;
+}
+.tasks-cal-picker-year {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--sans);
+}
+.tasks-cal-picker-year-btn {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-m);
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 120ms;
+}
+.tasks-cal-picker-year-btn:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+.tasks-cal-picker-months {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+.tasks-cal-picker-month {
+  padding: 6px 4px;
+  text-align: center;
+  border-radius: var(--r-m);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--sans);
+  transition: background 120ms, color 120ms, border-color 120ms;
+}
+.tasks-cal-picker-month:hover {
+  background: var(--bg-2);
+  color: var(--text);
+}
+.tasks-cal-picker-month--current {
+  background: var(--accent-faint);
+  color: var(--accent);
+  font-weight: 600;
+  border-color: var(--accent);
 }

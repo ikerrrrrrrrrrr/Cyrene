@@ -15,6 +15,7 @@ function ScheduledTasksPage() {
   const [error, setError] = useStateT(null);
   const [editingId, setEditingId] = useStateT(null);
   const [showForm, setShowForm] = useStateT(false);
+  const [viewMode, setViewMode] = useStateT("list");
 
   async function loadTasks() {
     try {
@@ -62,9 +63,15 @@ function ScheduledTasksPage() {
     <div className="page tasks-page">
       <div className="page-head">
         <h2>{t("tasks.title")}</h2>
-        <button className="iconbtn tasks-add-btn" onClick={() => { setEditingId(null); setShowForm(true); }}>
-          + {t("tasks.newTask")}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="tasks-view-toggle">
+            <button className={"tasks-view-btn" + (viewMode === "list" ? " active" : "")} onClick={() => setViewMode("list")}>{t("tasks.viewList")}</button>
+            <button className={"tasks-view-btn" + (viewMode === "calendar" ? " active" : "")} onClick={() => setViewMode("calendar")}>{t("tasks.viewCalendar")}</button>
+          </div>
+          <button className="iconbtn tasks-add-btn" onClick={() => { setEditingId(null); setShowForm(true); }}>
+            + {t("tasks.newTask")}
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -95,7 +102,12 @@ function ScheduledTasksPage() {
 
       {loading ? (
         <div className="tasks-loading">{t("tasks.loading")}</div>
-      ) : tasks.length === 0 ? (
+      ) : viewMode === "calendar" ? React.createElement(window.TaskCalendarView, {
+        tasks: tasks,
+        onEdit: function(task) { setEditingId(task.id); setShowForm(true); },
+        onToggle: handleToggleStatus,
+        onDelete: handleDelete,
+      }) : tasks.length === 0 ? (
         <div className="tasks-empty">{t("tasks.empty")}</div>
       ) : (
         <div className="tasks-list">
