@@ -27,6 +27,28 @@ function renderMarkdown(text) {
   return escapeHtml(source).replace(/\n/g, "<br>");
 }
 
+function extractHtmlBlocks(text) {
+  var source = String(text || "");
+  var parts = [];
+  var regex = /```html\s*\n([\s\S]*?)```/g;
+  var lastIndex = 0;
+  var match;
+  while ((match = regex.exec(source)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ type: "markdown", content: source.slice(lastIndex, match.index) });
+    }
+    parts.push({ type: "html", content: match[1].trim() });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < source.length) {
+    parts.push({ type: "markdown", content: source.slice(lastIndex) });
+  }
+  return {
+    hasBlocks: parts.some(function (p) { return p.type === "html"; }),
+    parts: parts.length > 0 ? parts : [{ type: "markdown", content: source }]
+  };
+}
+
 function escapeRegExp(value) {
   return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -809,6 +831,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [sidebarWidth, setSidebarWidth] = useState(function() {
     try { return parseInt(localStorage.getItem("cyrene-sidebar-width") || "360", 10) || 360; } catch(e) { return 360; }
   });
+  const [activeHtmlContent, setActiveHtmlContent] = useState(null);
+  const [activePdfUrl, setActivePdfUrl] = useState(null);
+  const [activePdfName, setActivePdfName] = useState("");
+  const [activePptUrl, setActivePptUrl] = useState(null);
+  const [activePptName, setActivePptName] = useState("");
+  const [htmlViewTab, setHtmlViewTab] = useState("rendered");
   const [ccModal, setCcModal] = useState(null);
   const [shellModal, setShellModal] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
@@ -1967,6 +1995,24 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     userAtBottomRef.current = isNearBottom(el, 60);
   }
 
+  function handleShowHtml(content) {
+    setActiveHtmlContent(content);
+    setHtmlViewTab("rendered");
+    setRightSidebarView("html");
+  }
+
+  function handleShowPdf(url, name) {
+    setActivePdfUrl(url);
+    setActivePdfName(name || "");
+    setRightSidebarView("pdf");
+  }
+
+  function handleShowPpt(url, name) {
+    setActivePptUrl(url);
+    setActivePptName(name || "");
+    setRightSidebarView("ppt");
+  }
+
   var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[contextKey(c)]; });
   var visibleKeys = visibleChips.map(function (c) { return contextKey(c); });
   var addableContexts = [];
@@ -2039,6 +2085,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                 key={entry.renderKey}
                 msg={entry.msg}
                 assistantName={DATA.assistantName}
+                onShowHtml={handleShowHtml}
+                onShowPdf={handleShowPdf}
+                onShowPpt={handleShowPpt}
               />
             );
           })}
@@ -2079,6 +2128,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                   }
                   send({ text: retryData.text, attachments: retryData.attachments, guideRoundId: retryData.roundId, retry: true, retryRequestId: retryData.requestId });
                 } : null}
+                onShowHtml={handleShowHtml}
+                onShowPdf={handleShowPdf}
+                onShowPpt={handleShowPpt}
               />
             );
           })}
@@ -2534,12 +2586,19 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         onViewChange={setRightSidebarView}
         roundId={session.currentRoundId}
         onResize={setSidebarWidth}
+        activeHtmlContent={activeHtmlContent}
+        activePdfUrl={activePdfUrl}
+        activePdfName={activePdfName}
+        activePptUrl={activePptUrl}
+        activePptName={activePptName}
+        htmlViewTab={htmlViewTab}
+        onHtmlViewTabChange={setHtmlViewTab}
       />
     </div>
   );
 }
 
-function Message({ msg, assistantName, onRetry }) {
+function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt }) {
   const { t } = useI18n();
 
   if (msg.kind === "compacted") {
@@ -2553,7 +2612,10 @@ function Message({ msg, assistantName, onRetry }) {
   // Archived context — read-only, with markdown for agent/system messages
   if (msg.isArchivedContext) {
     var archAttachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
-    var archBody = (msg.role === "agent" || msg.role === "system") && msg.body
+    var archIsAgent = msg.role === "agent" || msg.role === "system";
+    var archExtracted = archIsAgent && msg.body ? extractHtmlBlocks(msg.body) : null;
+    var archHasHtml = archExtracted && archExtracted.hasBlocks;
+    var archBody = archIsAgent && msg.body && !archHasHtml
       ? renderMarkdown(injectAttachmentLinks(msg.body, archAttachments))
       : msg.body;
     return (
@@ -2566,7 +2628,19 @@ function Message({ msg, assistantName, onRetry }) {
           </span>
           <span className="msg-time">{msg.time}</span>
         </div>
-        {archBody && archBody !== msg.body ? (
+        {archHasHtml ? (
+          <div className="msg-body markdown">
+            {archExtracted.parts.map(function(part, idx) {
+              if (part.type === "markdown" && part.content.trim()) {
+                return <div key={idx} dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(part.content, archAttachments)) }} />;
+              }
+              if (part.type === "html" && part.content) {
+                return <div key={idx} className="html-block-placeholder"><button className="html-show-btn" onClick={function() { onShowHtml && onShowHtml(part.content); }}>{t("chat.html.showBtn")}</button></div>;
+              }
+              return null;
+            })}
+          </div>
+        ) : archBody && archBody !== msg.body ? (
           <div className="msg-body markdown" dangerouslySetInnerHTML={{__html: archBody}} />
         ) : (
           <div className="msg-body">{msg.body}</div>
@@ -2652,11 +2726,24 @@ function Message({ msg, assistantName, onRetry }) {
         </details>
       )}
 
-      {msg.body && (
-        (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
-          ? <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: markdownBody }}></div>
-          : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
-      )}
+      {msg.body && (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
+        ? (function() {
+            var extracted = extractHtmlBlocks(msg.body);
+            if (!extracted.hasBlocks) {
+              return <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(msg.body, attachments)) }} />;
+            }
+            return <div className="msg-body markdown">{extracted.parts.map(function(part, idx) {
+              if (part.type === "markdown" && part.content.trim()) {
+                return <div key={idx} dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(part.content, attachments)) }} />;
+              }
+              if (part.type === "html" && part.content) {
+                return <div key={idx} className="html-block-placeholder"><button className="html-show-btn" onClick={function() { onShowHtml && onShowHtml(part.content); }}>{t("chat.html.showBtn")}</button></div>;
+              }
+              return null;
+            })}</div>;
+          })()
+        : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
+      }
       {(msg.role === "agent" || msg.role === "system") && msg.body && !msg.streamingReply && (
         <div className="msg-actions">
           <button className="msg-action-btn" onClick={function () { navigator.clipboard.writeText(msg.body); }} title={t("chat.copyAction") || "复制"}>
@@ -2673,10 +2760,13 @@ function Message({ msg, assistantName, onRetry }) {
         <div className="msg-attachments">
           {attachments.map(function (file, index) {
             var isImage = String(file.content_type || "").startsWith("image/");
+            var isPdf = String(file.content_type || "") === "application/pdf";
+            var isPpt = String(file.content_type || "") === "application/vnd.ms-powerpoint" || String(file.content_type || "") === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+            var isHtml = String(file.content_type || "") === "text/html" || String(file.content_type || "") === "application/xhtml+xml";
             var label = String(file.name || "file");
             var kind = String(file.kind || "file").toUpperCase();
             return (
-              <div className={"msg-attachment" + (isImage ? " image" : "")} key={file.id || (file.name + "_" + index)}>
+              <div className={"msg-attachment" + (isImage ? " image" : "") + (isPdf ? " pdf" : "") + (isPpt ? " pdf" : "")} key={file.id || (file.name + "_" + index)}>
                 {isImage && file.url ? (
                   <a className="msg-attachment-image" href={file.url} target="_blank" rel="noreferrer">
                     <img
@@ -2685,6 +2775,32 @@ function Message({ msg, assistantName, onRetry }) {
                       style={attachmentThumbStyle(file, 360, 260)}
                     />
                   </a>
+                ) : isPdf && file.url ? (
+                  <button className="pdf-show-btn" onClick={function() { onShowPdf && onShowPdf(file.url, file.name); }}>
+                    {t("chat.pdf.showBtn")}
+                  </button>
+                ) : isPpt && file.url ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button className="pdf-show-btn" onClick={function() { onShowPpt && onShowPpt(file.url, file.name); }}>
+                      {t("chat.ppt.showBtn")}
+                    </button>
+                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                  </div>
+                ) : isHtml && file.url ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button className="html-show-btn" onClick={function() {
+                      fetch(file.url).then(function(r) { return r.text(); }).then(function(html) {
+                        onShowHtml && onShowHtml(html);
+                      }).catch(function() {});
+                    }}>
+                      {t("chat.html.showBtn")}
+                    </button>
+                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                  </div>
                 ) : (
                   <a className="msg-attachment-file" href={file.url || "#"} download={label} target="_blank" rel="noreferrer" aria-label={label}>
                     <span className="msg-attachment-kind">{kind}</span>
@@ -2784,25 +2900,45 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange }) {
   const { t } = useI18n();
   const sideRef = useRef(null);
+  const hasHtmlContent = Boolean(activeHtmlContent);
+  const hasPdfContent = Boolean(activePdfUrl);
+  const hasPptContent = Boolean(activePptUrl);
+  const extraViewOptions = [];
+  if (hasHtmlContent) extraViewOptions.push({ id: "html", label: t("chat.html.sideTitle") });
+  if (hasPdfContent) extraViewOptions.push({ id: "pdf", label: t("chat.pdf.sideTitle") });
+  if (hasPptContent) extraViewOptions.push({ id: "ppt", label: t("chat.ppt.sideTitle") });
   const allViewOptions = [
     { id: "overview", label: t("chat.side.overview") },
+  ].concat(extraViewOptions).concat([
     { id: "agents", label: t("chat.side.agents") },
     { id: "shells", label: t("chat.side.shells") },
-  ];
-  const isMinimalMode = subagents.length === 0 && session.shells.length === 0;
+  ]);
+  const hasExtraContent = hasHtmlContent || hasPdfContent || hasPptContent;
+  const isMinimalMode = !hasExtraContent && subagents.length === 0 && session.shells.length === 0;
   const viewOptions = isMinimalMode ? [{ id: "overview", label: t("chat.side.overview") }] : allViewOptions;
   const showShells = view === "shells";
   const showAgents = view === "agents";
   const showSummary = view === "overview";
+  const showHtmlView = view === "html" && hasHtmlContent;
+  const showPdfView = view === "pdf" && hasPdfContent;
 
   useEffect(function() {
     if (isMinimalMode && view !== "overview") {
       onViewChange && onViewChange("overview");
     }
-  }, [isMinimalMode, view]);
+    if (view === "html" && !hasHtmlContent) {
+      onViewChange && onViewChange("overview");
+    }
+    if (view === "pdf" && !hasPdfContent) {
+      onViewChange && onViewChange("overview");
+    }
+    if (view === "ppt" && !hasPptContent) {
+      onViewChange && onViewChange("overview");
+    }
+  }, [isMinimalMode, view, hasHtmlContent, hasPdfContent, hasPptContent]);
 
   function onHandleMouseDown(e) {
     e.preventDefault();
@@ -2824,6 +2960,75 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     document.addEventListener("mouseup", onUp);
   }
 
+  function renderSideContent() {
+    if (view === "html" && hasHtmlContent) {
+      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        <HtmlViewPanel htmlContent={activeHtmlContent} tab={htmlViewTab} onTabChange={onHtmlViewTabChange} />
+      </div>;
+    }
+    if (view === "pdf" && hasPdfContent) {
+      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        <PdfViewPanel pdfUrl={activePdfUrl} pdfName={activePdfName} />
+      </div>;
+    }
+    if (view === "ppt" && hasPptContent) {
+      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        <PdfViewPanel pdfUrl={activePptUrl} pdfName={activePptName} />
+      </div>;
+    }
+    if (view === "shells") {
+      return <div className="side-section" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+        <div className="side-head">
+          {t("chat.activeShells")}
+          <span className="count">{session.shells.length}</span>
+        </div>
+        {session.shells.length === 0 && (
+          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
+        )}
+        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} onOpenShellModal={onOpenShellModal} />)}
+      </div>;
+    }
+    if (view === "agents") {
+      return <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
+        <AgentGroupChat roundId={roundId} subagents={subagents} session={session} />
+      </div>;
+    }
+    // default: overview
+    return <div className="side-section" style={{ borderBottom: 0 }}>
+      <SideTokenRing tokens={session.summary.tokens} />
+      {(() => {
+        var total = session.main_agent_context_tokens != null ? session.main_agent_context_tokens : (session.main_agent_total_tokens != null ? session.main_agent_total_tokens : session.summary.total_tokens);
+        var limit = session.ctx_limit || 0;
+        if (limit > 0 && total != null) {
+          var pct = Math.min(Math.round(total / limit * 100), 100);
+          var barColor = pct > 90 ? "#e74c3c" : pct > 70 ? "#f39c12" : "#4caf50";
+          var fmt = function (n) {
+            return n >= 1000000 ? (n / 1000000).toFixed(1) + "m" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+          };
+          return (
+            <div className="ctx-bar-overview">
+              <span className="ctx-bar-overview-label">上下文</span>
+              <span className="ctx-bar-overview-track">
+                <span className="ctx-bar-overview-fill" style={{ width: pct + "%", background: barColor }}></span>
+              </span>
+              <span className="ctx-bar-overview-nums">{fmt(total)} / {fmt(limit)}</span>
+            </div>
+          );
+        }
+        return null;
+      })()}
+      <div className="side-head">{t("chat.runSummary")}</div>
+      <div className="side-overview-kv">
+        <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
+        <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
+        <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
+        <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
+        <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
+      </div>
+      <SideModelUsage />
+    </div>;
+  }
+
   return (
     <div className="chat-side" ref={sideRef}>
       <div className="chat-side-resize-handle" onMouseDown={onHandleMouseDown} />
@@ -2843,55 +3048,96 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
           })}
         </div>
 
-        {showShells && <div className="side-section" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
-          <div className="side-head">
-            {t("chat.activeShells")}
-            <span className="count">{session.shells.length}</span>
-          </div>
-          {session.shells.length === 0 && (
-            <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
-          )}
-          {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} onOpenShellModal={onOpenShellModal} />)}
-        </div>}
-
-        {showAgents && <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
-          <AgentGroupChat roundId={roundId} subagents={subagents} session={session} />
-        </div>}
-
-        {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
-          <SideTokenRing tokens={session.summary.tokens} />
-          {(() => {
-            var total = session.main_agent_context_tokens != null ? session.main_agent_context_tokens : (session.main_agent_total_tokens != null ? session.main_agent_total_tokens : session.summary.total_tokens);
-            var limit = session.ctx_limit || 0;
-            if (limit > 0 && total != null) {
-              var pct = Math.min(Math.round(total / limit * 100), 100);
-              var barColor = pct > 90 ? "#e74c3c" : pct > 70 ? "#f39c12" : "#4caf50";
-              var fmt = function (n) {
-                return n >= 1000000 ? (n / 1000000).toFixed(1) + "m" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
-              };
-              return (
-                <div className="ctx-bar-overview">
-                  <span className="ctx-bar-overview-label">上下文</span>
-                  <span className="ctx-bar-overview-track">
-                    <span className="ctx-bar-overview-fill" style={{ width: pct + "%", background: barColor }}></span>
-                  </span>
-                  <span className="ctx-bar-overview-nums">{fmt(total)} / {fmt(limit)}</span>
-                </div>
-              );
-            }
-            return null;
-          })()}
-          <div className="side-head">{t("chat.runSummary")}</div>
-          <div className="side-overview-kv">
-            <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
-            <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
-            <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
-            <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
-            <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
-          </div>
-          <SideModelUsage />
-        </div>}
+        {renderSideContent()}
       </div>
+    </div>
+  );
+}
+
+// ── HTML Viewer Panel ──
+
+function HtmlViewPanel({ htmlContent, tab, onTabChange }) {
+  const { t, lang } = useI18n();
+  const [sourceText, setSourceText] = useState(htmlContent || "");
+  const [copied, setCopied] = useState(false);
+
+  useEffect(function () {
+    setSourceText(htmlContent || "");
+    setCopied(false);
+  }, [htmlContent]);
+
+  if (!htmlContent) {
+    return <div className="html-view-container" style={{ padding: 24, color: "var(--text-3)", fontSize: 12 }}>{t("chat.html.noContent")}</div>;
+  }
+
+  function handleCopy() {
+    navigator.clipboard.writeText(sourceText).then(function () {
+      setCopied(true);
+      setTimeout(function () { setCopied(false); }, 2000);
+    }).catch(function () {});
+  }
+
+  return (
+    <div className="html-view-container">
+      <div className="html-view-tabs">
+        <button type="button" className={"html-view-tab" + (tab === "source" ? " active" : "")} onClick={function () { onTabChange && onTabChange("source"); }}>{t("chat.html.sourceTab")}</button>
+        <button type="button" className={"html-view-tab" + (tab === "rendered" ? " active" : "")} onClick={function () { onTabChange && onTabChange("rendered"); }}>{t("chat.html.renderedTab")}</button>
+      </div>
+      {tab === "source" ? (
+        <div className="html-source-panel">
+          <textarea className="html-source-textarea" value={sourceText} onChange={function (e) { setSourceText(e.target.value); }} spellCheck={false} />
+          <div className="html-source-actions" style={{ display: "flex", padding: "8px 10px", borderTop: "1px solid var(--line)", gap: 6 }}>
+            <button type="button" className="msg-action-btn" onClick={handleCopy} title={t("chat.html.sourceTab")}>
+              {copied ? (lang === "zh" ? "已复制" : "Copied") : (lang === "zh" ? "复制" : "Copy")}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <iframe className="html-rendered-iframe" sandbox="allow-scripts" srcDoc={sourceText} title="HTML Preview" />
+      )}
+    </div>
+  );
+}
+
+// ── PDF / PPT Viewer Panel ──
+
+function PdfViewPanel({ pdfUrl, pdfName }) {
+  const { t } = useI18n();
+  const [objectUrl, setObjectUrl] = useState(null);
+  var urlRef = useRef(null);
+
+  useEffect(function () {
+    setObjectUrl(null);
+    if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
+    if (!pdfUrl) return;
+    var cancelled = false;
+    fetch(pdfUrl).then(function (r) { return r.blob(); }).then(function (blob) {
+      if (cancelled) return;
+      var url = URL.createObjectURL(blob);
+      urlRef.current = url;
+      setObjectUrl(url);
+    }).catch(function () {});
+    return function () { cancelled = true; };
+  }, [pdfUrl]);
+
+  if (!pdfUrl) {
+    return <div className="side-section" style={{ borderBottom: 0, padding: 24, color: "var(--text-3)", fontSize: 12 }}>{t("chat.pdf.noContent")}</div>;
+  }
+
+  return (
+    <div className="html-view-container">
+      {pdfName && (
+        <div style={{ padding: "8px 12px", fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)", borderBottom: "1px solid var(--line)", flexShrink: 0 }}>
+          {pdfName}
+        </div>
+      )}
+      {objectUrl ? (
+        <embed className="pdf-view-iframe" src={objectUrl} type="application/pdf" title={pdfName || "PDF"} />
+      ) : (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)", fontSize: 12 }}>
+          {t("chat.pdf.noContent")}
+        </div>
+      )}
     </div>
   );
 }

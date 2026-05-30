@@ -437,6 +437,23 @@ const TRANSLATIONS = {
     "chat.side.modelUsage": "Models",
     "chat.side.cacheHitRate": "Cache hit",
 
+    // ── HTML Sidebar ─────────────────────────────────────────────────────
+    "chat.html.showBtn": "Show HTML",
+    "chat.html.sideTitle": "HTML",
+    "chat.html.sourceTab": "Source",
+    "chat.html.renderedTab": "Rendered",
+    "chat.html.noContent": "No HTML content",
+
+    // ── PDF Sidebar ──────────────────────────────────────────────────────
+    "chat.pdf.showBtn": "View PDF",
+    "chat.pdf.sideTitle": "PDF",
+    "chat.pdf.noContent": "No PDF selected",
+
+    // ── PPT Sidebar ──────────────────────────────────────────────────────
+    "chat.ppt.showBtn": "View PPT",
+    "chat.ppt.sideTitle": "PPT",
+    "chat.ppt.noContent": "No PPT selected",
+
     // ── Agents Page ──────────────────────────────────────────────────────
     "agents.rounds": "Rounds",
     "agents.noRounds": "No rounds yet.",
@@ -1419,6 +1436,23 @@ const TRANSLATIONS = {
     "chat.side.all": "全部",
     "chat.side.modelUsage": "模型",
     "chat.side.cacheHitRate": "缓存命中率",
+
+    // ── HTML 侧栏 ────────────────────────────────────────────────────────
+    "chat.html.showBtn": "显示 HTML",
+    "chat.html.sideTitle": "网页",
+    "chat.html.sourceTab": "源码",
+    "chat.html.renderedTab": "渲染",
+    "chat.html.noContent": "暂无 HTML 内容",
+
+    // ── PDF 侧栏 ─────────────────────────────────────────────────────────
+    "chat.pdf.showBtn": "查看 PDF",
+    "chat.pdf.sideTitle": "PDF",
+    "chat.pdf.noContent": "暂无 PDF",
+
+    // ── PPT 侧栏 ─────────────────────────────────────────────────────────
+    "chat.ppt.showBtn": "查看 PPT",
+    "chat.ppt.sideTitle": "PPT",
+    "chat.ppt.noContent": "暂无 PPT",
 
     // ── 代理流程页 ──────────────────────────────────────────────────────
     "agents.rounds": "轮次",

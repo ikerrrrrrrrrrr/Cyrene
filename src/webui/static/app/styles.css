@@ -7050,7 +7050,7 @@ html[data-text-size="large"] .setup-section h2 { font-size: 25px; }
 
 .chat-side-switcher {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   gap: 4px;
   padding: 10px;
   border-bottom: 1px solid #e6e6e3;
@@ -7083,6 +7083,117 @@ html[data-text-size="large"] .setup-section h2 { font-size: 25px; }
 .chat-side-switcher.single button {
   width: auto;
   min-width: 80px;
+}
+
+/* ── HTML / PDF sidebar content viewer ── */
+
+.html-block-placeholder {
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+}
+
+.html-show-btn,
+.pdf-show-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms, color 120ms;
+}
+
+.html-show-btn:hover,
+.pdf-show-btn:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.msg-attachment.pdf {
+  display: flex;
+  align-items: center;
+}
+
+.html-view-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.html-view-tabs {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 0 12px;
+}
+
+.html-view-tab {
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.html-view-tab.active,
+.html-view-tab:hover {
+  color: var(--accent);
+}
+
+.html-view-tab.active {
+  border-bottom-color: var(--accent);
+}
+
+.html-source-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.html-source-textarea {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  resize: none;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  background: var(--bg-0);
+  color: var(--text-1);
+  outline: none;
+  tab-size: 2;
+}
+
+.html-source-textarea:focus {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.html-rendered-iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.pdf-view-iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
 }
 
 .app[data-screen-label="Cyrene · chat"] .chat-layout {
