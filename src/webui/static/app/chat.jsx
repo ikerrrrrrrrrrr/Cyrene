@@ -2915,10 +2915,11 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
   ].concat(extraViewOptions).concat([
     { id: "agents", label: t("chat.side.agents") },
     { id: "shells", label: t("chat.side.shells") },
+    { id: "map", label: t("chat.side.map") },
   ]);
   const hasExtraContent = hasHtmlContent || hasPdfContent || hasPptContent;
   const isMinimalMode = !hasExtraContent && subagents.length === 0 && session.shells.length === 0;
-  const viewOptions = isMinimalMode ? [{ id: "overview", label: t("chat.side.overview") }] : allViewOptions;
+  const viewOptions = isMinimalMode ? [{ id: "overview", label: t("chat.side.overview") }, { id: "map", label: t("chat.side.map") }] : allViewOptions;
   const showShells = view === "shells";
   const showAgents = view === "agents";
   const showSummary = view === "overview";
@@ -2926,7 +2927,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
   const showPdfView = view === "pdf" && hasPdfContent;
 
   useEffect(function() {
-    if (isMinimalMode && view !== "overview") {
+    if (isMinimalMode && view !== "overview" && view !== "map") {
       onViewChange && onViewChange("overview");
     }
     if (view === "html" && !hasHtmlContent) {
@@ -2991,6 +2992,11 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     if (view === "agents") {
       return <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
         <AgentGroupChat roundId={roundId} subagents={subagents} session={session} />
+      </div>;
+    }
+    if (view === "map") {
+      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        <MapView />
       </div>;
     }
     // default: overview

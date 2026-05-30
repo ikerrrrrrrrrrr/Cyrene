@@ -303,6 +303,14 @@ function connectEvents() {
         ].includes(data.type)) {
           scheduleRealtimeRefresh();
         }
+
+        // Map pin events — update global state for the MapView component.
+        if (data.type === "map_pin") {
+          DATA.map = DATA.map || {};
+          DATA.map.pins = data.pins || [];
+          DATA.map.routes = data.routes || [];
+          __bump();
+        }
       } catch (e) { /* swallow */ }
     };
     es.onerror = () => {

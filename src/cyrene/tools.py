@@ -1762,6 +1762,13 @@ TOOL_HANDLERS: dict[str, Any] = {
     "send_notification": _tool_send_notification,
 }
 
+# Register map pin tool (deferred import to avoid circular dependency).
+def _register_map_tool() -> None:
+    from cyrene.map_pin_tool import register_to
+    register_to(TOOL_DEFS, TOOL_HANDLERS)
+
+_register_map_tool()
+
 
 def get_active_tool_defs() -> list[dict]:
     """Return TOOL_DEFS filtered by enabled tools, plus MCP tools from connected servers.
