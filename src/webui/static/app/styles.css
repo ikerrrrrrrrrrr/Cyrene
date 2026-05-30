@@ -10525,19 +10525,6 @@ html[data-theme="dark"] .welcome-range .active {
   color: var(--text-4);
   font-size: 0.9rem;
 }
-.entities-sample-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-  padding: 8px 14px;
-  border-radius: var(--r-m);
-  background: var(--accent-faint);
-  border: 1px solid var(--accent-dim);
-  color: var(--accent);
-  font-size: 12px;
-  font-family: var(--mono);
-}
 
 /* ── Entity card ── */
 .entity-card {

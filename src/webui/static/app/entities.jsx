@@ -54,23 +54,6 @@
     });
   }
 
-  // ── 示例数据 ──────────────────────────────────────────────────────
-
-  var SAMPLE_ENTITIES = [
-    { id: "sample_1", type: "project", title: "Cyrene v2.0 重构计划", content: "架构升级、性能优化和新功能开发的整体规划", status: "active", priority: "high", tags: ["架构", "计划"], people: ["Luciano"], due_date: new Date(Date.now() + 86400000 * 30).toISOString(), created_at: new Date(Date.now() - 86400000 * 7).toISOString(), confidence: 0.92, source: "user" },
-    { id: "sample_2", type: "task", title: "完成数据迁移脚本", content: "将旧版数据迁移到新的向量存储格式", status: "active", priority: "high", tags: ["后端", "数据"], people: ["Luciano"], due_date: new Date(Date.now() + 86400000 * 5).toISOString(), created_at: new Date(Date.now() - 86400000 * 3).toISOString(), confidence: 0.85, source: "agent" },
-    { id: "sample_3", type: "knowledge", title: "FastAPI 路由注册最佳实践", content: "使用 APIRouter 组织路由，避免循环导入", status: "active", priority: "medium", tags: ["Python", "后端"], created_at: new Date(Date.now() - 86400000 * 14).toISOString(), confidence: 0.98, source: "user" },
-    { id: "sample_4", type: "task", title: "优化前端打包体积", content: "分析 webpack bundle，移除未使用的依赖", status: "paused", priority: "medium", tags: ["前端", "性能"], people: ["Luciano"], due_date: new Date(Date.now() + 86400000 * 14).toISOString(), created_at: new Date(Date.now() - 86400000 * 5).toISOString(), confidence: 0.72, source: "user" },
-    { id: "sample_5", type: "decision", title: "采用 TailwindCSS 作为样式方案", content: "统一 UI 开发体验，减少自定义 CSS 维护成本", status: "done", priority: "medium", tags: ["前端", "架构"], people: ["Luciano"], created_at: new Date(Date.now() - 86400000 * 30).toISOString(), confidence: 0.95, source: "user" },
-    { id: "sample_6", type: "habit", title: "每日代码审查", content: "每天花 15 分钟审查团队 PR", status: "pending", priority: "low", tags: ["习惯", "团队"], due_date: new Date(Date.now() + 86400000 * 60).toISOString(), created_at: new Date(Date.now() - 86400000 * 2).toISOString(), confidence: 0.65, source: "agent" },
-    { id: "sample_7", type: "idea", title: "AI 驱动的代码片段推荐", content: "根据当前编辑上下文自动推荐相关代码片段", status: "pending", priority: "low", tags: ["AI", "功能"], created_at: new Date(Date.now() - 86400000 * 10).toISOString(), confidence: 0.45, source: "user" },
-    { id: "sample_8", type: "event", title: "团队技术分享会", content: "每月一次的内部技术交流", status: "active", priority: "medium", tags: ["团队", "活动"], due_date: new Date(Date.now() + 86400000 * 20).toISOString(), created_at: new Date(Date.now() - 86400000 * 15).toISOString(), confidence: 0.88, source: "user" },
-    { id: "sample_9", type: "problem", title: "生产环境内存泄漏排查", content: "长时间运行后内存占用持续增长，需定位泄漏源", status: "active", priority: "high", tags: ["后端", "运维"], people: ["Luciano"], due_date: new Date(Date.now() + 86400000 * 3).toISOString(), created_at: new Date(Date.now() - 86400000 * 1).toISOString(), confidence: 0.78, source: "agent" },
-    { id: "sample_10", type: "resource", title: "React 18 迁移指南", content: "官方迁移文档及注意事项汇总", status: "done", priority: "low", tags: ["前端", "文档"], created_at: new Date(Date.now() - 86400000 * 20).toISOString(), confidence: 0.96, source: "user" },
-    { id: "sample_11", type: "relationship", title: "与第三方 API 合作方对接", content: "处理 API 密钥和接口调用频率限制", status: "pending", priority: "medium", tags: ["对接", "API"], people: ["Luciano"], due_date: new Date(Date.now() + 86400000 * 10).toISOString(), created_at: new Date(Date.now() - 86400000 * 4).toISOString(), confidence: 0.82, source: "user" },
-    { id: "sample_12", type: "task", title: "编写单元测试覆盖核心模块", content: "核心模块测试覆盖率提升至 80%", status: "active", priority: "high", tags: ["测试", "质量"], due_date: new Date(Date.now() + 86400000 * 7).toISOString(), created_at: new Date(Date.now() - 86400000 * 2).toISOString(), confidence: 0.7, source: "user" },
-  ];
-
   // ── API 函数 ──────────────────────────────────────────────────────
 
   async function fetchEntities(params) {
@@ -750,9 +733,7 @@
     var showForm = useStateE(false);
     var setShowForm = showForm[1];
     var showFormVal = showForm[0];
-    var useSample = useStateE(false);
-    var setUseSample = useSample[1];
-    var useSampleVal = useSample[0];
+
     function reload() {
       setLoading(true);
       var params = {};
@@ -760,18 +741,11 @@
       if (statusFilterVal) params.status = statusFilterVal;
       if (searchQVal) params.q = searchQVal;
       fetchEntities(params).then(function (data) {
-        if (data && data.length > 0) {
-          setEntities(data);
-          setUseSample(false);
-        } else {
-          setEntities(SAMPLE_ENTITIES);
-          setUseSample(true);
-        }
+        setEntities(data || []);
         setLoading(false);
       }).catch(function (err) {
         console.error(err);
-        setEntities(SAMPLE_ENTITIES);
-        setUseSample(true);
+        setEntities([]);
         setLoading(false);
       });
     }
@@ -781,30 +755,11 @@
     }, [typeFilterVal, statusFilterVal, searchQVal]);
 
     function handleStatusChange(id, newStatus) {
-      if (useSampleVal) {
-        setEntities(function (prev) {
-          return prev.map(function (e) {
-            return e.id === id ? Object.assign({}, e, { status: newStatus }) : e;
-          });
-        });
-        return;
-      }
       var promise = updateEntity(id, { status: newStatus });
       promise.then(function () { reload(); }).catch(function (e) { console.error(e); });
     }
 
     function handleFieldChange(id, field, value) {
-      if (useSampleVal) {
-        setEntities(function (prev) {
-          return prev.map(function (e) {
-            if (e.id !== id) return e;
-            var updated = Object.assign({}, e);
-            updated[field] = value;
-            return updated;
-          });
-        });
-        return;
-      }
       var body = {};
       body[field] = value;
       var promise = updateEntity(id, body);
@@ -812,12 +767,6 @@
     }
 
     function handleDelete(id) {
-      if (useSampleVal) {
-        setEntities(function (prev) {
-          return prev.filter(function (e) { return e.id !== id; });
-        });
-        return;
-      }
       var promise = deleteEntity(id, false);
       promise.then(function () { reload(); }).catch(function (e) { console.error(e); });
     }
@@ -828,18 +777,6 @@
 
     function handleCreate(body) {
       setShowForm(false);
-      if (useSampleVal) {
-        var newEntity = Object.assign({
-          id: "sample_new_" + Date.now(),
-          created_at: new Date().toISOString(),
-          tags: body.tags || [],
-          people: body.people || [],
-          confidence: 1.0,
-          source: "user",
-        }, body);
-        setEntities(function (prev) { return [newEntity].concat(prev); });
-        return;
-      }
       fetch("/api/entities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -913,9 +850,6 @@
         ),
       ),
       React.createElement("div", { className: "entities-scroll" },
-        useSampleVal && React.createElement("div", { className: "entities-sample-note" },
-          React.createElement("span", null, "ℹ " + (t("entities.showingSamples") || "Showing sample data — connect backend for real entities")),
-        ),
         loadingVal
           ? React.createElement("div", { className: "entities-loading" }, "…")
           : (viewVal === "kanban"
