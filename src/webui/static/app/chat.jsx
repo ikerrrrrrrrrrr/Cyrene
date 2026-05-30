@@ -622,11 +622,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
      Also clear the restored state when the session finishes. */
   useEffect(function () {
     if (!isLiveSession) {
-      restoredRef.current = false;
       return;
     }
     const runtime = getChatRuntime();
-    if (session.status === "running" && !runtime.sending) {
+    if (session.status === "running" && !runtime.sending && !restoredRef.current) {
       // Session is running but runtime state was lost (page refresh).
       // Show the runtime trace panel and subscribe to SSE for live progress.
       restoredRef.current = true;
@@ -919,7 +918,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     el.style.setProperty('--scroll-pb-extra', '0px');
     el.offsetHeight;
     var containerRect = el.getBoundingClientRect();
-    var padTop = 56;
+    var padTop = parseFloat(getComputedStyle(el).paddingTop) || 0;
     var desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
     var maxScroll = el.scrollHeight - el.clientHeight;
     // If content below the user message is too short to let it reach the
@@ -1213,6 +1212,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       roundId: curGuideRoundId || "",
       clientRequestId: requestId,
     };
+    restoredRef.current = true;
     updateChatRuntime({
       sending: true,
       startedAt: Date.now(),
@@ -1416,6 +1416,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       clientRequestId: requestId,
     };
 
+    restoredRef.current = true;
     updateChatRuntime({
       sending: true,
       startedAt: Date.now(),
@@ -1894,7 +1895,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       // Force synchronous layout so measurements are correct
       var forceLayout = el.offsetHeight;
       var containerRect = el.getBoundingClientRect();
-      var padTop = 56; // .chat-scroll padding-top on chat page
+      var padTop = parseFloat(getComputedStyle(el).paddingTop) || 0;
       var desired = 0;
 
       if (renderedMessages.length > 0) {
