@@ -36,6 +36,7 @@ from cyrene.attachments import (
     run_vision_chat,
 )
 from cyrene.config import _strip_wrapping_quotes
+from cyrene.agent.state import _conversation_source
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
     _append_session_message,
@@ -615,6 +616,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.post("/api/chat")
     async def api_chat(request: Request):
+        _conversation_source.set("webui")
         body = await request.json()
         message = (body.get("message") or "").strip()
         attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
@@ -820,6 +822,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.post("/api/chat/answer-question")
     async def api_answer_question(request: Request):
+        _conversation_source.set("webui")
         body = await request.json()
         question_id = str(body.get("question_id") or "").strip()
         selected_option = str(body.get("selected_option") or "").strip()
@@ -2156,9 +2159,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 return JSONResponse({"error": "heartbeat_interval must be at least 60"}, status_code=400)
             set_setting("heartbeat_interval", value)
             changed.append("heartbeat_interval")
-        if "wechat_notify_scheduled" in body:
-            set_setting("wechat_notify_scheduled", bool(body["wechat_notify_scheduled"]))
-            changed.append("wechat_notify_scheduled")
+        if "notify_telegram" in body:
+            set_setting("notify_telegram", bool(body["notify_telegram"]))
+            changed.append("notify_telegram")
+        if "notify_wechat" in body:
+            set_setting("notify_wechat", bool(body["notify_wechat"]))
+            changed.append("notify_wechat")
         return {"ok": True, "changed": changed}
 
     @router.post("/api/settings/reset-data")
@@ -4302,7 +4308,8 @@ def _build_config() -> dict:
         "search_external_url": settings.get("search_external_url", ""),
         "spawn_policy": settings.get("spawn_policy", "conservative"),
         "heartbeat_interval": settings.get("heartbeat_interval", 1800),
-        "wechat_notify_scheduled": settings.get("wechat_notify_scheduled", True),
+        "notify_telegram": settings.get("notify_telegram", True),
+        "notify_wechat": settings.get("notify_wechat", True),
         "search_port": str(SEARXNG_PORT),
         "search_host": SEARXNG_HOST,
     }

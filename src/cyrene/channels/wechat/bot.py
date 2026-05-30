@@ -92,6 +92,7 @@ async def _handle_message(text: str, sender: str, client: WeChatClient, db_path:
     3. Show typing indicator, run the agent loop, send the reply.
     """
     from cyrene.agent import get_session_labels, run_agent
+    from cyrene.agent.state import _conversation_source
     from cyrene.conversations import archive_exchange
     from cyrene.scheduler import reset_lottery
 
@@ -115,6 +116,7 @@ async def _handle_message(text: str, sender: str, client: WeChatClient, db_path:
     reset_lottery()
     await client.send_typing(sender)
 
+    _conversation_source.set("wechat")
     response = await run_agent(text, client, sender, db_path)
 
     labels = get_session_labels()

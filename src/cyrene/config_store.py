@@ -131,7 +131,6 @@ _DEFAULT_SETTINGS: dict = {
     "models": _DEFAULT_MODELS,
     "vision_models": _DEFAULT_VISION_MODELS,
     "secondary_model": {"model": "", "name": "", "api_key": "", "base_url": "", "ctx_limit": 0, "max_concurrency": 0},
-    "wechat_notify_scheduled": True,
     "enabled_tools": _DEFAULT_ENABLED_TOOLS,
     "workspace_history": [],
     "workspace_active": True,
@@ -292,10 +291,36 @@ def _read_config() -> dict:
     try:
         encrypted = _ENCRYPTED_PATH.read_bytes()
         plain = _cipher().decrypt(encrypted)
-        return json.loads(plain.decode("utf-8"))
+        config = json.loads(plain.decode("utf-8"))
+        return _apply_settings_migrations(config)
     except Exception:
         logger.exception("Failed to decrypt config store, attempting migration")
         return _migrate_if_needed()
+
+
+_SETTINGS_MIGRATIONS_DONE: bool = False
+
+
+def _apply_settings_migrations(config: dict) -> dict:
+    """One-time migrations for renamed/deprecated settings keys."""
+    global _SETTINGS_MIGRATIONS_DONE
+    if _SETTINGS_MIGRATIONS_DONE:
+        return config
+
+    settings = config.setdefault("settings", {})
+    changed = False
+
+    # v1 → v2: wechat_notify_scheduled merged into notify_wechat
+    if "wechat_notify_scheduled" in settings and "notify_wechat" not in settings:
+        settings["notify_wechat"] = settings.pop("wechat_notify_scheduled")
+        changed = True
+
+    if changed:
+        _persist(config)
+        logger.info("Applied settings migration")
+
+    _SETTINGS_MIGRATIONS_DONE = True
+    return config
 
 
 def _ensure_loaded() -> dict:

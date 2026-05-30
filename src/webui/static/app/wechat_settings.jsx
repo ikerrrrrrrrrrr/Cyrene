@@ -1,5 +1,6 @@
 // WeChat channel settings panel — full lifecycle in the frontend
 const { useState: useStateSet, useEffect, useRef } = React;
+const { useI18n } = window;
 
 const QR_MODAL_STYLE = {
   position: "fixed", inset: 0, zIndex: 9999,
@@ -12,12 +13,13 @@ const QR_MODAL_BOX_STYLE = {
 };
 
 function WeChatPanel() {
+  const { t } = useI18n();
   const [connected, setConnected] = useStateSet(false);
   const [running, setRunning] = useStateSet(false);
   const [ownerWxid, setOwnerWxid] = useStateSet("");
   const [qrCode, setQrCode] = useStateSet(null);
   const [qrStatus, setQrStatus] = useStateSet("");
-  const [wechatNotifyScheduled, setWechatNotifyScheduled] = useStateSet(true);
+  const [notifyWechat, setNotifyWechat] = useStateSet(true);
   const cancelRef = useRef(false);
 
   async function refreshStatus() {
@@ -33,8 +35,8 @@ function WeChatPanel() {
   useEffect(() => {
     refreshStatus();
     fetch("/api/settings/config").then((r) => r.json()).then((cfg) => {
-      if (cfg && cfg.wechat_notify_scheduled !== undefined) {
-        setWechatNotifyScheduled(cfg.wechat_notify_scheduled);
+      if (cfg && cfg.notify_wechat !== undefined) {
+        setNotifyWechat(cfg.notify_wechat);
       }
     }).catch(() => {});
   }, []);
@@ -114,20 +116,6 @@ function WeChatPanel() {
     } catch (_) {}
   }
 
-  // ── WeChat notification toggle ─────────────────────────
-
-  async function toggleWechatNotify() {
-    const next = !wechatNotifyScheduled;
-    setWechatNotifyScheduled(next);
-    try {
-      await fetch("/api/settings/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wechat_notify_scheduled: next }),
-      });
-    } catch (_) {}
-  }
-
   // ── Render ──────────────────────────────────────────────
 
   return (
@@ -181,18 +169,36 @@ function WeChatPanel() {
           <div className="wechat-status">{qrStatus}</div>
         ) : null}
 
-        {/* ── Scheduled task notification toggle ─────── */}
+        {/* ── WeChat notification toggle ────────────── */}
         <div className="settings-channel-toggle-row">
-          <label>发送定时任务通知到微信</label>
+          <label>{t("settings.notifyWechat")}</label>
           <div
-            className={"toggle " + (wechatNotifyScheduled ? "on" : "")}
-            onClick={toggleWechatNotify}
+            className={"toggle " + (notifyWechat ? "on" : "")}
+            onClick={async function () {
+              var next = !notifyWechat;
+              setNotifyWechat(next);
+              try {
+                await fetch("/api/settings/config", {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ notify_wechat: next }),
+                });
+              } catch (_) {}
+            }}
             role="switch"
-            aria-checked={wechatNotifyScheduled}
+            aria-checked={notifyWechat}
             tabIndex={0}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") toggleWechatNotify(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") {
+              var next = !notifyWechat;
+              setNotifyWechat(next);
+              fetch("/api/settings/config", {
+                method: "PUT", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ notify_wechat: next }),
+              }).catch(() => {});
+            }}}
           ></div>
         </div>
+        <p className="settings-field-hint" style={{ marginTop: "4px" }}>{t("settings.notifyWechatHint")}</p>
       </div>
 
       {/* ── QR modal overlay ─────────────────────────── */}

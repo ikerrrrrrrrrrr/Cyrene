@@ -315,6 +315,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   });
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useStateSet(readStoredDesktopNotificationsEnabled);
   const [desktopNotificationStatus, setDesktopNotificationStatus] = useStateSet("");
+  const [notifyTelegram, setNotifyTelegram] = useStateSet(true);
+  const [notifyWechat, setNotifyWechat] = useStateSet(true);
   const [toolsExpanded, setToolsExpanded] = useStateSet(false);
 
   function toggleCapability(key) {
@@ -403,6 +405,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       setSoulDraft(payload.soul_content || "");
       if (payload.search_mode) setSearchMode(payload.search_mode);
       if (payload.search_external_url !== undefined) setSearchExternalUrl(payload.search_external_url);
+      if (payload.notify_telegram !== undefined) setNotifyTelegram(payload.notify_telegram);
+      if (payload.notify_wechat !== undefined) setNotifyWechat(payload.notify_wechat);
     }).catch(() => {});
     fetch("/api/settings/models").then((r) => r.json()).then((payload) => {
       const fallbackApiKey = "";
@@ -927,6 +931,19 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                     <span>{t("settings.placeholderOptional")}</span>
                     {telegramTokenSaved ? <span className="settings-saved-msg">{telegramTokenSaved}</span> : null}
                   </div>
+                  <div className="settings-inline-field" style={{ marginTop: "10px" }}>
+                    <span>{t("settings.notifyTelegram")}</span>
+                    <div className={"toggle " + (notifyTelegram ? "on" : "")} onClick={async function () {
+                      var next = !notifyTelegram;
+                      setNotifyTelegram(next);
+                      await fetch("/api/settings/config", {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ notify_telegram: next }),
+                      });
+                    }}></div>
+                  </div>
+                  <p className="settings-field-hint" style={{ marginTop: "4px" }}>{t("settings.notifyTelegramHint")}</p>
                 </div>
               </section>
 

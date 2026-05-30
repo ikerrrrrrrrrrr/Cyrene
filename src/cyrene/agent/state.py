@@ -42,6 +42,7 @@ _ui_round_assistant_meta: ContextVar[dict[str, Any] | None] = ContextVar("_ui_ro
 _deep_research_mode: ContextVar[bool] = ContextVar("_deep_research_mode", default=False)
 _deep_research_first_round: ContextVar[bool] = ContextVar("_deep_research_first_round", default=False)
 _current_command: ContextVar[str] = ContextVar("_current_command", default="")
+_conversation_source: ContextVar[str] = ContextVar("_conversation_source", default="")
 
 # ---------------------------------------------------------------------------
 # Module-level shared state

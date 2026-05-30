@@ -1171,12 +1171,32 @@ async def _tool_browser_type(args: dict[str, Any], _bot: Any, _chat_id: int, _db
 
 async def _tool_send_notification(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     from cyrene.notifications import notify
+    from cyrene.agent.state import _conversation_source
+
     title = str(args.get("title") or "Cyrene").strip()
     text = str(args.get("text") or "").strip()
     channel = str(args.get("channel") or "auto").strip()
     if not text:
         return "No notification text provided."
-    result = await notify(title, text, channel=channel)
+
+    source = _conversation_source.get()
+
+    # When the conversation started from WebUI (default), skip Telegram and WeChat
+    # so that WebUI interactions don't leak to external messaging channels.
+    # The settings toggle (notify_telegram / notify_wechat) still controls
+    # scheduled/background notifications through the scheduler.
+    if source == "webui":
+        if channel in ("telegram", "wechat"):
+            return f"{channel.capitalize()} notifications are not available from WebUI."
+        if channel == "auto":
+            # Only try sse — desktop/webhook are local and OK too, but "auto"
+            # from WebUI should not attempt Telegram/WeChat
+            result = await notify(title, text, channel="sse")
+        else:
+            result = await notify(title, text, channel=channel)
+    else:
+        result = await notify(title, text, channel=channel)
+
     if result.get("ok"):
         channels = list(result.get("channels", {}).keys())
         return f"Notification sent via: {', '.join(channels)}"
@@ -1702,13 +1722,13 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "send_notification",
-            "description": "Send a desktop or webhook notification. Use for alerts, reminders, or when you need the user's attention outside the chat.",
+            "description": "Send a desktop or webhook notification. Use for alerts, reminders, or when you need the user's attention outside the chat. Supports Telegram and WeChat if configured.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Short notification title."},
                     "text": {"type": "string", "description": "Notification body text."},
-                    "channel": {"type": "string", "description": "Delivery channel: 'auto' (try desktop then webhook), 'desktop', 'webhook', or 'sse'."},
+                    "channel": {"type": "string", "description": "Delivery channel: 'auto' (try all available), 'desktop', 'webhook', 'telegram', 'wechat', or 'sse'."},
                 },
                 "required": ["text"],
             },

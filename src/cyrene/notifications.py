@@ -1,7 +1,7 @@
 """Notification system — desktop notifications, webhook alerts, and in-app SSE events.
 
 Supports three delivery channels:
-  1. **macOS native** — uses ``osascript`` for Notification Center alerts.
+  1. **Desktop native** — macOS (osascript), Windows (VBScript popup), Linux (notify-send).
   2. **Webhook** — POST to Discord, Slack, or generic webhook URLs.
   3. **In-app SSE** — pushes through the existing ``debug.publish_event`` bus.
 
@@ -17,8 +17,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import platform
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from typing import Any
 
@@ -49,8 +51,9 @@ async def notify(
     Args:
         title: Notification title (short).
         body: Notification body text.
-        channel: ``"auto"`` (try desktop → webhook → sse), ``"desktop"``,
-                 ``"webhook"``, or ``"sse"``.
+        channel: ``"auto"`` (try desktop → webhook → telegram → wechat → sse),
+                 ``"desktop"``, ``"webhook"``, ``"telegram"``, ``"wechat"``,
+                 or ``"sse"``.
         webhook_url: Override the configured webhook URL.
         webhook_type: Override the configured webhook type.
 
@@ -79,6 +82,18 @@ async def notify(
         elif channel == "webhook":
             results["webhook"] = {"ok": False, "error": "no webhook URL configured"}
 
+    if channel in ("auto", "telegram"):
+        telegram_result = await _notify_telegram(title, body)
+        results["telegram"] = telegram_result
+        if telegram_result.get("ok") and channel == "telegram":
+            return {"ok": True, "channels": results}
+
+    if channel in ("auto", "wechat"):
+        wechat_result = await _notify_wechat(title, body)
+        results["wechat"] = wechat_result
+        if wechat_result.get("ok") and channel == "wechat":
+            return {"ok": True, "channels": results}
+
     if channel in ("auto", "sse"):
         try:
             from cyrene import debug as cy_debug
@@ -100,25 +115,134 @@ async def notify(
 
 
 # ---------------------------------------------------------------------------
-# Desktop (macOS)
+# Desktop — cross-platform (macOS, Windows, Linux)
 # ---------------------------------------------------------------------------
 
 
 def _notify_desktop(title: str, body: str) -> dict[str, Any]:
-    if sys.platform != "darwin":
-        return {"ok": False, "error": "desktop notifications only supported on macOS"}
+    system = platform.system()
     try:
-        script = f'display notification "{_escape(body)}" with title "{_escape(title)}"'
-        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
-        return {"ok": True}
+        if system == "Darwin":
+            return _notify_macos(title, body)
+        elif system == "Windows":
+            return _notify_windows(title, body)
+        elif system == "Linux":
+            return _notify_linux(title, body)
+        else:
+            return {"ok": False, "error": f"unsupported platform: {system}"}
     except Exception as exc:
         logger.warning("Desktop notification failed: %s", exc)
         return {"ok": False, "error": str(exc)}
 
 
-def _escape(text: str) -> str:
-    """Escape text for AppleScript."""
-    return text.replace('"', '\\"').replace("\n", " \\n")
+def _notify_macos(title: str, body: str) -> dict[str, Any]:
+    """macOS Notification Center via osascript."""
+    safe_title = title.replace('"', '\\"').replace("\n", " \\n")
+    safe_body = body.replace('"', '\\"').replace("\n", " \\n")
+    script = f'display notification "{safe_body}" with title "{safe_title}"'
+    subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
+    return {"ok": True}
+
+
+def _notify_windows(title: str, body: str) -> dict[str, Any]:
+    """Windows toast popup via VBScript (auto-dismisses after 5s)."""
+    safe_title = title.replace('"', '""')
+    safe_body = body.replace('"', '""')
+    vbs = f'CreateObject("Wscript.Shell").Popup "{safe_body}", 5, "{safe_title}", 64'
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".vbs", mode="w", delete=False) as f:
+            f.write(vbs)
+            tmp = f.name
+        subprocess.run(["cscript", "//NoLogo", tmp], capture_output=True, timeout=10)
+        return {"ok": True}
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+
+def _notify_linux(title: str, body: str) -> dict[str, Any]:
+    """Linux desktop notification via notify-send (libnotify)."""
+    subprocess.run(
+        ["notify-send", title, body],
+        capture_output=True, timeout=10,
+    )
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+
+
+async def _notify_telegram(title: str, body: str) -> dict[str, Any]:
+    """Send a Telegram message to the configured owner."""
+    from cyrene.config import OWNER_ID, TELEGRAM_BOT_TOKEN
+    from cyrene.settings_store import get as get_setting
+
+    if not TELEGRAM_BOT_TOKEN or not OWNER_ID:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN or OWNER_ID not configured"}
+    if not get_setting("notify_telegram", True):
+        return {"ok": False, "error": "Telegram notifications disabled in settings"}
+
+    try:
+        text = f"*{title}*\n{body}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": OWNER_ID, "text": text, "parse_mode": "Markdown"},
+            )
+            resp.raise_for_status()
+        return {"ok": True}
+    except Exception as exc:
+        logger.warning("Telegram notification failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# WeChat
+# ---------------------------------------------------------------------------
+
+
+async def _notify_wechat(title: str, body: str) -> dict[str, Any]:
+    """Send a WeChat message to the configured owner."""
+    from cyrene.channels.wechat import get_current_client
+    from cyrene.config import WECHAT_OWNER_ID
+    from cyrene.settings_store import get as get_setting
+
+    if not get_setting("notify_wechat", True):
+        return {"ok": False, "error": "WeChat notifications disabled in settings"}
+    client = get_current_client()
+    if not client:
+        return {"ok": False, "error": "WeChat client not connected"}
+
+    owner_id = WECHAT_OWNER_ID or client._config.owner_wxid
+    if not owner_id:
+        return {"ok": False, "error": "WeChat owner wxid not configured"}
+
+    text = f"📋 {title}\n{body}"
+    try:
+        await client.send_message(owner_id, text)
+        return {"ok": True}
+    except Exception as exc:
+        logger.warning("WeChat notification failed, retrying: %s", exc)
+
+    # Retry once with a fresh client (token may have expired or been replaced)
+    client2 = get_current_client()
+    if client2 is not client and client2:
+        owner_id2 = WECHAT_OWNER_ID or client2._config.owner_wxid
+        if owner_id2:
+            try:
+                await client2.send_message(owner_id2, text)
+                return {"ok": True}
+            except Exception as exc2:
+                logger.warning("WeChat notification retry also failed: %s", exc2)
+                return {"ok": False, "error": str(exc2)}
+
+    return {"ok": False, "error": "WeChat notification failed"}
 
 
 # ---------------------------------------------------------------------------
