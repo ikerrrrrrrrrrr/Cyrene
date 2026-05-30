@@ -1,0 +1,109 @@
+/* ── Code Editor panel (right sidebar) ── */
+
+.code-editor-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+.code-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.code-editor-path {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.code-editor-lang {
+  color: var(--text-4);
+  text-transform: lowercase;
+  padding: 1px 6px;
+  background: var(--surface-3);
+  border-radius: var(--r-s);
+}
+
+.code-editor-dirty {
+  color: var(--accent);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.code-editor-save-msg {
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.code-editor-save-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--r-s);
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.code-editor-save-btn:hover {
+  opacity: 0.85;
+}
+
+.code-editor-save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.code-editor-close-btn {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.code-editor-close-btn:hover {
+  color: var(--text-2);
+}
+
+.code-editor-container {
+  flex: 1;
+  overflow: hidden;
+}
+
+.code-editor-container .cm-editor {
+  height: 100%;
+}
+
+.code-editor-container .cm-scroller {
+  overflow: auto;
+}
+
+/* Override CodeMirror default font to match Cyrene */
+.code-editor-container .cm-content {
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.code-editor-container .cm-gutters {
+  font-family: var(--mono);
+  font-size: 11px;
+}

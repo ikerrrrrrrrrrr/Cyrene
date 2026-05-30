@@ -2258,7 +2258,16 @@ def _register_map_tool() -> None:
     from cyrene.map_pin_tool import register_to
     register_to(TOOL_DEFS, TOOL_HANDLERS)
 
+
 _register_map_tool()
+
+
+def _register_code_tools() -> None:
+    from cyrene.code_tools import register_all
+    register_all(TOOL_DEFS, TOOL_HANDLERS)
+
+
+_register_code_tools()
 
 
 def get_active_tool_defs() -> list[dict]:

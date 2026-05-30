@@ -1,0 +1,112 @@
+/* ── Diff viewer panel (right sidebar) ── */
+
+.diff-viewer-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-1);
+}
+
+.diff-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.diff-viewer-title {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.diff-viewer-files {
+  color: var(--text-4);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-viewer-content {
+  flex: 1;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+/* ── Diff hunks ── */
+
+.diff-hunk {
+  margin: 0;
+}
+
+.diff-hunk-header {
+  padding: 4px 12px;
+  background: var(--surface-2);
+  color: var(--text-3);
+  font-size: 11px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.diff-line {
+  display: flex;
+  align-items: baseline;
+  padding: 0 4px;
+  min-height: 20px;
+}
+
+.diff-line-add {
+  background: rgba(46, 160, 67, 0.15);
+}
+
+.diff-line-del {
+  background: rgba(248, 81, 73, 0.15);
+}
+
+.diff-line-ctx {
+  background: transparent;
+}
+
+.diff-ln {
+  display: inline-block;
+  width: 36px;
+  min-width: 36px;
+  text-align: right;
+  padding: 0 6px;
+  color: var(--text-4);
+  font-size: 11px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.diff-ln-left {
+  border-right: 1px solid var(--line);
+}
+
+.diff-ln-right {
+  /* No border-right — diff-ln-left already provides the column separator */
+}
+
+.diff-text {
+  padding: 0 8px;
+  white-space: pre;
+  color: var(--text-2);
+}
+
+.diff-line-add .diff-text {
+  color: #2ea043;
+}
+
+.diff-line-del .diff-text {
+  color: #f85149;
+}

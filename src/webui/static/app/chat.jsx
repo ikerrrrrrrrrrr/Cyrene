@@ -15,14 +15,8 @@ function renderMarkdown(text) {
   const source = String(text || "");
   if (!source) return "";
   if (window.marked && window.DOMPurify) {
-    window.marked.setOptions({
-      gfm: true,
-      breaks: true,
-      headerIds: false,
-      mangle: false,
-    });
     const html = window.marked.parse(source);
-    return window.DOMPurify.sanitize(html);
+    return window.DOMPurify.sanitize(html, { ADD_ATTR: ["data-line", "data-language"] });
   }
   return escapeHtml(source).replace(/\n/g, "<br>");
 }
@@ -701,6 +695,34 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     triggerArchiveLoad({ initialLoad: true });
   }, [isLiveSession, session.id]);
 
+  useEffect(function () {
+    function onOpenEditor(e) {
+      var detail = e.detail || {};
+      setEditorData({
+        code: detail.code || "",
+        language: detail.language || "",
+        filePath: detail.filePath || "",
+      });
+      setRightSidebarView("code-editor");
+    }
+    window.addEventListener("cyrene:open-editor", onOpenEditor);
+    function onOpenDiff(e) {
+      var detail = e.detail || {};
+      setDiffData({
+        diff: detail.diff || "",
+        mode: detail.mode || "text",
+        left: detail.left || "",
+        right: detail.right || "",
+      });
+      setRightSidebarView("diff-viewer");
+    }
+    window.addEventListener("cyrene:open-diff", onOpenDiff);
+    return function () {
+      window.removeEventListener("cyrene:open-editor", onOpenEditor);
+      window.removeEventListener("cyrene:open-diff", onOpenDiff);
+    };
+  }, [setRightSidebarView]);
+
   function contextKey(c) { return c.key || c.label; }
 
   function contextDisplayLabel(c) {
@@ -782,6 +804,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [notice, setNotice] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
+  const [editorData, setEditorData] = useState({ code: "", language: "", filePath: "" });
+  const [diffData, setDiffData] = useState({ diff: "", mode: "text", left: "", right: "" });
   const [command, setCommand] = useState("");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashIndex, setSlashIndex] = useState(-1);
@@ -2593,6 +2617,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         activePptName={activePptName}
         htmlViewTab={htmlViewTab}
         onHtmlViewTabChange={setHtmlViewTab}
+        editorData={editorData}
+        diffData={diffData}
       />
     </div>
   );
@@ -2900,7 +2926,7 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData }) {
   const { t } = useI18n();
   const sideRef = useRef(null);
   const hasHtmlContent = Boolean(activeHtmlContent);
@@ -2916,6 +2942,8 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     { id: "agents", label: t("chat.side.agents") },
     { id: "shells", label: t("chat.side.shells") },
     { id: "map", label: t("chat.side.map") },
+    { id: "code-editor", label: t("chat.side.codeEditor") },
+    { id: "diff-viewer", label: t("chat.side.diffViewer") },
   ]);
   const hasExtraContent = hasHtmlContent || hasPdfContent || hasPptContent;
   const isMinimalMode = !hasExtraContent && subagents.length === 0 && session.shells.length === 0;
@@ -2997,6 +3025,27 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     if (view === "map") {
       return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
         <MapView />
+      </div>;
+    }
+    if (view === "code-editor") {
+      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        {typeof CodeEditorPanel !== "undefined" && React.createElement(CodeEditorPanel, {
+          code: editorData.code,
+          language: editorData.language,
+          filePath: editorData.filePath,
+          onClose: function () { onViewChange("overview"); },
+        })}
+      </div>;
+    }
+    if (view === "diff-viewer") {
+      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        {typeof DiffViewerPanel !== "undefined" && React.createElement(DiffViewerPanel, {
+          diff: diffData.diff,
+          mode: diffData.mode,
+          left: diffData.left,
+          right: diffData.right,
+          onClose: function () { onViewChange("overview"); },
+        })}
       </div>;
     }
     // default: overview
