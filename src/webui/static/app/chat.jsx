@@ -2668,9 +2668,9 @@ function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt
           </div>
         ) : archBody && archBody !== msg.body ? (
           <div className="msg-body markdown" dangerouslySetInnerHTML={{__html: archBody}} />
-        ) : (
+        ) : msg.body ? (
           <div className="msg-body">{msg.body}</div>
-        )}
+        ) : null}
       </div>
     );
   }
@@ -2752,24 +2752,25 @@ function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt
         </details>
       )}
 
-      {msg.body && (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
-        ? (function() {
-            var extracted = extractHtmlBlocks(msg.body);
-            if (!extracted.hasBlocks) {
-              return <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(msg.body, attachments)) }} />;
-            }
-            return <div className="msg-body markdown">{extracted.parts.map(function(part, idx) {
-              if (part.type === "markdown" && part.content.trim()) {
-                return <div key={idx} dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(part.content, attachments)) }} />;
+      {(msg.body || msg.streamingReply) ? (
+        msg.body && (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
+          ? (function() {
+              var extracted = extractHtmlBlocks(msg.body);
+              if (!extracted.hasBlocks) {
+                return <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(msg.body, attachments)) }} />;
               }
-              if (part.type === "html" && part.content) {
-                return <div key={idx} className="html-block-placeholder"><button className="html-show-btn" onClick={function() { onShowHtml && onShowHtml(part.content); }}>{t("chat.html.showBtn")}</button></div>;
-              }
-              return null;
-            })}</div>;
-          })()
-        : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
-      }
+              return <div className="msg-body markdown">{extracted.parts.map(function(part, idx) {
+                if (part.type === "markdown" && part.content.trim()) {
+                  return <div key={idx} dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(part.content, attachments)) }} />;
+                }
+                if (part.type === "html" && part.content) {
+                  return <div key={idx} className="html-block-placeholder"><button className="html-show-btn" onClick={function() { onShowHtml && onShowHtml(part.content); }}>{t("chat.html.showBtn")}</button></div>;
+                }
+                return null;
+              })}</div>;
+            })()
+          : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
+      ) : null}
       {(msg.role === "agent" || msg.role === "system") && msg.body && !msg.streamingReply && (
         <div className="msg-actions">
           <button className="msg-action-btn" onClick={function () { navigator.clipboard.writeText(msg.body); }} title={t("chat.copyAction") || "复制"}>

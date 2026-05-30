@@ -108,23 +108,22 @@
               if (hunks.length === 0) {
                 return createElement("div", { style: { padding: 24, textAlign: "center", color: "var(--text-4)", fontSize: 12 } }, "No differences");
               }
-              return null;
+              return hunks.map(function (hunk, hi) {
+                return createElement("div", { key: "h" + hi, className: "diff-hunk" },
+                  createElement("div", { className: "diff-hunk-header" }, hunk.header),
+                  hunk.lines.map(function (l, li) {
+                    return createElement("div", {
+                      key: "l" + li,
+                      className: "diff-line diff-line-" + l.type,
+                    },
+                      createElement("span", { className: "diff-ln diff-ln-left" }, l.leftNum != null ? l.leftNum : ""),
+                      createElement("span", { className: "diff-ln diff-ln-right" }, l.rightNum != null ? l.rightNum : ""),
+                      createElement("span", { className: "diff-text" }, l.text)
+                    );
+                  })
+                );
+              });
             })()
-              : hunks.map(function (hunk, hi) {
-                  return createElement("div", { key: "h" + hi, className: "diff-hunk" },
-                    createElement("div", { className: "diff-hunk-header" }, hunk.header),
-                    hunk.lines.map(function (l, li) {
-                      return createElement("div", {
-                        key: "l" + li,
-                        className: "diff-line diff-line-" + l.type,
-                      },
-                        createElement("span", { className: "diff-ln diff-ln-left" }, l.leftNum != null ? l.leftNum : ""),
-                        createElement("span", { className: "diff-ln diff-ln-right" }, l.rightNum != null ? l.rightNum : ""),
-                        createElement("span", { className: "diff-text" }, l.text)
-                      );
-                    })
-                  );
-                })
           )
     );
   }

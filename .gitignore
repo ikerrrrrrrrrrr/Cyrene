@@ -48,3 +48,7 @@ tests*
 
 # Promotional landing page
 webpage/
+
+# Node.js build artifacts (webui JSX precompilation)
+node_modules/
+src/webui/static/app/compiled/

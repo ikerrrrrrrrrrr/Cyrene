@@ -1,0 +1,10 @@
+{
+  "name": "cyrene-webui",
+  "private": true,
+  "scripts": {
+    "build": "node build-jsx.mjs"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.0"
+  }
+}

@@ -306,8 +306,8 @@ button { font-family: inherit; }
     var(--material-sheen),
     linear-gradient(180deg, var(--glass-veil), transparent 32%),
     linear-gradient(160deg, color-mix(in srgb, var(--glass-fill) 90%, var(--accent) 10%), var(--glass-fill-strong));
-  border: 1px solid var(--material-border);
-  border-radius: var(--r-xl);
+  border: none;
+  border-radius: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -2567,14 +2567,18 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   box-shadow: var(--surface-gloss), var(--shadow-sm);
   min-height: 0;
   min-width: 0;
+  overflow: hidden;
+  position: relative;
   transition: opacity 180ms ease, transform 220ms ease, margin 220ms ease, padding 220ms ease;
 }
 .chat-side-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
   width: 5px;
-  flex-shrink: 0;
   cursor: col-resize;
-  position: relative;
-  border-radius: var(--r-xl) 0 0 var(--r-xl);
+  z-index: 1;
 }
 .chat-side-resize-handle::after {
   content: '';
@@ -9012,7 +9016,10 @@ html[data-text-size="large"] .settings-nav .nav-item {
 
 .sidebar {
   border: 1px solid #e3e3df;
-  border-radius: 12px;
+  border-left: 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-radius: 0 12px 12px 0;
   overflow-x: hidden;
   overflow-y: auto;
   box-shadow:
@@ -9021,7 +9028,7 @@ html[data-text-size="large"] .settings-nav .nav-item {
 }
 
 .sidebar.collapsed {
-  border-radius: 12px;
+  border-radius: 0 12px 12px 0;
 }
 
 .skills-rail-empty {
@@ -9060,7 +9067,7 @@ html[data-theme="dark"] .sidebar {
 
 /* Final shell alignment: topbar and sidebar share the same top edge. */
 .app {
-  padding: 10px 12px 10px 10px;
+  padding: 10px 12px 10px 0;
   gap: 12px;
 }
 
