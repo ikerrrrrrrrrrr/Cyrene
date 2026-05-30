@@ -806,6 +806,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     return null;
   }
   const [ccStatus, setCcStatus] = useState(null);
+  const [sidebarWidth, setSidebarWidth] = useState(function() {
+    try { return parseInt(localStorage.getItem("cyrene-sidebar-width") || "360", 10) || 360; } catch(e) { return 360; }
+  });
   const [ccModal, setCcModal] = useState(null);
   const [shellModal, setShellModal] = useState(null);
   const [runtimeState, setRuntimeState] = useState(getChatRuntimeSnapshot);
@@ -1076,6 +1079,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     setQuestionDraft("");
   }, [pendingQuestion ? pendingQuestion.id : ""]);
+
+  useEffect(function () {
+    try { localStorage.setItem("cyrene-sidebar-width", String(sidebarWidth)); } catch(e) {}
+  }, [sidebarWidth]);
 
   useEffect(function () {
     if (!sending || !runtimeState.startedAt) return;
@@ -1968,7 +1975,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   var hasAddable = addableContexts.length > 0 || liveRounds.length > 0;
 
   return (
-    <div className={"chat-layout" + (rightSidebarCollapsed ? " right-collapsed" : "")}>
+    <div className={"chat-layout" + (rightSidebarCollapsed ? " right-collapsed" : "")} style={{ "--chat-right-panel-width": sidebarWidth + "px" }}>
       <div className="chat-main">
         {ccModal ? (
           <window.CCTerminalPanel
@@ -2526,6 +2533,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         view={rightSidebarView}
         onViewChange={setRightSidebarView}
         roundId={session.currentRoundId}
+        onResize={setSidebarWidth}
       />
     </div>
   );
@@ -2776,81 +2784,114 @@ function ToolCard({ tool }) {
   );
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize }) {
   const { t } = useI18n();
-  const viewOptions = [
+  const sideRef = useRef(null);
+  const allViewOptions = [
     { id: "overview", label: t("chat.side.overview") },
     { id: "agents", label: t("chat.side.agents") },
     { id: "shells", label: t("chat.side.shells") },
   ];
+  const isMinimalMode = subagents.length === 0 && session.shells.length === 0;
+  const viewOptions = isMinimalMode ? [{ id: "overview", label: t("chat.side.overview") }] : allViewOptions;
   const showShells = view === "shells";
   const showAgents = view === "agents";
   const showSummary = view === "overview";
+
+  useEffect(function() {
+    if (isMinimalMode && view !== "overview") {
+      onViewChange && onViewChange("overview");
+    }
+  }, [isMinimalMode, view]);
+
+  function onHandleMouseDown(e) {
+    e.preventDefault();
+    var startX = e.clientX;
+    var startWidth = sideRef.current ? sideRef.current.getBoundingClientRect().width : 320;
+    var layout = sideRef.current && sideRef.current.parentElement;
+    if (layout) layout.classList.add("resizing");
+    function onMove(mv) {
+      var delta = startX - mv.clientX;
+      var newWidth = Math.min(520, Math.max(200, startWidth + delta));
+      onResize && onResize(newWidth);
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      if (layout) layout.classList.remove("resizing");
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
   return (
-    <div className="chat-side">
-      <div className="chat-side-switcher">
-        {viewOptions.map(function (item) {
-          return (
-            <button
-              key={item.id}
-              type="button"
-              className={view === item.id ? "active" : ""}
-              onClick={function () { onViewChange && onViewChange(item.id); }}
-            >
-              {item.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {showShells && <div className="side-section" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
-        <div className="side-head">
-          {t("chat.activeShells")}
-          <span className="count">{session.shells.length}</span>
-        </div>
-        {session.shells.length === 0 && (
-          <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
-        )}
-        {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} onOpenShellModal={onOpenShellModal} />)}
-      </div>}
-
-      {showAgents && <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
-        <AgentGroupChat roundId={roundId} subagents={subagents} session={session} />
-      </div>}
-
-      {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
-        <SideTokenRing tokens={session.summary.tokens} />
-        {(() => {
-          var total = session.main_agent_context_tokens != null ? session.main_agent_context_tokens : (session.main_agent_total_tokens != null ? session.main_agent_total_tokens : session.summary.total_tokens);
-          var limit = session.ctx_limit || 0;
-          if (limit > 0 && total != null) {
-            var pct = Math.min(Math.round(total / limit * 100), 100);
-            var barColor = pct > 90 ? "#e74c3c" : pct > 70 ? "#f39c12" : "#4caf50";
-            var fmt = function (n) {
-              return n >= 1000000 ? (n / 1000000).toFixed(1) + "m" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
-            };
+    <div className="chat-side" ref={sideRef}>
+      <div className="chat-side-resize-handle" onMouseDown={onHandleMouseDown} />
+      <div className="chat-side-inner">
+        <div className={"chat-side-switcher" + (isMinimalMode ? " single" : "")}>
+          {viewOptions.map(function (item) {
             return (
-              <div className="ctx-bar-overview">
-                <span className="ctx-bar-overview-label">上下文</span>
-                <span className="ctx-bar-overview-track">
-                  <span className="ctx-bar-overview-fill" style={{ width: pct + "%", background: barColor }}></span>
-                </span>
-                <span className="ctx-bar-overview-nums">{fmt(total)} / {fmt(limit)}</span>
-              </div>
+              <button
+                key={item.id}
+                type="button"
+                className={view === item.id ? "active" : ""}
+                onClick={function () { onViewChange && onViewChange(item.id); }}
+              >
+                {item.label}
+              </button>
             );
-          }
-          return null;
-        })()}
-        <div className="side-head">{t("chat.runSummary")}</div>
-        <div className="side-overview-kv">
-          <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
-          <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
-          <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
-          <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
-          <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
+          })}
         </div>
-        <SideModelUsage />
-      </div>}
+
+        {showShells && <div className="side-section" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+          <div className="side-head">
+            {t("chat.activeShells")}
+            <span className="count">{session.shells.length}</span>
+          </div>
+          {session.shells.length === 0 && (
+            <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-4)" }}>—</div>
+          )}
+          {session.shells.map((s) => <ShellCard key={s.id} shell={s} ccStatus={ccStatus} onOpenCCModal={onOpenCCModal} onOpenShellModal={onOpenShellModal} />)}
+        </div>}
+
+        {showAgents && <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
+          <AgentGroupChat roundId={roundId} subagents={subagents} session={session} />
+        </div>}
+
+        {showSummary && <div className="side-section" style={{ borderBottom: 0 }}>
+          <SideTokenRing tokens={session.summary.tokens} />
+          {(() => {
+            var total = session.main_agent_context_tokens != null ? session.main_agent_context_tokens : (session.main_agent_total_tokens != null ? session.main_agent_total_tokens : session.summary.total_tokens);
+            var limit = session.ctx_limit || 0;
+            if (limit > 0 && total != null) {
+              var pct = Math.min(Math.round(total / limit * 100), 100);
+              var barColor = pct > 90 ? "#e74c3c" : pct > 70 ? "#f39c12" : "#4caf50";
+              var fmt = function (n) {
+                return n >= 1000000 ? (n / 1000000).toFixed(1) + "m" : n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
+              };
+              return (
+                <div className="ctx-bar-overview">
+                  <span className="ctx-bar-overview-label">上下文</span>
+                  <span className="ctx-bar-overview-track">
+                    <span className="ctx-bar-overview-fill" style={{ width: pct + "%", background: barColor }}></span>
+                  </span>
+                  <span className="ctx-bar-overview-nums">{fmt(total)} / {fmt(limit)}</span>
+                </div>
+              );
+            }
+            return null;
+          })()}
+          <div className="side-head">{t("chat.runSummary")}</div>
+          <div className="side-overview-kv">
+            <span className="k">{t("chat.runId")}</span><span className="v">{session.id}</span>
+            <span className="k">{t("chat.started")}</span><span className="v">{session.started}</span>
+            <span className="k">{t("chat.elapsed")}</span><span className="v">{session.dur}</span>
+            <span className="k">{t("chat.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
+            <span className="k">{t("chat.spend")}</span><span className="v">{session.summary.spend}</span>
+          </div>
+          <SideModelUsage />
+        </div>}
+      </div>
     </div>
   );
 }
