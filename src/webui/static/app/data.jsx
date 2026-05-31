@@ -268,11 +268,16 @@ function connectEvents() {
         const data = JSON.parse(ev.data);
         if (data.type === "heartbeat") return;
 
-        // Browser notification via SSE
+        // Notification via SSE: use Web Notification API in browser,
+        // Electron Notification API when running in Electron.
         if (data.type === "notification" && data.title && data.body) {
           try {
             const enabled = localStorage.getItem("cyrene-desktop-notifications") === "1";
-            if (enabled && "Notification" in window && Notification.permission === "granted") {
+            if (!enabled) return;
+            const isElectron = navigator.userAgent.includes("Electron");
+            if (isElectron && window.cyrene && window.cyrene.showNotification) {
+              window.cyrene.showNotification({ title: data.title, body: data.body });
+            } else if ("Notification" in window && Notification.permission === "granted") {
               new Notification(data.title, { body: data.body });
             }
           } catch (e) { /* best-effort */ }

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -323,6 +323,9 @@ if (!gotSingleInstanceLock) {
     applyLaunchAtLogin(readDesktopSettings().launchAtLogin);
     ipcMain.handle('desktop-settings:get', () => getDesktopSettings());
     ipcMain.handle('desktop-settings:update', (_event, updates) => saveDesktopSettings(updates || {}));
+    ipcMain.handle('notification:show', (_event, { title, body }) => {
+      new Notification({ title, body }).show();
+    });
     spawnPython();
     if (!launchHidden) {
       createMainWindow();

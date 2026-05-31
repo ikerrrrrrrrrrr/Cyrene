@@ -1,7 +1,7 @@
 """Notification system — desktop notifications, webhook alerts, and in-app SSE events.
 
 Supports three delivery channels:
-  1. **Desktop native** — macOS (osascript), Windows (VBScript popup), Linux (notify-send).
+  1. **Desktop native** — macOS (SSE + frontend Notification API), Windows (VBScript popup), Linux (notify-send).
   2. **Webhook** — POST to Discord, Slack, or generic webhook URLs.
   3. **In-app SSE** — pushes through the existing ``debug.publish_event`` bus.
 
@@ -66,10 +66,15 @@ async def notify(
     results: dict[str, Any] = {}
 
     if channel in ("auto", "desktop"):
-        desktop_result = _notify_desktop(title, body)
+        desktop_result = await _notify_desktop(title, body)
         results["desktop"] = desktop_result
         if desktop_result.get("ok") and channel == "desktop":
-            return {"ok": True, "channels": results}
+            # On macOS, desktop is delivered via SSE — the return is deferred
+            # to the SSE block below so the event actually gets published.
+            if platform.system() == "Darwin":
+                pass
+            else:
+                return {"ok": True, "channels": results}
 
     if channel in ("auto", "webhook"):
         wh_url = webhook_url or _WEBHOOK_URL
@@ -94,7 +99,8 @@ async def notify(
         if wechat_result.get("ok") and channel == "wechat":
             return {"ok": True, "channels": results}
 
-    if channel in ("auto", "sse"):
+    _desktop_is_sse = platform.system() == "Darwin" and results.get("desktop", {}).get("ok")
+    if channel in ("auto", "sse") or _desktop_is_sse:
         try:
             from cyrene import debug as cy_debug
 
@@ -107,7 +113,7 @@ async def notify(
             results["sse"] = {"ok": True}
         except Exception as exc:
             results["sse"] = {"ok": False, "error": str(exc)}
-        if channel == "sse" or (channel == "auto" and not any(r.get("ok") for r in results.values())):
+        if channel == "sse" or (channel == "desktop" and _desktop_is_sse) or (channel == "auto" and not any(r.get("ok") for r in results.values())):
             return {"ok": results.get("sse", {}).get("ok", False), "channels": results}
 
     any_ok = any(r.get("ok") for r in results.values())
@@ -119,11 +125,14 @@ async def notify(
 # ---------------------------------------------------------------------------
 
 
-def _notify_desktop(title: str, body: str) -> dict[str, Any]:
+async def _notify_desktop(title: str, body: str) -> dict[str, Any]:
     system = platform.system()
     try:
         if system == "Darwin":
-            return _notify_macos(title, body)
+            # macOS desktop notifications are delivered via SSE + frontend
+            # Notification API. Return ok so notify() knows to skip other
+            # channels — the actual SSE publish happens in the SSE block.
+            return {"ok": True, "via": "sse"}
         elif system == "Windows":
             return _notify_windows(title, body)
         elif system == "Linux":
@@ -133,15 +142,6 @@ def _notify_desktop(title: str, body: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Desktop notification failed: %s", exc)
         return {"ok": False, "error": str(exc)}
-
-
-def _notify_macos(title: str, body: str) -> dict[str, Any]:
-    """macOS Notification Center via osascript."""
-    safe_title = title.replace('"', '\\"').replace("\n", " \\n")
-    safe_body = body.replace('"', '\\"').replace("\n", " \\n")
-    script = f'display notification "{safe_body}" with title "{safe_title}"'
-    subprocess.run(["osascript", "-e", script], capture_output=True, timeout=10)
-    return {"ok": True}
 
 
 def _notify_windows(title: str, body: str) -> dict[str, Any]:
