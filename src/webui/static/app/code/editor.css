@@ -2,6 +2,8 @@
 
 .code-editor-panel {
   height: 100%;
+  width: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -47,6 +49,13 @@
   font-size: 10px;
 }
 
+.code-editor-fallback-badge {
+  color: var(--warn, #d28a2f);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .code-editor-save-btn {
   font-family: var(--mono);
   font-size: 11px;
@@ -57,6 +66,23 @@
   padding: 4px 12px;
   cursor: pointer;
   transition: opacity 0.15s;
+}
+
+.code-editor-ghost-btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-s);
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.code-editor-ghost-btn:hover {
+  background: color-mix(in srgb, var(--surface-3) 75%, var(--accent) 25%);
+  color: var(--text-1);
 }
 
 .code-editor-save-btn:hover {
@@ -85,11 +111,13 @@
 
 .code-editor-container {
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
 .code-editor-container .cm-editor {
   height: 100%;
+  min-height: 0;
 }
 
 .code-editor-container .cm-scroller {
@@ -106,4 +134,53 @@
 .code-editor-container .cm-gutters {
   font-family: var(--mono);
   font-size: 11px;
+}
+
+.code-editor-container .cm-tooltip {
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-1);
+  box-shadow: var(--surface-gloss), var(--shadow-md);
+}
+
+.code-editor-container .cm-panels {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.code-editor-fallback {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px;
+  gap: 8px;
+}
+
+.code-editor-fallback-note {
+  color: var(--text-4);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.code-editor-fallback-input {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  background: var(--surface-1);
+  color: var(--text-1);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.65;
+  padding: 12px;
+  outline: none;
+}
+
+.code-editor-fallback-pre {
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
 }

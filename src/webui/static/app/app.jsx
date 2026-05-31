@@ -349,16 +349,20 @@ function App() {
     setSelectedSessionId(id || null);
   }
 
+  const [systemTheme, setSystemTheme] = useStateApp(function () {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+
   function resolveActualTheme(mode) {
     if (mode === "system") {
-      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      return systemTheme;
     }
     return mode;
   }
 
   const actualTheme = React.useMemo(function () {
     return resolveActualTheme(t.theme);
-  }, [t.theme]);
+  }, [t.theme, systemTheme]);
 
   useEffectApp(function () {
     localStorage.setItem("cyrene-tweak-theme", JSON.stringify(t.theme));
@@ -386,16 +390,20 @@ function App() {
     document.documentElement.dataset.textSize = t.textSize || "default";
     document.documentElement.dataset.animPulse = t.animatePulse ? "on" : "off";
     document.documentElement.dataset.legend = t.showLegend ? "on" : "off";
+    window.dispatchEvent(new CustomEvent("cyrene:theme-change", {
+      detail: { mode: t.theme, actualTheme: applied },
+    }));
     delete document.documentElement.dataset.booting;
   }, [t.theme, t.accent, t.density, t.textSize, t.animatePulse, t.showLegend, actualTheme]);
 
   useEffectApp(function () {
-    if (t.theme !== "system") return;
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    function onChange() { document.documentElement.dataset.theme = resolveActualTheme("system"); }
+    function onChange(event) {
+      setSystemTheme(event.matches ? "dark" : "light");
+    }
     mq.addEventListener("change", onChange);
     return function () { mq.removeEventListener("change", onChange); };
-  }, [t.theme]);
+  }, []);
 
   function toggleTheme() {
     const order = ["system", "light", "dark"];

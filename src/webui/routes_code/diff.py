@@ -1,9 +1,11 @@
 """Diff computation API."""
+import asyncio
 import difflib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from cyrene.config import WORKSPACE_DIR
 
 router = APIRouter()
 
@@ -12,6 +14,11 @@ class DiffBody(BaseModel):
     mode: str = "text"  # "text" or "file"
     left: str = ""
     right: str = ""
+
+
+class GitDiffBody(BaseModel):
+    path: str = ""
+    staged: bool = False
 
 
 def _compute_unified_diff(left_text: str, right_text: str, left_label: str = "a", right_label: str = "b") -> str:
@@ -52,3 +59,38 @@ async def compute_diff(body: DiffBody):
 
     diff = _compute_unified_diff(left_text, right_text, left_label=body.left, right_label=body.right)
     return {"diff": diff, "has_changes": bool(diff.strip())}
+
+
+@router.post("/git-diff")
+async def compute_git_diff(body: GitDiffBody):
+    """Compute git diff for the current workspace or a specific path."""
+    cmd = ["git", "diff"]
+    if body.staged:
+        cmd.append("--staged")
+    if body.path:
+        from cyrene.tools import _resolve_workspace_path
+        try:
+            resolved = _resolve_workspace_path(body.path)
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        try:
+            rel = str(resolved.resolve().relative_to(WORKSPACE_DIR.resolve()))
+        except ValueError:
+            rel = body.path
+        cmd.extend(["--", rel])
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(WORKSPACE_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="git diff timed out")
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="git not available")
+    if proc.returncode not in (0, 1):
+        raise HTTPException(status_code=400, detail=stderr.decode("utf-8", errors="replace") or "git diff failed")
+    diff = stdout.decode("utf-8", errors="replace")
+    return {"diff": diff, "has_changes": bool(diff.strip()), "path": body.path, "staged": body.staged}

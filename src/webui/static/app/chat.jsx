@@ -723,6 +723,49 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     };
   }, [setRightSidebarView]);
 
+  useEffect(function () {
+    if (!isLiveSession) return;
+    var messages = Array.isArray(session.chat && session.chat.messages) ? session.chat.messages : [];
+    var candidate = null;
+    for (var i = messages.length - 1; i >= 0; i--) {
+      var msg = messages[i];
+      if (!msg || msg.role !== "agent" || !Array.isArray(msg.tools) || msg.tools.length === 0) continue;
+      if (!msg.tools.some(isCodeMutationTool)) continue;
+      candidate = msg;
+      break;
+    }
+    if (!candidate) return;
+    var signature = String(candidate.messageId || candidate.id || "") + ":" + candidate.tools.map(function (tool) {
+      return String(tool && (tool.toolCallId || tool.name) || "");
+    }).join(",");
+    if (!signature || signature === autoDiffSignatureRef.current) return;
+    if (gitDiffUnavailableRef.current) return;
+    autoDiffSignatureRef.current = signature;
+    fetch("/api/code/git-diff", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    })
+      .then(function (r) {
+        if (!r.ok) {
+          if (r.status === 404) gitDiffUnavailableRef.current = true;
+          throw new Error("HTTP " + r.status);
+        }
+        return r.json();
+      })
+      .then(function (data) {
+        if (!data || !data.has_changes || !data.diff) return;
+        setDiffData({
+          diff: data.diff || "",
+          mode: "text",
+          left: "",
+          right: "",
+        });
+        setRightSidebarView("diff-viewer");
+      })
+      .catch(function () {});
+  }, [isLiveSession, session.id, session.chat.messages, setRightSidebarView]);
+
   function contextKey(c) { return c.key || c.label; }
 
   function contextDisplayLabel(c) {
@@ -806,6 +849,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [editorData, setEditorData] = useState({ code: "", language: "", filePath: "" });
   const [diffData, setDiffData] = useState({ diff: "", mode: "text", left: "", right: "" });
+  const autoDiffSignatureRef = useRef("");
+  const gitDiffUnavailableRef = useRef(false);
   const [command, setCommand] = useState("");
   const [slashMenuOpen, setSlashMenuOpen] = useState(false);
   const [slashIndex, setSlashIndex] = useState(-1);
@@ -2970,6 +3015,61 @@ function ToolCard({ tool }) {
   );
 }
 
+function extractToolFilePath(rawArgs) {
+  if (!rawArgs || typeof rawArgs !== "object") return "";
+  var pathKeys = [
+    "path",
+    "file_path",
+    "filepath",
+    "filePath",
+    "filename",
+    "file",
+    "target_file",
+    "targetFile",
+  ];
+  for (var i = 0; i < pathKeys.length; i++) {
+    var value = rawArgs[pathKeys[i]];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function isLikelyCodePath(filePath) {
+  var path = String(filePath || "").trim().toLowerCase();
+  if (!path) return false;
+  var codeLikeNames = [
+    "dockerfile",
+    "makefile",
+    "jenkinsfile",
+    "procfile",
+    ".gitignore",
+    ".editorconfig",
+  ];
+  var codeLikeExts = [
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".java", ".kt", ".swift", ".rb", ".php", ".go", ".rs",
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh",
+    ".cs", ".scala", ".sh", ".bash", ".zsh", ".fish",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini",
+    ".xml", ".sql", ".vue", ".svelte",
+  ];
+  for (var i = 0; i < codeLikeNames.length; i++) {
+    if (path === codeLikeNames[i] || path.endsWith("/" + codeLikeNames[i])) return true;
+  }
+  for (var j = 0; j < codeLikeExts.length; j++) {
+    if (path.endsWith(codeLikeExts[j])) return true;
+  }
+  return /(^|\/)(src|app|lib|pkg|cmd|internal|server|client|tests?|spec)\//.test(path);
+}
+
+function isCodeMutationTool(tool) {
+  var name = String(tool && tool.name || "").toLowerCase();
+  if (name !== "write" && name !== "edit") return false;
+  if (String(tool && tool.status || "").toLowerCase() !== "done") return false;
+  return isLikelyCodePath(extractToolFilePath(tool && tool.rawArgs));
+}
+
 function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData }) {
   const { t } = useI18n();
   const sideRef = useRef(null);
@@ -2991,7 +3091,10 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
   ]);
   const hasExtraContent = hasHtmlContent || hasPdfContent || hasPptContent;
   const isMinimalMode = !hasExtraContent && subagents.length === 0 && session.shells.length === 0;
-  const viewOptions = isMinimalMode ? [{ id: "overview", label: t("chat.side.overview") }, { id: "map", label: t("chat.side.map") }] : allViewOptions;
+  const isProgrammaticView = view === "code-editor" || view === "diff-viewer";
+  const minimalViewOptions = [{ id: "overview", label: t("chat.side.overview") }, { id: "map", label: t("chat.side.map") }];
+  if (isProgrammaticView) minimalViewOptions.push(allViewOptions.find(function(o) { return o.id === view; }));
+  const viewOptions = isMinimalMode ? minimalViewOptions : allViewOptions;
   const showShells = view === "shells";
   const showAgents = view === "agents";
   const showSummary = view === "overview";
@@ -2999,7 +3102,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
   const showPdfView = view === "pdf" && hasPdfContent;
 
   useEffect(function() {
-    if (isMinimalMode && view !== "overview" && view !== "map") {
+    if (isMinimalMode && view !== "overview" && view !== "map" && !isProgrammaticView) {
       onViewChange && onViewChange("overview");
     }
     if (view === "html" && !hasHtmlContent) {
@@ -3072,7 +3175,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
       </div>;
     }
     if (view === "code-editor") {
-      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+      return <div className="side-section side-section--flush" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
         {typeof CodeEditorPanel !== "undefined" && React.createElement(CodeEditorPanel, {
           code: editorData.code,
           language: editorData.language,

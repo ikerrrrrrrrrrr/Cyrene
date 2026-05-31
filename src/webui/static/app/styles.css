@@ -2636,6 +2636,9 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   border-bottom: 1px solid var(--line);
   padding: 12px 12px 10px;
 }
+.side-section--flush {
+  padding: 0;
+}
 .side-section:last-child {
   border-bottom: 0;
 }

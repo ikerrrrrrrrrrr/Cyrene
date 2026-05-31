@@ -2943,6 +2943,7 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
     """Convert state.json raw messages → UI message format."""
     out = []
     compacted_marker_emitted = False
+    tool_outputs = _tool_output_map(raw_msgs)
     for i, m in enumerate(raw_msgs):
         if _is_hidden_internal_message(m):
             continue
@@ -3010,14 +3011,19 @@ def _convert_messages(raw_msgs: list[dict]) -> list[dict]:
             tools = []
             for tc in m["tool_calls"]:
                 fn = tc.get("function", {})
-                args = fn.get("arguments", "")
+                raw_args = fn.get("arguments", "")
+                parsed_args = _safe_json_loads(raw_args) if isinstance(raw_args, str) else raw_args
+                args = raw_args
                 if isinstance(args, str) and len(args) > 80:
                     args = args[:80] + "…"
+                tool_call_id = str(tc.get("id") or "")
                 tools.append({
                     "name": fn.get("name", "?"),
                     "arg": str(args)[:120],
                     "status": "done",
-                    "out": "",
+                    "out": tool_outputs.get(tool_call_id, ""),
+                    "toolCallId": tool_call_id,
+                    "rawArgs": parsed_args if parsed_args is not None else raw_args,
                 })
             ui_msg["tools"] = tools
         out.append(ui_msg)

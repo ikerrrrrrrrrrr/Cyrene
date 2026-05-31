@@ -25,21 +25,35 @@ async function build() {
   mkdirSync(OUT_DIR, { recursive: true })
 
   for (const file of files) {
-    const src = readFileSync(file, 'utf8')
-    const result = await esbuild.transform(src, {
-      loader: 'jsx',
-      jsx: 'transform',
-    })
-
-    // Change top-level const to var to avoid redeclaration errors
-    // across separate <script> tags (Babel standalone isolated per file)
-    let code = result.code.replace(/^const /gm, 'var ')
-
     // Preserve subdirectory structure relative to APP_DIR
     const rel = relative(APP_DIR, file).replace(/\.jsx$/, '.js')
     const outFile = join(OUT_DIR, rel)
     mkdirSync(dirname(outFile), { recursive: true })
-    writeFileSync(outFile, code)
+
+    if (rel === 'code/editor.js') {
+      await esbuild.build({
+        entryPoints: [file],
+        outfile: outFile,
+        bundle: true,
+        format: 'iife',
+        platform: 'browser',
+        jsx: 'transform',
+        target: 'es2020',
+        logLevel: 'silent',
+      })
+    } else {
+      const src = readFileSync(file, 'utf8')
+      const result = await esbuild.transform(src, {
+        loader: 'jsx',
+        jsx: 'transform',
+      })
+
+      // Change top-level const to var to avoid redeclaration errors
+      // across separate <script> tags (Babel standalone isolated per file)
+      const code = result.code.replace(/^const /gm, 'var ')
+      writeFileSync(outFile, code)
+    }
+
     console.log(`✓ ${relative(APP_DIR, file)} → compiled/${rel}`)
   }
 
