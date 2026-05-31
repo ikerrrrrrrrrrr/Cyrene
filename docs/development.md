@@ -61,9 +61,9 @@ The **Status** page shows live debug logs, system metrics, worker status, and se
 uv pip install -e ".[dev]"
 
 # Run MCP manager tests
-PYTHONPATH=src python -m pytest tests/test_mcp_manager.py -v
+python -m pytest tests/test_mcp_manager.py -v
 
-# Run all tests
+# Run all tests (editable install makes PYTHONPATH=src unnecessary)
 pytest -q
 ```
 
