@@ -637,6 +637,15 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
     try:
         _load_lottery_state()
 
+        # Check whether agent proactive messaging is enabled in settings
+        try:
+            from cyrene.settings_store import get as _get_setting
+            if not _get_setting("agent_proactive", True):
+                logger.debug("Agent proactive messaging disabled via settings")
+                return
+        except Exception:
+            pass
+
         if not _is_daytime():
             logger.debug("Nighttime, skipping proactive check")
             return

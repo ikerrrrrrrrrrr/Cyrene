@@ -135,6 +135,7 @@ _DEFAULT_SETTINGS: dict = {
     "workspace_history": [],
     "workspace_active": True,
     "soul_active": True,
+    "agent_proactive": True,
 }
 
 _EDITABLE_ENV_KEYS = {

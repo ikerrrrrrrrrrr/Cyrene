@@ -2163,6 +2163,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 return JSONResponse({"error": "heartbeat_interval must be at least 60"}, status_code=400)
             set_setting("heartbeat_interval", value)
             changed.append("heartbeat_interval")
+        if "agent_proactive" in body:
+            set_setting("agent_proactive", bool(body["agent_proactive"]))
+            changed.append("agent_proactive")
         if "notify_telegram" in body:
             set_setting("notify_telegram", bool(body["notify_telegram"]))
             changed.append("notify_telegram")
@@ -4329,6 +4332,7 @@ def _build_config() -> dict:
         "search_external_url": settings.get("search_external_url", ""),
         "spawn_policy": settings.get("spawn_policy", "conservative"),
         "heartbeat_interval": settings.get("heartbeat_interval", 1800),
+        "agent_proactive": settings.get("agent_proactive", True),
         "notify_telegram": settings.get("notify_telegram", True),
         "notify_wechat": settings.get("notify_wechat", True),
         "search_port": str(SEARXNG_PORT),

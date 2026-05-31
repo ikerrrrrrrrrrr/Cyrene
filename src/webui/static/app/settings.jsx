@@ -317,6 +317,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [desktopNotificationStatus, setDesktopNotificationStatus] = useStateSet("");
   const [notifyTelegram, setNotifyTelegram] = useStateSet(true);
   const [notifyWechat, setNotifyWechat] = useStateSet(true);
+  const [agentProactive, setAgentProactive] = useStateSet(true);
   const [toolsExpanded, setToolsExpanded] = useStateSet(false);
 
   function toggleCapability(key) {
@@ -407,6 +408,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       if (payload.search_external_url !== undefined) setSearchExternalUrl(payload.search_external_url);
       if (payload.notify_telegram !== undefined) setNotifyTelegram(payload.notify_telegram);
       if (payload.notify_wechat !== undefined) setNotifyWechat(payload.notify_wechat);
+      if (payload.agent_proactive !== undefined) setAgentProactive(payload.agent_proactive);
     }).catch(() => {});
     fetch("/api/settings/models").then((r) => r.json()).then((payload) => {
       const fallbackApiKey = "";
@@ -615,6 +617,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
         body: JSON.stringify({
           spawn_policy: config.spawn_policy || "conservative",
           heartbeat_interval: Number(config.heartbeat_interval) || 1800,
+          agent_proactive: agentProactive,
         }),
       });
       if (!response.ok) throw new Error("HTTP " + response.status);
@@ -1298,6 +1301,11 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 <option value="conservative">{t("settings.conservative")}</option>
                 <option value="off">{t("settings.off")}</option>
               </select>
+            </div>
+
+            <div className="field">
+              <div className="label">{t("settings.agentProactive")}<small>{t("settings.agentProactiveHint")}</small></div>
+              <div className={"toggle " + (agentProactive ? "on" : "")} onClick={() => setAgentProactive(!agentProactive)}></div>
             </div>
 
             <div className="field">
