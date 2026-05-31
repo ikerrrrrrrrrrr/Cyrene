@@ -672,6 +672,39 @@ async def test_heartbeat_proactive_check_uses_main_agent_loop(monkeypatch):
     assert seen["db_path"] == "db.sqlite3"
     assert "scheduler-initiated proactive check-in" in seen["prompt"]
     assert "Recent memories about the user" in seen["prompt"]
+    assert "If you speak, the final reply will be shown directly to the user" in seen["prompt"]
+
+
+async def test_heartbeat_proactive_check_stays_silent_when_agent_skips(monkeypatch):
+    from cyrene import scheduler
+
+    seen = {"notified": False}
+
+    monkeypatch.setattr(scheduler, "OWNER_ID", 7)
+    monkeypatch.setattr(scheduler, "_load_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_save_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_is_daytime", lambda: True)
+    monkeypatch.setattr(scheduler, "_silence_hours", lambda: 96.0)
+
+    async def fake_context(_db_path):
+        return "## Recent conversation\n- user already closed the loop"
+
+    async def fake_run_heartbeat_agent(prompt, bot, chat_id, db_path):
+        seen["prompt"] = prompt
+        return ""
+
+    async def fake_notify(*args, **kwargs):
+        seen["notified"] = True
+
+    monkeypatch.setattr(scheduler, "_assemble_proactive_context", fake_context)
+    monkeypatch.setattr(scheduler, "run_heartbeat_agent", fake_run_heartbeat_agent)
+    monkeypatch.setattr(scheduler, "notify", fake_notify)
+
+    await scheduler._heartbeat_proactive_check(bot=None, db_path="db.sqlite3")
+
+    assert seen["notified"] is False
+    assert "scheduler-initiated proactive check-in" in seen["prompt"]
+    assert "do not interrupt" in seen["prompt"].lower()
 
 
 async def test_execute_task_fallback_persists_webui_reminder(monkeypatch, tmp_path):

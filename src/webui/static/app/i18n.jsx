@@ -529,6 +529,22 @@ const TRANSLATIONS = {
 
     // ── Code Attachment ───────────────────────────────────────────────────
     "chat.code.showBtn": "Show Code",
+    "chat.code.newFile": "New file",
+    "chat.code.fallbackBadge": "fallback",
+    "chat.code.save": "Save",
+    "chat.code.saving": "Saving...",
+    "chat.code.loading": "Loading editor...",
+    "chat.code.saved": "Saved",
+    "chat.code.saveFailed": "Save failed",
+    "chat.code.errorPrefix": "Error",
+    "chat.code.diffError": "Diff error",
+    "chat.code.showDiffTitle": "Show red/green diff against the original buffer",
+    "chat.code.confirmCloseDirty": "Unsaved changes will be lost. Close anyway?",
+    "chat.code.fallbackNote": "CodeMirror unavailable. Using plain text mode.",
+    "chat.diff.title": "Diff",
+    "chat.diff.loading": "Loading diff...",
+    "chat.diff.noDifferences": "No differences",
+    "chat.diff.errorPrefix": "Error",
 
     // ── Agents Page ──────────────────────────────────────────────────────
     "agents.rounds": "Rounds",
@@ -1619,6 +1635,22 @@ const TRANSLATIONS = {
 
     // ── 代码附件 ─────────────────────────────────────────────────────────
     "chat.code.showBtn": "显示代码",
+    "chat.code.newFile": "新文件",
+    "chat.code.fallbackBadge": "降级",
+    "chat.code.save": "保存",
+    "chat.code.saving": "保存中...",
+    "chat.code.loading": "正在加载编辑器...",
+    "chat.code.saved": "已保存",
+    "chat.code.saveFailed": "保存失败",
+    "chat.code.errorPrefix": "错误",
+    "chat.code.diffError": "差异错误",
+    "chat.code.showDiffTitle": "显示与原始缓冲区的红绿差异",
+    "chat.code.confirmCloseDirty": "未保存的修改将会丢失。仍然关闭吗？",
+    "chat.code.fallbackNote": "CodeMirror 不可用，已切换到纯文本模式。",
+    "chat.diff.title": "差异",
+    "chat.diff.loading": "正在加载差异...",
+    "chat.diff.noDifferences": "没有差异",
+    "chat.diff.errorPrefix": "错误",
 
     // ── 代理流程页 ──────────────────────────────────────────────────────
     "agents.rounds": "轮次",

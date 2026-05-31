@@ -400,7 +400,7 @@ def _build_proactive_user_prompt(context: str, silence_hours: float | None) -> s
 - If the user mentioned plans, events, or concerns recently — follow up on them naturally.
 - If the user's recent emotional patterns suggest stress or tiredness, be warm and supportive.
 - If there are open topics from the recent conversation, follow up.
-- If there's truly nothing specific to reference, do a gentle check-in — but avoid generic "how are you".
+- If there's truly nothing specific to reference, do not interrupt.
 {silence_note}
 
 ## Current situation

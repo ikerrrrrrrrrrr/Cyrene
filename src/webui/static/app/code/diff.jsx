@@ -9,6 +9,13 @@
   var useEffect = React.useEffect;
   var createElement = React.createElement;
 
+  function diffT(key, fallback, vars) {
+    if (typeof window !== "undefined" && typeof window.t === "function") {
+      return window.t(key, vars);
+    }
+    return fallback;
+  }
+
   function isBinaryDiff(text) {
     return text && /^Binary files /.test(text.trim());
   }
@@ -65,7 +72,7 @@
             setLoading(false);
           })
           .catch(function (e) {
-            setDiffText("Error: " + (e.message || e));
+            setDiffText(diffT("chat.diff.errorPrefix", "Error") + ": " + (e.message || e));
             setLoading(false);
           });
       } else if (props.diff) {
@@ -82,7 +89,7 @@
     },
       // Header
       createElement("div", { className: "diff-viewer-header" },
-        createElement("span", { className: "diff-viewer-title" }, "Diff"),
+        createElement("span", { className: "diff-viewer-title" }, diffT("chat.diff.title", "Diff")),
         props.left && props.right && createElement("span", { className: "diff-viewer-files" },
           props.left + " → " + props.right
         ),
@@ -95,18 +102,18 @@
       // Content
       loading
         ? createElement("div", {
-            style: { padding: 24, textAlign: "center", color: "var(--text-4)", fontSize: 12 },
-          }, "Loading diff...")
+            className: "diff-viewer-empty",
+          }, diffT("chat.diff.loading", "Loading diff..."))
         : createElement("div", { className: "diff-viewer-content" },
             (function () {
               if (!diffText) {
-                return createElement("div", { style: { padding: 24, textAlign: "center", color: "var(--text-4)", fontSize: 12 } }, "No differences");
+                return createElement("div", { className: "diff-viewer-empty" }, diffT("chat.diff.noDifferences", "No differences"));
               }
               if (binary) {
-                return createElement("div", { style: { padding: 24, textAlign: "center", color: "var(--text-4)", fontSize: 12 } }, diffText.trim());
+                return createElement("div", { className: "diff-viewer-empty" }, diffText.trim());
               }
               if (hunks.length === 0) {
-                return createElement("div", { style: { padding: 24, textAlign: "center", color: "var(--text-4)", fontSize: 12 } }, "No differences");
+                return createElement("div", { className: "diff-viewer-empty" }, diffT("chat.diff.noDifferences", "No differences"));
               }
               return hunks.map(function (hunk, hi) {
                 return createElement("div", { key: "h" + hi, className: "diff-hunk" },

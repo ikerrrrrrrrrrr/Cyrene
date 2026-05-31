@@ -3185,7 +3185,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
       </div>;
     }
     if (view === "diff-viewer") {
-      return <div className="side-section" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+      return <div className="side-section side-section--flush" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
         {typeof DiffViewerPanel !== "undefined" && React.createElement(DiffViewerPanel, {
           diff: diffData.diff,
           mode: diffData.mode,

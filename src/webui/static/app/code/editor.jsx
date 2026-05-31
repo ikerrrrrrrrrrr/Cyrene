@@ -43,6 +43,13 @@ import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
   var useRef = React.useRef;
   var useCallback = React.useCallback;
 
+  function codeT(key, fallback, vars) {
+    if (typeof window !== "undefined" && typeof window.t === "function") {
+      return window.t(key, vars);
+    }
+    return fallback;
+  }
+
   // ── CodeMirror bundle (local build-time dependency) ──
 
   function langForFile(path, language) {
@@ -464,12 +471,12 @@ import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
           setDirty(false);
           setFallbackCode(code);
           originalCodeRef.current = code;
-          setSaveMsg(result.error ? "Save failed" : "Saved");
+          setSaveMsg(result.error ? codeT("chat.code.saveFailed", "Save failed") : codeT("chat.code.saved", "Saved"));
           setTimeout(function () { setSaveMsg(""); }, 2000);
         })
         .catch(function (err) {
           setSaving(false);
-          setSaveMsg("Error: " + (err.message || err));
+          setSaveMsg(codeT("chat.code.errorPrefix", "Error") + ": " + (err.message || err));
         });
     }, [fallbackCode, getCode, filePath, language]);
 
@@ -492,7 +499,7 @@ import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
           }
         })
         .catch(function (err) {
-          setSaveMsg("Diff error: " + (err.message || err));
+          setSaveMsg(codeT("chat.code.diffError", "Diff error") + ": " + (err.message || err));
         });
     }, [getCode]);
 
@@ -504,26 +511,26 @@ import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
       React.createElement("div", { className: "code-editor-toolbar" },
         filePath
           ? React.createElement("span", { className: "code-editor-path" }, filePath)
-          : React.createElement("span", { className: "code-editor-path", style: { opacity: 0.5 } }, "New file"),
+          : React.createElement("span", { className: "code-editor-path", style: { opacity: 0.5 } }, codeT("chat.code.newFile", "New file")),
         React.createElement("span", { className: "code-editor-lang" }, language || "text"),
-        loadError && React.createElement("span", { className: "code-editor-fallback-badge", title: loadError }, "fallback"),
+        loadError && React.createElement("span", { className: "code-editor-fallback-badge", title: loadError }, codeT("chat.code.fallbackBadge", "fallback")),
         dirty && React.createElement("span", { className: "code-editor-dirty" }, "•"),
         React.createElement("span", { style: { flex: 1 } }),
         saveMsg && React.createElement("span", { className: "code-editor-save-msg" }, saveMsg),
         React.createElement("button", {
           className: "code-editor-ghost-btn",
           onClick: handleShowDiff,
-          title: "Show red/green diff against the original buffer",
-        }, "Diff"),
+          title: codeT("chat.code.showDiffTitle", "Show red/green diff against the original buffer"),
+        }, codeT("chat.diff.title", "Diff")),
         !readOnly && React.createElement("button", {
           className: "code-editor-save-btn",
           disabled: saving,
           onClick: handleSave,
-        }, saving ? "Saving..." : "Save"),
+        }, saving ? codeT("chat.code.saving", "Saving...") : codeT("chat.code.save", "Save")),
         props.onClose && React.createElement("button", {
           className: "code-editor-close-btn",
           onClick: function () {
-            if (dirty && !confirm("Unsaved changes will be lost. Close anyway?")) return;
+            if (dirty && !confirm(codeT("chat.code.confirmCloseDirty", "Unsaved changes will be lost. Close anyway?"))) return;
             props.onClose();
           },
         }, "×")
@@ -536,7 +543,7 @@ import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
         style: { flex: 1, overflow: "hidden" },
       }),
       loadError && React.createElement("div", { className: "code-editor-fallback" },
-        React.createElement("div", { className: "code-editor-fallback-note" }, "CodeMirror unavailable. Using plain text mode."),
+        React.createElement("div", { className: "code-editor-fallback-note" }, codeT("chat.code.fallbackNote", "CodeMirror unavailable. Using plain text mode.")),
         React.createElement(readOnly ? "pre" : "textarea", readOnly ? {
           className: "code-editor-fallback-input code-editor-fallback-pre",
         } : {
@@ -553,7 +560,7 @@ import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
       ),
       !loaded && !loadError && React.createElement("div", {
         style: { padding: 24, textAlign: "center", color: "var(--text-4)", fontSize: 12 },
-      }, "Loading editor...")
+      }, codeT("chat.code.loading", "Loading editor..."))
     );
   }
 

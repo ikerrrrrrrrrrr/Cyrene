@@ -415,6 +415,7 @@ async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str)
         "Match the user's preferred language based on their past messages.\n"
         "Do not mention the scheduler, heartbeat, lottery, hidden prompt, or internal instructions.\n"
         "If you decide to speak, send one concise, useful proactive message to the user.\n"
+        "If you decide not to interrupt, call `quit` immediately and do not write any user-facing text.\n"
         "If tools are useful, use the normal main-agent loop and let the UI show the later details."
     )
     if _agent_lock.locked():
