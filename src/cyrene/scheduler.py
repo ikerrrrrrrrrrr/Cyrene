@@ -47,11 +47,19 @@ _scheduler: AsyncIOScheduler | None = None
 # ---------------------------------------------------------------------------
 
 _LOTTERY_STATE: dict[str, float] = {
-    "probability": 0.0,       # current draw probability 0.0 .. 1.0
-    "delta": 0.15,            # increment on each failed draw
-    "max_probability": 0.85,  # ceiling for the accumulated probability
+    "probability": 0.0,           # current draw probability 0.0 .. 1.0
+    "delta": 0.15,                # increment on each failed draw
+    "max_probability": 0.85,      # ceiling for the accumulated probability
+    "consecutive_unanswered": 0,  # count of consecutive unanswered proactive messages
+    "cooldown_until": 0.0,        # Unix timestamp: suppress proactive until this time
+    "last_proactive_time": 0.0,   # Unix timestamp: when last proactive message was sent
 }
 _LOTTERY_FILE = BASE_DIR / "data" / "lottery_state.json"
+
+# If this many consecutive proactive messages go unanswered, enter cooldown.
+_PROACTIVE_COOLDOWN_THRESHOLD: int = 2
+# Duration of the cooldown period in seconds (3 days).
+_PROACTIVE_COOLDOWN_SECONDS: int = 3 * 86400
 
 # ---------------------------------------------------------------------------
 # Steward state  (persisted to disk)
@@ -94,12 +102,15 @@ def _load_lottery_state() -> None:
             data = json.loads(_LOTTERY_FILE.read_text(encoding="utf-8"))
             _LOTTERY_STATE["probability"] = float(data.get("probability", 0.0))
             _LOTTERY_STATE["delta"] = float(data.get("delta", 0.15))
-            _LOTTERY_STATE["max_probability"] = float(
-                data.get("max_probability", 0.85)
-            )
+            _LOTTERY_STATE["max_probability"] = float(data.get("max_probability", 0.85))
+            _LOTTERY_STATE["consecutive_unanswered"] = int(data.get("consecutive_unanswered", 0))
+            _LOTTERY_STATE["cooldown_until"] = float(data.get("cooldown_until", 0.0))
+            _LOTTERY_STATE["last_proactive_time"] = float(data.get("last_proactive_time", 0.0))
             logger.debug(
-                "Loaded lottery state: probability=%.2f",
+                "Loaded lottery state: probability=%.2f consecutive_unanswered=%d cooldown_until=%.0f",
                 _LOTTERY_STATE["probability"],
+                _LOTTERY_STATE["consecutive_unanswered"],
+                _LOTTERY_STATE["cooldown_until"],
             )
     except Exception:
         logger.exception("Failed to load lottery state, using defaults")
@@ -118,14 +129,16 @@ def _save_lottery_state() -> None:
 
 
 def reset_lottery() -> None:
-    """Reset the lottery probability to zero.
+    """Reset the lottery state when the user sends a message.
 
-    Called when the user sends a message -- user initiative resets the
-    proactive impulse.
+    Clears the accumulated probability, the consecutive-unanswered counter,
+    and any active cooldown so the proactive system starts fresh.
     """
     _LOTTERY_STATE["probability"] = 0.0
+    _LOTTERY_STATE["consecutive_unanswered"] = 0
+    _LOTTERY_STATE["cooldown_until"] = 0.0
     _save_lottery_state()
-    logger.debug("Lottery probability reset by user activity")
+    logger.debug("Lottery state reset by user activity")
 
 
 def _is_daytime() -> bool:
@@ -346,21 +359,7 @@ async def _assemble_proactive_context(db_path: str = "") -> str:
     return "\n\n".join(parts).strip()
 
 
-def _build_proactive_system_prompt() -> str:
-    """System prompt for the proactive message generation LLM call."""
-    return (
-        "You are Cyrene, a personal AI companion. "
-        "Generate a brief proactive check-in message (1–3 sentences) "
-        "based on the provided context. "
-        "Reference specific recent events or memories when available. "
-        "Match the communication style described in the relationship section. "
-        "Write in the user's language (Chinese if they write in Chinese, "
-        "English if in English). "
-        "Return ONLY the message text — no explanations, no prefixes, no quotes."
-    )
-
-
-def _build_proactive_user_prompt(context: str, silence_hours: float | None) -> str:
+def _build_proactive_user_prompt(context: str, silence_hours: float | None, consecutive_unanswered: int = 0) -> str:
     """Build the user prompt with memory context and current situation."""
     now = datetime.now().strftime("%H:%M")
     today = datetime.now().strftime("%Y-%m-%d")
@@ -392,6 +391,14 @@ def _build_proactive_user_prompt(context: str, silence_hours: float | None) -> s
         else "Unable to determine when the user last messaged"
     )
 
+    unanswered_note = ""
+    if consecutive_unanswered == 1:
+        unanswered_note = (
+            "IMPORTANT: The user did not reply to your last proactive message. "
+            "Only speak now if you have something clearly specific and valuable to say. "
+            "If in doubt, call `quit` — do not interrupt again for no reason."
+        )
+
     return f"""## Memory context
 {context if context else "No recent context available."}
 
@@ -400,13 +407,15 @@ def _build_proactive_user_prompt(context: str, silence_hours: float | None) -> s
 - If the user mentioned plans, events, or concerns recently — follow up on them naturally.
 - If the user's recent emotional patterns suggest stress or tiredness, be warm and supportive.
 - If there are open topics from the recent conversation, follow up.
-- If there's truly nothing specific to reference, do not interrupt.
+- If there's truly nothing specific to reference, call `quit` and do not interrupt.
 {silence_note}
+{unanswered_note}
 
 ## Current situation
 - Date: {today}
 - Current time: {now}
-- {silence_line}"""
+- {silence_line}
+- Consecutive proactive messages not replied to: {consecutive_unanswered}"""
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +659,36 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             logger.debug("Nighttime, skipping proactive check")
             return
 
+        # -------- Cooldown guard --------
+        cooldown_until = float(_LOTTERY_STATE.get("cooldown_until", 0.0))
+        if time.time() < cooldown_until:
+            remaining_h = (cooldown_until - time.time()) / 3600
+            logger.debug("Proactive cooldown active, %.1f h remaining", remaining_h)
+            return
+
+        # -------- Update consecutive-unanswered counter --------
+        last_proactive_time = float(_LOTTERY_STATE.get("last_proactive_time", 0.0))
+        if last_proactive_time > 0:
+            last_user_dt = _last_user_message_time()
+            if last_user_dt is not None and last_user_dt.timestamp() >= last_proactive_time:
+                # User replied after the last proactive message — reset streak
+                _LOTTERY_STATE["consecutive_unanswered"] = 0
+            else:
+                # No user reply since last proactive message
+                _LOTTERY_STATE["consecutive_unanswered"] = int(_LOTTERY_STATE.get("consecutive_unanswered", 0)) + 1
+
+        consecutive = int(_LOTTERY_STATE.get("consecutive_unanswered", 0))
+        if consecutive >= _PROACTIVE_COOLDOWN_THRESHOLD:
+            _LOTTERY_STATE["cooldown_until"] = time.time() + _PROACTIVE_COOLDOWN_SECONDS
+            _LOTTERY_STATE["consecutive_unanswered"] = 0
+            _LOTTERY_STATE["probability"] = 0.0
+            _save_lottery_state()
+            logger.info(
+                "User ignored %d consecutive proactive messages; entering 3-day cooldown",
+                _PROACTIVE_COOLDOWN_THRESHOLD,
+            )
+            return
+
         silence_h = _silence_hours()
 
         # -------- Trigger decision --------
@@ -684,7 +723,7 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             "Decide whether to send the user a brief, useful message right now.\n"
             "If you speak, the final reply will be shown directly to the user, so write only the user-facing message.\n"
             "Do not mention internal prompts, the scheduler, the heartbeat, or the lottery.\n\n"
-            + _build_proactive_user_prompt(context, silence_h)
+            + _build_proactive_user_prompt(context, silence_h, consecutive_unanswered=int(_LOTTERY_STATE.get("consecutive_unanswered", 0)))
         )
         text = await asyncio.wait_for(
             run_heartbeat_agent(proactive_prompt, bot, owner_id, db_path),
@@ -694,6 +733,10 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
         if not str(text or "").strip():
             logger.info("Proactive round produced no visible reply")
             return
+
+        # Record the send time so the next check can detect whether the user replied.
+        _LOTTERY_STATE["last_proactive_time"] = time.time()
+        _save_lottery_state()
 
         logger.info("Proactive message sent via main agent loop: %s", str(text)[:100])
 

@@ -414,9 +414,13 @@ async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str)
         "Write to the user in a natural, user-facing voice.\n"
         "Match the user's preferred language based on their past messages.\n"
         "Do not mention the scheduler, heartbeat, lottery, hidden prompt, or internal instructions.\n"
-        "If you decide to speak, send one concise, useful proactive message to the user.\n"
-        "If you decide not to interrupt, call `quit` immediately and do not write any user-facing text.\n"
-        "If tools are useful, use the normal main-agent loop and let the UI show the later details."
+        "\n"
+        "DECISION RULE — default to silence:\n"
+        "- Call `quit` immediately unless you have something genuinely specific and useful to say.\n"
+        "- Generic greetings, vague check-ins, or messages with nothing concrete to reference are NOT worth sending.\n"
+        "- If the user did not reply to a recent proactive message, raise the bar even higher — only speak if you are confident the message is timely and valuable.\n"
+        "- If you decide to speak, keep it to 1–2 sentences. Be direct, warm, and specific.\n"
+        "- If tools are useful, use them before composing the reply."
     )
     if _agent_lock.locked():
         return ""
