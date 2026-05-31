@@ -57,11 +57,14 @@ The **Status** page shows live debug logs, system metrics, worker status, and se
 ## Testing
 
 ```bash
+# Fresh dev test setup (installs package + test dependencies)
+uv pip install -e ".[dev]"
+
 # Run MCP manager tests
 PYTHONPATH=src python -m pytest tests/test_mcp_manager.py -v
 
 # Run all tests
-PYTHONPATH=src python -m pytest tests/
+pytest -q
 ```
 
 Some tests require an LLM endpoint to be configured.
