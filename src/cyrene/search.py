@@ -3,23 +3,21 @@ Deep Search Pipeline -- Multi-stage search with query generation, parallel fetch
 filtering, and synthesis.
 
 Architecture:
-  Query Generator (LLM) --> Parallel Searcher (asyncio) --> Filter (LLM) --> Synthesizer (LLM)
+  Query Generator (LLM) --> SimpleXNG Searcher --> Filter (LLM) --> Synthesizer (LLM)
 """
 
 import asyncio
 import logging
 import re
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
 from cyrene import debug
 from cyrene.call_llm import call_llm as _unified_call_llm
 from cyrene.config import (
-    SEARCH_PROXY, SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT, SEARXNG_URL,
+    SEARCH_PROXY, SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,
 )
-from cyrene.settings_store import get as get_web_setting
 
 logger = logging.getLogger(__name__)
 
@@ -86,195 +84,26 @@ async def _generate_queries(topic: str) -> list[str]:
     return queries[:5]
 
 
-# ---------------------------------------------------------------------------
-# Stage 2: Parallel search and content fetching
-# ---------------------------------------------------------------------------
-
-
-def _extract_ddg_url(href: str) -> str:
-    """Extract the real URL from a DuckDuckGo redirect URL."""
-    if "duckduckgo.com/l/?" in href or href.startswith("//"):
-        # Handle relative URLs like //duckduckgo.com/l/?uddg=...
-        if href.startswith("//"):
-            href = "https:" + href
-        parsed = urlparse(href)
-        params = parse_qs(parsed.query)
-        uddg = params.get("uddg")
-        if uddg:
-            return uddg[0]
-    return href
-
-
-# ---------------------------------------------------------------------------
-# 限流器：跟踪请求频率，超限时等待
-# ---------------------------------------------------------------------------
-class _RateLimiter:
-    def __init__(self, max_per_window: int, window_sec: float, cooldown_sec: float = 60.0):
-        self.max_per_window = max_per_window
-        self.window_sec = window_sec
-        self.cooldown_sec = cooldown_sec
-        self.timestamps: list[float] = []
-        self.in_cooldown = False
-
-    async def acquire(self) -> None:
-        """等待直到可以发起请求。"""
-        now = asyncio.get_event_loop().time()
-
-        if self.in_cooldown:
-            # 冷却中，等冷却结束
-            wait = min(self.cooldown_sec, self.window_sec * 2)
-            logger.info("Rate limiter in cooldown, waiting %.0fs", wait)
-            await asyncio.sleep(wait)
-            self.in_cooldown = False
-            self.timestamps.clear()
-            return
-
-        # 清理过期的时间戳
-        cutoff = now - self.window_sec
-        self.timestamps = [t for t in self.timestamps if t > cutoff]
-
-        if len(self.timestamps) >= self.max_per_window:
-            # 达到上限，等最旧的时间戳过期
-            wait = self.timestamps[0] + self.window_sec - now + 1
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self.timestamps.clear()
-
-        self.timestamps.append(asyncio.get_event_loop().time())
-
-    def mark_throttled(self) -> None:
-        """被限流时标记冷却。"""
-        self.in_cooldown = True
-        self.timestamps.clear()
-
-_DDG_LIMITER = _RateLimiter(max_per_window=3, window_sec=30, cooldown_sec=120)
-_BING_LIMITER = _RateLimiter(max_per_window=5, window_sec=30, cooldown_sec=180)
-
-
-async def _search_duckduckgo(query: str) -> list[dict]:
-    """Search DuckDuckGo and return up to 5 results with title, url, snippet."""
-    url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
-    results: list[dict] = []
-
-    await _DDG_LIMITER.acquire()
-
-    def _fetch() -> tuple[str, int]:
-        sess = _proxied_session()
-        r = sess.get(url, timeout=_HTTP_TIMEOUT)
-        return r.text, r.status_code
-
-    loop = asyncio.get_event_loop()
-    try:
-        html, status = await loop.run_in_executor(None, _fetch)
-    except Exception as exc:
-        logger.warning("DuckDuckGo search failed for query %r: %s", query, exc)
-        return []
-
-    # 检测是否被限流（202 或截断页面）
-    if status != 200 or len(html) < 20000 or 'result__a' not in html:
-        logger.warning("DuckDuckGo rate limited (status=%d, len=%d), cooling down", status, len(html))
-        _DDG_LIMITER.mark_throttled()
-        return []
-
-    title_matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.DOTALL)
-    snippet_matches = re.findall(r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
-
-    for i, (href, title_html) in enumerate(title_matches):
-        title = re.sub(r"<.*?>", "", title_html).strip()
-        real_url = _extract_ddg_url(href)
-        snippet = ""
-        if i < len(snippet_matches):
-            snippet = re.sub(r"<.*?>", "", snippet_matches[i]).strip()
-        results.append({"title": title, "url": real_url, "snippet": snippet, "query": query})
-        if len(results) >= 5:
-            break
-
-    return results[:5]
-
-
-_BING_DECOY_KEYWORDS = [
-    "youtube", "microsoft", "support.microsoft", "chatgpt", "reddit",
-    "google", "facebook", "instagram", "twitter", "amazon",
-]
-
-async def _search_baidu(query: str) -> list[dict]:
-    """Search Baidu and return up to 5 results with title, url, snippet.
-    Baidu is accessible from China without proxy issues."""
-    url = f"https://www.baidu.com/s?wd={quote(query)}&ie=utf-8"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-    def _fetch() -> str:
-        r = requests.get(url, headers=headers, timeout=_HTTP_TIMEOUT)
-        return r.text
-
-    loop = asyncio.get_event_loop()
-    try:
-        html = await loop.run_in_executor(None, _fetch)
-    except Exception as exc:
-        logger.warning("Baidu search failed for query %r: %s", query, exc)
-        return []
-
-    results: list[dict] = []
-
-    # Baidu results: <div class="result" id="..."> <h3><a href="..." aria-text="title">
-    blocks = re.findall(r'<div\s+class="result"\s+id="\d+"[^>]*>([\s\S]*?)</div>\s*</div>', html, re.DOTALL)
-    if not blocks:
-        # Try alternative Baidu result format
-        blocks = re.findall(r'<div[^>]*class="c-container"[^>]*>([\s\S]*?)<!--ecms', html, re.DOTALL)
-
-    for block in blocks:
-        a_match = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
-        if not a_match:
-            continue
-        url = a_match.group(1)
-        title = re.sub(r'<[^>]+>', '', a_match.group(2)).strip()
-        if not title:
-            continue
-        # Extract snippet
-        snippet = ""
-        snip = re.search(r'<span[^>]*class="content-right_[^"]*"[^>]*>(.*?)</span>', block, re.DOTALL)
-        if not snip:
-            snip = re.search(r'<div[^>]*class="c-abstract"[^>]*>(.*?)</div>', block, re.DOTALL)
-        if snip:
-            snippet = re.sub(r'<[^>]+>', '', snip.group(1)).strip()
-
-        results.append({"title": title, "url": url, "snippet": snippet, "query": query})
-        if len(results) >= 5:
-            break
-
-    return results[:5]
-
-
-def _get_searxng_url() -> str:
-    """Resolve the SearXNG base URL from Web UI settings, env vars, or auto-start."""
-    search_mode = get_web_setting("search_mode", "builtin")
-
-    if search_mode == "fallback":
-        return ""
-
-    if search_mode == "external":
-        url = get_web_setting("search_external_url", "") or SEARXNG_URL
-        return url
-
-    # "builtin" mode
-    if SEARXNG_URL:
-        return SEARXNG_URL
+def _get_simplexng_url() -> str:
+    """Resolve the app-managed SimpleXNG search API URL."""
     if SEARXNG_AUTO_START:
         return f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"
     return ""
 
 
-async def _search_searxng(query: str) -> list[dict]:
-    """Search via local SearxNG instance. No rate limits, clean JSON API."""
-    base_url = _get_searxng_url()
+async def _search_simplexng(query: str) -> list[dict]:
+    """Search via the built-in SimpleXNG SearXNG-compatible API."""
+    base_url = _get_simplexng_url()
     if not base_url:
         return []
     url = f"{base_url.rstrip('/')}/search"
     headers = {"Accept": "application/json"}
 
     def _fetch() -> list[dict]:
-        # SearxNG 是本地服务，不走代理
-        r = requests.get(url, params={"q": query, "format": "json", "language": "zh-CN", "safesearch": "0"}, headers=headers, timeout=_HTTP_TIMEOUT)
+        # SimpleXNG 是本地服务，必须忽略系统代理环境变量。
+        sess = requests.Session()
+        sess.trust_env = False
+        r = sess.get(url, params={"q": query, "format": "json", "language": "zh-CN", "safesearch": "0"}, headers=headers, timeout=_HTTP_TIMEOUT)
         r.raise_for_status()
         data = r.json()
         return data.get("results", [])
@@ -283,7 +112,7 @@ async def _search_searxng(query: str) -> list[dict]:
     try:
         raw_results = await loop.run_in_executor(None, _fetch)
     except Exception as exc:
-        logger.warning("SearxNG search failed: %s", exc)
+        logger.warning("SimpleXNG search failed: %s", exc)
         return []
 
     results = []
@@ -297,91 +126,6 @@ async def _search_searxng(query: str) -> list[dict]:
             break
 
     return results
-
-
-async def _search_bing(query: str) -> list[dict]:
-    """Search Bing and return up to 5 results with title, url, snippet.
-    Used as fallback when DuckDuckGo is unavailable (e.g. China)."""
-    url = f"https://www.bing.com/search?q={quote(query)}"
-
-    await _BING_LIMITER.acquire()
-
-    def _fetch() -> str:
-        sess = _proxied_session()
-        sess.headers.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
-        # 不设置 Accept-Language，避免代理劫持
-        r = sess.get(url, timeout=_HTTP_TIMEOUT)
-        r.raise_for_status()
-        return r.text
-
-    loop = asyncio.get_event_loop()
-    try:
-        html = await loop.run_in_executor(None, _fetch)
-    except Exception as exc:
-        logger.warning("Bing search failed for query %r: %s", query, exc)
-        return []
-    results: list[dict] = []
-
-    # Bing results live in <li class="b_algo"> blocks
-    algo_blocks = re.findall(r'<li\s+class="b_algo"[^>]*>([\s\S]*?)</li>', html, re.DOTALL)
-
-    # DEBUG: 打印原始结果标题
-    debug_titles = []
-    for b in algo_blocks[:5]:
-        hm = re.search(r'<h2[^>]*>\s*<a[^>]+href="[^"]+"[^>]*>([\s\S]*?)</a>', b, re.DOTALL)
-        if hm:
-            debug_titles.append(re.sub(r'<[^>]+>', '', hm.group(1)).strip()[:50])
-    if debug_titles:
-        logger.warning("Bing raw results for %r: %s", query[:30], debug_titles)
-
-    # 检查是否被限流（返回全是垃圾结果）
-    if len(algo_blocks) > 0:
-        all_titles = []
-        for b in algo_blocks[:5]:
-            hm = re.search(r'<h2[^>]*>\s*<a[^>]+href="[^"]+"[^>]*>([\s\S]*?)</a>', b, re.DOTALL)
-            if hm:
-                all_titles.append(re.sub(r'<[^>]+>', '', hm.group(1)).strip().lower())
-        decoy_count = sum(1 for t in all_titles for d in _BING_DECOY_KEYWORDS if d in t)
-        if len(all_titles) > 0 and decoy_count >= len(all_titles) * 0.6:
-            logger.warning("Bing rate limited (decoy results %d/%d), cooling down", decoy_count, len(all_titles))
-            _BING_LIMITER.mark_throttled()
-            return []
-    for block in algo_blocks:
-        # Extract link from <h2><a href="...">title</a></h2>
-        h2_match = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', block, re.DOTALL)
-        if not h2_match:
-            continue
-        url_raw = h2_match.group(1)
-        title = re.sub(r'<[^>]+>', '', h2_match.group(2)).strip()
-        if not title or url_raw.startswith('/') or url_raw.startswith('#'):
-            continue
-
-        # Take URL from <cite> tag (Bing shows the real URL there)
-        cite_match = re.search(r'<cite[^>]*>([\s\S]*?)</cite>', block, re.DOTALL)
-        if cite_match:
-            real_url = re.sub(r'<[^>]+>', '', cite_match.group(1)).strip()
-            # Bing sometimes wraps the URL, clean it
-            real_url = real_url.replace(' ', '').replace('&#8203;', '')
-            if real_url.startswith('http'):
-                url_raw = real_url
-
-        if url_raw.startswith('https://www.bing.com/') and '?' not in url_raw.split('/')[-1]:
-            continue
-
-        # Extract snippet
-        snippet = ""
-        cap_match = re.search(r'<div[^>]*class="b_caption"[^>]*>([\s\S]*?)</div>', block, re.DOTALL)
-        if cap_match:
-            p_match = re.search(r'<p[^>]*>([\s\S]*?)</p>', cap_match.group(1), re.DOTALL)
-            if p_match:
-                snippet = re.sub(r'<[^>]+>', '', p_match.group(1)).strip()
-
-        results.append({"title": title, "url": url_raw, "snippet": snippet, "query": query})
-        if len(results) >= 5:
-            break
-
-    return results[:5]
-
 
 def _strip_html(text: str) -> str:
     """Strip HTML tags and normalize whitespace."""
@@ -556,12 +300,12 @@ async def deep_search(topic: str) -> str:
     """Multi-stage deep search pipeline.
 
     Stages:
-        1. Query generation (LLM): generate 3-5 search queries
-        2. Parallel search (asyncio): search DuckDuckGo + fetch URL contents
+        1. Query selection: use the original user topic
+        2. SimpleXNG search + fetch URL contents
         3. Filter (LLM): keep only relevant results
         4. Synthesize (LLM): produce structured answer
 
-    Error handling: any stage that fails falls back gracefully to the next stage.
+    Search intentionally goes through the built-in SimpleXNG backend only.
     """
     logger.info("Deep search starting for: %s", topic)
 
@@ -576,25 +320,11 @@ async def deep_search(topic: str) -> str:
     # -----------------------------------------------------------------------
     semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
-    async def _limited_search(q: str, engine: str) -> list[dict]:
+    async def _limited_search(q: str) -> list[dict]:
         async with semaphore:
-            if engine == "searxng":
-                return await _search_searxng(q)
-            elif engine == "ddg":
-                return await _search_duckduckgo(q)
-            elif engine == "baidu":
-                return await _search_baidu(q)
-            else:
-                return await _search_bing(q)
+            return await _search_simplexng(q)
 
-    # SearxNG 优先（配置了 URL 或自动启动）。手搓的 DDG/Bing/Baidu 限流严重，不可靠。
-    _search_url = _get_searxng_url()
-    if _search_url:
-        search_tasks = [_limited_search(q, "searxng") for q in queries]
-    else:
-        search_tasks = [_limited_search(q, "ddg") for q in queries]
-        search_tasks += [_limited_search(q, "bing") for q in queries]
-        search_tasks += [_limited_search(q, "baidu") for q in queries]
+    search_tasks = [_limited_search(q) for q in queries]
 
     search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
@@ -603,8 +333,7 @@ async def deep_search(topic: str) -> str:
         if isinstance(sr, list):
             all_results.extend(sr)
 
-    engine = "SearxNG" if _search_url else "DDG+Bing+Baidu"
-    logger.info("Stage 2 search complete: %d raw results (%s)", len(all_results), engine)
+    logger.info("Stage 2 search complete: %d raw results (SimpleXNG)", len(all_results))
 
     if not all_results:
         return f"Search returned no results for: {topic}"

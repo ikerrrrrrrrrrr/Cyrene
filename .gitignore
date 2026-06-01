@@ -17,6 +17,7 @@ data/
 
 # Environment
 .env
+.env.bak
 
 # Electron
 electron/node_modules/
@@ -35,6 +36,7 @@ dist-electron/
 .claude/
 CLAUDE.md
 CLAUDE.local.md
+AGENTS.md
 uv.lock
 .codex
 .codex.lock

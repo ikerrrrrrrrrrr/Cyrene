@@ -1028,6 +1028,8 @@ async def cancel_subagent_tasks(round_id: str) -> None:
 def _log_task_exception(task: asyncio.Task, agent_id: str) -> None:
     try:
         task.result()
+    except asyncio.CancelledError:
+        return
     except Exception:
         logger.exception("Sub-agent %s task crashed before internal try/except", agent_id)
 
@@ -1081,9 +1083,18 @@ async def _run_subagent(
         extra_prompt = _DEEP_RESEARCH_SUBAGENT_PROMPT
     else:
         extra_prompt = ""
+    now = datetime.now(timezone.utc).astimezone()
+    temporal_context = f"""
+## Current Date and Relative Time
+- Current local date: {now:%Y-%m-%d}.
+- Current local time: {now:%Y-%m-%d %H:%M:%S %Z}.
+- Interpret relative phrases such as today, recently, this week, last week, 最近, 最近一周, 今天, 本周 relative to this date.
+- For current weather or travel recommendations, search for current forecast/current conditions. Do not invent or substitute old years unless the user explicitly asks for historical weather.
+"""
     subagent_prompt = (
         _MAIN_AGENT_PROMPT
         + extra_prompt
+        + temporal_context
         + f"""
 
 ## Sub-agent Context

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import cyrene.agent.state as _state
 from cyrene import debug
+from cyrene.context_trace import strip_context_metadata
 from cyrene.agent.message import (
     _dedupe_messages_by_id,
     _ensure_message_identity,
@@ -509,6 +510,7 @@ def _schedule_memory_compression(messages: list[dict[str, Any]]) -> None:
 
 
 async def _write_session_messages_locked(state: dict[str, Any], messages: list[dict[str, Any]]) -> None:
+    messages = strip_context_metadata(messages)
     _ensure_archive_session_id(state)
     messages = _compress_report_messages_for_storage(messages)
     messages = _ensure_message_identity(messages)
@@ -533,6 +535,7 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
 
 
 async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
+    messages = strip_context_metadata(messages)
     messages = _compress_report_messages_for_storage(messages)
     messages = _ensure_message_identity(list(messages))
     async with _session_state_lock:

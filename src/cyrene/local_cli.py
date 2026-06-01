@@ -29,6 +29,28 @@ def _pick_web_port(preferred_port: int = WEB_PORT) -> int:
     raise RuntimeError("Failed to allocate a local web port")
 
 
+def _read_int_flag(argv: list[str], name: str) -> int | None:
+    """Read a simple integer CLI flag from argv.
+
+    Supports both ``--port 4242`` and ``--port=4242``.
+    """
+    prefix = f"{name}="
+    for idx, arg in enumerate(argv):
+        if arg == name:
+            if idx + 1 >= len(argv):
+                raise SystemExit(f"{name} requires an integer value")
+            raw = argv[idx + 1]
+        elif arg.startswith(prefix):
+            raw = arg[len(prefix):]
+        else:
+            continue
+        try:
+            return int(raw)
+        except ValueError as exc:
+            raise SystemExit(f"{name} requires an integer value, got {raw!r}") from exc
+    return None
+
+
 async def _prepare_cli() -> None:
     """初始化（同 __main__ 但不需要 bot）"""
     for d in (WORKSPACE_DIR, STORE_DIR, DATA_DIR, INBOX_DIR):
@@ -439,6 +461,9 @@ def _run_web_mode() -> None:
         import cyrene.debug as _debug
         _debug.VERBOSE = True
         _debug.init_debug_log()
+    requested_port = _read_int_flag(_sys.argv[1:], "--port")
+    preferred_port = requested_port or WEB_PORT
+    selected_port = _pick_web_port(preferred_port)
 
     import asyncio
     from cyrene.debug import enable_event_bus
@@ -473,7 +498,9 @@ def _run_web_mode() -> None:
         bot = WebBot()
         scheduler = setup_scheduler(bot, str(DB_PATH))
         scheduler.start()
-        print(f"{ASSISTANT_NAME} Web UI starting...")
+        print(f"{ASSISTANT_NAME} Web UI starting at http://127.0.0.1:{selected_port}")
+        if selected_port != preferred_port:
+            print(f"Port {preferred_port} is busy; using {selected_port} instead.")
 
         # 后台检查更新（不阻塞启动）
         try:
@@ -483,7 +510,7 @@ def _run_web_mode() -> None:
             pass
 
         try:
-            await run_web(bot, str(DB_PATH))
+            await run_web(bot, str(DB_PATH), port=selected_port)
         except KeyboardInterrupt:
             logger.info("Shutting down...")
         finally:

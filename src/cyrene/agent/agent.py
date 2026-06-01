@@ -48,9 +48,76 @@ from cyrene.agent.state import (
     _ui_round_hide_initial_detail,
 )
 from cyrene.llm import _assistant_text, _truncate
+from cyrene.context_trace import attach_context, context_block
 from cyrene.tools import _execute_tool, get_active_tool_defs
 
 logger = logging.getLogger(__name__)
+
+
+def _annotate_history_context(history: list) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    for index, raw in enumerate(history or []):
+        if not isinstance(raw, dict):
+            continue
+        message = dict(raw)
+        role = str(message.get("role") or "")
+        content = message.get("content") or ""
+        if message.get("compacted_block"):
+            block = context_block(
+                f"history.compacted.{message.get('message_id') or index}",
+                "history_compacted",
+                source="data/state.json",
+                reason="older session history compacted for token budget",
+                transforms=["mechanical_compaction", "llm_distillation"] if message.get("llm_compacted") else ["mechanical_compaction"],
+                content=content,
+                metadata={"message_id": message.get("message_id", ""), "round_id": message.get("round_id", "")},
+            )
+        elif message.get("report_expanded_for_turn"):
+            block = context_block(
+                f"history.report_expanded.{message.get('message_id') or index}",
+                "history",
+                source="conversation archive",
+                reason="user explicitly referenced an archived report",
+                transforms=["restore_archived_report_for_turn"],
+                content=content,
+                metadata={"message_id": message.get("message_id", ""), "round_id": message.get("round_id", "")},
+            )
+        elif role == "tool":
+            block = context_block(
+                f"history.tool_result.{message.get('tool_call_id') or index}",
+                "tool_result",
+                source="data/state.json",
+                reason="tool result from session history",
+                content=content,
+                metadata={"tool_call_id": message.get("tool_call_id", ""), "round_id": message.get("round_id", "")},
+            )
+        elif role == "system":
+            block_id = f"history.system.{index}"
+            block_type = "system"
+            reason = "system message from prepared history"
+            if str(content).startswith("[Restored context]"):
+                block_id = "short_term.restored"
+                block_type = "short_term"
+                reason = "short-term memory restored because session history was empty"
+            block = context_block(
+                block_id,
+                block_type,
+                source="prepared history",
+                reason=reason,
+                content=content,
+                metadata={"message_id": message.get("message_id", ""), "round_id": message.get("round_id", "")},
+            )
+        else:
+            block = context_block(
+                f"session.history.{message.get('message_id') or index}",
+                "history",
+                source="data/state.json",
+                reason="session history included in current LLM call",
+                content=content,
+                metadata={"role": role, "message_id": message.get("message_id", ""), "round_id": message.get("round_id", "")},
+            )
+        annotated.append(attach_context(message, block))
+    return annotated
 
 
 async def _run_main_agent(
@@ -65,6 +132,7 @@ async def _run_main_agent(
     public_user_message: str | None = None,
     public_attachments: list[dict[str, Any]] | None = None,
     lang: str = "",
+    system_context: list[dict[str, Any]] | None = None,
 ) -> str:
     _caller_type.set("main_agent")
     suppress_initial_detail = _ui_round_hide_initial_detail.get()
@@ -83,6 +151,25 @@ async def _run_main_agent(
     effective_system = system_prompt or _MAIN_AGENT_PROMPT
     llm_user_entry = dict(user_entry)
     llm_user_entry["content"] = user_message
+    system_blocks = list(system_context or [
+        context_block(
+            "main.system.effective",
+            "system",
+            source="cyrene.agent.agent._run_main_agent",
+            reason="effective system prompt",
+            content=effective_system,
+        )
+    ])
+    system_entry = attach_context({"role": "system", "content": effective_system}, system_blocks)
+    llm_user_entry = attach_context(llm_user_entry, context_block(
+        "user.current.raw",
+        "user",
+        source="run_agent(user_message)",
+        reason="current user request passed to LLM",
+        content=user_message,
+        metadata={"visible_differs": public_user_message is not None and public_user_message != user_message},
+    ))
+    history = _annotate_history_context(history)
     phase1_tools = _LIGHT_TOOL_DEFS
     if _deep_research_first_round.get():
         phase1_decision = _DEEP_RESEARCH_PHASE1_DECISION
@@ -97,7 +184,14 @@ async def _run_main_agent(
         )
     else:
         phase1_decision = _PHASE1_DECISION_PROMPT
-    phase1_messages = [{"role": "system", "content": effective_system}, *history, llm_user_entry, {"role": "user", "content": phase1_decision}]
+    phase1_decision_entry = attach_context({"role": "user", "content": phase1_decision}, context_block(
+        "phase1.decision_rules",
+        "phase_rules",
+        source="cyrene.agent.prompts",
+        reason="decision-phase tool-gating rules",
+        content=phase1_decision,
+    ))
+    phase1_messages = [system_entry, *history, llm_user_entry, phase1_decision_entry]
 
     async def _ensure_text_reply(
         response_obj: dict[str, Any],
@@ -207,7 +301,7 @@ async def _run_main_agent(
         ]
         response = await _call_llm(retry_messages, tools=phase1_tools)
     tool_calls = response.get("tool_calls") or []
-    messages = [{"role": "system", "content": effective_system}, *history, llm_user_entry]
+    messages = [system_entry, *history, llm_user_entry]
     assistant_entry = _assistant_entry_from_response(response, round_id)
     messages.append(assistant_entry)
 
@@ -231,7 +325,17 @@ async def _run_main_agent(
             result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None)
         except Exception as exc:
             result = f"Tool failed: {exc}"
-        tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": ask_user_call["id"], "content": _truncate(result)}
+        truncated_result = _truncate(result)
+        tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": ask_user_call["id"], "content": truncated_result}
+        tool_entry = attach_context(tool_entry, context_block(
+            f"tool.result.ask_user.{ask_user_call['id']}",
+            "tool_result",
+            source="tool:ask_user",
+            reason="ask_user tool output returned to LLM",
+            transforms=["truncate"] if str(truncated_result) != str(result) else [],
+            content=truncated_result,
+            metadata={"tool_name": "ask_user", "tool_call_id": ask_user_call["id"]},
+        ))
         if round_id:
             tool_entry["round_id"] = round_id
         messages.append(tool_entry)
@@ -245,7 +349,7 @@ async def _run_main_agent(
         if not suppress_initial_detail:
             event["detail"] = f"Phase 1 decided to use tools. Task: {user_message[:120]}"
         await _publish_runtime_event(event)
-        messages = [{"role": "system", "content": effective_system}, *history, dict(llm_user_entry)]
+        messages = [system_entry, *history, dict(llm_user_entry)]
 
         for _ in range(_MAX_TOOL_ROUNDS):
             response = await _call_llm(messages, tools=get_active_tool_defs())
@@ -304,6 +408,14 @@ async def _run_main_agent(
                         "role": "tool", "tool_call_id": t["id"],
                         "content": "Skipped because a previous tool already paused the round until the user answers.",
                     }
+                    skipped_tool_entry = attach_context(skipped_tool_entry, context_block(
+                        f"tool.result.skipped.{t['id']}",
+                        "tool_result",
+                        source="cyrene.agent.agent",
+                        reason="tool skipped after ask_user paused the round",
+                        transforms=["synthetic_tool_result"],
+                        content=skipped_tool_entry["content"],
+                    ))
                     if round_id:
                         skipped_tool_entry["round_id"] = round_id
                     messages.append(skipped_tool_entry)
@@ -313,7 +425,17 @@ async def _run_main_agent(
                     result = await _execute_tool(tool_name, args, bot, chat_id, db_path, None)
                 except Exception as e:
                     result = f"Tool failed: {e}"
-                tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": t["id"], "content": _truncate(result)}
+                truncated_result = _truncate(result)
+                tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": t["id"], "content": truncated_result}
+                tool_entry = attach_context(tool_entry, context_block(
+                    f"tool.result.{tool_name}.{t['id']}",
+                    "tool_result",
+                    source=f"tool:{tool_name}",
+                    reason="tool output returned to LLM",
+                    transforms=["truncate"] if str(truncated_result) != str(result) else [],
+                    content=truncated_result,
+                    metadata={"tool_name": tool_name, "tool_call_id": t["id"]},
+                ))
                 if round_id:
                     tool_entry["round_id"] = round_id
                 messages.append(tool_entry)
@@ -504,7 +626,17 @@ async def _run_main_agent(
                 result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None)
             except Exception as exc:
                 result = f"Tool failed: {exc}"
-            tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": ask_user_call["id"], "content": _truncate(result)}
+            truncated_result = _truncate(result)
+            tool_entry: dict[str, Any] = {"role": "tool", "tool_call_id": ask_user_call["id"], "content": truncated_result}
+            tool_entry = attach_context(tool_entry, context_block(
+                f"tool.result.ask_user.{ask_user_call['id']}",
+                "tool_result",
+                source="tool:ask_user",
+                reason="ask_user tool output returned to LLM after correction",
+                transforms=["truncate"] if str(truncated_result) != str(result) else [],
+                content=truncated_result,
+                metadata={"tool_name": "ask_user", "tool_call_id": ask_user_call["id"]},
+            ))
             if round_id:
                 tool_entry["round_id"] = round_id
             messages.append(tool_entry)
@@ -519,7 +651,13 @@ async def _run_main_agent(
         event["detail"] = "Phase 1 decided chat-only, no tools needed"
     await _publish_runtime_event(event)
     if _streaming_reply_requested():
-        messages = [{"role": "system", "content": effective_system}, *history, user_entry]
+        messages = [system_entry, *history, attach_context(user_entry, context_block(
+            "user.current.visible",
+            "user",
+            source="run_agent(public_user_message)",
+            reason="visible user message for streamed final reply",
+            content=user_entry.get("content") or "",
+        ))]
         final_text = await _final_reply_from_history(messages, max_tokens=None)
         final_entry = {"role": "assistant", "content": final_text}
         if client_request_id:

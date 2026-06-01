@@ -19,7 +19,7 @@ const ACCENT_PRESETS = {
   dark:  ["#4fd1a0", "#6dbde0", "#b8a2e0", "#e8ae5c", "#e87070"],
   light: ["#2da873", "#3b90c8", "#7858b0", "#c88520", "#d04848"],
 };
-const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "memory", "evolution", "settings", "tasks", "entities"]);
+const VALID_UI_PAGES = new Set(["chat", "agents", "sessions", "memory", "evolution", "settings", "tasks", "entities", "context_debug"]);
 
 function readStoredUiPage() {
   try {
@@ -515,6 +515,10 @@ function App() {
                                     setPage("agents");
                                   }} />}
         {page === "memory"   && <MemoryPage />}
+        {page === "context_debug" && React.createElement(
+          window.ContextDebuggerPage || (function () { return React.createElement("div", { className: "page" }, "Loading context debugger..."); }),
+          {}
+        )}
         {page === "evolution" && <EvolutionPage />}
         {page === "tasks" && React.createElement(
           window.ScheduledTasksPage || (function () { return React.createElement("div", { className: "page" }, "Loading tasks..."); }),
@@ -557,8 +561,9 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
     { id: "tasks",    label: t("nav.tasks"),    icon: "◎", key: "4" },
     { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "5", badge: sessionCount > 0 ? String(sessionCount) : null },
     { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "6" },
-    { id: "evolution", label: t("nav.evolution"), icon: "⟁", key: "7", cssClass: "evo-icon" },
-    { id: "entities", label: t("nav.entities"), icon: "⊙", key: "8" },
+    { id: "context_debug", label: t("nav.contextDebug"), icon: "◇", key: "7" },
+    { id: "evolution", label: t("nav.evolution"), icon: "⟁", key: "8", cssClass: "evo-icon" },
+    { id: "entities", label: t("nav.entities"), icon: "⊙", key: "9" },
   ];
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
@@ -727,6 +732,7 @@ function Topbar({
     page === "agents" ? <>{t("topbar.agentFlow")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "sessions" ? <>{t("topbar.sessions")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "memory" ? <>{t("topbar.memory")}<span className="crumb-sep">/</span><b>{t("topbar.pipeline")}</b></> :
+    page === "context_debug" ? <>{t("topbar.contextDebug")}<span className="crumb-sep">/</span><b>{t("contextDebug.calls")}</b></> :
     page === "evolution" ? <>{t("topbar.evolution")}<span className="crumb-sep">/</span><b>evolve</b></> :
     page === "tasks" ? <>{t("nav.tasks")}<span className="crumb-sep">/</span><b>{t("tasks.title")}</b></> :
     page === "entities" ? <>{t("nav.entities")}<span className="crumb-sep">/</span><b>{t("entities.title")}</b></> :

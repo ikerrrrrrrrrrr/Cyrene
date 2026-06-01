@@ -250,8 +250,6 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     soul_path: "—",
     workspace_dir: "—",
     soul_content: "",
-    search_mode: "builtin",
-    search_external_url: "",
     spawn_policy: "conservative",
   });
   const [soulDraft, setSoulDraft] = useStateSet("");
@@ -260,9 +258,6 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     streamThinking: readStoredTweak("cap-streamThinking", true),
     redactSecrets: readStoredTweak("cap-redactSecrets", true),
   });
-  const [searchMode, setSearchMode] = useStateSet("builtin");
-  const [searchExternalUrl, setSearchExternalUrl] = useStateSet("");
-  const [searchSaved, setSearchSaved] = useStateSet("");
   const [models, setModels] = useStateSet([]);
   const [newModel, setNewModel] = useStateSet(createEmptyModelCandidate());
   const [visionModels, setVisionModels] = useStateSet([]);
@@ -404,8 +399,6 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     fetch("/api/settings/config").then((r) => r.json()).then((payload) => {
       setConfig(payload);
       setSoulDraft(payload.soul_content || "");
-      if (payload.search_mode) setSearchMode(payload.search_mode);
-      if (payload.search_external_url !== undefined) setSearchExternalUrl(payload.search_external_url);
       if (payload.notify_telegram !== undefined) setNotifyTelegram(payload.notify_telegram);
       if (payload.notify_wechat !== undefined) setNotifyWechat(payload.notify_wechat);
       if (payload.agent_proactive !== undefined) setAgentProactive(payload.agent_proactive);
@@ -463,22 +456,6 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       setTimeout(() => setSoulStatus(""), 1500);
     } catch (e) {
       setSoulStatus(t("settings.error") + ": " + e.message);
-    }
-  }
-
-  async function saveSearch() {
-    setSearchSaved(t("settings.saving"));
-    try {
-      const response = await fetch("/api/settings/search", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ search_mode: searchMode, search_external_url: searchExternalUrl }),
-      });
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      setSearchSaved(t("settings.saved"));
-      setTimeout(() => setSearchSaved(""), 1500);
-    } catch (e) {
-      setSearchSaved(t("settings.error") + ": " + e.message);
     }
   }
 
@@ -1435,37 +1412,17 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
 
               <div className="field">
                 <div className="label">{t("settings.searchBackend")}<small>{t("settings.searchBackendHint")}</small></div>
-                <div className="seg">
-                  <button className={"seg-btn " + (searchMode === "builtin" ? "active" : "")} onClick={() => setSearchMode("builtin")}>{t("settings.builtin")}</button>
-                  <button className={"seg-btn " + (searchMode === "external" ? "active" : "")} onClick={() => setSearchMode("external")}>{t("settings.external")}</button>
-                  <button className={"seg-btn " + (searchMode === "fallback" ? "active" : "")} onClick={() => setSearchMode("fallback")}>{t("settings.fallbackOnly")}</button>
-                </div>
+                <input className="input mono" value={t("settings.builtin")} readOnly style={{ maxWidth: 420 }} />
               </div>
 
-              {searchMode === "external" ? (
-                <div className="field">
-                  <div className="label">{t("settings.externalUrl")}<small>{t("settings.externalUrlHint")}</small></div>
-                  <input className="input mono" value={searchExternalUrl} onChange={(e) => setSearchExternalUrl(e.target.value)} placeholder="http://localhost:8888" style={{ maxWidth: 420 }} />
-                </div>
-              ) : null}
+              <div className="field">
+                <div className="label">{t("settings.builtinStatus")}<small>{t("settings.builtinStatusHint", { port: config.search_port || "8888" })}</small></div>
+                <input className="input mono" value={t("settings.autoStarted")} readOnly style={{ maxWidth: 420 }} />
+              </div>
 
-              {searchMode === "builtin" ? (
-                <div className="field">
-                  <div className="label">{t("settings.builtinStatus")}<small>{t("settings.builtinStatusHint", { port: config.search_port || "8888" })}</small></div>
-                  <input className="input mono" value={t("settings.autoStarted")} readOnly style={{ maxWidth: 420 }} />
-                </div>
-              ) : null}
-
-              {searchMode === "fallback" ? (
-                <div className="field">
-                  <div className="label">{t("settings.fallbackEngines")}<small>{t("settings.fallbackEnginesHint")}</small></div>
-                  <input className="input mono" value={t("settings.fallbackDesc")} readOnly style={{ maxWidth: 420 }} />
-                </div>
-              ) : null}
-
-              <div className="settings-actions">
-                <button className="btn primary" onClick={saveSearch}>{t("settings.saveSearch")}</button>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{searchSaved}</span>
+              <div className="field">
+                <div className="label">{t("settings.searchProxy")}<small>{t("settings.searchProxyHint")}</small></div>
+                <input className="input mono" value={t("settings.searchProxyAuto")} readOnly style={{ maxWidth: 420 }} />
               </div>
             </div>
 

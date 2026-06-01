@@ -9,6 +9,7 @@ loop).
 import asyncio
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import cyrene.agent.state as _state
@@ -77,6 +78,7 @@ from cyrene.agent.state import (
     _ui_round_hide_initial_detail,
 )
 from cyrene.config import ASSISTANT_NAME
+from cyrene.context_trace import context_block
 from cyrene.llm import _assistant_text, _truncate
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context
@@ -277,13 +279,65 @@ async def _run_chat_agent(
                 raise
             memory_context = get_memory_context()
         main_system = _MAIN_AGENT_PROMPT
+        now = datetime.now().astimezone()
+        temporal_context = (
+            "## Current Date and Relative Time\n"
+            f"- Current local date: {now:%Y-%m-%d}.\n"
+            f"- Current local time: {now:%Y-%m-%d %H:%M:%S %Z}.\n"
+            "- Interpret relative phrases such as today, recently, this week, last week, 最近, 最近一周, 今天, 本周 relative to this date.\n"
+            "- For current weather or travel recommendations, search for current forecast/current conditions. Do not invent or substitute old years unless the user explicitly asks for historical weather."
+        )
+        main_system += "\n\n" + temporal_context
+        main_system_context = [
+            context_block(
+                "main.system.base",
+                "system",
+                source="cyrene.agent.prompts._MAIN_AGENT_PROMPT",
+                reason="base main-agent instructions",
+                content=_MAIN_AGENT_PROMPT,
+            ),
+            context_block(
+                "runtime.temporal_context",
+                "system",
+                source="datetime.now().astimezone()",
+                reason="anchor relative dates and current/recent searches",
+                content=temporal_context,
+                metadata={"date": f"{now:%Y-%m-%d}", "timezone": now.tzname()},
+                transforms=["concat_into_system"],
+            ),
+        ]
         if lang and lang != "en":
-            main_system += f"\n\nThe user has set their preferred language to {lang}. Reply in this language."
+            lang_prompt = f"The user has set their preferred language to {lang}. Reply in this language."
+            main_system += "\n\n" + lang_prompt
+            main_system_context.append(context_block(
+                "main.system.language",
+                "system",
+                source="run_agent(lang)",
+                reason="user selected preferred language",
+                content=lang_prompt,
+                metadata={"lang": lang},
+            ))
         if memory_context:
             main_system = main_system + "\n\n## Memory Context\n" + memory_context
+            main_system_context.append(context_block(
+                "memory.context",
+                "memory",
+                source="cyrene.memory.get_memory_context",
+                reason="main agent memory injection",
+                transforms=["concat_into_system"],
+                content=memory_context,
+            ))
         skill_prompt_block = build_skill_prompt_block()
         if skill_prompt_block:
             main_system = main_system + "\n\n" + skill_prompt_block
+            main_system_context.append(context_block(
+                "skills.installed",
+                "skills",
+                source="cyrene.skills_registry.build_skill_prompt_block",
+                reason="enabled external skills are visible to the agent",
+                transforms=["preview", "concat_into_system"],
+                content=skill_prompt_block,
+            ))
 
         is_deep_research = command == "deep-research"
         dr_token = _deep_research_mode.set(is_deep_research)
@@ -293,7 +347,15 @@ async def _run_chat_agent(
         # Command-specific prompt injection
         if command == "deep-research":
             main_system = main_system + "\n\n" + _DEEP_RESEARCH_PROMPT
-            main_system += (
+            main_system_context.append(context_block(
+                "command.deep-research",
+                "command_prompt",
+                source="cyrene.agent.prompts._DEEP_RESEARCH_PROMPT",
+                reason="deep-research command selected",
+                transforms=["concat_into_system"],
+                content=_DEEP_RESEARCH_PROMPT,
+            ))
+            deep_research_spawn_policy = (
                 "\n\n## Subagent Spawn Policy\n"
                 "Current policy: deep-research (maximum parallelism).\n"
                 "- You MUST spawn subagents for EVERY research track. Never do research yourself — your only job is to decompose, delegate, and synthesize.\n"
@@ -304,42 +366,147 @@ async def _run_chat_agent(
                 "- If any subagent result is thin, contradictory, or incomplete, immediately spawn follow-up subagents to fill the gap.\n"
                 "- The ONLY reason not to spawn a subagent is if the task is already fully answered with high confidence. When in doubt, spawn."
             )
+            main_system += deep_research_spawn_policy
+            main_system_context.append(context_block(
+                "spawn_policy.deep-research",
+                "spawn_policy",
+                source="cyrene.agent.coordinator",
+                reason="deep-research command forces maximum parallelism",
+                transforms=["concat_into_system"],
+                content=deep_research_spawn_policy,
+            ))
         elif command == "quick-answer":
             main_system = main_system + "\n\n" + _QUICK_ANSWER_PROMPT
+            main_system_context.append(context_block(
+                "command.quick-answer",
+                "command_prompt",
+                source="cyrene.agent.prompts._QUICK_ANSWER_PROMPT",
+                reason="quick-answer command selected",
+                transforms=["concat_into_system"],
+                content=_QUICK_ANSWER_PROMPT,
+            ))
         elif command == "help-me-decide":
             main_system = main_system + "\n\n" + _HELP_ME_DECIDE_PROMPT
-            main_system += (
+            main_system_context.append(context_block(
+                "command.help-me-decide",
+                "command_prompt",
+                source="cyrene.agent.prompts._HELP_ME_DECIDE_PROMPT",
+                reason="help-me-decide command selected",
+                transforms=["concat_into_system"],
+                content=_HELP_ME_DECIDE_PROMPT,
+            ))
+            help_me_decide_spawn_policy = (
                 "\n\n## Subagent Spawn Policy\n"
                 "Current policy: help-me-decide.\n"
                 "- Spawn exactly ONE subagent per option. Launch all simultaneously.\n"
                 "- Do NOT do any option research yourself — delegate every option to its own subagent.\n"
                 "- After all subagents return, synthesize into a decision report."
             )
+            main_system += help_me_decide_spawn_policy
+            main_system_context.append(context_block(
+                "spawn_policy.help-me-decide",
+                "spawn_policy",
+                source="cyrene.agent.coordinator",
+                reason="help-me-decide command sets delegation policy",
+                transforms=["concat_into_system"],
+                content=help_me_decide_spawn_policy,
+            ))
         elif command == "learning-plan":
             main_system = main_system + "\n\n" + _LEARNING_PLAN_PROMPT
-            main_system += (
+            main_system_context.append(context_block(
+                "command.learning-plan",
+                "command_prompt",
+                source="cyrene.agent.prompts._LEARNING_PLAN_PROMPT",
+                reason="learning-plan command selected",
+                transforms=["concat_into_system"],
+                content=_LEARNING_PLAN_PROMPT,
+            ))
+            learning_plan_spawn_policy = (
                 "\n\n## Subagent Spawn Policy\n"
                 "Current policy: learning-plan.\n"
                 "- Spawn exactly ONE subagent per knowledge module. Launch all simultaneously.\n"
                 "- Do NOT research learning resources yourself — delegate every module to its own subagent.\n"
                 "- After all subagents return, synthesize into a structured learning plan."
             )
+            main_system += learning_plan_spawn_policy
+            main_system_context.append(context_block(
+                "spawn_policy.learning-plan",
+                "spawn_policy",
+                source="cyrene.agent.coordinator",
+                reason="learning-plan command sets delegation policy",
+                transforms=["concat_into_system"],
+                content=learning_plan_spawn_policy,
+            ))
         elif command == "daily-review":
             main_system = main_system + "\n\n" + _DAILY_REVIEW_PROMPT
-            main_system = main_system + "\n\n" + _spawn_policy_prompt_block("off")
+            main_system_context.append(context_block(
+                "command.daily-review",
+                "command_prompt",
+                source="cyrene.agent.prompts._DAILY_REVIEW_PROMPT",
+                reason="daily-review command selected",
+                transforms=["concat_into_system"],
+                content=_DAILY_REVIEW_PROMPT,
+            ))
+            spawn_policy_block = _spawn_policy_prompt_block("off")
+            main_system = main_system + "\n\n" + spawn_policy_block
+            main_system_context.append(context_block(
+                "spawn_policy.off",
+                "spawn_policy",
+                source="cyrene.agent.prompts._spawn_policy_prompt_block",
+                reason="daily-review disables subagents",
+                transforms=["concat_into_system"],
+                content=spawn_policy_block,
+                metadata={"policy": "off"},
+            ))
         elif command == "deep-compare":
             main_system = main_system + "\n\n" + _DEEP_COMPARE_PROMPT
-            main_system += (
+            main_system_context.append(context_block(
+                "command.deep-compare",
+                "command_prompt",
+                source="cyrene.agent.prompts._DEEP_COMPARE_PROMPT",
+                reason="deep-compare command selected",
+                transforms=["concat_into_system"],
+                content=_DEEP_COMPARE_PROMPT,
+            ))
+            deep_compare_spawn_policy = (
                 "\n\n## Subagent Spawn Policy\n"
                 "Current policy: deep-compare.\n"
                 "- Spawn exactly ONE subagent per comparison dimension. Launch all simultaneously.\n"
                 "- Do NOT do any comparison research yourself — delegate every dimension to its own subagent.\n"
                 "- After all subagents return, synthesize into a comparison matrix and recommendation."
             )
+            main_system += deep_compare_spawn_policy
+            main_system_context.append(context_block(
+                "spawn_policy.deep-compare",
+                "spawn_policy",
+                source="cyrene.agent.coordinator",
+                reason="deep-compare command sets delegation policy",
+                transforms=["concat_into_system"],
+                content=deep_compare_spawn_policy,
+            ))
         elif command == "claude-code":
             main_system = main_system + "\n\n" + _CLAUDE_CODE_PROMPT
+            main_system_context.append(context_block(
+                "command.claude-code",
+                "command_prompt",
+                source="cyrene.agent.prompts._CLAUDE_CODE_PROMPT",
+                reason="claude-code command selected",
+                transforms=["concat_into_system"],
+                content=_CLAUDE_CODE_PROMPT,
+            ))
         else:
-            main_system = main_system + "\n\n" + _spawn_policy_prompt_block(get_spawn_policy())
+            spawn_policy = get_spawn_policy()
+            spawn_policy_block = _spawn_policy_prompt_block(spawn_policy)
+            main_system = main_system + "\n\n" + spawn_policy_block
+            main_system_context.append(context_block(
+                f"spawn_policy.{spawn_policy}",
+                "spawn_policy",
+                source="cyrene.agent.prompts._spawn_policy_prompt_block",
+                reason="configured spawn policy",
+                transforms=["concat_into_system"],
+                content=spawn_policy_block,
+                metadata={"policy": spawn_policy},
+            ))
 
         from cyrene.agent.agent import _run_main_agent
 
@@ -347,6 +514,7 @@ async def _run_chat_agent(
             user_message, history, bot, chat_id, db_path, main_system,
             client_request_id=client_request_id, persist_user_message=persist_user_message,
             public_user_message=public_user_message, public_attachments=public_attachments, lang=lang,
+            system_context=main_system_context,
         )
 
         if refresh_labels:
