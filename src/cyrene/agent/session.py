@@ -20,7 +20,6 @@ from cyrene.agent.message import (
     _extract_json_object,
     _fallback_label,
     _is_replaceable_live_message,
-    _merge_message_sequence,
     _message_suffix_after_persisted_prefix,
 )
 from cyrene.agent.state import (
@@ -50,6 +49,53 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Session state I/O
 # ---------------------------------------------------------------------------
+
+def _messages_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_id = str(left.get("message_id", "")).strip()
+    right_id = str(right.get("message_id", "")).strip()
+    if left_id and right_id and left_id == right_id:
+        return True
+    return (
+        str(left.get("role", "")).strip() == str(right.get("role", "")).strip()
+        and str(left.get("content", "")).strip() == str(right.get("content", "")).strip()
+        and str(left.get("round_id", "")).strip() == str(right.get("round_id", "")).strip()
+        and str(left.get("queued_guidance_id", "")).strip() == str(right.get("queued_guidance_id", "")).strip()
+        and str(left.get("question_id", "")).strip() == str(right.get("question_id", "")).strip()
+        and str(left.get("client_request_id", "")).strip() == str(right.get("client_request_id", "")).strip()
+        and bool(left.get("question_prompt")) == bool(right.get("question_prompt"))
+        and bool(left.get("intermediate_reply")) == bool(right.get("intermediate_reply"))
+    )
+
+
+def _shared_tail_prefix_len(current_tail: list[dict[str, Any]], base_tail: list[dict[str, Any]]) -> int:
+    shared = 0
+    limit = min(len(current_tail), len(base_tail))
+    while shared < limit and _messages_equivalent(current_tail[shared], base_tail[shared]):
+        shared += 1
+    return shared
+
+
+def _replaceable_live_block_end(messages: list[dict[str, Any]], insert_at: int, round_id: str) -> int:
+    replace_end = insert_at
+    while replace_end < len(messages) and _is_replaceable_live_message(messages[replace_end], round_id):
+        replace_end += 1
+    return replace_end
+
+
+def _merge_live_block(existing_block: list[dict[str, Any]], incoming_block: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = [dict(message) for message in existing_block if isinstance(message, dict)]
+    for incoming in incoming_block:
+        if not isinstance(incoming, dict):
+            continue
+        replaced = False
+        for index, existing in enumerate(merged):
+            if _messages_equivalent(existing, incoming):
+                merged[index] = dict(incoming)
+                replaced = True
+                break
+        if not replaced:
+            merged.append(dict(incoming))
+    return _dedupe_messages_by_id(merged)
 
 def _load_session_state() -> dict[str, Any]:
     if not _state.STATE_FILE.exists():
@@ -556,14 +602,13 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
             insert_at = max(0, min(insert_at, len(base_messages)))
             suffix = _message_suffix_after_persisted_prefix(messages, base_messages, prefix_len)
             round_id = str(_current_round_id.get() or "").strip()
-            replace_end = insert_at
-            while replace_end < len(base_messages) and _is_replaceable_live_message(base_messages[replace_end], round_id):
-                replace_end += 1
-            effective_messages = [
+            replace_end = _replaceable_live_block_end(base_messages, insert_at, round_id)
+            live_block = base_messages[insert_at:replace_end]
+            effective_messages = _dedupe_messages_by_id([
                 *base_messages[:insert_at],
-                *_merge_message_sequence(base_messages[insert_at:replace_end], suffix),
+                *_merge_live_block(live_block, suffix),
                 *base_messages[replace_end:],
-            ]
+            ])
         elif base_messages is not None:
             current = state.get("messages", [])
             current_messages = list(current) if isinstance(current, list) else []
@@ -573,11 +618,19 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
                 insert_at = len(base_messages)
             insert_at = max(0, min(insert_at, len(base_messages)))
             suffix = _message_suffix_after_persisted_prefix(messages, base_messages, prefix_len)
-            existing_tail = current_messages[insert_at:] if insert_at < len(current_messages) else []
-            effective_messages = [
+            round_id = str(_current_round_id.get() or "").strip()
+            replace_end = _replaceable_live_block_end(current_messages, insert_at, round_id)
+            live_block = current_messages[insert_at:replace_end]
+            current_tail = current_messages[replace_end:] if replace_end < len(current_messages) else []
+            base_tail = base_messages[insert_at:] if insert_at < len(base_messages) else []
+            shared_tail_len = _shared_tail_prefix_len(current_tail, base_tail)
+            concurrent_tail = current_tail[shared_tail_len:]
+            effective_messages = _dedupe_messages_by_id([
                 *base_messages[:insert_at],
-                *_merge_message_sequence(existing_tail or base_messages[insert_at:], suffix),
-            ]
+                *concurrent_tail,
+                *_merge_live_block(live_block, suffix),
+                *base_tail,
+            ])
         await _write_session_messages_locked(state, effective_messages)
 
 

@@ -167,6 +167,14 @@ from cyrene.agent.message import (
     _is_placeholder_reply,
 )
 
+from cyrene.memory import (
+    get_memory_context,
+)
+
+from cyrene.short_term import (
+    get_context,
+)
+
 
 def __getattr__(name: str):
     if name in {"STATE_FILE", "DATA_DIR"}:

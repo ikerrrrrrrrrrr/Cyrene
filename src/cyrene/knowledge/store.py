@@ -128,7 +128,7 @@ async def create_document(
     if metadata is None:
         metadata = {}
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         await db.execute(
             """
@@ -168,7 +168,7 @@ async def create_document(
 
 async def get_document(db_path: str, doc_id: str) -> dict | None:
     """Get a single document by ID."""
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM kb_documents WHERE id = ?", (doc_id,))
         row = await cursor.fetchone()
@@ -182,6 +182,7 @@ async def list_documents(
     kind: str | None = None,
     status: str | None = None,
     tag: str | None = None,
+    source: str | None = None,
     limit: int = 200,
 ) -> list[dict]:
     """List documents with optional filtering."""
@@ -201,6 +202,10 @@ async def list_documents(
         query += " AND status = ?"
         params.append(status)
 
+    if source:
+        query += " AND source = ?"
+        params.append(source)
+
     if tag:
         query += " AND tags LIKE ?"
         # Match quoted tag token in JSON array
@@ -210,7 +215,7 @@ async def list_documents(
     query += " ORDER BY updated_at DESC LIMIT ?"
     params.append(limit)
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
@@ -250,7 +255,7 @@ async def update_document(db_path: str, doc_id: str, **fields) -> dict | None:
 
     values.append(doc_id)
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         await db.execute(
             f"UPDATE kb_documents SET {', '.join(set_clauses)} WHERE id = ?",
@@ -273,7 +278,7 @@ async def delete_document(db_path: str, doc_id: str, *, remove_file: bool = True
     if not doc:
         return False
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         # Delete FTS entries for all chunks of this document
         await db.execute(
             "DELETE FROM kb_chunks_fts WHERE document_id = ?",
@@ -332,7 +337,7 @@ async def upsert_document_by_path(
     tags = fields.get("tags")
     metadata = fields.get("metadata")
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
 
         # Try INSERT ON CONFLICT
@@ -403,7 +408,7 @@ async def sync_filesystem(db_path: str) -> dict:
     if EXPORTS_DIR.exists():
         dirs_to_scan.append(("generated", EXPORTS_DIR))
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
 
         # Get all existing paths
@@ -475,7 +480,7 @@ async def replace_chunks(
 
     Deletes old chunks and FTS entries, then inserts new chunks and FTS entries.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         # Delete old FTS entries
         await db.execute(
             "DELETE FROM kb_chunks_fts WHERE document_id = ?",
@@ -545,7 +550,7 @@ async def get_chunks(
         query += " LIMIT ?"
         params.append(limit)
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
@@ -567,7 +572,7 @@ async def iter_embedded_chunks(
 
     query += " ORDER BY created_at ASC"
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
@@ -587,7 +592,7 @@ async def create_relation(
     rel_id = _new_id()
     now = _now()
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         try:
             await db.execute(
@@ -622,7 +627,7 @@ async def list_relations(
 
     query += " ORDER BY created_at DESC"
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
@@ -651,7 +656,7 @@ async def update_relation(
 
     values.append(rel_id)
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         await db.execute(
             f"UPDATE kb_relations SET {', '.join(set_clauses)} WHERE id = ?",
@@ -666,7 +671,7 @@ async def update_relation(
 
 async def delete_relation(db_path: str, rel_id: str) -> bool:
     """Delete a relation."""
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         cursor = await db.execute("DELETE FROM kb_relations WHERE id = ?", (rel_id,))
         await db.commit()
         return cursor.rowcount > 0
@@ -686,7 +691,7 @@ async def get_graph(
     """
     from cyrene.knowledge import embeddings
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
 
         # Get all documents as nodes
@@ -810,6 +815,47 @@ async def get_graph(
                 }
                 edges.append(auto_edge)
 
+        elif include_auto:
+            # No embeddings configured -> connect documents by shared significant
+            # terms (lexical fallback, zero extra deps) so the map still shows links.
+            from cyrene.db import _extract_topic_terms
+
+            cursor = await db.execute("SELECT document_id, content FROM kb_chunks ORDER BY document_id")
+            chunk_rows = await cursor.fetchall()
+            doc_text: dict[str, list[str]] = {}
+            for row in chunk_rows:
+                bucket = doc_text.setdefault(row["document_id"], [])
+                if sum(len(x) for x in bucket) < 20000:
+                    bucket.append(row["content"] or "")
+            doc_terms: dict[str, set] = {}
+            for d_id, parts in doc_text.items():
+                terms = set(_extract_topic_terms(" ".join(parts), limit=40))
+                if len(terms) >= 3:
+                    doc_terms[d_id] = terms
+            ids = list(doc_terms.keys())
+            cand = []
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    a = doc_terms[ids[i]]
+                    b = doc_terms[ids[j]]
+                    shared = len(a & b)
+                    if shared < 2:
+                        continue
+                    union = len(a | b) or 1
+                    jac = shared / union
+                    if jac >= 0.1:
+                        cand.append((jac, ids[i], ids[j]))
+            cand.sort(reverse=True, key=lambda x: x[0])
+            for jac, doc_a, doc_b in cand[:200]:
+                edges.append({
+                    "id": f"auto:{doc_a}:{doc_b}",
+                    "from": doc_a,
+                    "to": doc_b,
+                    "relation": "similar",
+                    "weight": round(jac, 3),
+                    "source": "auto",
+                })
+
     return {"nodes": nodes, "edges": edges}
 
 
@@ -817,7 +863,7 @@ async def get_stats(db_path: str) -> dict:
     """Get knowledge base statistics."""
     from cyrene.knowledge.embeddings import is_configured
 
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
 
         # Get counts

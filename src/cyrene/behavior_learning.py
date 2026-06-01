@@ -26,15 +26,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from cyrene.config import DB_PATH
+from cyrene.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
 _DATA_DIR: Path | None = None
 _WORKSPACE_DIR: Path | None = None
-_DB_FILE: Path = DB_PATH
+_DB_FILE: Path = DATA_DIR / "behavior-learning.db"
 _INIT_DONE = False
-_PROCESS_LOCK = asyncio.Lock()
+_PROCESS_LOCK: asyncio.Lock | None = None
+_PROCESS_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 
 _current_session_id: ContextVar[str] = ContextVar("behavior_session_id", default="")
 _current_turn_id: ContextVar[str] = ContextVar("behavior_turn_id", default="")
@@ -513,18 +514,31 @@ def _json_loads(raw: Any, fallback: Any) -> Any:
 class _Conn:
     """Async context manager wrapping aiosqlite with sqlite3.Row row_factory."""
     def __init__(self):
-        self._conn = aiosqlite.connect(str(_DB_FILE))
+        self._conn: aiosqlite.Connection | None = None
 
     async def __aenter__(self) -> aiosqlite.Connection:
+        _DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self._conn = aiosqlite.connect(str(_DB_FILE))
         await self._conn.__aenter__()
         self._conn.row_factory = sqlite3.Row
         return self._conn
 
     async def __aexit__(self, *args):
+        if self._conn is None:
+            return False
         return await self._conn.__aexit__(*args)
 
 
 _conn = _Conn
+
+
+def _get_process_lock() -> asyncio.Lock:
+    global _PROCESS_LOCK, _PROCESS_LOCK_LOOP
+    loop = asyncio.get_running_loop()
+    if _PROCESS_LOCK is None or _PROCESS_LOCK_LOOP is not loop:
+        _PROCESS_LOCK = asyncio.Lock()
+        _PROCESS_LOCK_LOOP = loop
+    return _PROCESS_LOCK
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -882,7 +896,8 @@ async def init(data_dir: Path, workspace_dir: Path) -> None:
     global _DATA_DIR, _WORKSPACE_DIR, _DB_FILE, _INIT_DONE
     _DATA_DIR = data_dir
     _WORKSPACE_DIR = workspace_dir
-    _DB_FILE = DB_PATH
+    _DB_FILE = Path(data_dir) / "behavior-learning.db"
+    _DB_FILE.parent.mkdir(parents=True, exist_ok=True)
     await _ensure_tables()
     await _seed_core_vocabulary()
     await _refresh_generated_skill_names_with_llm()
@@ -4504,7 +4519,7 @@ async def _promote_unknown_pool() -> None:
 
 
 async def process_unprocessed_turns(force: bool = False) -> dict[str, Any]:
-    async with _PROCESS_LOCK:
+    async with _get_process_lock():
         async with _conn() as conn:
             cursor = await conn.execute(
                 """

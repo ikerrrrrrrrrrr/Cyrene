@@ -87,6 +87,33 @@ from cyrene.settings_store import get_spawn_policy
 from cyrene.tools import TOOL_HANDLERS, _execute_tool, get_active_tool_defs
 
 logger = logging.getLogger(__name__)
+_BACKGROUND_BEHAVIOR_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_background_behavior_task(task: asyncio.Task[Any]) -> None:
+    _BACKGROUND_BEHAVIOR_TASKS.add(task)
+
+    def _done(completed: asyncio.Task[Any]) -> None:
+        _BACKGROUND_BEHAVIOR_TASKS.discard(completed)
+        try:
+            completed.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.debug("background behavior-learning task finished with exception", exc_info=True)
+
+    task.add_done_callback(_done)
+
+
+async def _kick_behavior_learning_processing() -> None:
+    from cyrene import behavior_learning as _behavior_learning
+
+    task = asyncio.create_task(_behavior_learning.process_unprocessed_turns())
+    _track_background_behavior_task(task)
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
+    except asyncio.TimeoutError:
+        return
 
 
 # ---------------------------------------------------------------------------
@@ -532,7 +559,7 @@ async def _run_chat_agent(
                     session_title=latest_labels.get("session_title", ""),
                     round_title=latest_labels.get("round_title", ""),
                 )
-                _ = asyncio.create_task(_behavior_learning.process_unprocessed_turns())
+                await _kick_behavior_learning_processing()
             except Exception:
                 logger.warning("Failed to finalize behavior-learning turn", exc_info=True)
         await _publish_runtime_event({

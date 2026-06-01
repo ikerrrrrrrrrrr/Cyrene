@@ -120,12 +120,13 @@ def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
         kind: str = None,
         status: str = None,
         tag: str = None,
+        source: str = None,
         limit: int = 200,
     ):
         """List documents."""
         try:
             return await store.list_documents(
-                db_path, q=q, kind=kind, status=status, tag=tag, limit=limit
+                db_path, q=q, kind=kind, status=status, tag=tag, source=source, limit=limit
             )
         except Exception as e:
             return JSONResponse({"error": f"List failed: {str(e)}"}, status_code=400)
@@ -241,7 +242,7 @@ def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
                     {"error": "src_id, dst_id, and relation are required"}, status_code=400
                 )
 
-            rel = await store.create_relation(db_path, src_id, dst_id, relation, weight)
+            rel = await store.create_relation(db_path, src_id=src_id, dst_id=dst_id, relation=relation, weight=weight)
             return rel
         except Exception as e:
             return JSONResponse({"error": f"Create relation failed: {str(e)}"}, status_code=400)

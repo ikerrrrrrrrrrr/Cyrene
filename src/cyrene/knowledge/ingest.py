@@ -3,6 +3,7 @@
 Handles text extraction, chunking, embedding, and indexing.
 """
 
+import asyncio
 import re
 import aiosqlite
 from pathlib import Path
@@ -21,16 +22,21 @@ async def extract_document_text(path: Path, kind: str) -> str:
 
     - pdf: Use pypdf to extract full text from all pages
     - image: Use vision analysis to describe image
-    - code/text: Read file with UTF-8 (ignoring errors)
-    - other: Return empty string
+    - code/map (text-based): Read file with UTF-8 (ignoring errors)
+    - other (binary/unknown): Return empty string (archived only)
 
-    Strategy: attempt extraction for all kinds; use empty string as fallback.
+    Binary/unknown files (kind == "file": .pptx, .docx, .zip, ...) are NOT read
+    as text — doing so yields tens of MB of mojibake that explodes into tens of
+    thousands of junk chunks (and, with embeddings on, that many API calls).
     """
     if not isinstance(path, Path):
         path = Path(path)
 
     if not path.exists():
         return ""
+
+    # Cap to avoid pathological chunk/embedding blow-ups on very large files
+    _MAX_EXTRACT_BYTES = 10 * 1024 * 1024  # 10 MB
 
     try:
         if kind == "pdf" or is_pdf_path(path):
@@ -52,8 +58,19 @@ async def extract_document_text(path: Path, kind: str) -> str:
             except Exception:
                 return ""
 
-        # code, text, and default: read as text
-        return path.read_text(encoding="utf-8", errors="ignore")
+        # Everything else: read as text, but guard against binaries. Files whose
+        # kind is "file" (unknown) may be real text (e.g. .html) or binary
+        # (.pptx/.docx/.zip). Sniff for NUL bytes to skip binaries instead of
+        # turning them into mojibake that explodes into tens of thousands of chunks.
+        try:
+            if path.stat().st_size > _MAX_EXTRACT_BYTES:
+                return ""
+            sample = path.read_bytes()[:8192]
+            if b"\x00" in sample:
+                return ""  # binary content — archive only
+            return path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return ""
     except Exception:
         return ""
 
@@ -116,12 +133,23 @@ def chunk_text(
     return chunks
 
 
+_INDEX_LOCK = asyncio.Lock()
+
+
 async def index_document(db_path: str, doc_id: str) -> None:
     """Index a document: extract text, chunk, embed, and update database.
 
-    Sets status to parsing -> indexed or error.
-    Gracefully handles missing embeddings configuration (uses FTS only).
+    Serialized via a module-level lock so concurrent upload/reindex tasks (each
+    fired as its own asyncio task) don't contend on the single SQLite writer and
+    raise "database is locked". This also enforces the intended sequential,
+    burst-free indexing.
     """
+    async with _INDEX_LOCK:
+        await _index_document_inner(db_path, doc_id)
+
+
+async def _index_document_inner(db_path: str, doc_id: str) -> None:
+    """Set status parsing -> indexed/error; degrades gracefully without embeddings."""
     try:
         # Get document
         doc = await store.get_document(db_path, doc_id)
@@ -204,7 +232,7 @@ async def process_pending(db_path: str, *, limit: int | None = None) -> None:
     Indexes up to `limit` pending documents. Failures are marked as error without retry.
     Sequential processing avoids overwhelming vision/embedding APIs.
     """
-    async with aiosqlite.connect(db_path) as db:
+    async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id FROM kb_documents WHERE status = ? ORDER BY created_at ASC LIMIT ?",

@@ -2854,7 +2854,7 @@ def _build_archive_sessions(
                 (str(section.get("session_title", "")).strip() for section in group_sections if section.get("session_title")),
                 "",
             )
-            title = group_session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
+            title = group_session_title or file_session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
             preview = messages[-1].get("body", "")[:80] if messages else ""
             current_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
             current_round_title = next(
@@ -2935,7 +2935,7 @@ def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
         round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
         round_title = _parse_archive_meta(section, "round_title")
         archive_session_id = _parse_archive_meta(section, "archive_session_id")
-        session_title = _parse_archive_meta(section, "session_title")
+        session_title = _parse_archive_meta(section, "session_title") or file_session_title
         body_start = section.find("## ")
         raw_entry = section[body_start:].strip() if body_start >= 0 else section.strip()
         sections_out.append({

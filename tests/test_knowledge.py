@@ -902,3 +902,30 @@ class TestGetGraphWithoutAuto:
 
         # No auto edges should be present
         assert all(edge["source"] != "auto" for edge in graph["edges"])
+
+
+class TestBinaryFileHandling:
+    """Binary/unknown files must be archived, not read as text (regression)."""
+
+    @pytest.mark.asyncio
+    async def test_binary_file_not_read_as_text(self, temp_db):
+        """A binary 'file' kind (e.g. .pptx) must NOT be read as text.
+
+        Regression: extract_document_text used to read every non-pdf/image file
+        as utf-8 (errors=ignore), turning a multi-MB binary into mojibake that
+        exploded into tens of thousands of junk chunks (and as many embedding
+        calls when vectors are configured).
+        """
+        import os
+        from cyrene.knowledge.ingest import index_document
+        with TemporaryDirectory() as tmpdir:
+            bf = Path(tmpdir) / "deck.pptx"
+            # PK zip header + NUL bytes => detected as binary (pptx/docx/zip are zips)
+            bf.write_bytes(b"PK\x03\x04" + b"\x00" * 64 + os.urandom(80000))
+            doc = await store.create_document(temp_db, name="deck.pptx", path=str(bf), kind="file")
+            await index_document(temp_db, doc["id"])
+            d = await store.get_document(temp_db, doc["id"])
+            assert d["status"] == "indexed"
+            assert d["chunk_count"] == 0  # archived only — no junk chunks
+            chunks = await store.get_chunks(temp_db, doc["id"])
+            assert len(chunks) == 0

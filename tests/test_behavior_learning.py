@@ -12,9 +12,6 @@ async def _init_behavior(tmp_path, monkeypatch):
     from cyrene import behavior_learning as bl
 
     await bl.init(tmp_path, tmp_path)
-    monkeypatch.setattr(bl, "_DB_FILE", tmp_path / "behavior-learning.db")
-    await bl._ensure_tables()
-    await bl._seed_core_vocabulary()
     monkeypatch.setattr(bl, "_call_llm_json", _fake_llm_json)
     return bl
 
@@ -78,7 +75,9 @@ async def test_behavior_learning_promotes_to_active_skill(tmp_path, monkeypatch)
     assert len(skills) == 1
     assert skills[0]["status"] == "active"
     assert skills[0]["skill_type"] == "parameterized"
-    assert skills[0]["run_statistics"]["shadow_success"] == 3
+    # Shadow validation backfills every eligible historical turn before activation,
+    # so the counter reflects total successful dry runs, not the promotion threshold.
+    assert skills[0]["run_statistics"]["shadow_success"] == 4
 
 
 async def test_behavior_learning_manual_edit_and_rollback(tmp_path, monkeypatch):

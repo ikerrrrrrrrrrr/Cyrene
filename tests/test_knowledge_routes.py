@@ -113,6 +113,46 @@ class TestKnowledgeRoutes:
         assert "error" in data
 
     @pytest.mark.asyncio
+    async def test_create_relation_happy_path(self, client, temp_db):
+        """Create a valid relation via the endpoint and verify it round-trips.
+
+        Regression guard: api_create_relation must call the keyword-only
+        store.create_relation with keyword args (a positional call raised
+        TypeError that was swallowed into a 400, silently breaking the
+        knowledge-map manual annotation feature).
+        """
+        from cyrene.knowledge import store
+        a = await store.create_document(temp_db, name="a.md", path="/tmp/kbroute_a.md", kind="code")
+        b = await store.create_document(temp_db, name="b.md", path="/tmp/kbroute_b.md", kind="code")
+
+        resp = client.post(
+            "/api/knowledge/relations",
+            json={"src_id": a["id"], "dst_id": b["id"], "relation": "depends", "weight": 0.7},
+        )
+        assert resp.status_code == 200
+        rel = resp.json()
+        assert rel.get("id")
+        assert rel["src_id"] == a["id"]
+        assert rel["dst_id"] == b["id"]
+        assert rel["relation"] == "depends"
+        assert rel["source"] == "manual"
+
+        # Graph reflects the new manual edge
+        graph = client.get("/api/knowledge/graph").json()
+        assert len(graph["nodes"]) == 2
+        assert len(graph["edges"]) == 1
+        assert graph["edges"][0]["source"] == "manual"
+        assert graph["edges"][0]["relation"] == "depends"
+
+        # Update + delete round-trip through the endpoints
+        rid = rel["id"]
+        up = client.patch("/api/knowledge/relations/" + rid, json={"relation": "blocks"})
+        assert up.status_code == 200 and up.json()["relation"] == "blocks"
+        dl = client.delete("/api/knowledge/relations/" + rid)
+        assert dl.status_code == 200 and dl.json()["ok"] is True
+        assert len(client.get("/api/knowledge/graph").json()["edges"]) == 0
+
+    @pytest.mark.asyncio
     async def test_delete_nonexistent_document(self, client):
         """Test deleting a nonexistent document."""
         response = client.delete("/api/knowledge/documents/nonexistent_id")
