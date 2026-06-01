@@ -1,5 +1,6 @@
 """FastAPI app factory and WebBot adapter for the scheduler."""
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -59,6 +60,15 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
             await _setup_wechat(app, db_path)
         except Exception:
             logger.warning("WeChat bot setup failed — check your config / proxy setup")
+
+    @app.on_event("startup")
+    async def _sync_knowledge_catalog() -> None:
+        try:
+            from cyrene.knowledge import store, ingest
+            await store.sync_filesystem(db_path)
+            asyncio.create_task(ingest.process_pending(db_path))
+        except Exception:
+            logger.warning("Knowledge catalog sync failed — check your knowledge base")
 
     return app
 

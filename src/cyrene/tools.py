@@ -579,9 +579,34 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
         return f"Error: file not found: {path}"
 
     text = str(args.get("text", "") or "").strip()
-    attachment = build_public_attachment_payload(
-        register_generated_attachment(str(path), display_name=str(args.get("name", "") or "").strip() or None)
-    )
+    registered = register_generated_attachment(str(path), display_name=str(args.get("name", "") or "").strip() or None)
+    attachment = build_public_attachment_payload(registered)
+
+    # Register in knowledge base
+    try:
+        from cyrene.knowledge import store, ingest
+        import mimetypes
+        doc_path = registered.get("path", "")
+        if doc_path:
+            from pathlib import Path
+            import mimetypes
+            doc_file = Path(doc_path)
+            content_type = mimetypes.guess_type(str(doc_file))[0] or "application/octet-stream"
+            from cyrene.attachments import attachment_kind_from_meta
+            kind = attachment_kind_from_meta(content_type, doc_file.name)
+            doc = await store.upsert_document_by_path(
+                _db_path,
+                path=str(doc_file.resolve()),
+                source="generated",
+                name=registered.get("name", doc_file.name),
+                content_type=content_type,
+                kind=kind,
+                size=doc_file.stat().st_size if doc_file.exists() else 0,
+                metadata={"sent_to_chat": True},
+            )
+            asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
+    except Exception as e:
+        logger.debug(f"Failed to register generated file in knowledge base: {e}")
 
     round_id = str(_current_round_id.get() or "").strip()
     client_request_id = str(_current_client_request_id.get() or "").strip()
@@ -1204,6 +1229,33 @@ async def _tool_recall_memory(args: dict[str, Any], _bot: Any, _chat_id: int, _d
     return _json_result(payload)
 
 
+async def _tool_search_knowledge(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    """Search the user's knowledge base for relevant passages."""
+    query = str(args.get("query", "") or "").strip()
+    if not query:
+        return "Error: query is required."
+
+    k = max(1, int(args.get("k", 6) or 6))
+
+    try:
+        from cyrene.knowledge import retrieve
+
+        results = await retrieve.search_knowledge(_db_path, query, k=k)
+        if not results:
+            return "No matching documents found in the knowledge base."
+
+        output_lines = [f"Found {len(results)} matching passage(s) from your knowledge base:\n"]
+        for i, result in enumerate(results, start=1):
+            doc_name = result.get("document_name", "Unknown")
+            content = result.get("content", "")[:400]
+            score = result.get("score", 0)
+            output_lines.append(f"[{i}. {doc_name}] (score: {score:.2f})\n{content}\n")
+        return "\n".join(output_lines)
+    except Exception as e:
+        logger.debug(f"Knowledge base search failed: {e}")
+        return f"Error searching knowledge base: {str(e)}"
+
+
 async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     from cyrene.agent.state import _current_round_id
 
@@ -1769,6 +1821,21 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "SearchKnowledge",
+            "description": "Search the user's knowledge base (uploaded/imported/generated documents) for relevant passages via hybrid keyword+vector retrieval. Use this whenever the user references their documents, files, notes, or materials.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keyword or phrase to search for in documents."},
+                    "k": {"type": "integer", "description": "Maximum number of matching chunks to return (default: 6)."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "StartShell",
             "description": "Start an independent persistent shell session for long-running work. Use this when you need a shell that stays alive and should keep appearing in the UI shell list.",
             "parameters": {
@@ -2180,6 +2247,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "Grep": _tool_grep,
     "Bash": _tool_bash,
     "RecallMemory": _tool_recall_memory,
+    "SearchKnowledge": _tool_search_knowledge,
     "StartShell": _tool_start_shell,
     "SendShell": _tool_send_shell,
     "ListShells": _tool_list_shells,

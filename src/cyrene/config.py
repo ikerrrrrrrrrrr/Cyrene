@@ -102,6 +102,11 @@ if "pro" in OPENAI_MODEL.lower():
     logging.getLogger(__name__).warning("Refusing to use Pro model: %s. Falling back to deepseek-v4-flash", OPENAI_MODEL)
     OPENAI_MODEL = "deepseek-v4-flash"
 
+# === Embedding 配置 ===
+EMBEDDING_BASE_URL = _strip_wrapping_quotes(_store.get_env("EMBEDDING_BASE_URL", ""))
+EMBEDDING_API_KEY = _strip_wrapping_quotes(_store.get_env("EMBEDDING_API_KEY", ""))
+EMBEDDING_MODEL = _strip_wrapping_quotes(_store.get_env("EMBEDDING_MODEL", ""))
+
 # === Agent 配置 ===
 ASSISTANT_NAME = _store.get_env("ASSISTANT_NAME", "Cyrene")
 MAX_TOOL_ROUNDS = int(_store.get_env("MAX_TOOL_ROUNDS", "15"))
@@ -145,6 +150,9 @@ _EDITABLE_KEYS = {
     "TELEGRAM_BOT_TOKEN": {"label": "Telegram Token","masked": True},
     "WECHAT_BOT_TOKEN":  {"label": "WeChat Token",  "masked": True},
     "AMAP_API_KEY":      {"label": "高德地图 Key",  "masked": True},
+    "EMBEDDING_BASE_URL": {"label": "Embedding Endpoint", "masked": False},
+    "EMBEDDING_API_KEY": {"label": "Embedding API Key", "masked": True},
+    "EMBEDDING_MODEL":   {"label": "Embedding Model", "masked": False},
 }
 
 
@@ -189,6 +197,12 @@ def _apply_env_updates(updates: dict[str, str]) -> None:
             _mod.WECHAT_OWNER_ID = value
         elif key == "AMAP_API_KEY":
             _mod.AMAP_API_KEY = value
+        elif key == "EMBEDDING_BASE_URL":
+            _mod.EMBEDDING_BASE_URL = value
+        elif key == "EMBEDDING_API_KEY":
+            _mod.EMBEDDING_API_KEY = value
+        elif key == "EMBEDDING_MODEL":
+            _mod.EMBEDDING_MODEL = value
 
 
 def get_env_keys_meta() -> list[dict]:

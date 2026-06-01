@@ -145,6 +145,63 @@ CREATE TABLE IF NOT EXISTS entity_type_confidence (
     sample_count INTEGER DEFAULT 0,
     updated_at   TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS kb_documents (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    content_type  TEXT DEFAULT '',
+    kind          TEXT DEFAULT 'file',
+    size          INTEGER DEFAULT 0,
+    status        TEXT DEFAULT 'pending',
+    source        TEXT DEFAULT 'upload',
+    title         TEXT DEFAULT '',
+    summary       TEXT DEFAULT '',
+    tags          TEXT DEFAULT '[]',
+    char_count    INTEGER DEFAULT 0,
+    chunk_count   INTEGER DEFAULT 0,
+    entity_id     TEXT,
+    error         TEXT DEFAULT '',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    indexed_at    TEXT,
+    metadata      TEXT DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_kb_documents_status ON kb_documents(status);
+CREATE INDEX IF NOT EXISTS idx_kb_documents_kind   ON kb_documents(kind);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_documents_path ON kb_documents(path);
+
+CREATE TABLE IF NOT EXISTS kb_chunks (
+    id              TEXT PRIMARY KEY,
+    document_id     TEXT NOT NULL,
+    ordinal         INTEGER NOT NULL,
+    content         TEXT NOT NULL,
+    char_start      INTEGER DEFAULT 0,
+    char_end        INTEGER DEFAULT 0,
+    token_count     INTEGER DEFAULT 0,
+    embedding       BLOB,
+    embedding_dim   INTEGER DEFAULT 0,
+    embedding_model TEXT DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kb_chunks_document ON kb_chunks(document_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_chunks_fts USING fts5(
+    content, chunk_id UNINDEXED, document_id UNINDEXED, tokenize='trigram'
+);
+
+CREATE TABLE IF NOT EXISTS kb_relations (
+    id          TEXT PRIMARY KEY,
+    src_id      TEXT NOT NULL,
+    dst_id      TEXT NOT NULL,
+    relation    TEXT DEFAULT 'related',
+    weight      REAL DEFAULT 1.0,
+    source      TEXT DEFAULT 'manual',
+    created_at  TEXT NOT NULL,
+    UNIQUE(src_id, dst_id, relation)
+);
+CREATE INDEX IF NOT EXISTS idx_kb_relations_src ON kb_relations(src_id);
+CREATE INDEX IF NOT EXISTS idx_kb_relations_dst ON kb_relations(dst_id);
 """
 
 _TOPIC_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[a-z][a-z0-9_-]{2,}")

@@ -28,6 +28,7 @@ from cyrene import debug
 from webui.routes_map import register_map_routes
 from webui.routes_amap import register_amap_routes
 from webui.routes_entities import register_entity_routes
+from webui.routes_knowledge import register_knowledge_routes
 from webui.routes_code import router as code_router
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
@@ -542,6 +543,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     register_map_routes(router)
     register_amap_routes(router)
     register_entity_routes(router, db_path)
+    register_knowledge_routes(router, db_path)
     router.include_router(code_router)
 
     # ---- SPA root ----
@@ -593,6 +595,22 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 **({"width": width} if isinstance(width, int) else {}),
                 **({"height": height} if isinstance(height, int) else {}),
             })
+
+            # Register document in knowledge base
+            try:
+                from cyrene.knowledge import store, ingest
+                doc = await store.upsert_document_by_path(
+                    _db_path,
+                    path=str(target.resolve()),
+                    source="chat_upload",
+                    name=file.filename or safe_name,
+                    content_type=content_type,
+                    kind=kind,
+                    size=len(content),
+                )
+                asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
+            except Exception as e:
+                logger.debug(f"Failed to register document in knowledge base: {e}")
 
         return {"files": uploaded}
 
