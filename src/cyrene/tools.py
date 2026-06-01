@@ -19,7 +19,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import httpx
 from croniter import croniter
@@ -1042,55 +1041,7 @@ async def _tool_websearch(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
     query = str(args.get("query", ""))
     if not query:
         return "No query provided."
-
-    # 超过 15 个字符的复杂查询走深度搜索，简单的直接搜索
-    if len(query) > 15:
-        result = await deep_search(query)
-        return result
-
-    # 短查询走 DuckDuckGo 搜索，失败时 fallback 到 Bing
-    url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            response = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            response.raise_for_status()
-        html = response.text
-        matches = re.findall(r'<a[^>]*class="result__a"[^>]*href="(.*?)"[^>]*>(.*?)</a>', html, re.S)
-        if matches:
-            results = []
-            for href, title in matches[:10]:
-                clean_title = re.sub(r"<.*?>", "", title).strip()
-                results.append(f"- {clean_title}\n  {href}")
-            return "\n".join(results)
-    except Exception:
-        pass
-
-    # DuckDuckGo 失败，尝试 Bing
-    try:
-        bing_url = f"https://www.bing.com/search?q={quote(query)}&setmkt=en-US"
-        bing_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/131.0.0.0",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
-            bresp = await client.get(bing_url, headers=bing_headers)
-            bresp.raise_for_status()
-        bhtml = bresp.text
-        blocks = re.findall(r'<li\s+class="b_algo"[^>]*>([\s\S]*?)</li>', bhtml, re.DOTALL)
-        bresults = []
-        for block in blocks[:10]:
-            hm = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)</a>', block, re.DOTALL)
-            if hm:
-                bt = re.sub(r'<[^>]+>', '', hm.group(2)).strip()
-                bu = hm.group(1)
-                if bt and not bu.startswith('/'):
-                    bresults.append(f"- {bt}\n  {bu}")
-        if bresults:
-            return "\n".join(bresults)
-    except Exception:
-        pass
-
-    return "No results."
+    return await deep_search(query)
 
 
 async def _tool_send_agent_message(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -1925,7 +1876,7 @@ TOOL_DEFS = [
         "type": "function",
         "function": {
             "name": "spawn_subagent",
-            "description": "Main agent only. Spawn a sub-agent. Subagents must not spawn more subagents; they should coordinate with peers via send_agent_message and finish via quit.",
+            "description": "Main agent only. Spawn a sub-agent. If the user explicitly asks for N subagents, named peer agents, or one subagent per item/person/city/option, call this tool once for EACH requested agent in the same assistant turn before expecting peer coordination. Subagents must not spawn more subagents; they should coordinate with peers via send_agent_message and finish via quit.",
             "parameters": {
                 "type": "object",
                 "properties": {

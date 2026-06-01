@@ -20,6 +20,7 @@ from cyrene.config import (
     DEFAULT_OPENAI_BASE_URL,
     _strip_wrapping_quotes,
 )
+from cyrene.context_trace import strip_context_metadata, summarize_context_trace
 from cyrene.settings_store import get_models, get_vision_models, get_secondary_model
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,7 @@ def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
     """Ensure valid tool_calls/tool message pairing with unique tool_call_ids."""
     import uuid as _uuid
 
+    messages = strip_context_metadata(messages)
     seen_ids: set[str] = set()
     result: list[dict[str, Any]] = []
     i = 0
@@ -479,6 +481,7 @@ async def _publish_llm_event(
         "model": model,
         "tools": [t.get("function", {}).get("name") for t in (tools or [])],
         "messages": _sanitize_messages_for_llm(messages),
+        "context_trace": summarize_context_trace(messages),
         "response": response,
         "usage": response.get("usage") or {},
         "duration_ms": duration_ms,

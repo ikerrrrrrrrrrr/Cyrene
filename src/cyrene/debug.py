@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cyrene.config import DATA_DIR, DB_PATH
+from cyrene.context_trace import strip_context_metadata, summarize_context_trace
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def log_llm_call(
         return
 
     # Clean messages for JSON serialization (remove non-serializable fields)
-    clean_messages = _clean_for_json(messages)
+    clean_messages = _clean_for_json(strip_context_metadata(messages))
 
     # Generate event_id so this entry is queryable via get_full_event()
     import uuid as _uuid
@@ -66,6 +67,7 @@ def log_llm_call(
         "caller": caller,
         "phase": phase,
         "messages": clean_messages,
+        "context_trace": _clean_for_json(summarize_context_trace(messages)),
         "tools": tools,
         "response": _clean_for_json(response),
         "duration_ms": round(duration_ms, 1),

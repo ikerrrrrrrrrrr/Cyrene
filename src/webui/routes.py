@@ -1100,6 +1100,70 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "event not found"}, status_code=404)
         return event
 
+    @router.get("/api/context-debug/events")
+    async def api_context_debug_events(request: Request):
+        """List recent LLM calls that have context trace metadata."""
+        try:
+            limit = int(request.query_params.get("limit") or "120")
+        except ValueError:
+            limit = 120
+        limit = max(1, min(limit, 500))
+        events_by_id: dict[str, dict[str, Any]] = {}
+
+        def add_event(raw: dict[str, Any], log_file: str = "") -> None:
+            if raw.get("type") != "llm_call":
+                return
+            event_id = str(raw.get("event_id") or "").strip()
+            if not event_id:
+                return
+            trace = raw.get("context_trace") if isinstance(raw.get("context_trace"), dict) else {}
+            included = trace.get("included") if isinstance(trace.get("included"), list) else []
+            events_by_id[event_id] = {
+                "id": event_id,
+                "timestamp": raw.get("timestamp") or "",
+                "caller": raw.get("caller") or "",
+                "phase": raw.get("phase") or "",
+                "model": raw.get("model") or "",
+                "duration_ms": raw.get("duration_ms"),
+                "total_tokens_est": int(trace.get("total_tokens_est") or 0),
+                "block_count": len(included),
+                "message_count": len(raw.get("messages") or []),
+                "token_by_type": trace.get("token_by_type") or {},
+                "source_log": log_file,
+            }
+
+        for event in debug.get_recent_events(500):
+            add_event(event)
+
+        if DATA_DIR.exists():
+            for log_file in sorted(DATA_DIR.glob("debug_*.jsonl"), reverse=True)[:20]:
+                try:
+                    with open(log_file, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                add_event(json.loads(line), log_file.name)
+                            except Exception:
+                                continue
+                except Exception:
+                    continue
+
+        events = sorted(
+            events_by_id.values(),
+            key=lambda item: str(item.get("timestamp") or ""),
+            reverse=True,
+        )[:limit]
+        return {"events": events}
+
+    @router.get("/api/context-debug/events/{event_id}")
+    async def api_context_debug_event_detail(event_id: str):
+        event = debug.get_full_event(event_id)
+        if event is None or event.get("type") != "llm_call":
+            return JSONResponse({"error": "event not found"}, status_code=404)
+        return event
+
     # ---- Claude Code terminal / learning ----
 
     @router.get("/api/cc/status")
@@ -2185,13 +2249,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.put("/api/settings/search")
     async def api_update_search(request: Request):
         from cyrene.settings_store import set_ as set_setting
-        body = await request.json()
-        changed = []
-        for key in ("search_mode", "search_external_url"):
-            if key in body:
-                set_setting(key, body[key])
-                changed.append(key)
-        return {"ok": True, "changed": changed}
+        await request.json()
+        set_setting("search_mode", "builtin")
+        set_setting("search_external_url", "")
+        return {"ok": True, "changed": ["search_mode", "search_external_url"]}
 
     # ---- MCP Servers API ----
 
@@ -4334,8 +4395,8 @@ def _build_config() -> dict:
         "soul_path": str(SOUL_PATH),
         "workspace_dir": str(WORKSPACE_DIR),
         "soul_content": _read_soul(),
-        "search_mode": settings.get("search_mode", "builtin"),
-        "search_external_url": settings.get("search_external_url", ""),
+        "search_mode": "builtin",
+        "search_external_url": "",
         "spawn_policy": settings.get("spawn_policy", "conservative"),
         "heartbeat_interval": settings.get("heartbeat_interval", 1800),
         "agent_proactive": settings.get("agent_proactive", True),
@@ -4358,12 +4419,10 @@ def _build_context_chips() -> list[dict]:
 
 
 def _build_search_config() -> dict:
-    settings = get_web_settings()
     return {
-        "search_mode": settings.get("search_mode", "builtin"),
-        "search_external_url": settings.get("search_external_url", ""),
+        "search_mode": "builtin",
+        "search_external_url": "",
         "auto_start_enabled": os.getenv("SEARXNG_AUTO_START", "1") not in ("0", "false", "no"),
-        "env_searxng_url": os.getenv("SEARXNG_URL", ""),
     }
 
 
