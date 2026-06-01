@@ -541,8 +541,19 @@ async def _tool_send_user_message(args: dict[str, Any], _bot: Any, _chat_id: int
     from cyrene.agent.session import append_system_message
     from cyrene.agent.message import _insert_intermediate_user_reply
 
-    if _current_agent_id.get() != "main":
+    sender = str(_current_agent_id.get() or "").strip()
+    if sender not in {"main", "scheduler"}:
         return "Only the main agent can send a user-visible WebUI message. Subagents must report via quit or send_agent_message."
+
+    if sender == "scheduler":
+        await append_system_message(
+            text,
+            message_meta={"scheduled": True},
+            publish_event={"scheduled": True},
+        )
+        if _notify_state is not None:
+            _notify_state["sent"] = True
+        return "Scheduled message sent to the user."
 
     round_id = str(_current_round_id.get() or "").strip()
     if not round_id:

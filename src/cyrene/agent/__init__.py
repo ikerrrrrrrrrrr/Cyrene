@@ -2,12 +2,6 @@
 
 ``from cyrene.agent import run_agent`` still works via the re-exports below.
 """
-# Backward-compat: re-export from cyrene.agent.state so that the same
-# mutable references are shared by all sub-modules (tests that write
-# ``agent.STATE_FILE = path`` must use ``cyrene.agent.state.STATE_FILE``
-# instead if they need sub-modules to see the update).
-from cyrene.agent.state import DATA_DIR, STATE_FILE
-
 from cyrene.agent.state import (
     _active_main_round_id,
     _active_main_round_prompt,
@@ -172,6 +166,14 @@ from cyrene.agent.agent import (
 from cyrene.agent.message import (
     _is_placeholder_reply,
 )
+
+
+def __getattr__(name: str):
+    if name in {"STATE_FILE", "DATA_DIR"}:
+        from cyrene.agent import state as _state
+
+        return getattr(_state, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _register_quit_handler() -> None:
