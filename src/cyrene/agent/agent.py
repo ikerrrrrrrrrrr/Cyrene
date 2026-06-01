@@ -322,7 +322,7 @@ async def _run_main_agent(
     if ask_user_call:
         try:
             args = json.loads(ask_user_call["function"].get("arguments") or "{}")
-            result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None)
+            result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None, tool_call_id=ask_user_call["id"])
         except Exception as exc:
             result = f"Tool failed: {exc}"
         truncated_result = _truncate(result)
@@ -334,7 +334,7 @@ async def _run_main_agent(
             reason="ask_user tool output returned to LLM",
             transforms=["truncate"] if str(truncated_result) != str(result) else [],
             content=truncated_result,
-            metadata={"tool_name": "ask_user", "tool_call_id": ask_user_call["id"]},
+            metadata={"tool_name": "ask_user", "tool_call_id": ask_user_call["id"], "tool_args": args},
         ))
         if round_id:
             tool_entry["round_id"] = round_id
@@ -422,7 +422,7 @@ async def _run_main_agent(
                     continue
                 try:
                     args = json.loads(t["function"].get("arguments") or "{}")
-                    result = await _execute_tool(tool_name, args, bot, chat_id, db_path, None)
+                    result = await _execute_tool(tool_name, args, bot, chat_id, db_path, None, tool_call_id=t["id"])
                 except Exception as e:
                     result = f"Tool failed: {e}"
                 truncated_result = _truncate(result)
@@ -434,7 +434,7 @@ async def _run_main_agent(
                     reason="tool output returned to LLM",
                     transforms=["truncate"] if str(truncated_result) != str(result) else [],
                     content=truncated_result,
-                    metadata={"tool_name": tool_name, "tool_call_id": t["id"]},
+                    metadata={"tool_name": tool_name, "tool_call_id": t["id"], "tool_args": args},
                 ))
                 if round_id:
                     tool_entry["round_id"] = round_id
@@ -623,7 +623,7 @@ async def _run_main_agent(
         if ask_user_call:
             try:
                 args = json.loads(ask_user_call["function"].get("arguments") or "{}")
-                result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None)
+                result = await _execute_tool("ask_user", args, bot, chat_id, db_path, None, tool_call_id=ask_user_call["id"])
             except Exception as exc:
                 result = f"Tool failed: {exc}"
             truncated_result = _truncate(result)
@@ -635,7 +635,7 @@ async def _run_main_agent(
                 reason="ask_user tool output returned to LLM after correction",
                 transforms=["truncate"] if str(truncated_result) != str(result) else [],
                 content=truncated_result,
-                metadata={"tool_name": "ask_user", "tool_call_id": ask_user_call["id"]},
+                metadata={"tool_name": "ask_user", "tool_call_id": ask_user_call["id"], "tool_args": args},
             ))
             if round_id:
                 tool_entry["round_id"] = round_id

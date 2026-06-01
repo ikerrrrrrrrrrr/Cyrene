@@ -2262,7 +2262,7 @@ def get_active_tool_defs_for_actor(actor: str = "main") -> list[dict]:
     return defs
 
 
-async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None) -> str:
+async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None, *, tool_call_id: str = "") -> str:
     if name == "spawn_subagent":
         from cyrene.settings_store import get_spawn_policy
         if get_spawn_policy() == "off":
@@ -2279,10 +2279,11 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
             manager = _get_mcp_mgr()
             result = await manager.execute_tool(name, arguments)
             if _debug.VERBOSE:
-                _debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000)
+                _debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000, tool_call_id=tool_call_id)
             await _debug.publish_event({
                 "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
                 "result": str(result),
+                "tool_call_id": tool_call_id,
                 "round_id": _current_round_id.get(),
             })
             from cyrene.pattern import record_action
@@ -2315,6 +2316,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
         await debug.publish_event({
             "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
             "result": f"Tool failed: {e}",
+            "tool_call_id": tool_call_id,
             "round_id": _current_round_id.get(),
         })
         from cyrene.pattern import record_action
@@ -2332,11 +2334,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     from cyrene import debug
     if debug.VERBOSE:
         from cyrene.agent.state import _caller_type
-        debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000)
+        debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000, tool_call_id=tool_call_id)
     from cyrene.agent.state import _caller_type, _current_round_id
     await debug.publish_event({
         "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
         "result": str(result),
+        "tool_call_id": tool_call_id,
         "round_id": _current_round_id.get(),
     })
     from cyrene.pattern import record_action

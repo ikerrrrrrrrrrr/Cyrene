@@ -10,11 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cyrene.config import DATA_DIR, DB_PATH
+from cyrene import context_identity
 from cyrene.context_trace import strip_context_metadata, summarize_context_trace
 
 logger = logging.getLogger(__name__)
 
-VERBOSE = True
+VERBOSE = False
 _log_file: Path | None = None
 
 
@@ -60,6 +61,15 @@ def log_llm_call(
     import uuid as _uuid
     event_id = f"evt_{_uuid.uuid4().hex[:12]}"
 
+    context_trace = _clean_for_json(summarize_context_trace(messages))
+    identity_graph = _llm_identity_graph(
+        event_id,
+        caller=caller,
+        phase=phase,
+        context_trace=context_trace,
+        tools=tools,
+    )
+
     entry = {
         "type": "llm_call",
         "event_id": event_id,
@@ -67,32 +77,47 @@ def log_llm_call(
         "caller": caller,
         "phase": phase,
         "messages": clean_messages,
-        "context_trace": _clean_for_json(summarize_context_trace(messages)),
+        "context_trace": context_trace,
         "tools": tools,
         "response": _clean_for_json(response),
         "duration_ms": round(duration_ms, 1),
     }
+    if identity_graph:
+        entry["identity_graph"] = identity_graph
+        entry["request_id"] = identity_graph.get("request_id", "")
     _write_entry(entry)
     # Also store in _full_events for fast lookup
     _full_events[event_id] = dict(entry)
 
 
-def log_tool_call(caller: str, tool_name: str, args: dict, result: str, duration_ms: float) -> None:
+def log_tool_call(caller: str, tool_name: str, args: dict, result: str, duration_ms: float, *, tool_call_id: str = "") -> None:
     """Log one tool execution — FULL args and result."""
     if not VERBOSE:
         return
     import uuid as _uuid
     event_id = f"evt_{_uuid.uuid4().hex[:12]}"
+    identity_graph = _tool_identity_graph(
+        event_id,
+        caller=caller,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        args=args,
+        result=result,
+    )
     entry = {
         "type": "tool_call",
         "event_id": event_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "caller": caller,
         "tool": tool_name,
+        "tool_call_id": tool_call_id,
         "args": args,
         "result": str(result),
         "duration_ms": round(duration_ms, 1),
     }
+    if identity_graph:
+        entry["identity_graph"] = identity_graph
+        entry["request_id"] = identity_graph.get("request_id", "")
     _write_entry(entry)
     _full_events[event_id] = dict(entry)
 
@@ -114,6 +139,82 @@ def _clean_for_json(obj):
 def get_log_path() -> str:
     """Return the current debug log path, or empty string."""
     return str(_log_file) if _log_file else ""
+
+
+def identity_logging_enabled() -> bool:
+    """Return true when verbose logging is writing durable request traces."""
+    return bool(VERBOSE and _log_file is not None)
+
+
+def _llm_identity_graph(
+    event_id: str,
+    *,
+    caller: str,
+    phase: str,
+    context_trace: dict,
+    tools: list | None,
+) -> dict | None:
+    request_id = context_identity.current_request_id()
+    if not request_id:
+        return None
+    included = context_trace.get("included") if isinstance(context_trace, dict) else []
+    depends_on_cids = [
+        str(block.get("cid") or "")
+        for block in included
+        if isinstance(block, dict) and block.get("cid")
+    ]
+    depends_on_nodes = [
+        str(block.get("source_node_id") or "")
+        for block in included
+        if isinstance(block, dict) and block.get("source_node_id")
+    ]
+    source_nodes = [
+        {
+            "cid": str(block.get("cid") or ""),
+            "node_id": str(block.get("source_node_id") or ""),
+            "type": str(block.get("type") or ""),
+            "label": str(block.get("id") or ""),
+        }
+        for block in included
+        if isinstance(block, dict) and block.get("cid") and block.get("source_node_id")
+    ]
+    tool_schema = context_identity.tool_schema_source(tools)
+    if tool_schema:
+        depends_on_cids.append(str(tool_schema["cid"]))
+        depends_on_nodes.append(str(tool_schema["node_id"]))
+        source_nodes.append(tool_schema)
+    return {
+        "request_id": request_id,
+        "node_id": context_identity.event_node_id("llm", event_id, caller=caller, phase=phase),
+        "node_type": "llm",
+        "title": f"{caller or 'agent'} · {phase or 'call'}",
+        "depends_on_cids": list(dict.fromkeys(depends_on_cids)),
+        "depends_on_nodes": list(dict.fromkeys(depends_on_nodes)),
+        "source_nodes": source_nodes,
+    }
+
+
+def _tool_identity_graph(
+    event_id: str,
+    *,
+    caller: str,
+    tool_name: str,
+    tool_call_id: str = "",
+    args: dict,
+    result: str,
+) -> dict | None:
+    request_id = context_identity.current_request_id()
+    if not request_id:
+        return None
+    result_cid = context_identity.tool_result_cid(tool_name, tool_call_id or event_id, args, result)
+    return {
+        "request_id": request_id,
+        "node_id": context_identity.event_node_id("tool", event_id, caller=caller, name=tool_name),
+        "node_type": "tool",
+        "title": f"{caller or 'agent'} · {tool_name}",
+        "produces_cid": result_cid,
+        "produces_node_id": context_identity.source_node_id(result_cid, "tool_result"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +249,29 @@ async def publish_event(event: dict) -> None:
     if event.get("type") in ("llm_call", "tool_call"):
         event_id = f"evt_{_uuid.uuid4().hex[:12]}"
         event["event_id"] = event_id
+        if context_identity.current_request_id() and not event.get("identity_graph"):
+            if event.get("type") == "llm_call":
+                event["identity_graph"] = _llm_identity_graph(
+                    event_id,
+                    caller=str(event.get("caller") or ""),
+                    phase=str(event.get("phase") or ""),
+                    context_trace=event.get("context_trace") if isinstance(event.get("context_trace"), dict) else {},
+                    tools=[
+                        {"function": {"name": str(name)}}
+                        for name in (event.get("tools") or [])
+                    ],
+                )
+            elif event.get("type") == "tool_call":
+                event["identity_graph"] = _tool_identity_graph(
+                    event_id,
+                    caller=str(event.get("caller") or ""),
+                    tool_name=str(event.get("tool") or ""),
+                    tool_call_id=str(event.get("tool_call_id") or ""),
+                    args=event.get("args") if isinstance(event.get("args"), dict) else {},
+                    result=str(event.get("result") or ""),
+                )
+            if event.get("identity_graph"):
+                event["request_id"] = event["identity_graph"].get("request_id", "")
         _full_events[event_id] = dict(event)
         # 控制 _full_events 大小
         if len(_full_events) > _MAX_FULL_EVENTS:

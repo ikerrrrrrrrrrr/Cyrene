@@ -78,7 +78,8 @@ from cyrene.agent.state import (
     _ui_round_hide_initial_detail,
 )
 from cyrene.config import ASSISTANT_NAME
-from cyrene.context_trace import context_block
+from cyrene import context_identity
+from cyrene.context_trace import attach_context, context_block
 from cyrene.llm import _assistant_text, _truncate
 from cyrene.memory import get_memory_context
 from cyrene.short_term import get_context
@@ -104,47 +105,66 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 
 async def _run_execution_agent_locked(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     _caller_type.set("execution_agent")
+    identity_tokens: tuple[Any, Any, str] | None = None
+    if not context_identity.current_request_id():
+        identity_tokens = context_identity.begin_request("execution", task)
     messages = [
         {"role": "system", "content": _EXECUTION_SYSTEM_PROMPT},
         {"role": "user", "content": task},
     ]
 
     final_text = "Done."
-    for _ in range(_MAX_TOOL_ROUNDS):
-        response = await _call_llm(messages, tools=get_active_tool_defs())
+    try:
+        for _ in range(_MAX_TOOL_ROUNDS):
+            response = await _call_llm(messages, tools=get_active_tool_defs())
 
-        assistant_entry: dict[str, Any] = {"role": "assistant"}
-        if response.get("content"):
-            assistant_entry["content"] = response["content"]
-        else:
-            assistant_entry["content"] = ""
-        if response.get("tool_calls"):
-            assistant_entry["tool_calls"] = response["tool_calls"]
-        if response.get("reasoning_content"):
-            assistant_entry["reasoning_content"] = response["reasoning_content"]
-        if response.get("usage"):
-            assistant_entry["usage"] = response["usage"]
-        messages.append(assistant_entry)
+            assistant_entry: dict[str, Any] = {"role": "assistant"}
+            if response.get("content"):
+                assistant_entry["content"] = response["content"]
+            else:
+                assistant_entry["content"] = ""
+            if response.get("tool_calls"):
+                assistant_entry["tool_calls"] = response["tool_calls"]
+            if response.get("reasoning_content"):
+                assistant_entry["reasoning_content"] = response["reasoning_content"]
+            if response.get("usage"):
+                assistant_entry["usage"] = response["usage"]
+            messages.append(assistant_entry)
 
-        tool_calls = response.get("tool_calls") or []
-        if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
-            final_text = _assistant_text(response) or "Done."
-            break
-        if not tool_calls:
-            return _assistant_text(response) or "Done."
+            tool_calls = response.get("tool_calls") or []
+            if any(tc.get("function", {}).get("name") == "quit" for tc in tool_calls):
+                final_text = _assistant_text(response) or "Done."
+                break
+            if not tool_calls:
+                return _assistant_text(response) or "Done."
 
-        for tc in tool_calls:
-            call_id = tc["id"]
-            fn = tc["function"]
-            name = fn["name"]
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-                result = await _execute_tool(name, args, bot, chat_id, db_path, notify_state)
-            except Exception as e:
-                result = f"Tool {name} failed: {e}"
-            messages.append({"role": "tool", "tool_call_id": call_id, "content": _truncate(result)})
+            for tc in tool_calls:
+                call_id = tc["id"]
+                fn = tc["function"]
+                name = fn["name"]
+                args: dict[str, Any] = {}
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                    result = await _execute_tool(name, args, bot, chat_id, db_path, notify_state, tool_call_id=call_id)
+                except Exception as e:
+                    result = f"Tool {name} failed: {e}"
+                truncated_result = _truncate(result)
+                messages.append(attach_context(
+                    {"role": "tool", "tool_call_id": call_id, "content": truncated_result},
+                    context_block(
+                        f"tool.result.{name}.{call_id}",
+                        "tool_result",
+                        source=f"tool:{name}",
+                        reason="execution agent tool output returned to LLM",
+                        transforms=["truncate"] if str(truncated_result) != str(result) else [],
+                        content=truncated_result,
+                        metadata={"tool_name": name, "tool_call_id": call_id, "tool_args": args},
+                    ),
+                ))
 
-    return final_text
+        return final_text
+    finally:
+        context_identity.reset_request(identity_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +269,12 @@ async def _run_chat_agent(
     hide_initial_detail_token = _ui_round_hide_initial_detail.set(bool(hide_initial_detail))
     assistant_meta_token = _ui_round_assistant_meta.set(dict(assistant_message_meta) if assistant_message_meta else None)
     behavior_turn_context: dict[str, Any] | None = None
+    identity_tokens = context_identity.begin_request(
+        "user" if persist_user_message else "agent",
+        public_prompt if public_prompt is not None else user_message,
+        round_id=round_id,
+        client_request_id=client_request_id,
+    )
     final_output = ""
     try:
         restored_short_term = False
@@ -563,6 +589,7 @@ async def _run_chat_agent(
         _state._active_main_round_public_prompt = ""
         _state._active_main_round_started_at = 0.0
         _state._temporary_full_access.set(False)
+        context_identity.reset_request(identity_tokens)
         _current_round_id.reset(round_token)
 
 

@@ -12,6 +12,8 @@ import hashlib
 import re
 from typing import Any
 
+from cyrene import context_identity
+
 CTX_KEY = "_ctx"
 
 
@@ -57,8 +59,28 @@ def context_block(
         "chars": len(text),
         "content_sha256_16": content_fingerprint(text),
     }
-    if metadata:
-        block["metadata"] = dict(metadata)
+    meta = dict(metadata or {})
+    if context_identity.enabled():
+        if block["type"] == "tool_result" and (meta.get("tool_name") or meta.get("tool_call_id")):
+            cid = context_identity.tool_result_cid(
+                str(meta.get("tool_name") or "tool"),
+                str(meta.get("tool_call_id") or block["id"]),
+                meta.get("tool_args") or "",
+                text,
+            )
+            block.update({
+                "cid": cid,
+                "source_node_id": context_identity.source_node_id(cid, "tool_result"),
+            })
+        else:
+            block.update(context_identity.block_identity(
+                block["id"],
+                block["type"],
+                content=text,
+                source=block["source"],
+            ))
+    if meta:
+        block["metadata"] = meta
     return block
 
 
@@ -126,6 +148,13 @@ def summarize_context_trace(messages: list[dict[str, Any]]) -> dict[str, Any]:
             block_id = str(block.get("id") or "context.unknown")
             block_type = str(block.get("type") or "unknown")
             block.setdefault("tokens_est", message_tokens)
+            if context_identity.enabled() and not block.get("cid"):
+                block.update(context_identity.block_identity(
+                    block_id,
+                    block_type,
+                    content=_message_content_text(message),
+                    source=str(block.get("source") or "messages"),
+                ))
             block["message_index"] = index
             block["message_role"] = role
             block_ids.append(block_id)
@@ -140,14 +169,19 @@ def summarize_context_trace(messages: list[dict[str, Any]]) -> dict[str, Any]:
             "role": role,
             "tokens_est": message_tokens,
             "block_ids": block_ids,
+            "block_cids": [str(block.get("cid") or "") for block in included if block.get("message_index") == index and block.get("cid")],
         })
 
-    return {
+    summary = {
         "included": included,
         "message_map": message_map,
         "token_by_type": token_by_type,
         "total_tokens_est": sum(item["tokens_est"] for item in message_map),
     }
+    request_id = context_identity.current_request_id()
+    if request_id:
+        summary["request_id"] = request_id
+    return summary
 
 
 def _infer_block_for_message(index: int, message: dict[str, Any], message_tokens: int) -> dict[str, Any]:

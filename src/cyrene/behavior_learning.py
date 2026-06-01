@@ -3984,7 +3984,7 @@ async def try_route_and_execute_skill(
             tool_name = str(call["function"]["name"])
             try:
                 resolved_args = json.loads(call["function"]["arguments"])
-                result = await _execute_tool(tool_name, resolved_args, bot, chat_id, db_path, None)
+                result = await _execute_tool(tool_name, resolved_args, bot, chat_id, db_path, None, tool_call_id=call["id"])
                 tool_success = not str(result).lower().startswith("tool failed:")
                 failure_reason = "" if tool_success else str(result)
             except Exception as exc:

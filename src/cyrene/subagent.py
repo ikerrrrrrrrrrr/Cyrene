@@ -24,7 +24,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from cyrene import debug
+from cyrene import context_identity
 from cyrene.config import DATA_DIR
+from cyrene.context_trace import attach_context, context_block
 
 logger = logging.getLogger(__name__)
 
@@ -1069,6 +1071,13 @@ async def _run_subagent(
     caller_token = _caller_type.set(f"subagent_{agent_id}")
     round_id = await get_round_id(agent_id)
     round_token = _current_round_id.set(round_id) if round_id else None
+    identity_tokens = None
+    if not context_identity.current_request_id():
+        identity_tokens = context_identity.begin_request(
+            "subagent",
+            f"{agent_id}: {task}",
+            round_id=round_id,
+        )
     dm_token = _direct_message_mode.set(False)
     from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
 
@@ -1220,11 +1229,19 @@ You are a **participant** in this discussion. Rules:
             if should_exit:
                 for tc in tcs:
                     if tc.get("function", {}).get("name") == "quit":
-                        messages.append({
+                        messages.append(attach_context({
                             "role": "tool",
                             "tool_call_id": tc["id"],
                             "content": "Interaction ended.",
-                        })
+                        }, context_block(
+                            f"tool.result.quit.{tc['id']}",
+                            "tool_result",
+                            source="tool:quit",
+                            reason="subagent quit result returned to LLM",
+                            transforms=["synthetic_tool_result"],
+                            content="Interaction ended.",
+                            metadata={"tool_name": "quit", "tool_call_id": tc["id"], "tool_args": {}},
+                        )))
                 if tcs:
                     await _save_if_registered()
 
@@ -1272,18 +1289,42 @@ You are a **participant** in this discussion. Rules:
                 name = tc["function"]["name"]
                 if not is_tool_allowed_for_actor(name, "subagent"):
                     result = f"Tool {name} is reserved for the main agent. Subagents must coordinate via send_agent_message and return their final result via quit."
-                    messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+                    messages.append(attach_context(
+                        {"role": "tool", "tool_call_id": tc["id"], "content": result},
+                        context_block(
+                            f"tool.result.{name}.{tc['id']}",
+                            "tool_result",
+                            source=f"tool:{name}",
+                            reason="reserved tool rejection returned to subagent LLM",
+                            transforms=["synthetic_tool_result"],
+                            content=result,
+                            metadata={"tool_name": name, "tool_call_id": tc["id"], "tool_args": {}},
+                        ),
+                    ))
                     continue
+                args = {}
                 try:
                     args = json.loads(tc["function"].get("arguments") or "{}")
                     token = _current_agent_id.set(agent_id)
                     try:
-                        result = await _execute_tool(name, args, bot, chat_id, db_path, None)
+                        result = await _execute_tool(name, args, bot, chat_id, db_path, None, tool_call_id=tc["id"])
                     finally:
                         _current_agent_id.reset(token)
                 except Exception as e:
                     result = f"Tool {name} failed: {e}"
-                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": _truncate(result)})
+                truncated_result = _truncate(result)
+                messages.append(attach_context(
+                    {"role": "tool", "tool_call_id": tc["id"], "content": truncated_result},
+                    context_block(
+                        f"tool.result.{name}.{tc['id']}",
+                        "tool_result",
+                        source=f"tool:{name}",
+                        reason="subagent tool output returned to LLM",
+                        transforms=["truncate"] if str(truncated_result) != str(result) else [],
+                        content=truncated_result,
+                        metadata={"tool_name": name, "tool_call_id": tc["id"], "tool_args": args},
+                    ),
+                ))
                 # 每执行完一个工具检查 inbox，用户引导时能更快响应
                 inbox_text = _get_inbox(agent_id)
                 if inbox_text:
@@ -1307,6 +1348,7 @@ You are a **participant** in this discussion. Rules:
     finally:
         _caller_type.reset(caller_token)
         _direct_message_mode.reset(dm_token)
+        context_identity.reset_request(identity_tokens)
         if round_token is not None:
             _current_round_id.reset(round_token)
 

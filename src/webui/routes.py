@@ -1109,6 +1109,20 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             limit = 120
         limit = max(1, min(limit, 500))
         events_by_id: dict[str, dict[str, Any]] = {}
+        semantic_keys: set[str] = set()
+
+        def semantic_event_key(raw: dict[str, Any]) -> str:
+            graph = raw.get("identity_graph") if isinstance(raw.get("identity_graph"), dict) else {}
+            ts = str(raw.get("timestamp") or "")[:19]
+            return "|".join([
+                str(raw.get("type") or ""),
+                str(raw.get("caller") or ""),
+                str(raw.get("phase") or ""),
+                str(raw.get("tool") or ""),
+                str(raw.get("tool_call_id") or ""),
+                str(raw.get("request_id") or graph.get("request_id") or ""),
+                ts,
+            ])
 
         def add_event(raw: dict[str, Any], log_file: str = "") -> None:
             if raw.get("type") != "llm_call":
@@ -1116,6 +1130,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             event_id = str(raw.get("event_id") or "").strip()
             if not event_id:
                 return
+            semantic_key = semantic_event_key(raw)
+            if semantic_key in semantic_keys:
+                return
+            semantic_keys.add(semantic_key)
             trace = raw.get("context_trace") if isinstance(raw.get("context_trace"), dict) else {}
             included = trace.get("included") if isinstance(trace.get("included"), list) else []
             events_by_id[event_id] = {
@@ -1124,6 +1142,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "caller": raw.get("caller") or "",
                 "phase": raw.get("phase") or "",
                 "model": raw.get("model") or "",
+                "request_id": raw.get("request_id") or (raw.get("identity_graph") or {}).get("request_id") or "",
                 "duration_ms": raw.get("duration_ms"),
                 "total_tokens_est": int(trace.get("total_tokens_est") or 0),
                 "block_count": len(included),
@@ -1131,9 +1150,6 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "token_by_type": trace.get("token_by_type") or {},
                 "source_log": log_file,
             }
-
-        for event in debug.get_recent_events(500):
-            add_event(event)
 
         if DATA_DIR.exists():
             for log_file in sorted(DATA_DIR.glob("debug_*.jsonl"), reverse=True)[:20]:
@@ -1160,9 +1176,153 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.get("/api/context-debug/events/{event_id}")
     async def api_context_debug_event_detail(event_id: str):
         event = debug.get_full_event(event_id)
-        if event is None or event.get("type") != "llm_call":
+        if event is None or event.get("type") not in ("llm_call", "tool_call"):
             return JSONResponse({"error": "event not found"}, status_code=404)
         return event
+
+    @router.get("/api/context-debug/requests/{request_id}")
+    async def api_context_debug_request_graph(request_id: str):
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return JSONResponse({"error": "request_id required"}, status_code=400)
+
+        raw_events: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        semantic_seen: set[str] = set()
+
+        def semantic_event_key(raw: dict[str, Any]) -> str:
+            graph = raw.get("identity_graph") if isinstance(raw.get("identity_graph"), dict) else {}
+            ts = str(raw.get("timestamp") or "")[:19]
+            return "|".join([
+                str(raw.get("type") or ""),
+                str(raw.get("caller") or ""),
+                str(raw.get("phase") or ""),
+                str(raw.get("tool") or ""),
+                str(raw.get("tool_call_id") or ""),
+                str(raw.get("request_id") or graph.get("request_id") or ""),
+                ts,
+            ])
+
+        def add_raw(raw: dict[str, Any]) -> None:
+            if not isinstance(raw, dict):
+                return
+            graph = raw.get("identity_graph") if isinstance(raw.get("identity_graph"), dict) else {}
+            if str(raw.get("request_id") or graph.get("request_id") or "") != request_id:
+                return
+            event_id = str(raw.get("event_id") or "")
+            if event_id and event_id in seen:
+                return
+            semantic_key = semantic_event_key(raw)
+            if semantic_key in semantic_seen:
+                return
+            semantic_seen.add(semantic_key)
+            if event_id:
+                seen.add(event_id)
+            raw_events.append(raw)
+
+        if DATA_DIR.exists():
+            for log_file in sorted(DATA_DIR.glob("debug_*.jsonl"), reverse=True)[:20]:
+                try:
+                    with open(log_file, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                add_raw(json.loads(line))
+                            except Exception:
+                                continue
+                except Exception:
+                    continue
+
+        for event in debug.get_recent_events(500):
+            add_raw(event)
+
+        for event in debug.get_recent_events(500):
+            add_event(event)
+
+        raw_events.sort(key=lambda item: str(item.get("timestamp") or ""))
+        nodes: dict[str, dict[str, Any]] = {}
+        links: list[dict[str, Any]] = []
+        event_node_ids: list[str] = []
+
+        def add_node(node: dict[str, Any]) -> None:
+            node_id = str(node.get("id") or "").strip()
+            if not node_id:
+                return
+            if node_id not in nodes:
+                nodes[node_id] = node
+            else:
+                nodes[node_id].update({k: v for k, v in node.items() if v not in (None, "", [])})
+
+        def add_link(source: str, target: str, kind: str) -> None:
+            if not source or not target:
+                return
+            links.append({"source": source, "target": target, "kind": kind})
+
+        for raw in raw_events:
+            graph = raw.get("identity_graph") if isinstance(raw.get("identity_graph"), dict) else {}
+            node_id = str(graph.get("node_id") or "").strip()
+            event_id = str(raw.get("event_id") or "")
+            if not node_id:
+                continue
+            node_type = str(graph.get("node_type") or raw.get("type") or "event")
+            add_node({
+                "id": node_id,
+                "type": node_type,
+                "title": graph.get("title") or event_id,
+                "event_id": event_id,
+                "timestamp": raw.get("timestamp") or "",
+                "caller": raw.get("caller") or "",
+                "phase": raw.get("phase") or "",
+                "tool": raw.get("tool") or "",
+            })
+            event_node_ids.append(node_id)
+            for source in graph.get("source_nodes") or []:
+                if not isinstance(source, dict):
+                    continue
+                source_id = str(source.get("node_id") or "").strip()
+                add_node({
+                    "id": source_id,
+                    "type": source.get("type") or "source",
+                    "title": source.get("label") or source.get("cid") or "source",
+                    "cid": source.get("cid") or "",
+                    "tool_names": source.get("tool_names") or [],
+                })
+            for dep in graph.get("depends_on_nodes") or []:
+                dep_id = str(dep or "").strip()
+                if dep_id and dep_id not in nodes:
+                    add_node({"id": dep_id, "type": "source", "title": dep_id})
+                add_link(dep_id, node_id, "context")
+            produced = str(graph.get("produces_node_id") or "").strip()
+            if produced:
+                add_node({
+                    "id": produced,
+                    "type": "tool_result",
+                    "title": graph.get("produces_cid") or "tool result",
+                    "cid": graph.get("produces_cid") or "",
+                })
+                add_link(node_id, produced, "produces")
+
+        for idx in range(1, len(event_node_ids)):
+            add_link(event_node_ids[idx - 1], event_node_ids[idx], "sequence")
+
+        return {
+            "request_id": request_id,
+            "nodes": list(nodes.values()),
+            "links": links,
+            "events": [
+                {
+                    "event_id": raw.get("event_id") or "",
+                    "type": raw.get("type") or "",
+                    "timestamp": raw.get("timestamp") or "",
+                    "caller": raw.get("caller") or "",
+                    "phase": raw.get("phase") or "",
+                    "tool": raw.get("tool") or "",
+                }
+                for raw in raw_events
+            ],
+        }
 
     # ---- Claude Code terminal / learning ----
 
