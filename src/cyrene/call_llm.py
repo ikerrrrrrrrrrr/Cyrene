@@ -6,11 +6,13 @@ search.py, scheduler.py, attachments.py, and onboarding.py.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import os
 import re
 import time as _time
+import uuid
 from typing import Any, Callable, Awaitable
 
 import httpx
@@ -346,6 +348,79 @@ def _message_from_upstream_payload(data: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"Upstream response missing choices/message payload: {error_text}")
 
 
+_DSML_MARKER = r"(?:｜｜|\|\|)DSML(?:｜｜|\|\|)"
+_DSML_TOOL_BLOCK_RE = re.compile(
+    rf"<{_DSML_MARKER}tool_calls>(?P<body>.*?)</{_DSML_MARKER}tool_calls>",
+    re.DOTALL,
+)
+_DSML_INVOKE_RE = re.compile(
+    rf"<{_DSML_MARKER}invoke\s+name=(?P<quote>[\"'])(?P<name>.*?)(?P=quote)\s*(?:/>|>(?P<body>.*?)</{_DSML_MARKER}invoke>)",
+    re.DOTALL,
+)
+_DSML_PARAMETER_RE = re.compile(
+    rf"<{_DSML_MARKER}parameter\s+name=(?P<quote>[\"'])(?P<name>.*?)(?P=quote)(?P<attrs>[^>]*)>(?P<value>.*?)</{_DSML_MARKER}parameter>",
+    re.DOTALL,
+)
+
+
+def _dsml_parameter_value(value: str, attrs: str) -> Any:
+    text = html.unescape(str(value or "").strip())
+    string_match = re.search(r"""\bstring\s*=\s*["'](?P<value>true|false)["']""", str(attrs or ""), re.IGNORECASE)
+    if string_match and string_match.group("value").lower() == "true":
+        return text
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def _normalize_dsml_tool_calls(message: dict[str, Any], tools: list | None) -> dict[str, Any]:
+    """Convert DeepSeek's textual DSML fallback into OpenAI-style tool calls."""
+    if not tools or message.get("tool_calls"):
+        return message
+    content = message.get("content")
+    if not isinstance(content, str) or "DSML" not in content:
+        return message
+
+    allowed_names = {
+        str(tool.get("function", {}).get("name") or "").strip()
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    blocks = list(_DSML_TOOL_BLOCK_RE.finditer(content))
+    if not blocks:
+        return message
+
+    tool_calls: list[dict[str, Any]] = []
+    for block in blocks:
+        invocations = list(_DSML_INVOKE_RE.finditer(block.group("body")))
+        if not invocations:
+            return message
+        for invocation in invocations:
+            name = html.unescape(invocation.group("name")).strip()
+            if not name or name not in allowed_names:
+                return message
+            arguments: dict[str, Any] = {}
+            for parameter in _DSML_PARAMETER_RE.finditer(invocation.group("body") or ""):
+                parameter_name = html.unescape(parameter.group("name")).strip()
+                if parameter_name:
+                    arguments[parameter_name] = _dsml_parameter_value(parameter.group("value"), parameter.group("attrs"))
+            tool_calls.append({
+                "index": len(tool_calls),
+                "id": f"call_dsml_{uuid.uuid4().hex[:16]}",
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(arguments, ensure_ascii=False),
+                },
+            })
+
+    normalized = dict(message)
+    normalized["content"] = _DSML_TOOL_BLOCK_RE.sub("", content).strip()
+    normalized["tool_calls"] = tool_calls
+    return normalized
+
+
 def _normalized_usage(usage: Any, messages: list[dict[str, Any]], response_message: dict[str, Any]) -> dict[str, int]:
     if isinstance(usage, dict) and any(isinstance(usage.get(key), int) for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
         prompt = int(usage.get("prompt_tokens") or 0)
@@ -538,6 +613,8 @@ async def call_llm(
     Raises:
         httpx.HTTPError: When all candidates and endpoints fail.
     """
+    global _secondary_in_flight
+
     _t0 = _time.monotonic()
 
     resolved = candidates if candidates is not None else _resolve_candidates(model_type)
@@ -591,6 +668,7 @@ async def call_llm(
                             msg = _message_from_upstream_payload(data)
                             msg["usage"] = _normalized_usage(data.get("usage"), messages, msg)
 
+                        msg = _normalize_dsml_tool_calls(msg, tools)
                         msg.setdefault("role", "assistant")
                         msg.setdefault("content", "")
                         if msg.get("usage"):

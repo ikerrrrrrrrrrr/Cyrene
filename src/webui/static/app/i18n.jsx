@@ -577,6 +577,10 @@ const TRANSLATIONS = {
     // ── Map Attachment ────────────────────────────────────────────────────
     "chat.map.showBtn": "Show Map",
 
+    // ── Markdown Attachment ───────────────────────────────────────────────
+    "chat.md.showBtn": "Preview",
+    "chat.md.sideTitle": "Markdown",
+
     // ── Code Attachment ───────────────────────────────────────────────────
     "chat.code.showBtn": "Show Code",
     "chat.code.newFile": "New file",
@@ -1754,6 +1758,8 @@ const TRANSLATIONS = {
 
     // ── 地图附件 ─────────────────────────────────────────────────────────
     "chat.map.showBtn": "显示地图",
+    "chat.md.showBtn": "预览",
+    "chat.md.sideTitle": "Markdown",
 
     // ── 代码附件 ─────────────────────────────────────────────────────────
     "chat.code.showBtn": "显示代码",

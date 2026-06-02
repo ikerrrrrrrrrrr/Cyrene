@@ -580,7 +580,7 @@ function resetChatRuntime(options) {
 
 window.resetChatRuntime = resetChatRuntime;
 
-function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = false, rightSidebarView = "overview", setRightSidebarView }) {
+function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = false, setRightSidebarCollapsed, rightSidebarView = "overview", setRightSidebarView }) {
   useDataVersion(); // re-render when DATA refreshes
   const { t, lang } = useI18n();
 
@@ -848,6 +848,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [attachments, setAttachments] = useState([]);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [editorData, setEditorData] = useState({ code: "", language: "", filePath: "" });
+  const [activeMarkdownContent, setActiveMarkdownContent] = useState("");
+  const [activeMarkdownName, setActiveMarkdownName] = useState("");
   const [diffData, setDiffData] = useState({ diff: "", mode: "text", left: "", right: "" });
   const autoDiffSignatureRef = useRef("");
   const gitDiffUnavailableRef = useRef(false);
@@ -2064,32 +2066,50 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     userAtBottomRef.current = isNearBottom(el, 60);
   }
 
+  function expandRightSidebar() {
+    if (rightSidebarCollapsed && setRightSidebarCollapsed) setRightSidebarCollapsed(false);
+  }
+
   function handleShowHtml(content) {
+    expandRightSidebar();
     setActiveHtmlContent(content);
     setHtmlViewTab("rendered");
     setRightSidebarView("html");
   }
 
   function handleShowPdf(url, name) {
+    expandRightSidebar();
     setActivePdfUrl(url);
     setActivePdfName(name || "");
     setRightSidebarView("pdf");
   }
 
   function handleShowPpt(url, name) {
+    expandRightSidebar();
     setActivePptUrl(url);
     setActivePptName(name || "");
     setRightSidebarView("ppt");
   }
 
   function handleShowMap() {
+    expandRightSidebar();
     setRightSidebarView("map");
   }
 
   function handleShowCode(url, name) {
+    expandRightSidebar();
     fetch(url).then(function(r) { return r.text(); }).then(function(code) {
       setEditorData({ code: code, language: "", filePath: name || "" });
       setRightSidebarView("code-editor");
+    }).catch(function() {});
+  }
+
+  function handleShowMarkdown(url, name) {
+    expandRightSidebar();
+    fetch(url).then(function(r) { return r.text(); }).then(function(md) {
+      setActiveMarkdownContent(md);
+      setActiveMarkdownName(name || "");
+      setRightSidebarView("markdown");
     }).catch(function() {});
   }
 
@@ -2170,6 +2190,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                 onShowPpt={handleShowPpt}
                 onShowMap={handleShowMap}
                 onShowCode={handleShowCode}
+                onShowMarkdown={handleShowMarkdown}
               />
             );
           })}
@@ -2208,13 +2229,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
                   if (_runtime.retiredRequestIds.indexOf(retryData.requestId) === -1) {
                     updateChatRuntime({ retiredRequestIds: _runtime.retiredRequestIds.concat([retryData.requestId]) });
                   }
-                  send({ text: retryData.text, attachments: retryData.attachments, guideRoundId: retryData.roundId, retry: true, retryRequestId: retryData.requestId });
+                  send({ text: retryData.text, attachments: retryData.attachments, guideRoundId: "", retry: true, retryRequestId: retryData.requestId });
                 } : null}
                 onShowHtml={handleShowHtml}
                 onShowPdf={handleShowPdf}
                 onShowPpt={handleShowPpt}
                 onShowMap={handleShowMap}
                 onShowCode={handleShowCode}
+                onShowMarkdown={handleShowMarkdown}
               />
             );
           })}
@@ -2679,12 +2701,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         onHtmlViewTabChange={setHtmlViewTab}
         editorData={editorData}
         diffData={diffData}
+        activeMarkdownContent={activeMarkdownContent}
+        activeMarkdownName={activeMarkdownName}
       />
     </div>
   );
 }
 
-function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt, onShowMap, onShowCode }) {
+function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt, onShowMap, onShowCode, onShowMarkdown }) {
   const { t } = useI18n();
 
   if (msg.kind === "compacted") {
@@ -2862,9 +2886,10 @@ function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt
             var isPpt = String(file.content_type || "") === "application/vnd.ms-powerpoint" || String(file.content_type || "") === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
             var isHtml = String(file.content_type || "") === "text/html" || String(file.content_type || "") === "application/xhtml+xml";
             var isMap = file.kind === "map" || String(file.content_type || "") === "application/geo+json" || String(file.content_type || "") === "application/vnd.geo+json";
-            var _codeExts = new Set(["py","js","ts","jsx","tsx","css","json","md","yaml","yml","toml","xml","sql","sh","bash","rs","go","java","c","cpp","h","rb","php","swift","kt","txt","csv","ini","cfg","env"]);
+            var _codeExts = new Set(["py","js","ts","jsx","tsx","css","json","yaml","yml","toml","xml","sql","sh","bash","rs","go","java","c","cpp","h","rb","php","swift","kt","txt","csv","ini","cfg","env"]);
             var _fileExt = String(file.name || "").split(".").pop().toLowerCase();
-            var isCode = file.kind === "code" || (_codeExts.has(_fileExt) && !isImage && !isPdf && !isPpt && !isHtml && !isMap);
+            var isMarkdown = file.kind === "markdown" || _fileExt === "md" || _fileExt === "markdown";
+            var isCode = !isMarkdown && (file.kind === "code" || (_codeExts.has(_fileExt) && !isImage && !isPdf && !isPpt && !isHtml && !isMap));
             var label = String(file.name || "file");
             var kind = String(file.kind || "file").toUpperCase();
             return (
@@ -2907,6 +2932,15 @@ function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt
                   <button className="html-show-btn" onClick={function() { onShowMap && onShowMap(); }}>
                     {t("chat.map.showBtn")}
                   </button>
+                ) : isMarkdown && file.url ? (
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button className="html-show-btn" onClick={function() { onShowMarkdown && onShowMarkdown(file.url, file.name); }}>
+                      {t("chat.md.showBtn")}
+                    </button>
+                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    </a>
+                  </div>
                 ) : isCode && file.url ? (
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                     <button className="html-show-btn" onClick={function() { onShowCode && onShowCode(file.url, file.name); }}>
@@ -3070,16 +3104,18 @@ function isCodeMutationTool(tool) {
   return isLikelyCodePath(extractToolFilePath(tool && tool.rawArgs));
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData, activeMarkdownContent, activeMarkdownName }) {
   const { t } = useI18n();
   const sideRef = useRef(null);
   const hasHtmlContent = Boolean(activeHtmlContent);
   const hasPdfContent = Boolean(activePdfUrl);
   const hasPptContent = Boolean(activePptUrl);
+  const hasMarkdownContent = Boolean(activeMarkdownContent);
   const extraViewOptions = [];
   if (hasHtmlContent) extraViewOptions.push({ id: "html", label: t("chat.html.sideTitle") });
   if (hasPdfContent) extraViewOptions.push({ id: "pdf", label: t("chat.pdf.sideTitle") });
   if (hasPptContent) extraViewOptions.push({ id: "ppt", label: t("chat.ppt.sideTitle") });
+  if (hasMarkdownContent) extraViewOptions.push({ id: "markdown", label: t("chat.md.sideTitle") });
   const allViewOptions = [
     { id: "overview", label: t("chat.side.overview") },
   ].concat(extraViewOptions).concat([
@@ -3089,9 +3125,9 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     { id: "code-editor", label: t("chat.side.codeEditor") },
     { id: "diff-viewer", label: t("chat.side.diffViewer") },
   ]);
-  const hasExtraContent = hasHtmlContent || hasPdfContent || hasPptContent;
+  const hasExtraContent = hasHtmlContent || hasPdfContent || hasPptContent || hasMarkdownContent;
   const isMinimalMode = !hasExtraContent && subagents.length === 0 && session.shells.length === 0;
-  const isProgrammaticView = view === "code-editor" || view === "diff-viewer";
+  const isProgrammaticView = view === "code-editor" || view === "diff-viewer" || view === "markdown";
   const minimalViewOptions = [{ id: "overview", label: t("chat.side.overview") }, { id: "map", label: t("chat.side.map") }];
   if (isProgrammaticView) minimalViewOptions.push(allViewOptions.find(function(o) { return o.id === view; }));
   const viewOptions = isMinimalMode ? minimalViewOptions : allViewOptions;
@@ -3114,7 +3150,10 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     if (view === "ppt" && !hasPptContent) {
       onViewChange && onViewChange("overview");
     }
-  }, [isMinimalMode, view, hasHtmlContent, hasPdfContent, hasPptContent]);
+    if (view === "markdown" && !hasMarkdownContent) {
+      onViewChange && onViewChange("overview");
+    }
+  }, [isMinimalMode, view, hasHtmlContent, hasPdfContent, hasPptContent, hasMarkdownContent]);
 
   function onHandleMouseDown(e) {
     e.preventDefault();
@@ -3167,6 +3206,16 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     if (view === "agents") {
       return <div className="side-section" style={{ flex: 1, overflowY: "auto", padding: 0, display: "flex", flexDirection: "column" }}>
         <AgentGroupChat roundId={roundId} subagents={subagents} session={session} />
+      </div>;
+    }
+    if (view === "markdown" && hasMarkdownContent) {
+      return <div className="side-section" style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        {activeMarkdownName && (
+          <div style={{ padding: "10px 14px 6px", fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", borderBottom: "1px solid var(--line)", flexShrink: 0 }}>
+            {activeMarkdownName}
+          </div>
+        )}
+        <div className="msg-body markdown" style={{ padding: "14px 16px", flex: 1 }} dangerouslySetInnerHTML={{ __html: renderMarkdown(activeMarkdownContent) }} />
       </div>;
     }
     if (view === "map") {

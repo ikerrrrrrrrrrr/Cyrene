@@ -24,8 +24,8 @@ def _patch_call_llm(monkeypatch, fake):
 
 
 def _patch_call_llm_stream(monkeypatch, fake):
-    from cyrene.agent import agent as _a
-    monkeypatch.setattr(_a, '_call_llm_stream', fake)
+    from cyrene.agent import guidance as _g
+    monkeypatch.setattr(_g, '_call_llm_stream', fake)
 
 
 def _patch_save_session(monkeypatch, fake):
@@ -447,6 +447,94 @@ async def test_call_llm_stream_falls_back_to_next_model_candidate(monkeypatch):
     ]
     assert emitted[0]["type"] == "reply_start"
     assert emitted[-1]["type"] == "reply_done"
+
+
+def test_normalize_dsml_tool_calls_converts_textual_fallback():
+    from cyrene import call_llm as cll
+
+    message = {
+        "role": "assistant",
+        "content": (
+            '<｜｜DSML｜｜tool_calls>\n'
+            '<｜｜DSML｜｜invoke name="WebSearch">\n'
+            '<｜｜DSML｜｜parameter name="query" string="true">AoA prediction</｜｜DSML｜｜parameter>\n'
+            '</｜｜DSML｜｜invoke>\n'
+            '<｜｜DSML｜｜invoke name="quit"/>\n'
+            '</｜｜DSML｜｜tool_calls>'
+        ),
+    }
+    tools = [
+        {"type": "function", "function": {"name": "WebSearch"}},
+        {"type": "function", "function": {"name": "quit"}},
+    ]
+
+    normalized = cll._normalize_dsml_tool_calls(message, tools)
+
+    assert normalized["content"] == ""
+    assert [call["function"]["name"] for call in normalized["tool_calls"]] == ["WebSearch", "quit"]
+    assert json.loads(normalized["tool_calls"][0]["function"]["arguments"]) == {"query": "AoA prediction"}
+    assert json.loads(normalized["tool_calls"][1]["function"]["arguments"]) == {}
+
+
+def test_normalize_dsml_tool_calls_rejects_unknown_tools():
+    from cyrene import call_llm as cll
+
+    message = {
+        "role": "assistant",
+        "content": (
+            '<｜｜DSML｜｜tool_calls>'
+            '<｜｜DSML｜｜invoke name="UnknownTool"/>'
+            '</｜｜DSML｜｜tool_calls>'
+        ),
+    }
+
+    assert cll._normalize_dsml_tool_calls(message, [{"type": "function", "function": {"name": "WebSearch"}}]) == message
+
+
+def test_retry_safe_guide_round_id_drops_completed_round_target():
+    from webui import routes
+
+    assert routes._retry_safe_guide_round_id("round_old", retry=True) == ""
+    assert routes._retry_safe_guide_round_id(" round_live ", retry=False) == "round_live"
+
+
+async def test_call_llm_secondary_concurrency_counter(monkeypatch):
+    from cyrene import call_llm as cll
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"role": "assistant", "content": "secondary ok"}}]}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, endpoint, json=None, headers=None):
+            return FakeResponse()
+
+    monkeypatch.setattr(cll.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    monkeypatch.setattr(cll, "_secondary_in_flight", 0)
+
+    message = await cll.call_llm(
+        [{"role": "user", "content": "hello"}],
+        candidates=[{
+            "id": "secondary",
+            "model": "secondary-model",
+            "api_key": "",
+            "endpoints": ["https://secondary.example/v1/chat/completions"],
+            "max_concurrency": 1,
+        }],
+        publish_events=False,
+        record_usage=False,
+    )
+
+    assert message["content"] == "secondary ok"
+    assert cll._secondary_in_flight == 0
 
 
 async def test_run_vision_chat_uses_vision_candidates_after_primary_failure(monkeypatch):
@@ -959,13 +1047,14 @@ async def test_schedule_task_once_normalizes_naive_local_time_to_utc(monkeypatch
 
     seen = {}
 
-    async def fake_create_task(db_path, chat_id, prompt, schedule_type, schedule_value, next_run):
+    async def fake_create_task(db_path, chat_id, prompt, schedule_type, schedule_value, next_run, permission_mode="workspace_only"):
         seen["db_path"] = db_path
         seen["chat_id"] = chat_id
         seen["prompt"] = prompt
         seen["schedule_type"] = schedule_type
         seen["schedule_value"] = schedule_value
         seen["next_run"] = next_run
+        seen["permission_mode"] = permission_mode
         return "task_local"
 
     class _FakeLocalNow(datetime):
@@ -990,9 +1079,10 @@ async def test_schedule_task_once_normalizes_naive_local_time_to_utc(monkeypatch
         None,
     )
 
-    assert result == "Task task_local scheduled. Next run: 2026-05-20T11:35:35+00:00"
+    assert result == "Task task_local scheduled. Next run: 2026-05-20T11:35:35+00:00 权限模式：workspace_only"
     assert seen["schedule_value"] == "2026-05-20T11:35:35+00:00"
     assert seen["next_run"] == "2026-05-20T11:35:35+00:00"
+    assert seen["permission_mode"] == "workspace_only"
 
 
 async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):
@@ -1267,6 +1357,7 @@ async def test_stream_reply_payload_emits_ndjson_events():
 
 async def test_run_main_agent_chat_only_streams_final_reply(monkeypatch):
     from cyrene import agent
+    from cyrene import behavior_learning
     from cyrene.agent import state as _agent_state
     from cyrene.agent import session as _agent_session
     from cyrene.agent import agent as _agent_core
@@ -1295,6 +1386,7 @@ async def test_run_main_agent_chat_only_streams_final_reply(monkeypatch):
     _patch_save_session(monkeypatch, fake_save_session_messages)
     _patch_append_session(monkeypatch, AsyncMock())
     monkeypatch.setattr(_agent_state, "_publish_runtime_event", AsyncMock())
+    monkeypatch.setattr(behavior_learning, "try_route_and_execute_skill", AsyncMock(return_value=None))
 
     async def collect(event):
         streamed.append(event)
@@ -1438,7 +1530,7 @@ async def test_queue_round_guidance_drains_main_inbox_without_subagents(monkeypa
 
     seen = {}
     monkeypatch.setattr(
-        agent,
+        _agent_guidance,
         "get_live_rounds",
         lambda: [{"id": "round_1", "status": "running", "title": "round one", "pendingGuidance": 0, "runningSubagents": 0, "subagentCount": 0}],
     )
@@ -1685,7 +1777,7 @@ async def test_main_inbox_guidance_failure_inserts_error_reply(monkeypatch, tmp_
     )
 
     monkeypatch.setattr(
-        agent,
+        _agent_guidance,
         "get_live_rounds",
         lambda: [{"id": "round_1", "status": "running", "title": "round one", "pendingGuidance": 0, "runningSubagents": 0, "subagentCount": 0}],
     )
@@ -1763,7 +1855,7 @@ async def test_main_inbox_guidance_continuation_keeps_ack_before_final_reply(mon
     )
 
     monkeypatch.setattr(
-        agent,
+        _agent_guidance,
         "get_live_rounds",
         lambda: [{"id": "round_1", "status": "running", "title": "round one", "pendingGuidance": 0, "runningSubagents": 0, "subagentCount": 0}],
     )

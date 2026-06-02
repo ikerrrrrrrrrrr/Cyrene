@@ -177,11 +177,13 @@ function sessionsFingerprint(sessions) {
     }).join(",");
     return [
       s.id || "",
+      s.title || "",
       s.status || "",
       nodes,
       edges,
       s.preview || "",
       s.currentRoundId || "",
+      s.currentRoundTitle || "",
       messages.length,
       lastMessageId,
       lastMessageBody,

@@ -981,10 +981,6 @@
     };
 
     return React.createElement("div", { className: "page knowledge-page" },
-      React.createElement("div", { className: "kb-tabs-header" },
-        React.createElement("h2", { className: "kb-page-title" }, t("knowledge.title"))
-      ),
-
       React.createElement("div", { className: "kb-tabs" },
         React.createElement("button", {
           className: "kb-tab" + (activeTabVal === "files" ? " active" : ""),

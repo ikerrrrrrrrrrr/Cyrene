@@ -451,6 +451,11 @@ def _safe_upload_name(filename: str) -> str:
     return sanitized or "upload.bin"
 
 
+def _retry_safe_guide_round_id(guide_round_id: str, retry: bool) -> str:
+    """A retry regenerates a reply; it must not target the old completed round."""
+    return "" if retry else str(guide_round_id or "").strip()
+
+
 def _image_dimensions(path: Path) -> tuple[int | None, int | None]:
     try:
         with Image.open(path) as image:
@@ -652,6 +657,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         retry_request_id = str(body.get("retry_request_id") or "").strip()
         if retry and retry_request_id:
             await _remove_messages_by_request_id(retry_request_id)
+        guide_round_id = _retry_safe_guide_round_id(guide_round_id, retry)
         normalized_attachments = [
             {
                 "id": str(item.get("id") or "").strip(),

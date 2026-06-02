@@ -503,6 +503,7 @@ function App() {
                                   selectedSessionId={activeSession ? activeSession.id : null}
                                   onSelectSession={selectSession}
                                   rightSidebarCollapsed={rightSidebarCollapsed}
+                                  setRightSidebarCollapsed={setRightSidebarCollapsed}
                                   rightSidebarView={rightSidebarView}
                                   setRightSidebarView={setRightSidebarView} />}
         {page === "agents"   && <AgentsPage orientation={t.orientation} selectedSessionId={activeSession ? activeSession.id : null} rightSidebarCollapsed={false} />}
