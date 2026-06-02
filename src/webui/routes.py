@@ -2671,6 +2671,30 @@ def _ui_pending_question(raw_pending: Any) -> dict[str, Any] | None:
     }
 
 
+def _has_recent_main_agent_activity(recent: list[dict], now_ts: datetime) -> bool:
+    """Return whether recent runtime events indicate an unfinished main-agent run."""
+    cutoff_ts = now_ts - timedelta(seconds=30)
+    active = False
+    for event in recent:
+        try:
+            event_ts = datetime.fromisoformat(str(event.get("timestamp") or ""))
+            if event_ts <= cutoff_ts:
+                continue
+        except (ValueError, TypeError):
+            continue
+
+        event_type = str(event.get("type") or "")
+        if event_type == "session_update":
+            active = str(event.get("status") or "") == "running"
+            continue
+        if event_type == "phase_transition":
+            active = True
+            continue
+        if event_type in ("llm_call", "tool_call") and str(event.get("caller") or "") == "main_agent":
+            active = True
+    return active
+
+
 def _build_current_session() -> dict | None:
     """Build a session object from state.json + live subagents.
 
@@ -2746,20 +2770,7 @@ def _build_current_session() -> dict | None:
         # during Phase 1/2 of the main agent loop)
         recent = debug.get_recent_events(200)
         now_ts = datetime.now(timezone.utc)
-        cutoff_ts = now_ts - timedelta(seconds=30)
-        active_events = 0
-        for e in recent:
-            if e.get("type") not in ("phase_transition", "llm_call", "tool_call"):
-                continue
-            ts = e.get("timestamp")
-            if not ts:
-                continue
-            try:
-                if datetime.fromisoformat(ts) > cutoff_ts:
-                    active_events += 1
-            except (ValueError, TypeError):
-                pass
-        if active_events:
+        if _has_recent_main_agent_activity(recent, now_ts):
             live_status = "running"
         else:
             live_status = "done"

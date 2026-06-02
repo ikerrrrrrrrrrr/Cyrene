@@ -2507,6 +2507,51 @@ def test_build_current_session_uses_live_shell_snapshots(monkeypatch, tmp_path):
     assert len(session["shells"]) == 1
 
 
+def test_build_current_session_done_event_clears_recent_activity(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from cyrene import debug
+    from webui import routes
+
+    monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
+    routes.STATE_FILE.write_text(
+        '{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"done"}]}',
+        encoding="utf-8",
+    )
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(debug, "get_recent_events", lambda limit=200: [
+        {"type": "tool_call", "caller": "main_agent", "timestamp": (now - timedelta(seconds=2)).isoformat()},
+        {"type": "session_update", "status": "done", "timestamp": now.isoformat()},
+        {"type": "llm_call", "caller": "behavior_learning", "timestamp": now.isoformat()},
+    ])
+
+    session = routes._build_current_session()
+
+    assert session["status"] == "done"
+
+
+def test_build_current_session_detects_activity_after_done_event(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from cyrene import debug
+    from webui import routes
+
+    monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
+    routes.STATE_FILE.write_text(
+        '{"messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"done"}]}',
+        encoding="utf-8",
+    )
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(debug, "get_recent_events", lambda limit=200: [
+        {"type": "session_update", "status": "done", "timestamp": (now - timedelta(seconds=2)).isoformat()},
+        {"type": "llm_call", "caller": "main_agent", "timestamp": now.isoformat()},
+    ])
+
+    session = routes._build_current_session()
+
+    assert session["status"] == "running"
+
+
 def test_build_sessions_includes_today_archive_when_live_session_exists(tmp_path, monkeypatch):
     from webui import routes
 
