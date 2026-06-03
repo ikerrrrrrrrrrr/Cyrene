@@ -309,6 +309,37 @@ async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_promp
     assert "stable trait" in seen["system_prompt"]
 
 
+async def test_run_chat_agent_schedules_session_label_refresh_without_blocking_reply(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import behavior_learning
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent import guidance as _agent_guidance
+    from cyrene.agent import round as _agent_round
+
+    scheduled: list[tuple[str, str]] = []
+
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    _patch_runtime_context(monkeypatch, get_context=lambda max_chars=5000: "")
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", **kwargs):
+        return "ok"
+
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
+    monkeypatch.setattr(_agent_coordinator, "_schedule_session_label_refresh", lambda message, round_id: scheduled.append((message, round_id)))
+    monkeypatch.setattr(behavior_learning, "begin_turn", AsyncMock(return_value=None))
+
+    result = await asyncio.wait_for(agent._run_chat_agent("hello", None, 0, "db.sqlite3"), timeout=0.1)
+
+    assert result == "ok"
+    assert len(scheduled) == 1
+    assert scheduled[0][0] == "hello"
+    assert scheduled[0][1].startswith("round_")
+
+
 async def test_call_llm_falls_back_to_next_model_candidate(monkeypatch):
     from cyrene import call_llm as cll
 
@@ -2301,7 +2332,7 @@ async def test_run_subagent_persists_quit_tool_messages_before_resume(monkeypatc
         "",
     ])
 
-    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
         snapshot = json.loads(json.dumps(messages, ensure_ascii=False))
         llm_inputs.append(snapshot)
         assert max_tokens is None
@@ -2523,11 +2554,32 @@ def test_build_current_session_done_event_clears_recent_activity(monkeypatch, tm
         {"type": "tool_call", "caller": "main_agent", "timestamp": (now - timedelta(seconds=2)).isoformat()},
         {"type": "session_update", "status": "done", "timestamp": now.isoformat()},
         {"type": "llm_call", "caller": "behavior_learning", "timestamp": now.isoformat()},
+        {"type": "llm_call", "caller": "compactor", "timestamp": now.isoformat()},
     ])
 
     session = routes._build_current_session()
 
     assert session["status"] == "done"
+
+
+async def test_compress_old_messages_labels_llm_as_compactor(monkeypatch):
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+
+    callers = []
+
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+        callers.append(_agent_state._caller_type.get())
+        return {"content": ""}
+
+    monkeypatch.setattr(_agent_session, "_call_llm", fake_call_llm)
+
+    await _agent_session._compress_old_messages([
+        {"role": "user", "content": "remember this"},
+        {"role": "assistant", "content": "noted"},
+    ])
+
+    assert callers == ["compactor"]
 
 
 def test_build_current_session_detects_activity_after_done_event(monkeypatch, tmp_path):
@@ -2559,7 +2611,7 @@ def test_build_sessions_includes_today_archive_when_live_session_exists(tmp_path
     monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
     routes.CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-    today = routes.datetime.now(routes.timezone.utc).strftime("%Y-%m-%d")
+    today = routes.datetime.now().astimezone().strftime("%Y-%m-%d")
     (routes.CONVERSATIONS_DIR / f"{today}.md").write_text(
         "# Conversations\n\n## 08:00:00 UTC\n\n**User**: hi\n\n**Ape**: archived\n\n---\n",
         encoding="utf-8",
@@ -2583,7 +2635,7 @@ def test_build_sessions_skips_archive_copy_of_current_live_session(tmp_path, mon
     monkeypatch.setattr(routes, "STATE_FILE", tmp_path / "state.json")
     routes.CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
-    today = routes.datetime.now(routes.timezone.utc).strftime("%Y-%m-%d")
+    today = routes.datetime.now().astimezone().strftime("%Y-%m-%d")
     (routes.CONVERSATIONS_DIR / f"{today}.md").write_text(
         "# Conversations\n\n"
         "## 08:00:00 UTC\n\n"
@@ -3547,7 +3599,7 @@ async def test_refresh_session_labels_persists_titles(monkeypatch, tmp_path):
         {"role": "assistant", "content": "ok", "round_id": "round_1"},
     ])
 
-    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+    async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
         return {"content": '{"round_title":"加密货币辩论","session_title":"加密货币多代理讨论"}'}
 
     _patch_call_llm(monkeypatch, fake_call_llm)

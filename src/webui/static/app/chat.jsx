@@ -580,6 +580,21 @@ function resetChatRuntime(options) {
 
 window.resetChatRuntime = resetChatRuntime;
 
+var _SIDEBAR_CODE_EXTS = new Set(["py","js","ts","jsx","tsx","css","json","yaml","yml","toml","xml","sql","sh","bash","rs","go","java","c","cpp","h","rb","php","swift","kt","txt","csv","ini","cfg","env"]);
+
+function classifyAttachmentTab(file) {
+  var ct = String(file.content_type || "");
+  var ext = String(file.name || "").split(".").pop().toLowerCase();
+  if (ct.startsWith("image/")) return null;
+  if (ct === "application/pdf") return "pdf";
+  if (ct === "application/vnd.ms-powerpoint" || ct === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return "ppt";
+  if (ct === "text/html" || ct === "application/xhtml+xml") return "html";
+  if (file.kind === "map" || ct === "application/geo+json" || ct === "application/vnd.geo+json") return "map";
+  if (file.kind === "markdown" || ext === "md" || ext === "markdown") return "markdown";
+  if (file.kind === "code" || _SIDEBAR_CODE_EXTS.has(ext)) return "code-editor";
+  return null;
+}
+
 function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = false, setRightSidebarCollapsed, rightSidebarView = "overview", setRightSidebarView }) {
   useDataVersion(); // re-render when DATA refreshes
   const { t, lang } = useI18n();
@@ -703,6 +718,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         language: detail.language || "",
         filePath: detail.filePath || "",
       });
+      addSidebarTab("code-editor");
       setRightSidebarView("code-editor");
     }
     window.addEventListener("cyrene:open-editor", onOpenEditor);
@@ -714,6 +730,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         left: detail.left || "",
         right: detail.right || "",
       });
+      addSidebarTab("diff-viewer");
       setRightSidebarView("diff-viewer");
     }
     window.addEventListener("cyrene:open-diff", onOpenDiff);
@@ -761,10 +778,95 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           left: "",
           right: "",
         });
+        addSidebarTab("diff-viewer");
         setRightSidebarView("diff-viewer");
       })
       .catch(function () {});
   }, [isLiveSession, session.id, session.chat.messages, setRightSidebarView]);
+
+  // ── Round change: clear content tabs ───────────────────────────────────
+  useEffect(function () {
+    var roundId = session.currentRoundId || "";
+    if (!roundId) return;
+    if (prevRoundIdRef.current && roundId !== prevRoundIdRef.current) {
+      setSidebarTabs(new Set());
+      setActiveHtmlContent(null);
+      setActivePdfUrl(null);
+      setActivePdfName("");
+      setActivePptUrl(null);
+      setActivePptName("");
+      setActiveMarkdownContent("");
+      setActiveMarkdownName("");
+      setHtmlViewTab("rendered");
+      autoLoadedAttachmentsRef.current = new Set();
+      autoDiffSignatureRef.current = "";
+      var contentViews = ["html", "pdf", "ppt", "markdown", "map", "code-editor", "diff-viewer"];
+      if (contentViews.indexOf(rightSidebarView) !== -1) {
+        setRightSidebarView("overview");
+      }
+    }
+    prevRoundIdRef.current = roundId;
+  }, [session.currentRoundId]);
+
+  // ── Auto-detect agent attachments → register sidebar tabs ──────────────
+  useEffect(function () {
+    var messages = Array.isArray(session.chat && session.chat.messages) ? session.chat.messages : [];
+    var currentRound = session.currentRoundId || "";
+    var newTabs = new Set();
+    var latestFiles = {};
+
+    for (var i = messages.length - 1; i >= 0; i--) {
+      var msg = messages[i];
+      if (msg.role !== "agent") continue;
+      if (currentRound && msg.roundId && msg.roundId !== currentRound) continue;
+      var files = Array.isArray(msg.files) ? msg.files : [];
+      for (var j = 0; j < files.length; j++) {
+        var file = files[j];
+        if (!file.url) continue;
+        var tabId = classifyAttachmentTab(file);
+        if (!tabId) continue;
+        newTabs.add(tabId);
+        if (!latestFiles[tabId]) latestFiles[tabId] = file;
+      }
+    }
+
+    if (newTabs.size === 0) return;
+
+    setSidebarTabs(function (prev) {
+      var merged = new Set(prev);
+      var changed = false;
+      newTabs.forEach(function (t) { if (!merged.has(t)) { merged.add(t); changed = true; } });
+      return changed ? merged : prev;
+    });
+
+    Object.keys(latestFiles).forEach(function (tid) {
+      var f = latestFiles[tid];
+      var loadKey = tid + ":" + f.url;
+      if (autoLoadedAttachmentsRef.current.has(loadKey)) return;
+      autoLoadedAttachmentsRef.current.add(loadKey);
+
+      if (tid === "pdf") {
+        setActivePdfUrl(f.url);
+        setActivePdfName(f.name || "");
+      } else if (tid === "ppt") {
+        setActivePptUrl(f.url);
+        setActivePptName(f.name || "");
+      } else if (tid === "html") {
+        fetch(f.url).then(function (r) { return r.text(); }).then(function (html) {
+          setActiveHtmlContent(html);
+        }).catch(function () {});
+      } else if (tid === "markdown") {
+        fetch(f.url).then(function (r) { return r.text(); }).then(function (md) {
+          setActiveMarkdownContent(md);
+          setActiveMarkdownName(f.name || "");
+        }).catch(function () {});
+      } else if (tid === "code-editor") {
+        fetch(f.url).then(function (r) { return r.text(); }).then(function (code) {
+          setEditorData({ code: code, language: "", filePath: f.name || "" });
+        }).catch(function () {});
+      }
+    });
+  }, [session.chat.messages, session.currentRoundId]);
 
   function contextKey(c) { return c.key || c.label; }
 
@@ -874,6 +976,20 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   // mounting phase when layout is still settling (padding, archive loading).
   const mountingRef = useRef(true);
   const restoredRef = useRef(false);
+
+  // ── Sidebar tab lifecycle ──────────────────────────────────────────────
+  const [sidebarTabs, setSidebarTabs] = useState(new Set());
+  const prevRoundIdRef = useRef("");
+  const autoLoadedAttachmentsRef = useRef(new Set());
+
+  function addSidebarTab(tabId) {
+    setSidebarTabs(function (prev) {
+      if (prev.has(tabId)) return prev;
+      var next = new Set(prev);
+      next.add(tabId);
+      return next;
+    });
+  }
 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
@@ -1282,6 +1398,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (!hasAssistantReply) return;
     completeWatchedRequest(requestId);
   }, [isLiveSession, session.id, session.chat.messages, runtimeState.watchRequestId]);
+
+  useEffect(function () {
+    if (!isLiveSession || session.status === "running") return;
+    const runtime = getChatRuntime();
+    const requestId = runtime.watchRequestId;
+    if (!runtime.sending || !requestId || runtime.requests[requestId]) return;
+    completeWatchedRequest(requestId);
+  }, [isLiveSession, session.id, session.status, runtimeState.sending, runtimeState.watchRequestId]);
 
   async function send(options) {
     const preserveProgress = Boolean(options && options.preserveProgress);
@@ -2072,6 +2196,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function handleShowHtml(content) {
     expandRightSidebar();
+    addSidebarTab("html");
     setActiveHtmlContent(content);
     setHtmlViewTab("rendered");
     setRightSidebarView("html");
@@ -2079,6 +2204,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function handleShowPdf(url, name) {
     expandRightSidebar();
+    addSidebarTab("pdf");
     setActivePdfUrl(url);
     setActivePdfName(name || "");
     setRightSidebarView("pdf");
@@ -2086,6 +2212,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function handleShowPpt(url, name) {
     expandRightSidebar();
+    addSidebarTab("ppt");
     setActivePptUrl(url);
     setActivePptName(name || "");
     setRightSidebarView("ppt");
@@ -2093,11 +2220,13 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function handleShowMap() {
     expandRightSidebar();
+    addSidebarTab("map");
     setRightSidebarView("map");
   }
 
   function handleShowCode(url, name) {
     expandRightSidebar();
+    addSidebarTab("code-editor");
     fetch(url).then(function(r) { return r.text(); }).then(function(code) {
       setEditorData({ code: code, language: "", filePath: name || "" });
       setRightSidebarView("code-editor");
@@ -2106,6 +2235,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   function handleShowMarkdown(url, name) {
     expandRightSidebar();
+    addSidebarTab("markdown");
     fetch(url).then(function(r) { return r.text(); }).then(function(md) {
       setActiveMarkdownContent(md);
       setActiveMarkdownName(name || "");
@@ -2703,6 +2833,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         diffData={diffData}
         activeMarkdownContent={activeMarkdownContent}
         activeMarkdownName={activeMarkdownName}
+        sidebarTabs={sidebarTabs}
       />
     </div>
   );
@@ -3104,56 +3235,33 @@ function isCodeMutationTool(tool) {
   return isLikelyCodePath(extractToolFilePath(tool && tool.rawArgs));
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData, activeMarkdownContent, activeMarkdownName }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData, activeMarkdownContent, activeMarkdownName, sidebarTabs }) {
   const { t } = useI18n();
   const sideRef = useRef(null);
+  const tabs = sidebarTabs || new Set();
   const hasHtmlContent = Boolean(activeHtmlContent);
   const hasPdfContent = Boolean(activePdfUrl);
   const hasPptContent = Boolean(activePptUrl);
   const hasMarkdownContent = Boolean(activeMarkdownContent);
-  const extraViewOptions = [];
-  if (hasHtmlContent) extraViewOptions.push({ id: "html", label: t("chat.html.sideTitle") });
-  if (hasPdfContent) extraViewOptions.push({ id: "pdf", label: t("chat.pdf.sideTitle") });
-  if (hasPptContent) extraViewOptions.push({ id: "ppt", label: t("chat.ppt.sideTitle") });
-  if (hasMarkdownContent) extraViewOptions.push({ id: "markdown", label: t("chat.md.sideTitle") });
-  const allViewOptions = [
-    { id: "overview", label: t("chat.side.overview") },
-  ].concat(extraViewOptions).concat([
-    { id: "agents", label: t("chat.side.agents") },
-    { id: "shells", label: t("chat.side.shells") },
-    { id: "map", label: t("chat.side.map") },
-    { id: "code-editor", label: t("chat.side.codeEditor") },
-    { id: "diff-viewer", label: t("chat.side.diffViewer") },
-  ]);
-  const hasExtraContent = hasHtmlContent || hasPdfContent || hasPptContent || hasMarkdownContent;
-  const isMinimalMode = !hasExtraContent && subagents.length === 0 && session.shells.length === 0;
-  const isProgrammaticView = view === "code-editor" || view === "diff-viewer" || view === "markdown";
-  const minimalViewOptions = [{ id: "overview", label: t("chat.side.overview") }, { id: "map", label: t("chat.side.map") }];
-  if (isProgrammaticView) minimalViewOptions.push(allViewOptions.find(function(o) { return o.id === view; }));
-  const viewOptions = isMinimalMode ? minimalViewOptions : allViewOptions;
-  const showShells = view === "shells";
-  const showAgents = view === "agents";
-  const showSummary = view === "overview";
-  const showHtmlView = view === "html" && hasHtmlContent;
-  const showPdfView = view === "pdf" && hasPdfContent;
 
-  useEffect(function() {
-    if (isMinimalMode && view !== "overview" && view !== "map" && !isProgrammaticView) {
+  const viewOptions = [{ id: "overview", label: t("chat.side.overview") }];
+  if (tabs.has("html"))        viewOptions.push({ id: "html",        label: t("chat.html.sideTitle") });
+  if (tabs.has("pdf"))         viewOptions.push({ id: "pdf",         label: t("chat.pdf.sideTitle") });
+  if (tabs.has("ppt"))         viewOptions.push({ id: "ppt",         label: t("chat.ppt.sideTitle") });
+  if (tabs.has("markdown"))    viewOptions.push({ id: "markdown",    label: t("chat.md.sideTitle") });
+  if (subagents.length > 0)    viewOptions.push({ id: "agents",      label: t("chat.side.agents") });
+  if (session.shells.length > 0) viewOptions.push({ id: "shells",    label: t("chat.side.shells") });
+  if (tabs.has("map"))         viewOptions.push({ id: "map",         label: t("chat.side.map") });
+  if (tabs.has("code-editor")) viewOptions.push({ id: "code-editor", label: t("chat.side.codeEditor") });
+  if (tabs.has("diff-viewer")) viewOptions.push({ id: "diff-viewer", label: t("chat.side.diffViewer") });
+
+  const viewIds = viewOptions.map(function (o) { return o.id; });
+
+  useEffect(function () {
+    if (viewIds.indexOf(view) === -1) {
       onViewChange && onViewChange("overview");
     }
-    if (view === "html" && !hasHtmlContent) {
-      onViewChange && onViewChange("overview");
-    }
-    if (view === "pdf" && !hasPdfContent) {
-      onViewChange && onViewChange("overview");
-    }
-    if (view === "ppt" && !hasPptContent) {
-      onViewChange && onViewChange("overview");
-    }
-    if (view === "markdown" && !hasMarkdownContent) {
-      onViewChange && onViewChange("overview");
-    }
-  }, [isMinimalMode, view, hasHtmlContent, hasPdfContent, hasPptContent, hasMarkdownContent]);
+  }, [view, viewIds.join(",")]);
 
   function onHandleMouseDown(e) {
     e.preventDefault();
@@ -3284,7 +3392,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
     <div className="chat-side" ref={sideRef}>
       <div className="chat-side-resize-handle" onMouseDown={onHandleMouseDown} />
       <div className="chat-side-inner">
-        <div className={"chat-side-switcher" + (isMinimalMode ? " single" : "")}>
+        <div className={"chat-side-switcher" + (viewOptions.length <= 1 ? " single" : "")}>
           {viewOptions.map(function (item) {
             return (
               <button

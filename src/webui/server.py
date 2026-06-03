@@ -70,6 +70,14 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
         except Exception:
             logger.warning("Knowledge catalog sync failed — check your knowledge base")
 
+    @app.on_event("shutdown")
+    async def _close_browser_session() -> None:
+        try:
+            from cyrene.browser import close_session
+            await close_session()
+        except Exception:
+            logger.warning("Browser session shutdown failed")
+
     return app
 
 

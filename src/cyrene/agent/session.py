@@ -1080,6 +1080,7 @@ Output format (one per line, no explanations):
 [preference] user likes casual short replies
 """
 
+    token = _caller_type.set("compactor")
     try:
         response = await _call_llm([
             {"role": "system", "content": "You extract structured memories from conversations. Be concise."},
@@ -1089,6 +1090,8 @@ Output format (one per line, no explanations):
     except Exception:
         logger.warning("Memory compression failed", exc_info=True)
         return
+    finally:
+        _caller_type.reset(token)
 
     for line in compressed.split("\n"):
         line = line.strip()
@@ -1115,15 +1118,20 @@ async def clear_session_id() -> None:
     from cyrene.subagent import clear as _clear_subagents
     from cyrene.inbox import clear_all_inboxes
 
-    for task in list(_state._pending_interrupt_clearers):
-        task.cancel()
-    _state._pending_interrupt_clearers.clear()
-    for task in list(_state._pending_label_refreshes):
-        task.cancel()
-    _state._pending_label_refreshes.clear()
+    def _cancel_pending_tasks(tasks: set[asyncio.Task[Any]]) -> None:
+        for task in list(tasks):
+            try:
+                if not task.done() and not task.get_loop().is_closed():
+                    task.cancel()
+            except RuntimeError:
+                pass
+        tasks.clear()
+
+    _cancel_pending_tasks(_state._pending_interrupt_clearers)
+    _cancel_pending_tasks(_state._pending_label_refreshes)
     _state._interrupt_event.clear()
     if _state._main_inbox_worker is not None:
-        _state._main_inbox_worker.cancel()
+        _cancel_pending_tasks({_state._main_inbox_worker})
         _state._main_inbox_worker = None
     _state._active_main_round_id = ""
     _state._active_main_round_prompt = ""

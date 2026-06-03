@@ -43,7 +43,7 @@ from cyrene.agent.prompts import (
 from cyrene.agent.session import (
     _expand_report_reference_history,
     _load_session_messages,
-    _refresh_session_labels,
+    _schedule_session_label_refresh,
     _save_session_messages,
     clear_session_id,
     get_session_labels,
@@ -545,10 +545,14 @@ async def _run_chat_agent(
         )
 
         if refresh_labels:
-            await _refresh_session_labels(user_message, round_id)
+            _schedule_session_label_refresh(user_message, round_id)
         if main_text == _AWAITING_USER_SENTINEL:
             return main_text
         final_output = main_text or "Done."
+        await _publish_runtime_event({
+            "type": "chat_message",
+            "client_request_id": client_request_id,
+        })
         if behavior_turn_context is not None:
             try:
                 from cyrene import behavior_learning as _behavior_learning
@@ -562,10 +566,6 @@ async def _run_chat_agent(
                 await _kick_behavior_learning_processing()
             except Exception:
                 logger.warning("Failed to finalize behavior-learning turn", exc_info=True)
-        await _publish_runtime_event({
-            "type": "chat_message",
-            "client_request_id": client_request_id,
-        })
         return final_output
     finally:
         if behavior_turn_context is not None:

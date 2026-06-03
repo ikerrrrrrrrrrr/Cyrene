@@ -1274,6 +1274,54 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             stream_task.cancel()
             await session.stop()
 
+    @router.websocket("/ws/browser")
+    async def ws_browser(websocket: WebSocket):
+        """Live screencast of the agent's browser session.
+
+        Streams CDP JPEG frames to the chat-side browser panel. The control
+        channel (start/stop/set_quality) is reserved for later; login takeover
+        (M3) happens in the native window, not over this socket.
+        """
+        await websocket.accept()
+        from cyrene import browser as _browser
+
+        if _browser._ensure_playwright() is None:
+            await websocket.send_json({"type": "error", "error": "Playwright is not installed."})
+            await websocket.close()
+            return
+
+        try:
+            session = await _browser.get_session()
+        except Exception as exc:
+            await websocket.send_json({"type": "error", "error": f"Browser launch failed: {exc}"})
+            await websocket.close()
+            return
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+        await session.start_screencast(queue)
+
+        async def _pump() -> None:
+            try:
+                while True:
+                    frame = await queue.get()
+                    await websocket.send_json({"type": "frame", **frame})
+            except Exception:
+                return
+
+        pump_task = asyncio.create_task(_pump())
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    json.loads(raw)  # reserved control messages — parsed, no-op for now
+                except json.JSONDecodeError:
+                    continue
+        except WebSocketDisconnect:
+            pass
+        finally:
+            pump_task.cancel()
+            await session.stop_screencast(queue)
+
     # ---- Sessions API ----
 
     @router.get("/api/sessions")
