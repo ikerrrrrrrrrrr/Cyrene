@@ -1569,6 +1569,31 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             clearChatRuntimeSseSubscription();
           }
         }
+        if (event.type === "error") {
+          // The agent run failed (model timeout/5xx/network). Surface it as a
+          // visible system message instead of silently ending on a "done" — #7.
+          streamCompleted = true;
+          if (isWatching) {
+            delete runtime.requests[requestId];
+            updateChatRuntime(function (state) {
+              return {
+                sending: false,
+                liveProgress: [],
+                startedAt: 0,
+                activeRequest: null,
+                watchRequestId: "",
+                pendingMessages: state.pendingMessages.concat([{
+                  id: "err_" + Date.now(),
+                  role: "system",
+                  time: new Date().toLocaleTimeString(),
+                  body: t("chat.modelFailed", { error: event.message || event.error || "unknown error" }),
+                }]),
+              };
+            });
+            clearChatRuntimeSseSubscription();
+          }
+          return;
+        }
       });
       if (window.refreshSessions) {
         await window.refreshSessions();
@@ -1729,6 +1754,31 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             });
             clearChatRuntimeSseSubscription();
           }
+        }
+        if (event.type === "error") {
+          // The agent run failed (model timeout/5xx/network). Surface it as a
+          // visible system message instead of silently ending on a "done" — #7.
+          streamCompleted = true;
+          if (isWatching) {
+            delete runtime.requests[requestId];
+            updateChatRuntime(function (state) {
+              return {
+                sending: false,
+                liveProgress: [],
+                startedAt: 0,
+                activeRequest: null,
+                watchRequestId: "",
+                pendingMessages: state.pendingMessages.concat([{
+                  id: "err_" + Date.now(),
+                  role: "system",
+                  time: new Date().toLocaleTimeString(),
+                  body: t("chat.modelFailed", { error: event.message || event.error || "unknown error" }),
+                }]),
+              };
+            });
+            clearChatRuntimeSseSubscription();
+          }
+          return;
         }
       });
       if (window.refreshSessions) {

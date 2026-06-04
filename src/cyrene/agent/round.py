@@ -189,6 +189,9 @@ def query_live_rounds(round_id: str = "") -> str:
             f"[{r['status'].upper()}] {r['title']} "
             f"(id={r['id']}, elapsed={r['elapsed']})"
         )
+        prompt = str(r.get("prompt") or "").strip()
+        if prompt and prompt != str(r.get("title") or "").strip():
+            log_line += f" — {prompt[:160]}"
         if r.get("pendingGuidance"):
             log_line += f" pending={r['pendingGuidance']}"
         lines.append(log_line)

@@ -3982,3 +3982,80 @@ def test_build_archive_sessions_splits_multiple_same_day_sessions_by_archive_ses
     assert sessions[0]["id"] == "archive_2026-05-15_session_beta"
     assert sessions[0]["chat"]["messages"][0]["body"] == "第二场开始"
     assert [node["title"] for node in sessions[1]["flow"]["nodes"] if node["kind"] == "input"] == ["设计角色", "继续讨论"]
+
+
+async def _drain_ndjson(response):
+    """Iterate a StreamingResponse body and parse each NDJSON line."""
+    parsed = []
+    async for chunk in response.body_iterator:
+        text = chunk.decode() if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                parsed.append(json.loads(line))
+    return parsed
+
+
+async def test_stream_agent_reply_surfaces_model_failure_instead_of_done(monkeypatch):
+    """Issue #7: a failing agent run (model timeout/5xx/network) must surface an
+    `error` event and publish session status `error` — never get swallowed into a
+    silent `done` (the symptom users hit as "模型失败只回 done")."""
+    from webui import routes
+    from cyrene import debug
+
+    events = []
+
+    async def fake_publish_event(event):
+        events.append(event)
+
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+
+    async def failing_run():
+        request = httpx.Request("POST", "https://example.test/v1/chat/completions")
+        raise httpx.ConnectError("upstream unreachable", request=request)
+
+    response = routes._stream_agent_reply(lambda: failing_run(), "hello")
+    lines = await _drain_ndjson(response)
+
+    error_lines = [ln for ln in lines if ln.get("type") == "error"]
+    assert error_lines, f"expected an error event, got {lines}"
+    assert error_lines[0]["error"] == "model_call_failed"
+    assert error_lines[0]["message"]
+    assert not any(ln.get("type") == "reply_done" for ln in lines)
+
+    statuses = [e.get("status") for e in events if e.get("type") == "session_update"]
+    assert "error" in statuses, statuses
+    assert "done" not in statuses, statuses
+
+
+async def test_stream_agent_reply_still_publishes_done_on_success(monkeypatch):
+    """Regression guard for the issue-#7 finally gating: a successful run must
+    still stream the reply and publish session status `done` (and no `error`)."""
+    from webui import routes
+    from cyrene import debug
+
+    events = []
+
+    async def fake_publish_event(event):
+        events.append(event)
+
+    async def fake_archive_exchange(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+    monkeypatch.setattr(routes, "archive_exchange", fake_archive_exchange)
+    monkeypatch.setattr(routes, "get_session_labels", lambda *a, **k: {})
+
+    async def ok_run():
+        return "hi there"
+
+    response = routes._stream_agent_reply(lambda: ok_run(), "hello")
+    lines = await _drain_ndjson(response)
+
+    done_lines = [ln for ln in lines if ln.get("type") == "reply_done"]
+    assert done_lines and done_lines[0]["response"] == "hi there"
+    assert not any(ln.get("type") == "error" for ln in lines)
+
+    statuses = [e.get("status") for e in events if e.get("type") == "session_update"]
+    assert "done" in statuses, statuses
+    assert "error" not in statuses, statuses

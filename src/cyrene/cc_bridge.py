@@ -211,7 +211,6 @@ def launch_cc_tmux(cwd: Path | None = None, session_name: str = "") -> dict[str,
         return {"ok": False, "reason": "tmux is not installed or not on PATH."}
 
     cwd = (cwd or Path.cwd()).resolve()
-    _run_command(["tmux", "set-option", "-g", "default-terminal", "tmux-256color"])
 
     # 优先使用调用方指定的名字，否则根据项目目录自动生成
     if session_name and _TMUX_SESSION_RE.fullmatch(session_name):
@@ -224,6 +223,8 @@ def launch_cc_tmux(cwd: Path | None = None, session_name: str = "") -> dict[str,
         if session["name"] == name:
             _register_cc_shell(name, cwd)
             return {"ok": True, "session": name, "detail": "Session already exists."}
+
+    _run_command(["tmux", "set-option", "-g", "default-terminal", "tmux-256color"])
 
     # 找到 claude 可执行文件
     cc_bin = _find_claude_bin()

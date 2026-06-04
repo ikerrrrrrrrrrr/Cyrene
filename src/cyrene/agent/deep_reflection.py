@@ -303,6 +303,7 @@ def _compress_attempts(source_messages: list[dict[str, Any]]) -> tuple[list[dict
     tools_used: list[dict[str, Any]] = []
     tool_name_by_call_id: dict[str, str] = {}
     tool_args_by_call_id: dict[str, dict[str, Any]] = {}
+    failed_unknown_call_ids = _failed_unknown_tool_call_ids(source_messages)
 
     for message in source_messages:
         if message.get("role") == "assistant":
@@ -312,9 +313,10 @@ def _compress_attempts(source_messages: list[dict[str, Any]]) -> tuple[list[dict
                 fn = tool_call.get("function") if isinstance(tool_call, dict) else {}
                 if not isinstance(fn, dict):
                     continue
-                name = str(fn.get("name") or "").strip()
                 args = _safe_tool_args(fn.get("arguments"))
                 call_id = str(tool_call.get("id") or "").strip()
+                raw_name = str(fn.get("name") or "").strip()
+                name = "unknown_tool" if call_id in failed_unknown_call_ids else raw_name
                 if call_id:
                     tool_name_by_call_id[call_id] = name
                     tool_args_by_call_id[call_id] = args
@@ -341,6 +343,20 @@ def _compress_attempts(source_messages: list[dict[str, Any]]) -> tuple[list[dict
             })
 
     return attempts, _dedupe_tool_entries(tools_used)
+
+
+def _failed_unknown_tool_call_ids(messages: list[dict[str, Any]]) -> set[str]:
+    result: set[str] = set()
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = str(message.get("content") or "")
+        if "Unknown tool:" not in content:
+            continue
+        call_id = str(message.get("tool_call_id") or "").strip()
+        if call_id:
+            result.add(call_id)
+    return result
 
 
 def _safe_tool_args(raw: Any) -> dict[str, Any]:

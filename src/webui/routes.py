@@ -378,6 +378,7 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
     async def event_stream():
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         saw_reply_events = False
+        run_failed = False
 
         async def publish_reply_event(event: dict[str, Any]) -> None:
             await queue.put(dict(event))
@@ -401,7 +402,24 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
                     saw_reply_events = True
                 yield _ndjson_line(event)
 
-            response = await task
+            try:
+                response = await task
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A model-call failure (timeout, 5xx, rate limit, network error)
+                # must surface to the client. Without this the NDJSON stream just
+                # ends silently and the round renders as a bland "done" — the
+                # exact symptom of issue #7 ("model failure only replies done").
+                run_failed = True
+                logger.exception("Streaming chat run failed: %s", format_httpx_error(exc))
+                yield _ndjson_line({
+                    "type": "error",
+                    "error": "model_call_failed",
+                    "message": str(exc).strip() or exc.__class__.__name__,
+                })
+                await debug.publish_event({"type": "session_update", "status": "error"})
+                return
             if response == _AWAITING_USER_SENTINEL:
                 yield _ndjson_line({"type": "awaiting_user", "awaiting_user": True, "pending_question": get_pending_question()})
                 return
@@ -435,8 +453,11 @@ def _stream_agent_reply(run_coro_factory, user_message: str) -> StreamingRespons
         finally:
             if not task.done():
                 task.cancel()
-            # Ensure "done" is published even on cancellation/error
-            await debug.publish_event({"type": "session_update", "status": "done"})
+            # Publish "done" on success/cancellation. On a model-call failure we
+            # already published "error" above and must not overwrite it with a
+            # misleading "done" (issue #7).
+            if not run_failed:
+                await debug.publish_event({"type": "session_update", "status": "done"})
 
     return StreamingResponse(
         event_stream(),
