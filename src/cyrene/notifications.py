@@ -1,7 +1,7 @@
 """Notification system — desktop notifications, webhook alerts, and in-app SSE events.
 
 Supports three delivery channels:
-  1. **Desktop native** — macOS (SSE + frontend Notification API), Windows (VBScript popup), Linux (notify-send).
+  1. **Desktop native** — macOS (``terminal-notifier`` with app icon), Windows (VBScript popup), Linux (notify-send).
   2. **Webhook** — POST to Discord, Slack, or generic webhook URLs.
   3. **In-app SSE** — pushes through the existing ``debug.publish_event`` bus.
 
@@ -80,12 +80,7 @@ async def notify(
         return {"ok": False, "error": f"unknown channel: {channel}"}
 
     results: dict[str, Any] = {}
-    sse_published = False
     for ch in order:
-        # On macOS the desktop channel is itself delivered over the SSE bus, so
-        # avoid publishing the same event twice in broadcast mode.
-        if ch == "sse" and sse_published:
-            continue
         res = await _dispatch_channel(ch, title, body, webhook_url, webhook_type)
         if res is None:
             # Channel not applicable (e.g. no webhook URL). Surface it as an
@@ -94,8 +89,6 @@ async def notify(
                 results[ch] = {"ok": False, "error": f"{ch} not configured"}
             continue
         results[ch] = res
-        if res.get("ok") and (ch == "sse" or (ch == "desktop" and platform.system() == "Darwin")):
-            sse_published = True
         if stop_after_first and res.get("ok"):
             break
 
@@ -153,9 +146,7 @@ async def _notify_desktop(title: str, body: str) -> dict[str, Any]:
     system = platform.system()
     try:
         if system == "Darwin":
-            # macOS desktop notifications ride the SSE bus + the frontend
-            # Notification API — delivering "desktop" *is* publishing the event.
-            return await _publish_sse(title, body)
+            return _notify_macos(title, body)
         elif system == "Windows":
             return _notify_windows(title, body)
         elif system == "Linux":
@@ -165,6 +156,64 @@ async def _notify_desktop(title: str, body: str) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Desktop notification failed: %s", exc)
         return {"ok": False, "error": str(exc)}
+
+
+def _notify_macos(title: str, body: str) -> dict[str, Any]:
+    """macOS native notification via ``terminal-notifier``.
+
+    ``terminal-notifier`` is a small CLI tool (``brew install terminal-notifier``)
+    that sends real Notification Center alerts from any process — no bundle ID,
+    no running NSApplication, no AppleScript required.  It fires even when no
+    Web UI or Electron window is open, which is the whole point for scheduled-task
+    reminders (#12).
+
+    Three-tier layout so each piece of information has its own line::
+
+        [Cyrene icon]  Cyrene                ← ASSISTANT_NAME (always)
+                       Scheduled task done   ← title arg  (event/task label)
+                       Backed up 42 files    ← body arg   (execution detail)
+
+    When ``terminal-notifier`` is not installed the channel reports failure so
+    ``auto`` mode can fall through to the next available channel (SSE, WeChat,
+    Telegram) rather than silently dropping the notification.
+    """
+    import shutil
+    from cyrene.config import ASSISTANT_NAME, BASE_DIR
+
+    binary = shutil.which("terminal-notifier")
+    if not binary:
+        return {
+            "ok": False,
+            "error": (
+                "terminal-notifier not found; "
+                "install it with: brew install terminal-notifier"
+            ),
+        }
+
+    # Use the installed Cyrene.app as the notification sender so the left icon
+    # shows Cyrene's own app icon on all macOS versions (the -appIcon flag was
+    # restricted by Apple on macOS 12+, but -sender is reliable).  If the
+    # Electron app is not installed, terminal-notifier falls back to its own
+    # icon gracefully — no error, no crash.
+    #
+    # Three-tier layout:
+    #   -title    → ASSISTANT_NAME ("Cyrene")  — always the app/agent name
+    #   -subtitle → title arg                  — task type / event label
+    #   -message  → body arg                   — execution detail / content
+    cmd = [
+        binary,
+        "-sender",   "com.cyrene.app",
+        "-title",    ASSISTANT_NAME,
+        "-subtitle", title,
+        "-message",  body,
+        "-sound",    "default",
+    ]
+
+    proc = subprocess.run(cmd, capture_output=True, timeout=10)
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", "replace").strip() or f"terminal-notifier exited {proc.returncode}"
+        return {"ok": False, "error": err}
+    return {"ok": True}
 
 
 def _notify_windows(title: str, body: str) -> dict[str, Any]:

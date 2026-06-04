@@ -4,6 +4,8 @@
 * #44 — attachment analysis cache moved out of source dirs + versioned key
 * #45 — notification ``auto`` mode stops after the first successful channel
 * #52 — browser tools are reserved for the main agent (no subagent access)
+* #12 — macOS desktop channel fires a real OS notification via
+  terminal-notifier, not merely an SSE event requiring an open browser tab
 """
 
 import sys
@@ -278,6 +280,85 @@ async def test_unknown_channel_is_rejected(monkeypatch):
     result = await n.notify("t", "b", channel="carrier-pigeon")
     assert result["ok"] is False
     assert "unknown channel" in result.get("error", "")
+
+
+# ---------------------------------------------------------------------------
+# #12 — macOS desktop notifications via terminal-notifier (not SSE-only)
+# ---------------------------------------------------------------------------
+
+
+async def test_macos_desktop_uses_terminal_notifier(monkeypatch):
+    """On macOS the desktop channel must fire terminal-notifier so a scheduled
+    task is announced even with no Web UI tab open (#12).
+
+    Checks:
+    * ``subprocess.run`` is called with ``terminal-notifier`` as the binary.
+    * ``_publish_sse`` is NOT called — desktop is an OS-native call now.
+    * The notification title is the configured ASSISTANT_NAME, not the raw
+      ``title`` argument (agent branding, not raw message header).
+    * The message body is passed as-is via a separate ``-message`` argument
+      (no shell-escaping needed — subprocess uses execv, not a shell).
+    """
+    import shutil
+    from cyrene import notifications as n
+
+    monkeypatch.setattr(n.platform, "system", lambda: "Darwin")
+    publish = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(n, "_publish_sse", publish)
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/terminal-notifier")
+    run = MagicMock(return_value=MagicMock(returncode=0, stderr=b""))
+    monkeypatch.setattr(n.subprocess, "run", run)
+
+    res = await n._notify_desktop("Task done", 'Backup "nightly" path')
+
+    assert res["ok"] is True
+    publish.assert_not_awaited()  # native call — no SSE fallback
+    run.assert_called_once()
+    argv = run.call_args.args[0]
+    assert argv[0] == "/usr/local/bin/terminal-notifier"
+    # Three-tier layout:
+    #   -title    → ASSISTANT_NAME  (agent brand, always fixed)
+    #   -subtitle → title arg       (task/event label)
+    #   -message  → body arg        (execution detail, verbatim — no escaping)
+    from cyrene.config import ASSISTANT_NAME
+    assert "-title"    in argv and argv[argv.index("-title")    + 1] == ASSISTANT_NAME
+    assert "-subtitle" in argv and argv[argv.index("-subtitle") + 1] == "Task done"
+    assert "-message"  in argv and argv[argv.index("-message")  + 1] == 'Backup "nightly" path'
+    # Sender is the installed Cyrene Electron app → left icon shows app icon
+    assert "-sender" in argv and argv[argv.index("-sender") + 1] == "com.cyrene.app"
+
+
+async def test_macos_desktop_not_installed_gives_clear_error(monkeypatch):
+    """When terminal-notifier is absent the channel reports a helpful error
+    so ``auto`` mode falls through to SSE/WeChat/Telegram (#12)."""
+    import shutil
+    from cyrene import notifications as n
+
+    monkeypatch.setattr(n.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+
+    res = await n._notify_desktop("t", "b")
+
+    assert res["ok"] is False
+    assert "terminal-notifier" in res["error"]
+    assert "brew" in res["error"]
+
+
+async def test_macos_desktop_reports_notifier_failure(monkeypatch):
+    """A non-zero terminal-notifier exit surfaces as a failed channel so
+    ``auto`` mode can fall through to the next channel (#12)."""
+    import shutil
+    from cyrene import notifications as n
+
+    monkeypatch.setattr(n.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/local/bin/terminal-notifier")
+    run = MagicMock(return_value=MagicMock(returncode=1, stderr=b"permission denied"))
+    monkeypatch.setattr(n.subprocess, "run", run)
+
+    res = await n._notify_desktop("t", "b")
+
+    assert res["ok"] is False
+    assert "permission denied" in res["error"]
 
 
 # ---------------------------------------------------------------------------
