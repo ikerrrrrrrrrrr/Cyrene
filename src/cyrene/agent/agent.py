@@ -18,9 +18,11 @@ from cyrene.agent.guidance import (
     _is_placeholder_reply,
     _tool_result_fallback_text,
 )
+from cyrene.agent.deep_reflection import create_deep_reflection_record, has_deep_reflection_record, project_history_for_llm
 from cyrene.agent.message import (
     _apply_assistant_meta,
     _assistant_entry_from_response,
+    _ensure_message_identity,
     _flush_intermediate_user_replies,
     _tool_result_requests_user_input,
 )
@@ -63,7 +65,17 @@ def _annotate_history_context(history: list) -> list[dict[str, Any]]:
         message = dict(raw)
         role = str(message.get("role") or "")
         content = message.get("content") or ""
-        if message.get("compacted_block"):
+        if message.get("deep_reflection_record"):
+            block = context_block(
+                f"history.deep_reflection.{message.get('reflection_id') or message.get('message_id') or index}",
+                "history_deep_reflection",
+                source="data/state.json",
+                reason="visible deep reflection record; projected before LLM calls",
+                transforms=["visible_record"],
+                content=content,
+                metadata={"reflection_id": str(message.get("reflection_id") or "")},
+            )
+        elif message.get("compacted_block"):
             block = context_block(
                 f"history.compacted.{message.get('message_id') or index}",
                 "history_compacted",
@@ -217,18 +229,19 @@ async def _run_main_agent(
                 await _emit_reply_stream_event({"type": "reply_delta", "delta": text})
                 await _emit_reply_stream_event({"type": "reply_done", "response": text})
             return text
+        llm_base_messages = project_history_for_llm(base_messages)
         if has_tool_results:
-            final_user_text = (await _final_user_reply_from_history(base_messages, max_tokens=None)).strip()
+            final_user_text = (await _final_user_reply_from_history(llm_base_messages, max_tokens=None)).strip()
             if final_user_text and not _is_placeholder_reply(final_user_text):
                 return final_user_text
             fallback_from_tools = _tool_result_fallback_text(base_messages).strip()
             if fallback_from_tools:
                 return fallback_from_tools
         else:
-            final_plain_text = (await _final_plain_reply_from_history(base_messages, max_tokens=None)).strip()
+            final_plain_text = (await _final_plain_reply_from_history(llm_base_messages, max_tokens=None)).strip()
             if final_plain_text and not _is_placeholder_reply(final_plain_text):
                 return final_plain_text
-        final_text = (await _final_reply_from_history(base_messages, max_tokens=None)).strip()
+        final_text = (await _final_reply_from_history(llm_base_messages, max_tokens=None)).strip()
         if final_text and not _is_placeholder_reply(final_text):
             return final_text
         meta = _ui_round_assistant_meta.get()
@@ -255,18 +268,21 @@ async def _run_main_agent(
             saved.append(message)
         return saved
 
-    try:
-        from cyrene import behavior_learning as _behavior_learning
-        routed = await _behavior_learning.try_route_and_execute_skill(
-            user_message=user_message, visible_user_entry=dict(user_entry),
-            llm_user_entry=dict(llm_user_entry), history=history,
-            bot=bot, chat_id=chat_id, db_path=db_path,
-            effective_system=effective_system, client_request_id=client_request_id, round_id=round_id,
-            lang=lang,
-        )
-    except Exception:
-        logger.warning("Learned skill routing failed; falling back to main agent loop", exc_info=True)
+    if has_deep_reflection_record(history):
         routed = None
+    else:
+        try:
+            from cyrene import behavior_learning as _behavior_learning
+            routed = await _behavior_learning.try_route_and_execute_skill(
+                user_message=user_message, visible_user_entry=dict(user_entry),
+                llm_user_entry=dict(llm_user_entry), history=history,
+                bot=bot, chat_id=chat_id, db_path=db_path,
+                effective_system=effective_system, client_request_id=client_request_id, round_id=round_id,
+                lang=lang,
+            )
+        except Exception:
+            logger.warning("Learned skill routing failed; falling back to main agent loop", exc_info=True)
+            routed = None
     if routed is not None:
         await _publish_runtime_event({
             "type": "phase_transition", "from": "skill_router", "to": "learned_skill",
@@ -276,7 +292,7 @@ async def _run_main_agent(
         return str(routed["final_text"] or "Done.")
 
     # Phase 1: lightweight decision
-    response = await _call_llm(phase1_messages, tools=phase1_tools)
+    response = await _call_llm(project_history_for_llm(phase1_messages), tools=phase1_tools)
     tool_calls = response.get("tool_calls") or []
     dr_tools = {"ask_user", "quit"}
     general_tools = {"use_tools", "ask_user", "quit"}
@@ -306,7 +322,7 @@ async def _run_main_agent(
                 ),
             },
         ]
-        response = await _call_llm(retry_messages, tools=phase1_tools)
+        response = await _call_llm(project_history_for_llm(retry_messages), tools=phase1_tools)
     tool_calls = response.get("tool_calls") or []
     messages = [system_entry, *history, llm_user_entry]
     assistant_entry = _assistant_entry_from_response(response, round_id)
@@ -359,7 +375,7 @@ async def _run_main_agent(
         messages = [system_entry, *history, dict(llm_user_entry)]
 
         for _ in range(_MAX_TOOL_ROUNDS):
-            response = await _call_llm(messages, tools=get_active_tool_defs())
+            response = await _call_llm(project_history_for_llm(messages), tools=get_active_tool_defs())
             entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):
                 entry["reasoning_content"] = response["reasoning_content"]
@@ -372,11 +388,12 @@ async def _run_main_agent(
             messages.append(_apply_assistant_meta(entry))
 
             tcs = response.get("tool_calls") or []
-            if any(t.get("function", {}).get("name") == "quit" for t in tcs):
+            tool_names = [str(t.get("function", {}).get("name") or "") for t in tcs]
+            if tcs and all(name == "quit" for name in tool_names):
                 await _publish_runtime_event({"type": "phase_transition", "from": "execution", "to": "done", "detail": "Agent called quit"})
                 if _streaming_reply_requested():
                     messages.pop()
-                    final_text = await _final_reply_from_history(messages, max_tokens=None)
+                    final_text = await _final_reply_from_history(project_history_for_llm(messages), max_tokens=None)
                     final_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
                     if client_request_id:
                         final_entry["client_request_id"] = client_request_id
@@ -392,7 +409,7 @@ async def _run_main_agent(
             if not tcs:
                 if _streaming_reply_requested():
                     messages.pop()
-                    final_text = await _final_reply_from_history(messages, max_tokens=None)
+                    final_text = await _final_reply_from_history(project_history_for_llm(messages), max_tokens=None)
                     final_entry = {"role": "assistant", "content": final_text}
                     if client_request_id:
                         final_entry["client_request_id"] = client_request_id
@@ -408,6 +425,9 @@ async def _run_main_agent(
 
             awaiting_user = False
             spawned = False
+            quit_requested = False
+            reflection_requested = False
+            pending_reflection_tool_calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
             for index, t in enumerate(tcs):
                 tool_name = t.get("function", {}).get("name")
                 if awaiting_user:
@@ -427,9 +447,36 @@ async def _run_main_agent(
                         skipped_tool_entry["round_id"] = round_id
                     messages.append(skipped_tool_entry)
                     continue
+                if reflection_requested:
+                    skipped_tool_entry = {
+                        "role": "tool",
+                        "tool_call_id": t["id"],
+                        "content": "Skipped because DeepReflect already reframed this turn; continue from the reflection packet instead of executing stale follow-up tools.",
+                    }
+                    skipped_tool_entry = attach_context(skipped_tool_entry, context_block(
+                        f"tool.result.skipped_after_reflection.{t['id']}",
+                        "tool_result",
+                        source="cyrene.agent.agent",
+                        reason="tool skipped after DeepReflect reframed the round",
+                        transforms=["synthetic_tool_result"],
+                        content=skipped_tool_entry["content"],
+                        metadata={"tool_name": tool_name, "tool_call_id": t["id"]},
+                    ))
+                    if round_id:
+                        skipped_tool_entry["round_id"] = round_id
+                    messages.append(skipped_tool_entry)
+                    continue
                 try:
                     args = json.loads(t["function"].get("arguments") or "{}")
-                    result = await _execute_tool(tool_name, args, bot, chat_id, db_path, None)
+                    if tool_name == "quit":
+                        quit_requested = True
+                        result = "Agent requested to finish after this tool-call batch."
+                    elif tool_name == "DeepReflect":
+                        pending_reflection_tool_calls.append((t, args))
+                        reflection_requested = True
+                        result = "Deep reflection complete. A reflection record will be added to the visible transcript."
+                    else:
+                        result = await _execute_tool(tool_name, args, bot, chat_id, db_path, None)
                 except Exception as e:
                     result = f"Tool failed: {e}"
                 truncated_result = _truncate(result)
@@ -450,9 +497,30 @@ async def _run_main_agent(
                     awaiting_user = True
                 if tool_name == "spawn_subagent":
                     spawned = True
+            if pending_reflection_tool_calls:
+                _ensure_message_identity(messages)
+                pending_reflection_records: list[dict[str, Any]] = []
+                for _tool_call, args in pending_reflection_tool_calls:
+                    reflection_record = await create_deep_reflection_record(
+                        messages,
+                        scope=str(args.get("scope") or "current_round"),
+                        goal_gap=str(args.get("goal_gap") or ""),
+                        user_requirement=str(args.get("user_requirement") or ""),
+                        focus=str(args.get("focus") or ""),
+                        lang_text=user_message,
+                    )
+                    if round_id:
+                        reflection_record["round_id"] = round_id
+                    if client_request_id:
+                        reflection_record["client_request_id"] = client_request_id
+                    pending_reflection_records.append(_apply_assistant_meta(reflection_record))
+                messages.extend(pending_reflection_records)
             if awaiting_user:
                 return _AWAITING_USER_SENTINEL
             await _save_session_messages(_session_messages_to_save(messages))
+            if quit_requested and not pending_reflection_tool_calls:
+                await _publish_runtime_event({"type": "phase_transition", "from": "execution", "to": "done", "detail": "Agent called quit"})
+                return await _ensure_text_reply(response, messages)
 
             # Subagent monitoring loop
             if spawned:
@@ -622,7 +690,7 @@ async def _run_main_agent(
                 ),
             },
         ]
-        response = await _call_llm(retry_messages, tools=phase1_tools)
+        response = await _call_llm(project_history_for_llm(retry_messages), tools=phase1_tools)
         for tc in (response.get("tool_calls") or []):
             if tc.get("function", {}).get("name") == "ask_user":
                 ask_user_call = tc
@@ -665,7 +733,7 @@ async def _run_main_agent(
             reason="visible user message for streamed final reply",
             content=user_entry.get("content") or "",
         ))]
-        final_text = await _final_reply_from_history(messages, max_tokens=None)
+        final_text = await _final_reply_from_history(project_history_for_llm(messages), max_tokens=None)
         final_entry = {"role": "assistant", "content": final_text}
         if client_request_id:
             final_entry["client_request_id"] = client_request_id

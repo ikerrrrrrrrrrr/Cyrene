@@ -174,28 +174,17 @@ def _lottery_draw() -> bool:
 def _last_user_message_time() -> datetime | None:
     """Infer the timestamp of the user's most recent message.
 
-    Tries ``state.json`` first (using the file modification time as a proxy),
-    then falls back to scanning today's conversation archive for the last
-    ``## HH:MM:SS UTC`` heading that precedes a ``**User**:`` entry.
+    The conversation archive is authoritative: its ``## HH:MM:SS UTC`` headings
+    are written once per user turn, so they track *when the user actually
+    spoke*. ``state.json``'s modification time is only a degraded fallback — the
+    agent rewrites that file on its own (proactive replies, steward, behaviour
+    learning, pattern detection), so its mtime is NOT a reliable proxy for user
+    activity and is trusted only when the most recent persisted message is
+    itself the user's.
 
     Returns ``None`` when no user message can be found.
     """
-    # 1. state.json: use file mtime as a rough proxy (messages carry no
-    #    per-message timestamp field).
-    try:
-        if STATE_FILE.exists():
-            mtime = STATE_FILE.stat().st_mtime
-            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            messages = data.get("messages", []) if isinstance(data, dict) else []
-            # Only trust mtime when there actually IS a user message
-            for msg in reversed(messages):
-                if msg.get("role") == "user" and str(msg.get("content", "")).strip():
-                    return datetime.fromtimestamp(mtime, tz=timezone.utc)
-    except Exception:
-        logger.debug("Could not read state.json for silence detection", exc_info=True)
-
-    # 2. Fallback: scan conversation archives for the most recent
-    #    ``**User**:`` entry with an explicit timestamp heading.
+    # 1. Conversation archives — authoritative per-user-turn timestamps.
     try:
         if CONVERSATIONS_DIR.exists():
             files = sorted(CONVERSATIONS_DIR.glob("*.md"), reverse=True)
@@ -230,6 +219,28 @@ def _last_user_message_time() -> datetime | None:
             "Could not scan conversation archives for silence detection",
             exc_info=True,
         )
+
+    # 2. Degraded fallback: state.json mtime, trusted only when the most recent
+    #    non-empty message is the user's (otherwise the mtime reflects one of the
+    #    agent's own writes and would make the user look more recently active
+    #    than they really are). Mostly relevant before any exchange is archived.
+    try:
+        if STATE_FILE.exists():
+            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            messages = data.get("messages", []) if isinstance(data, dict) else []
+            last_msg = next(
+                (
+                    m
+                    for m in reversed(messages)
+                    if isinstance(m, dict) and str(m.get("content", "")).strip()
+                ),
+                None,
+            )
+            if last_msg is not None and str(last_msg.get("role") or "") == "user":
+                mtime = STATE_FILE.stat().st_mtime
+                return datetime.fromtimestamp(mtime, tz=timezone.utc)
+    except Exception:
+        logger.debug("Could not read state.json for silence detection", exc_info=True)
 
     return None
 

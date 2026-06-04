@@ -4,6 +4,7 @@ import socket
 import uuid
 
 from cyrene.agent import clear_session_id, run_agent
+from cyrene.agent.commands import DEEP_REFLECT_COMMAND_ID, parse_deep_reflect_command
 from cyrene.config import (
     ASSISTANT_NAME, DB_PATH, DATA_DIR, INBOX_DIR, STORE_DIR, WORKSPACE_DIR,
     SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT, WEB_PORT,
@@ -330,7 +331,18 @@ async def _cli_loop() -> None:
                 await _cli_mcp_list()
                 continue
 
-            response = await run_agent(user_input, None, 0, str(DB_PATH))
+            deep_reflect = parse_deep_reflect_command(user_input)
+            if deep_reflect.get("matched"):
+                response = await run_agent(
+                    str(deep_reflect.get("focus") or ""),
+                    None,
+                    0,
+                    str(DB_PATH),
+                    command=DEEP_REFLECT_COMMAND_ID,
+                    public_user_message=user_input,
+                )
+            else:
+                response = await run_agent(user_input, None, 0, str(DB_PATH))
             print(f"\n{ASSISTANT_NAME}: {response}")
         except (KeyboardInterrupt, EOFError):
             break

@@ -652,6 +652,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         wants_stream = bool(body.get("stream"))
         lang = str(body.get("lang") or "").strip()
         command = str(body.get("command") or "").strip()
+        from cyrene.agent.commands import DEEP_REFLECT_COMMAND_ID, parse_deep_reflect_command
+        deep_reflect_parse = parse_deep_reflect_command(message)
+        if deep_reflect_parse.get("matched"):
+            command = DEEP_REFLECT_COMMAND_ID
+        if command == DEEP_REFLECT_COMMAND_ID and not message:
+            message = "/deep-reflect"
         mentions = body.get("mentions") if isinstance(body.get("mentions"), list) else []
         retry = bool(body.get("retry"))
         retry_request_id = str(body.get("retry_request_id") or "").strip()
@@ -673,7 +679,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             if str(item.get("path") or "").strip()
         ]
         public_attachments = [build_public_attachment_payload(item) for item in normalized_attachments]
-        if not message and not normalized_attachments:
+        if not message and not normalized_attachments and command != DEEP_REFLECT_COMMAND_ID:
             return JSONResponse({"error": "empty message"}, status_code=400)
         all_images = bool(normalized_attachments) and all(str(item.get("kind") or "") == "image" for item in normalized_attachments)
         message_with_attachments = (message or "[Attachment upload]") + _attachment_prompt_block(normalized_attachments)
@@ -765,7 +771,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return payload
 
         try:
-            if all_images:
+            if all_images and command != DEEP_REFLECT_COMMAND_ID:
                 async def _run_direct_image_chat() -> str:
                     response_text = await _chat_with_uploaded_images(message, normalized_attachments)
                     await _persist_direct_image_chat(message, response_text, public_attachments, client_request_id)

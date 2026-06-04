@@ -61,6 +61,7 @@ _MAIN_ONLY_TOOLS = {
     "send_file",
     "send_wechat_file",
     "ask_user",
+    "DeepReflect",
     "spawn_subagent",
     "query_round",
     # Browser tools are main-agent-only. The browser is a single shared global
@@ -742,6 +743,13 @@ async def _tool_ask_user(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pat
         "question_id": question.get("id", ""),
         "option_count": len(question.get("options", []) or []),
     })
+
+
+async def _tool_deep_reflect(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    return (
+        "DeepReflect is handled inside the main chat loop so it can access the live visible transcript. "
+        "If you see this fallback, continue without changing persisted history."
+    )
 
 
 async def _tool_prompt_claude_code(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
@@ -1709,6 +1717,23 @@ TOOL_DEFS = [
     {
         "type": "function",
         "function": {
+            "name": "DeepReflect",
+            "description": "Main agent only. Reframe the next working context when the current approach is not satisfying the user's goal, repeated work is not converging, or user guidance shows the direction is wrong. Do not use this merely because one tool failed. The visible transcript is preserved; future LLM context uses a compressed reflection packet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal_gap": {"type": "string", "description": "What user goal or requirement is not being satisfied by the current approach."},
+                    "user_requirement": {"type": "string", "description": "Optional exact user requirement or correction that should guide the reframing."},
+                    "scope": {"type": "string", "enum": ["current_round", "session_tail"], "description": "Which visible transcript span to compress. Defaults to current_round."},
+                    "focus": {"type": "string", "description": "Optional next-direction focus for the reflection worker."},
+                },
+                "required": ["goal_gap"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "PromptClaudeCode",
             "description": "Prepare a stronger Claude Code prompt from the user's task, then show it to the user for confirmation. Use this when the user wants Claude Code to execute a task and you want Cyrene to optimize the prompt first. Requires Claude Code to already be running; check with CheckClaudeCode and launch with StartClaudeCode if needed.",
             "parameters": {
@@ -2305,6 +2330,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "send_message_to_user": _tool_send_message_to_user,
     "send_file": _tool_send_file,
     "ask_user": _tool_ask_user,
+    "DeepReflect": _tool_deep_reflect,
     "PromptClaudeCode": _tool_prompt_claude_code,
     "send_agent_message": _tool_send_agent_message,
     "broadcast_agent_message": _tool_broadcast_agent_message,

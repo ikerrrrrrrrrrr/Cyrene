@@ -14,6 +14,8 @@ from typing import Any
 
 import cyrene.agent.state as _state
 
+from cyrene.agent.commands import DEEP_REFLECT_COMMAND_ID, parse_deep_reflect_command
+from cyrene.agent.deep_reflection import create_deep_reflection_record
 from cyrene import debug
 from cyrene.agent.guidance import (
     _final_reply_from_history,
@@ -25,6 +27,7 @@ from cyrene.agent.guidance import (
 from cyrene.agent.message import (
     _apply_assistant_meta,
     _assistant_entry_from_response,
+    _ensure_message_identity,
     _flush_intermediate_user_replies,
 )
 from cyrene.agent.prompts import (
@@ -247,6 +250,16 @@ async def _run_chat_agent(
 ) -> str:
     import time as _time
 
+    original_user_message = str(user_message or "")
+    deep_reflect_parse = parse_deep_reflect_command(original_user_message)
+    if deep_reflect_parse.get("matched"):
+        command = DEEP_REFLECT_COMMAND_ID
+        user_message = str(deep_reflect_parse.get("focus") or "")
+        if public_user_message is None:
+            public_user_message = original_user_message
+        if public_prompt is None:
+            public_prompt = original_user_message
+
     round_id = str(forced_round_id or "").strip() or f"round_{int(_time.time() * 1000)}"
     round_token = _current_round_id.set(round_id)
     full_session_messages = _load_session_messages()
@@ -287,17 +300,18 @@ async def _run_chat_agent(
         if ephemeral_system:
             history = [*history, {"role": "system", "content": ephemeral_system}]
 
-        try:
-            from cyrene import behavior_learning as _behavior_learning
-            labels = get_session_labels(round_id)
-            behavior_turn_context = await _behavior_learning.begin_turn(
-                session_id=labels.get("archive_session_id", ""),
-                round_id=round_id, user_message=user_message,
-                history=history, session_title=labels.get("session_title", ""),
-            )
-        except Exception:
-            logger.warning("Failed to initialize behavior-learning turn context", exc_info=True)
-            behavior_turn_context = None
+        if command != DEEP_REFLECT_COMMAND_ID:
+            try:
+                from cyrene import behavior_learning as _behavior_learning
+                labels = get_session_labels(round_id)
+                behavior_turn_context = await _behavior_learning.begin_turn(
+                    session_id=labels.get("archive_session_id", ""),
+                    round_id=round_id, user_message=user_message,
+                    history=history, session_title=labels.get("session_title", ""),
+                )
+            except Exception:
+                logger.warning("Failed to initialize behavior-learning turn context", exc_info=True)
+                behavior_turn_context = None
 
         try:
             memory_context = get_memory_context(include_short_term=not restored_short_term)
@@ -370,6 +384,70 @@ async def _run_chat_agent(
         dr_token = _deep_research_mode.set(is_deep_research)
         dr_first_token = _deep_research_first_round.set(is_deep_research and not bool(forced_round_id))
         cmd_token = _current_command.set(command)
+
+        if command == DEEP_REFLECT_COMMAND_ID:
+            visible_command_text = str(public_user_message if public_user_message is not None else original_user_message or "/deep-reflect").strip() or "/deep-reflect"
+            visible_history = [
+                message for message in history
+                if isinstance(message, dict)
+                and str(message.get("role") or "") != "system"
+                and not bool(message.get("hidden_from_ui"))
+            ]
+            user_entry: dict[str, Any] = {
+                "role": "user",
+                "content": visible_command_text,
+                "round_id": round_id,
+            }
+            if client_request_id:
+                user_entry["client_request_id"] = client_request_id
+            _ensure_message_identity([user_entry])
+            try:
+                reflection_record = await create_deep_reflection_record(
+                    list(visible_history),
+                    scope="current_round",
+                    goal_gap="The user manually requested deep reflection because the current work may not be satisfying the goal.",
+                    focus=user_message,
+                    lang_text=visible_command_text or user_message,
+                )
+                reflection_record["round_id"] = round_id
+                if client_request_id:
+                    reflection_record["client_request_id"] = client_request_id
+                main_text = str(reflection_record.get("content") or "Deep reflection is complete.")
+                await _save_session_messages([*visible_history, user_entry, reflection_record])
+            except Exception as exc:
+                logger.warning("Manual deep reflection failed", exc_info=True)
+                main_text = f"深度反思失败：{exc}" if any("\u4e00" <= ch <= "\u9fff" for ch in visible_command_text) else f"Deep reflection failed: {exc}"
+                assistant_entry = _apply_assistant_meta({
+                    "role": "assistant",
+                    "content": main_text,
+                    "round_id": round_id,
+                })
+                if client_request_id:
+                    assistant_entry["client_request_id"] = client_request_id
+                _ensure_message_identity([assistant_entry])
+                await _save_session_messages([*visible_history, user_entry, assistant_entry])
+
+            if refresh_labels:
+                _schedule_session_label_refresh(visible_command_text, round_id)
+            final_output = main_text
+            await _publish_runtime_event({
+                "type": "chat_message",
+                "client_request_id": client_request_id,
+            })
+            if behavior_turn_context is not None:
+                try:
+                    from cyrene import behavior_learning as _behavior_learning
+                    latest_labels = get_session_labels(round_id)
+                    await _behavior_learning.complete_turn(
+                        turn_id=behavior_turn_context["turn_id"],
+                        assistant_response=final_output,
+                        session_title=latest_labels.get("session_title", ""),
+                        round_title=latest_labels.get("round_title", ""),
+                    )
+                    await _kick_behavior_learning_processing()
+                except Exception:
+                    logger.warning("Failed to finalize behavior-learning turn", exc_info=True)
+            return final_output
 
         # Command-specific prompt injection
         if command == "deep-research":

@@ -859,6 +859,206 @@ async def test_heartbeat_proactive_check_stays_silent_when_agent_skips(monkeypat
     assert "quit" in seen["prompt"].lower()
 
 
+async def test_proactive_single_ignored_message_does_not_snowball_into_cooldown(monkeypatch):
+    """Regression: the unanswered streak must track delivered messages, not
+    heartbeat ticks. One ignored message followed by silent ticks must NOT
+    accumulate into the cooldown threshold."""
+    import time
+
+    from cyrene import scheduler
+
+    monkeypatch.setattr(scheduler, "OWNER_ID", 7)
+    monkeypatch.setattr(scheduler, "_load_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_save_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_is_daytime", lambda: True)
+    monkeypatch.setattr(scheduler, "_silence_hours", lambda: 96.0)
+    monkeypatch.setattr(scheduler, "notify", AsyncMock())
+    scheduler._LOTTERY_STATE.update(
+        consecutive_unanswered=0, cooldown_until=0.0, last_proactive_time=0.0, probability=0.0,
+    )
+
+    async def fake_context(_db_path=""):
+        return ""
+
+    # Deliver exactly one message on the first tick; stay silent ever after.
+    calls = {"n": 0}
+
+    async def fake_run_heartbeat_agent(prompt, bot, chat_id, db_path):
+        calls["n"] += 1
+        return "hey, how did the launch go?" if calls["n"] == 1 else ""
+
+    monkeypatch.setattr(scheduler, "_assemble_proactive_context", fake_context)
+    monkeypatch.setattr(scheduler, "run_heartbeat_agent", fake_run_heartbeat_agent)
+
+    # The user never replies (reset_lottery is never called) across many ticks.
+    for _ in range(6):
+        await scheduler._heartbeat_proactive_check(bot=None, db_path="db.sqlite3")
+
+    # Only the single delivery counts; no multi-day cooldown is armed.
+    assert scheduler._LOTTERY_STATE["consecutive_unanswered"] == 1
+    assert scheduler._LOTTERY_STATE["cooldown_until"] == 0.0
+    assert scheduler._LOTTERY_STATE["cooldown_until"] <= time.time()
+
+
+async def test_proactive_cooldown_arms_when_streak_reaches_threshold(monkeypatch):
+    """Once ``_PROACTIVE_COOLDOWN_THRESHOLD`` delivered messages go unanswered,
+    the next check arms the cooldown instead of sending again."""
+    import time
+
+    from cyrene import scheduler
+
+    sent = {"count": 0}
+
+    monkeypatch.setattr(scheduler, "OWNER_ID", 7)
+    monkeypatch.setattr(scheduler, "_load_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_save_lottery_state", lambda: None)
+    monkeypatch.setattr(scheduler, "_is_daytime", lambda: True)
+    monkeypatch.setattr(scheduler, "_silence_hours", lambda: 96.0)
+    monkeypatch.setattr(scheduler, "notify", AsyncMock())
+    scheduler._LOTTERY_STATE.update(
+        consecutive_unanswered=scheduler._PROACTIVE_COOLDOWN_THRESHOLD,
+        cooldown_until=0.0, last_proactive_time=0.0, probability=0.0,
+    )
+
+    async def fake_context(_db_path=""):
+        return ""
+
+    async def fake_run_heartbeat_agent(prompt, bot, chat_id, db_path):
+        sent["count"] += 1
+        return "hi"
+
+    monkeypatch.setattr(scheduler, "_assemble_proactive_context", fake_context)
+    monkeypatch.setattr(scheduler, "run_heartbeat_agent", fake_run_heartbeat_agent)
+
+    await scheduler._heartbeat_proactive_check(bot=None, db_path="db.sqlite3")
+
+    assert sent["count"] == 0
+    assert scheduler._LOTTERY_STATE["cooldown_until"] > time.time()
+    assert scheduler._LOTTERY_STATE["consecutive_unanswered"] == 0
+
+    # A user message clears the cooldown so the agent can speak again.
+    scheduler.reset_lottery()
+    assert scheduler._LOTTERY_STATE["cooldown_until"] == 0.0
+    assert scheduler._LOTTERY_STATE["consecutive_unanswered"] == 0
+
+
+async def test_system_initiated_silent_quit_yields_no_message(tmp_path, monkeypatch):
+    """A proactive round where the agent quits with nothing to say must return
+    an empty string so the scheduler delivers nothing — never a filler 'Done.'."""
+    from cyrene import agent
+    from cyrene.agent import session as _agent_session
+    from cyrene import debug
+
+    async def fake_publish_event(event):
+        return None
+
+    async def fake_call_llm(messages, tools=None, max_tokens=32000):
+        # Decision phase (and any later synthesis) silently quits, no text.
+        return {
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "quit", "arguments": "{}"}},
+            ],
+        }
+
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
+    monkeypatch.setattr(agent, "get_memory_context", lambda include_short_term=True: "")
+    _patch_call_llm(monkeypatch, fake_call_llm)
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+
+    result = await agent._run_chat_agent(
+        "internal proactive instruction",
+        None,
+        0,
+        "db.sqlite3",
+        persist_user_message=False,
+        public_prompt="",
+        refresh_labels=False,
+        hide_initial_detail=True,
+        assistant_message_meta={"proactive": True, "system_initiated": True},
+    )
+
+    assert result == ""
+
+
+def test_last_user_time_prefers_archive_over_state_mtime(tmp_path, monkeypatch):
+    """Silence detection must read the real user-turn timestamp from the
+    conversation archive, not state.json's mtime. The agent rewrites state.json
+    on its own (proactive replies, steward, ...), so a fresh mtime would
+    otherwise mask genuine user silence and suppress the >72h reach-out."""
+    from datetime import datetime, timezone
+
+    from cyrene import scheduler
+
+    conv_dir = tmp_path / "conversations"
+    conv_dir.mkdir()
+    # The user actually last spoke on 2026-06-02 at 09:00 UTC (recorded once,
+    # per turn, in the archive).
+    (conv_dir / "2026-06-02.md").write_text(
+        "# 2026-06-02\n\n## 09:00:00 UTC\n\n**User**: morning!\n\n**Cyrene**: hi\n",
+        encoding="utf-8",
+    )
+    # state.json was just rewritten by the agent — its last message is a
+    # proactive reply and its mtime is "now". That must NOT count as user activity.
+    state_file = tmp_path / "state.json"
+    state_file.write_text(
+        json.dumps({"messages": [
+            {"role": "user", "content": "morning!"},
+            {"role": "assistant", "content": "checking in", "proactive": True},
+        ]}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(scheduler, "CONVERSATIONS_DIR", conv_dir)
+    monkeypatch.setattr(scheduler, "STATE_FILE", state_file)
+
+    result = scheduler._last_user_message_time()
+
+    assert result == datetime(2026, 6, 2, 9, 0, 0, tzinfo=timezone.utc)
+
+
+def test_last_user_time_mtime_fallback_requires_user_spoke_last(tmp_path, monkeypatch):
+    """Before anything is archived, fall back to state.json mtime only when the
+    most recent message is the user's; otherwise report unknown (None) so we
+    never treat one of the agent's own writes as user activity."""
+    import os
+    from datetime import datetime, timezone
+
+    from cyrene import scheduler
+
+    conv_dir = tmp_path / "conversations"  # deliberately not created
+    state_file = tmp_path / "state.json"
+    monkeypatch.setattr(scheduler, "CONVERSATIONS_DIR", conv_dir)
+    monkeypatch.setattr(scheduler, "STATE_FILE", state_file)
+
+    # (a) User spoke last → mtime is a valid proxy.
+    state_file.write_text(
+        json.dumps({"messages": [
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "you there?"},
+        ]}),
+        encoding="utf-8",
+    )
+    pinned = datetime(2026, 6, 4, 8, 0, 0, tzinfo=timezone.utc).timestamp()
+    os.utime(state_file, (pinned, pinned))
+    result = scheduler._last_user_message_time()
+    assert result is not None
+    assert abs(result.timestamp() - pinned) < 1.0
+
+    # (b) Agent spoke last (proactive) → mtime is the agent's write, not the
+    #     user's, so it must be ignored.
+    state_file.write_text(
+        json.dumps({"messages": [
+            {"role": "user", "content": "you there?"},
+            {"role": "assistant", "content": "yes!", "proactive": True},
+        ]}),
+        encoding="utf-8",
+    )
+    assert scheduler._last_user_message_time() is None
+
+
 async def test_execute_task_fallback_persists_webui_reminder(monkeypatch, tmp_path):
     from cyrene import agent
     from cyrene.agent import state as _agent_state

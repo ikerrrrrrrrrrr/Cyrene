@@ -994,6 +994,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
     { id: "deep-research",   icon: "🔬", label: t("chat.commandDeepResearch"),   desc: t("chat.commandDeepResearchDesc"),   placeholder: t("chat.deepResearchPlaceholder") },
+    { id: "deep-reflect",    icon: "R",  label: t("chat.commandDeepReflect"),    desc: t("chat.commandDeepReflectDesc"),    placeholder: t("chat.deepReflectPlaceholder") },
     { id: "help-me-decide",  icon: "🤔", label: t("chat.commandHelpMeDecide"),   desc: t("chat.commandHelpMeDecideDesc"),   placeholder: t("chat.helpMeDecidePlaceholder") },
     { id: "learning-plan",   icon: "📚", label: t("chat.commandLearningPlan"),   desc: t("chat.commandLearningPlanDesc"),   placeholder: t("chat.learningPlanPlaceholder") },
     { id: "daily-review",    icon: "🌙", label: t("chat.commandDailyReview"),    desc: t("chat.commandDailyReviewDesc"),    placeholder: t("chat.dailyReviewPlaceholder") },
@@ -1409,7 +1410,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   async function send(options) {
     const preserveProgress = Boolean(options && options.preserveProgress);
-    const text = (options && options.text !== undefined) ? options.text : draft.trim();
+    const activeCommand = command;
+    let text = (options && options.text !== undefined) ? options.text : draft.trim();
+    if (!text && activeCommand === "deep-reflect") text = "/deep-reflect";
     const curAttachments = (options && options.attachments !== undefined) ? options.attachments : attachments;
     const curGuideRoundId = (options && options.guideRoundId !== undefined) ? options.guideRoundId : selectedGuideRoundId;
     const runtime = getChatRuntime();
@@ -1483,7 +1486,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           lang: lang,
           retry: options && options.retry || undefined,
           retry_request_id: options && options.retryRequestId || undefined,
-          command: command || undefined,
+          command: activeCommand || undefined,
           mentions: mentionedAgents.length > 0 ? mentionedAgents : undefined,
         }),
       });
@@ -2786,7 +2789,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
               )}
               <button
                 className={"send" + (visibleSending ? " stop" : "")}
-                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim() && attachments.length === 0)}
+                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim() && attachments.length === 0 && command !== "deep-reflect")}
                 onClick={visibleSending ? stopActiveRun : send}
               >
                 {visibleSending ? t("chat.stop") : <>{(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.send")} <span className="kbd">↵</span></>}

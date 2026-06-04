@@ -158,6 +158,9 @@ def _infer_block_for_message(index: int, message: dict[str, Any], message_tokens
     if message.get("compacted_block"):
         block_type = "history_compacted"
         block_id = f"history.compacted.{message.get('message_id') or index}"
+    elif message.get("deep_reflection_record"):
+        block_type = "history_deep_reflection"
+        block_id = f"history.deep_reflection.{message.get('reflection_id') or message.get('message_id') or index}"
     elif role == "tool":
         block_type = "tool_result"
         block_id = f"tool.result.{message.get('tool_call_id') or index}"
