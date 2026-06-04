@@ -33,6 +33,7 @@ from cyrene.agent import append_system_message, run_heartbeat_agent, run_steward
 from cyrene.channels.wechat import get_current_client
 from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STATE_FILE, STEWARD_INTERVAL
 from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
+from cyrene.io_utils import atomic_write_json, read_json_safe
 from cyrene.notifications import notify
 from cyrene.schedule_spec import compute_next_run
 from cyrene.short_term import clear_old_entries, get_context as get_short_term_context
@@ -98,8 +99,8 @@ def _load_lottery_state() -> None:
     """Restore lottery state from ``_LOTTERY_FILE``."""
     global _LOTTERY_STATE
     try:
-        if _LOTTERY_FILE.exists():
-            data = json.loads(_LOTTERY_FILE.read_text(encoding="utf-8"))
+        data = read_json_safe(_LOTTERY_FILE)
+        if data is not None:
             _LOTTERY_STATE["probability"] = float(data.get("probability", 0.0))
             _LOTTERY_STATE["delta"] = float(data.get("delta", 0.15))
             _LOTTERY_STATE["max_probability"] = float(data.get("max_probability", 0.85))
@@ -119,11 +120,7 @@ def _load_lottery_state() -> None:
 def _save_lottery_state() -> None:
     """Persist current lottery state to ``_LOTTERY_FILE``."""
     try:
-        _LOTTERY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _LOTTERY_FILE.write_text(
-            json.dumps(_LOTTERY_STATE, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(_LOTTERY_FILE, _LOTTERY_STATE)
     except Exception:
         logger.exception("Failed to save lottery state")
 
@@ -588,10 +585,7 @@ async def _deliver_proactive_message(text: str, bot, chat_id: int) -> None:
 
         from cyrene import debug
 
-        if STATE_FILE.exists():
-            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        else:
-            state = {}
+        state = read_json_safe(STATE_FILE) or {}
         if not isinstance(state, dict):
             state = {}
 
@@ -612,11 +606,7 @@ async def _deliver_proactive_message(text: str, bot, chat_id: int) -> None:
             messages = messages[-40:]
 
         state["messages"] = messages
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        STATE_FILE.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(STATE_FILE, state)
 
         # 3. Push SSE event so connected frontends update in real time
         await debug.publish_event({
@@ -770,8 +760,8 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
 def _get_last_steward_run() -> float | None:
     """Read the last steward run timestamp from ``_STEWARD_STATE_FILE``."""
     try:
-        if _STEWARD_STATE_FILE.exists():
-            data = json.loads(_STEWARD_STATE_FILE.read_text(encoding="utf-8"))
+        data = read_json_safe(_STEWARD_STATE_FILE)
+        if data is not None:
             return float(data.get("last_run", 0))
     except Exception:
         logger.exception("Failed to read steward state")
@@ -781,11 +771,7 @@ def _get_last_steward_run() -> float | None:
 def _save_steward_run(timestamp: float) -> None:
     """Persist the steward run timestamp to ``_STEWARD_STATE_FILE``."""
     try:
-        _STEWARD_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _STEWARD_STATE_FILE.write_text(
-            json.dumps({"last_run": timestamp}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(_STEWARD_STATE_FILE, {"last_run": timestamp})
     except Exception:
         logger.exception("Failed to save steward state")
 

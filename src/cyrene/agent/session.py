@@ -14,6 +14,7 @@ from uuid import uuid4
 import cyrene.agent.state as _state
 from cyrene import debug
 from cyrene.context_trace import strip_context_metadata
+from cyrene.io_utils import atomic_write_json, read_json_safe
 from cyrene.agent.message import (
     _dedupe_messages_by_id,
     _ensure_message_identity,
@@ -98,19 +99,18 @@ def _merge_live_block(existing_block: list[dict[str, Any]], incoming_block: list
     return _dedupe_messages_by_id(merged)
 
 def _load_session_state() -> dict[str, Any]:
-    if not _state.STATE_FILE.exists():
-        return {}
     try:
-        data = json.loads(_state.STATE_FILE.read_text(encoding="utf-8"))
+        data = read_json_safe(_state.STATE_FILE)
     except Exception:
         logger.exception("Failed to read state file")
+        return {}
+    if data is None:
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def _write_session_state(state: dict[str, Any]) -> None:
-    _state.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _state.STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(_state.STATE_FILE, state)
 
 
 def _ensure_archive_session_id(state: dict[str, Any]) -> str:
@@ -1139,21 +1139,17 @@ async def clear_session_id() -> None:
     _state._active_main_round_started_at = 0.0
     await _clear_subagents()
     await clear_all_inboxes()
-    if _state.STATE_FILE.exists():
-        try:
-            data = json.loads(_state.STATE_FILE.read_text(encoding="utf-8"))
+    try:
+        data = read_json_safe(_state.STATE_FILE)
+        if data:
             msgs = data.get("messages", [])
             if msgs:
                 _schedule_memory_compression(msgs)
-        except Exception:
-            pass
+    except Exception:
+        pass
     async with _session_state_lock:
         _state._session_epoch += 1
-        _state.STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _state.STATE_FILE.write_text(
-            json.dumps({"_session_epoch": _state._session_epoch}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        atomic_write_json(_state.STATE_FILE, {"_session_epoch": _state._session_epoch})
     try:
         from cyrene import pattern as _pattern_module
         _ = asyncio.create_task(_pattern_module.scan_for_session_start())

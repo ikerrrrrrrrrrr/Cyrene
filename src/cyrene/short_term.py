@@ -4,12 +4,12 @@ Stores compressed conversation summaries that persist across sessions.
 Entry lifecycle: conversation -> compressed -> short_term -> (via Steward) -> long_term
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from cyrene.config import DB_PATH
+from cyrene.io_utils import atomic_write_json, read_json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +25,16 @@ def init_short_term(data_dir: Path) -> None:
 
 def load_entries() -> list[dict]:
     """从 short_term.json 加载所有条目。文件不存在时返回空列表。"""
-    if _SHORT_TERM_FILE is None or not _SHORT_TERM_FILE.exists():
+    if _SHORT_TERM_FILE is None:
         return []
     try:
-        data = json.loads(_SHORT_TERM_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
+        data = read_json_safe(_SHORT_TERM_FILE)
     except Exception:
         logger.exception("Failed to load short-term memory")
         return []
+    if data is None:
+        return []
+    return data if isinstance(data, list) else []
 
 
 def save_entries(entries: list[dict]) -> None:
@@ -40,11 +42,7 @@ def save_entries(entries: list[dict]) -> None:
     if _SHORT_TERM_FILE is None:
         return
     try:
-        _SHORT_TERM_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SHORT_TERM_FILE.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+        atomic_write_json(_SHORT_TERM_FILE, entries)
     except Exception:
         logger.exception("Failed to save short-term memory")
 
