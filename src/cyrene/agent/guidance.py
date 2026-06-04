@@ -829,6 +829,16 @@ async def answer_pending_question(
             await _restore_pending_question(pending)
             raise
 
+    if isinstance(pending_meta, dict) and str(pending_meta.get("kind", "")).strip() == "browser_takeover":
+        # The user finished logging in via the native window. Return the browser
+        # session to headless (same profile → now authenticated), then fall through
+        # to resume the round normally with the user's confirmation.
+        try:
+            from cyrene.browser import end_browser_takeover
+            await end_browser_takeover(str(pending_meta.get("url", "") or ""))
+        except Exception:
+            logger.warning("browser end_takeover failed during resume", exc_info=True)
+
     answer_system = (
         "This user message answers your earlier clarification question for the same round.\n"
         f"Target round id: {round_id}\n"

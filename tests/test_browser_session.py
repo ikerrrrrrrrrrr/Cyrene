@@ -302,3 +302,79 @@ async def test_screencast_drops_frames_when_queue_full():
     session._on_screencast_frame({"data": "new", "sessionId": None})
     assert q.qsize() == 1
     assert q.get_nowait()["data"] == "old"
+
+
+# --- M3: native-window login takeover --------------------------------------
+
+
+async def test_browser_request_takeover_pauses_with_takeover_meta(monkeypatch):
+    import json
+
+    from cyrene import tools as _tools
+    from cyrene import debug as _debug
+    from cyrene import browser as _browser
+    from cyrene.agent import state as _state
+    from cyrene.agent import session as _session
+
+    agent_token = _state._current_agent_id.set("main")
+    round_token = _state._current_round_id.set("round_1")
+    try:
+        events = []
+
+        async def fake_publish(event):
+            events.append(event)
+
+        monkeypatch.setattr(_debug, "publish_event", fake_publish)
+
+        switched = []
+
+        class _FakeSession:
+            async def current_url(self):
+                return "https://example.com/login"
+
+            async def switch_to_headed(self, url=""):
+                switched.append(url)
+
+        async def fake_get_session():
+            return _FakeSession()
+
+        monkeypatch.setattr(_browser, "get_session", fake_get_session)
+
+        captured = {}
+
+        async def fake_upsert(payload):
+            captured.update(payload)
+            return {"id": "q_123"}
+
+        monkeypatch.setattr(_session, "_upsert_pending_question", fake_upsert)
+        monkeypatch.setattr(_session, "get_session_labels", lambda rid=None: {})
+
+        result = await _tools._tool_browser_request_takeover(
+            {"reason": "Please log in to Gmail"}, None, 0, "db", None
+        )
+
+        payload = json.loads(result)
+        assert payload["status"] == "awaiting_user"
+        assert payload["question_id"] == "q_123"
+        # The native window was raised before pausing.
+        assert switched == ["https://example.com/login"]
+        # The pending question is tagged so the resume hook can restore headless.
+        assert captured["meta"] == {"kind": "browser_takeover", "url": "https://example.com/login"}
+        assert any(e.get("type") == "browser_takeover_request" for e in events)
+    finally:
+        _state._current_agent_id.reset(agent_token)
+        _state._current_round_id.reset(round_token)
+
+
+async def test_browser_request_takeover_rejects_non_main_agent(monkeypatch):
+    from cyrene import tools as _tools
+    from cyrene.agent import state as _state
+
+    agent_token = _state._current_agent_id.set("alice")
+    round_token = _state._current_round_id.set("round_1")
+    try:
+        result = await _tools._tool_browser_request_takeover({"reason": "x"}, None, 0, "db", None)
+        assert "main agent" in result.lower()
+    finally:
+        _state._current_agent_id.reset(agent_token)
+        _state._current_round_id.reset(round_token)

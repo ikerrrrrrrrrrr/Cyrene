@@ -321,6 +321,36 @@ function connectEvents() {
           DATA.map.routes = data.routes || [];
           __bump();
         }
+
+        // Live browser view — the agent's screencast actions (M2).
+        if (data.type === "browser_frame") {
+          DATA.browser = DATA.browser || {};
+          DATA.browser.active = true;
+          DATA.browser.url = data.url || DATA.browser.url || "";
+          DATA.browser.title = data.title || "";
+          DATA.browser.action = data.action || "";
+          DATA.browser.target = data.target || null;
+          DATA.browser.box = data.box || null;
+          DATA.browser.roundId = data.round_id || "";
+          bumpData();
+        }
+        // Browser login takeover (M3): the panel shows a passive "waiting for
+        // login" placeholder. The actual confirmation is the app's standard
+        // question popup (QuestionPanel), not a control inside the panel.
+        if (data.type === "browser_takeover_request") {
+          DATA.browser = DATA.browser || {};
+          DATA.browser.active = true;
+          DATA.browser.url = data.url || DATA.browser.url || "";
+          DATA.browser.roundId = data.round_id || "";
+          DATA.browser.takeover = { pending: true, url: data.url || "", reason: data.reason || "" };
+          bumpData();
+        }
+        // Takeover ended/cancelled (user finished, or closed the window) — drop
+        // the placeholder so the panel returns to the live view.
+        if (data.type === "browser_takeover_cancelled" && DATA.browser) {
+          DATA.browser.takeover = { pending: false };
+          bumpData();
+        }
       } catch (e) { /* swallow */ }
     };
     es.onerror = () => {

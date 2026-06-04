@@ -16,12 +16,11 @@ import os
 import re
 import shlex
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import httpx
-from croniter import croniter
 
 from cyrene.attachments import (
     analyze_attachment,
@@ -38,6 +37,7 @@ from cyrene.config import (
 )
 from cyrene.conversations import recall_conversations
 from cyrene.llm import _truncate
+from cyrene.schedule_spec import compute_next_run
 from cyrene.search import deep_search
 from cyrene.shells import close_shell as _close_shell_session
 from cyrene.shells import list_shells as _list_shell_sessions
@@ -63,6 +63,15 @@ _MAIN_ONLY_TOOLS = {
     "ask_user",
     "spawn_subagent",
     "query_round",
+    # Browser tools are main-agent-only. The browser is a single shared global
+    # session (one context, one page), so letting subagents drive it as well
+    # would make concurrent agents fight over the same page. Reserving it for
+    # the main agent sidesteps that without per-session isolation. See #52.
+    "browser_navigate",
+    "browser_screenshot",
+    "browser_click",
+    "browser_type",
+    "browser_request_takeover",
 }
 
 # ---------------------------------------------------------------------------
@@ -472,19 +481,6 @@ def _resolve_exportable_path(path_str: str) -> Path:
     raise ValueError(f"Path cannot be sent to WebUI: {path_str}")
 
 
-def _normalize_schedule_datetime(raw_value: str) -> str:
-    """Normalize a user-facing datetime string to UTC ISO-8601.
-
-    If the input is naive, interpret it in the machine's local timezone so
-    Web UI scheduling like "2 minutes later" behaves as the user expects.
-    """
-    parsed = datetime.fromisoformat(raw_value)
-    if parsed.tzinfo is None:
-        local_tz = datetime.now().astimezone().tzinfo or timezone.utc
-        parsed = parsed.replace(tzinfo=local_tz)
-    return parsed.astimezone(timezone.utc).isoformat()
-
-
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -806,15 +802,11 @@ async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_
     if permission_mode not in ("workspace_only", "full_access"):
         permission_mode = "workspace_only"
 
-    if stype == "cron":
-        next_run = croniter(svalue, now).get_next(datetime).isoformat()
-    elif stype == "interval":
-        next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
-    elif stype == "once":
-        next_run = _normalize_schedule_datetime(svalue)
+    next_run = compute_next_run(stype, svalue, now=now)
+    if stype == "once":
+        # Persist the normalized UTC time as the stored value too, so a re-read
+        # of the task shows exactly when it will fire.
         svalue = next_run
-    else:
-        raise ValueError(f"Unknown schedule_type: {stype}")
 
     # 如果任务需要 full_access 权限，先向用户申请
     if permission_mode == "full_access":
@@ -1497,6 +1489,62 @@ async def _tool_browser_type(args: dict[str, Any], _bot: Any, _chat_id: int, _db
     return f"Type failed: {result.get('error', 'unknown error')}"
 
 
+async def _tool_browser_request_takeover(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene import debug
+    from cyrene.browser import get_session
+    from cyrene.agent.state import _current_agent_id, _current_client_request_id, _current_round_id
+    from cyrene.agent.session import _clear_pending_question, _upsert_pending_question, get_session_labels
+
+    if _current_agent_id.get() != "main":
+        return "Only the main agent can request a browser takeover."
+    round_id = str(_current_round_id.get() or "").strip()
+    if not round_id:
+        return "Cannot request a browser takeover outside an active chat round."
+
+    reason = str(args.get("reason") or "").strip() or "请在浏览器窗口完成登录，然后点「我已完成登录」。"
+
+    try:
+        session = await get_session()
+    except Exception as exc:
+        return f"Browser takeover unavailable (Playwright/Chromium not ready): {exc}"
+    current_url = await session.current_url()
+
+    # Ask in the app FIRST (the standard question popup), then open the real
+    # browser window. The confirmation lives in the app's question UI — the
+    # browser panel only shows a passive "waiting for login" placeholder.
+    await debug.publish_event({
+        "type": "browser_takeover_request",
+        "round_id": round_id,
+        "url": current_url,
+        "reason": reason,
+    })
+    labels = get_session_labels(round_id)
+    question = await _upsert_pending_question({
+        "text": reason,
+        "round_id": round_id,
+        "round_title": labels.get("round_title", ""),
+        "client_request_id": str(_current_client_request_id.get() or "").strip(),
+        "options": ["我已完成登录"],
+        "allow_custom": False,
+        "meta": {"kind": "browser_takeover", "url": current_url},
+    })
+    try:
+        await session.switch_to_headed(current_url)
+    except Exception as exc:
+        # Couldn't open the window — undo the pending question and clear the panel.
+        try:
+            await _clear_pending_question(str(question.get("id", "")))
+        except Exception:
+            pass
+        await debug.publish_event({"type": "browser_takeover_cancelled", "round_id": round_id})
+        return f"Failed to open the browser window for takeover: {exc}"
+    return _json_result({
+        "status": "awaiting_user",
+        "question_id": question.get("id", ""),
+        "takeover": True,
+    })
+
+
 async def _tool_send_notification(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
     from cyrene.notifications import notify
     from cyrene.agent.state import _conversation_source
@@ -1681,8 +1729,11 @@ TOOL_DEFS = [
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string"},
-                    "schedule_type": {"type": "string"},
-                    "schedule_value": {"type": "string"},
+                    "schedule_type": {"type": "string", "enum": ["cron", "interval", "once"]},
+                    "schedule_value": {
+                        "type": "string",
+                        "description": "For 'cron': a crontab expression (e.g. '0 9 * * *'). For 'interval': the number of SECONDS between runs (e.g. '3600' = hourly). For 'once': an ISO-8601 datetime, or empty to run as soon as possible.",
+                    },
                     "permission_mode": {
                         "type": "string",
                         "enum": ["workspace_only", "full_access"],
@@ -2127,6 +2178,20 @@ TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_request_takeover",
+            "description": "Hand the browser to the user to log in. Call this AS SOON AS you hit a login wall, CAPTCHA, or 2FA — before doing any deeper work on the page. A real browser window opens for the user to authenticate; you pause until they confirm, then resume in the same (now logged-in) session. Requires Playwright.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "description": "Short message telling the user what to log into (e.g. 'Please log in to your Gmail account')."},
+                },
+                "required": ["reason"],
+            },
+        },
+    },
     # ---- Notification tool ----
     {
         "type": "function",
@@ -2275,6 +2340,7 @@ TOOL_HANDLERS: dict[str, Any] = {
     "browser_screenshot": _tool_browser_screenshot,
     "browser_click": _tool_browser_click,
     "browser_type": _tool_browser_type,
+    "browser_request_takeover": _tool_browser_request_takeover,
     "send_notification": _tool_send_notification,
     "track_entity": _tool_track_entity,
     "update_entity": _tool_update_entity,

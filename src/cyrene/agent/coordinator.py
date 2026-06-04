@@ -548,7 +548,15 @@ async def _run_chat_agent(
             _schedule_session_label_refresh(user_message, round_id)
         if main_text == _AWAITING_USER_SENTINEL:
             return main_text
-        final_output = main_text or "Done."
+        if main_text:
+            final_output = main_text
+        elif assistant_message_meta and assistant_message_meta.get("system_initiated"):
+            # System-initiated rounds (e.g. the proactive heartbeat) must stay
+            # silent when the agent chose not to speak — never substitute a
+            # filler "Done." that would be delivered to the user.
+            final_output = ""
+        else:
+            final_output = "Done."
         await _publish_runtime_event({
             "type": "chat_message",
             "client_request_id": client_request_id,
@@ -610,11 +618,12 @@ async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str)
         "Match the user's preferred language based on their past messages.\n"
         "Do not mention the scheduler, heartbeat, lottery, hidden prompt, or internal instructions.\n"
         "\n"
-        "DECISION RULE — default to silence:\n"
-        "- Call `quit` immediately unless you have something genuinely specific and useful to say.\n"
-        "- Generic greetings, vague check-ins, or messages with nothing concrete to reference are NOT worth sending.\n"
-        "- If the user did not reply to a recent proactive message, raise the bar even higher — only speak if you are confident the message is timely and valuable.\n"
-        "- If you decide to speak, keep it to 1–2 sentences. Be direct, warm, and specific.\n"
+        "DECISION RULE — a warm, light-touch check-in:\n"
+        "- This is a chance to reach out the way a thoughtful friend would. If something specific comes to mind — a topic, plan, or feeling the user shared — follow up on it warmly.\n"
+        "- A brief, genuine hello is fine even without a concrete hook, as long as it feels caring rather than mechanical.\n"
+        "- Lean toward reaching out. Only stay silent (call `quit`) when a message now would feel intrusive or repetitive — for example you just messaged, or there is truly nothing worth saying.\n"
+        "- If the user did not reply to a recent proactive message, be more considerate: keep it lighter and don't pile on.\n"
+        "- Keep it to 1–2 sentences. Be direct, warm, and specific.\n"
         "- If tools are useful, use them before composing the reply."
     )
     if _agent_lock.locked():

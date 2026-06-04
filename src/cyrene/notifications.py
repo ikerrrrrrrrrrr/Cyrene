@@ -38,6 +38,9 @@ _NOTIFICATION_ENABLED = os.getenv("NOTIFICATION_ENABLED", "1") not in ("0", "fal
 # ---------------------------------------------------------------------------
 
 
+_ALL_CHANNELS = ("desktop", "webhook", "telegram", "wechat", "sse")
+
+
 async def notify(
     title: str,
     body: str,
@@ -46,78 +49,99 @@ async def notify(
     webhook_url: str | None = None,
     webhook_type: str | None = None,
 ) -> dict[str, Any]:
-    """Send a notification through available channels.
+    """Send a notification through one or more channels.
 
     Args:
         title: Notification title (short).
         body: Notification body text.
-        channel: ``"auto"`` (try desktop → webhook → telegram → wechat → sse),
-                 ``"desktop"``, ``"webhook"``, ``"telegram"``, ``"wechat"``,
-                 or ``"sse"``.
+        channel: delivery mode —
+            ``"auto"`` tries channels in order (desktop → webhook → telegram →
+            wechat → sse) and **stops after the first success**, so a delivered
+            desktop notification never fans out to external messengers (#45);
+            ``"broadcast"`` delivers through *every* configured channel; or a
+            single channel name (``"desktop"``, ``"webhook"``, ``"telegram"``,
+            ``"wechat"``, ``"sse"``).
         webhook_url: Override the configured webhook URL.
         webhook_type: Override the configured webhook type.
 
     Returns:
-        ``{"ok": True}`` or ``{"ok": False, "error": "..."}`` with per-channel results.
+        ``{"ok": bool, "channels": {name: {"ok": bool, ...}}}``.
     """
     if not _NOTIFICATION_ENABLED:
         return {"ok": False, "error": "notifications are disabled"}
 
+    if channel == "auto":
+        order, stop_after_first = list(_ALL_CHANNELS), True
+    elif channel == "broadcast":
+        order, stop_after_first = list(_ALL_CHANNELS), False
+    elif channel in _ALL_CHANNELS:
+        order, stop_after_first = [channel], False
+    else:
+        return {"ok": False, "error": f"unknown channel: {channel}"}
+
     results: dict[str, Any] = {}
-
-    if channel in ("auto", "desktop"):
-        desktop_result = await _notify_desktop(title, body)
-        results["desktop"] = desktop_result
-        if desktop_result.get("ok") and channel == "desktop":
-            # On macOS, desktop is delivered via SSE — the return is deferred
-            # to the SSE block below so the event actually gets published.
-            if platform.system() == "Darwin":
-                pass
-            else:
-                return {"ok": True, "channels": results}
-
-    if channel in ("auto", "webhook"):
-        wh_url = webhook_url or _WEBHOOK_URL
-        wh_type = webhook_type or _WEBHOOK_TYPE
-        if wh_url:
-            webhook_result = await _notify_webhook(wh_url, wh_type, title, body)
-            results["webhook"] = webhook_result
-            if webhook_result.get("ok") and channel == "webhook":
-                return {"ok": True, "channels": results}
-        elif channel == "webhook":
-            results["webhook"] = {"ok": False, "error": "no webhook URL configured"}
-
-    if channel in ("auto", "telegram"):
-        telegram_result = await _notify_telegram(title, body)
-        results["telegram"] = telegram_result
-        if telegram_result.get("ok") and channel == "telegram":
-            return {"ok": True, "channels": results}
-
-    if channel in ("auto", "wechat"):
-        wechat_result = await _notify_wechat(title, body)
-        results["wechat"] = wechat_result
-        if wechat_result.get("ok") and channel == "wechat":
-            return {"ok": True, "channels": results}
-
-    _desktop_is_sse = platform.system() == "Darwin" and results.get("desktop", {}).get("ok")
-    if channel in ("auto", "sse") or _desktop_is_sse:
-        try:
-            from cyrene import debug as cy_debug
-
-            await cy_debug.publish_event({
-                "type": "notification",
-                "title": title,
-                "body": body,
-                "ts": datetime.now(timezone.utc).isoformat(),
-            })
-            results["sse"] = {"ok": True}
-        except Exception as exc:
-            results["sse"] = {"ok": False, "error": str(exc)}
-        if channel == "sse" or (channel == "desktop" and _desktop_is_sse) or (channel == "auto" and not any(r.get("ok") for r in results.values())):
-            return {"ok": results.get("sse", {}).get("ok", False), "channels": results}
+    sse_published = False
+    for ch in order:
+        # On macOS the desktop channel is itself delivered over the SSE bus, so
+        # avoid publishing the same event twice in broadcast mode.
+        if ch == "sse" and sse_published:
+            continue
+        res = await _dispatch_channel(ch, title, body, webhook_url, webhook_type)
+        if res is None:
+            # Channel not applicable (e.g. no webhook URL). Surface it as an
+            # error only when that channel was explicitly requested.
+            if len(order) == 1:
+                results[ch] = {"ok": False, "error": f"{ch} not configured"}
+            continue
+        results[ch] = res
+        if res.get("ok") and (ch == "sse" or (ch == "desktop" and platform.system() == "Darwin")):
+            sse_published = True
+        if stop_after_first and res.get("ok"):
+            break
 
     any_ok = any(r.get("ok") for r in results.values())
     return {"ok": any_ok, "channels": results}
+
+
+async def _dispatch_channel(
+    ch: str,
+    title: str,
+    body: str,
+    webhook_url: str | None,
+    webhook_type: str | None,
+) -> dict[str, Any] | None:
+    """Deliver through a single channel. Returns the per-channel result, or
+    ``None`` when the channel is not applicable (e.g. no webhook configured)."""
+    if ch == "desktop":
+        return await _notify_desktop(title, body)
+    if ch == "webhook":
+        wh_url = webhook_url or _WEBHOOK_URL
+        if not wh_url:
+            return None
+        return await _notify_webhook(wh_url, webhook_type or _WEBHOOK_TYPE, title, body)
+    if ch == "telegram":
+        return await _notify_telegram(title, body)
+    if ch == "wechat":
+        return await _notify_wechat(title, body)
+    if ch == "sse":
+        return await _publish_sse(title, body)
+    return {"ok": False, "error": f"unknown channel: {ch}"}
+
+
+async def _publish_sse(title: str, body: str) -> dict[str, Any]:
+    """Publish a ``notification`` event on the in-app SSE bus."""
+    try:
+        from cyrene import debug as cy_debug
+
+        await cy_debug.publish_event({
+            "type": "notification",
+            "title": title,
+            "body": body,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------
@@ -129,10 +153,9 @@ async def _notify_desktop(title: str, body: str) -> dict[str, Any]:
     system = platform.system()
     try:
         if system == "Darwin":
-            # macOS desktop notifications are delivered via SSE + frontend
-            # Notification API. Return ok so notify() knows to skip other
-            # channels — the actual SSE publish happens in the SSE block.
-            return {"ok": True, "via": "sse"}
+            # macOS desktop notifications ride the SSE bus + the frontend
+            # Notification API — delivering "desktop" *is* publishing the event.
+            return await _publish_sse(title, body)
         elif system == "Windows":
             return _notify_windows(title, body)
         elif system == "Linux":

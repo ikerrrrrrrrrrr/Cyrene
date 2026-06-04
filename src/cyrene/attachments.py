@@ -16,6 +16,13 @@ from cyrene.llm import _assistant_text, _truncate
 
 UPLOADS_DIR = DATA_DIR / "webui_uploads"
 EXPORTS_DIR = DATA_DIR / "webui_exports"
+# Analysis results are cached under the app data dir — never next to the source
+# file — so read-only analysis can't mutate the user's workspace (issue #44).
+ANALYSIS_CACHE_DIR = DATA_DIR / "attachment_cache"
+
+# Bump when the parsing/analysis logic changes in a way that should invalidate
+# every previously cached result.
+_ANALYSIS_PARSER_VERSION = "2"
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"}
 _PDF_EXTENSIONS = {".pdf"}
@@ -44,8 +51,48 @@ _MULTIMODAL_MODEL_HINTS = (
 )
 
 
-def _sidecar_path(path: Path) -> Path:
-    return path.with_name(path.name + ".analysis.json")
+def _file_content_hash(path: Path) -> str:
+    """SHA-256 of the file's bytes, with a stat-based fallback if unreadable."""
+    h = hashlib.sha256()
+    try:
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        try:
+            st = path.stat()
+            h.update(f"stat:{path}:{st.st_size}:{st.st_mtime_ns}".encode())
+        except OSError:
+            h.update(f"path:{path}".encode())
+    return h.hexdigest()
+
+
+def _vision_model_fingerprint() -> str:
+    """A stable string that changes whenever the configured vision model(s) change."""
+    try:
+        from cyrene.config_store import get_vision_models
+        return json.dumps(get_vision_models() or [], sort_keys=True, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def _analysis_cache_key(path: Path, prompt: str) -> str:
+    """Cache key from file content, prompt, vision-model config, and parser version.
+
+    Any change to one of these yields a different key, so a stale analysis is
+    never reused after the file, prompt, model, or parser changes (issue #44).
+    """
+    parts = "\x00".join([
+        _ANALYSIS_PARSER_VERSION,
+        _file_content_hash(path),
+        prompt or "",
+        _vision_model_fingerprint(),
+    ])
+    return hashlib.sha256(parts.encode("utf-8")).hexdigest()
+
+
+def _cache_file(key: str) -> Path:
+    return ANALYSIS_CACHE_DIR / f"{key}.json"
 
 
 def is_uploaded_attachment_path(path_str: str) -> bool:
@@ -182,20 +229,26 @@ def _build_attachment_preview(result: dict[str, Any]) -> str:
     return str(result.get("note") or "File uploaded.")
 
 
-def _read_sidecar(path: Path) -> dict[str, Any] | None:
-    sidecar = _sidecar_path(path)
-    if not sidecar.exists():
+def _read_cache(key: str) -> dict[str, Any] | None:
+    cache_file = _cache_file(key)
+    if not cache_file.exists():
         return None
     try:
-        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        data = json.loads(cache_file.read_text(encoding="utf-8"))
     except Exception:
         return None
     return data if isinstance(data, dict) else None
 
 
-def _write_sidecar(path: Path, payload: dict[str, Any]) -> None:
-    sidecar = _sidecar_path(path)
-    sidecar.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+def _write_cache(key: str, payload: dict[str, Any]) -> None:
+    # Best-effort: caching must never fail an otherwise-successful analysis.
+    try:
+        ANALYSIS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_file(key).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
 
 
 def _pdf_analysis(path: Path, max_chars: int = 12000) -> dict[str, Any]:
@@ -256,7 +309,8 @@ async def run_vision_chat(content: list[dict[str, Any]], content_prompt: str = "
 
 async def analyze_attachment(path_str: str, prompt: str = "", force_refresh: bool = False) -> dict[str, Any]:
     path = Path(path_str).resolve()
-    cached = None if force_refresh else _read_sidecar(path)
+    cache_key = _analysis_cache_key(path, prompt)
+    cached = None if force_refresh else _read_cache(cache_key)
     if cached:
         return cached
 
@@ -283,5 +337,5 @@ async def analyze_attachment(path_str: str, prompt: str = "", force_refresh: boo
         payload["note"] = "No built-in parser for this file type."
 
     payload["preview"] = _build_attachment_preview(payload)
-    _write_sidecar(path, payload)
+    _write_cache(cache_key, payload)
     return payload

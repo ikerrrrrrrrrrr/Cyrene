@@ -54,3 +54,6 @@ webpage/
 # Node.js build artifacts (webui JSX precompilation)
 node_modules/
 src/webui/static/app/compiled/
+
+# Transient agent/test output written to the repo root
+/animations/

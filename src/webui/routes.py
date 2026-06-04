@@ -2360,8 +2360,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.post("/api/tasks")
     async def api_create_task(request: Request):
         from cyrene import db as cy_db
-        from croniter import croniter
-        from datetime import datetime, timezone, timedelta
+        from cyrene.schedule_spec import compute_next_run
         body = await request.json()
         stype = body["schedule_type"]
         svalue = body["schedule_value"]
@@ -2369,19 +2368,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         # 用户需通过 chat agent 的 schedule_task 工具创建（会弹出确认对话框）
         permission_mode = "workspace_only"
 
-        # Compute next_run if not provided by the frontend
+        # Compute next_run if not provided by the frontend. An invalid schedule
+        # is a 400 — never silently schedule for "now".
         next_run = body.get("next_run", "")
         if not next_run:
-            now_dt = datetime.now(timezone.utc)
             try:
-                if stype == "cron":
-                    next_run = croniter(svalue, now_dt).get_next(datetime).isoformat()
-                elif stype == "interval":
-                    next_run = (now_dt + timedelta(seconds=int(svalue))).isoformat()
-                elif stype == "once":
-                    next_run = now_dt.isoformat()
-            except Exception:
-                next_run = now_dt.isoformat()
+                next_run = compute_next_run(stype, svalue)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
 
         task_id = await cy_db.create_task(
             _db_path,
@@ -2398,27 +2392,21 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     @router.put("/api/tasks/{task_id}")
     async def api_update_task(task_id: str, request: Request):
         from cyrene import db as cy_db
-        from croniter import croniter
-        from datetime import datetime, timezone, timedelta
+        from cyrene.schedule_spec import compute_next_run
         body = await request.json()
         # Build SET clause dynamically from provided fields
         sets = []
         vals = []
 
-        # If schedule_type or schedule_value changed, recalculate next_run
+        # If schedule_type or schedule_value changed, recalculate next_run.
+        # An invalid schedule is a 400 rather than a silently-dropped update.
         stype = body.get("schedule_type")
         svalue = body.get("schedule_value")
         if stype and svalue and "next_run" not in body:
-            now_dt = datetime.now(timezone.utc)
             try:
-                if stype == "cron":
-                    body["next_run"] = croniter(svalue, now_dt).get_next(datetime).isoformat()
-                elif stype == "interval":
-                    body["next_run"] = (now_dt + timedelta(seconds=int(svalue))).isoformat()
-                elif stype == "once":
-                    body["next_run"] = now_dt.isoformat()
-            except Exception:
-                pass
+                body["next_run"] = compute_next_run(stype, svalue)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
 
         # permission_mode 不可通过 REST API 修改 ——
         # 需通过 chat agent 的 schedule_task 工具重新创建（会弹出确认对话框）

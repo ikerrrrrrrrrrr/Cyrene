@@ -2194,6 +2194,16 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (rightSidebarCollapsed && setRightSidebarCollapsed) setRightSidebarCollapsed(false);
   }
 
+  // Auto-reveal the live browser panel when the agent starts browsing (M2).
+  const _browserState = window.DATA && window.DATA.browser;
+  const browserActivityKey = _browserState && _browserState.active ? ("on:" + (_browserState.roundId || "")) : "off";
+  useEffect(function () {
+    if (browserActivityKey === "off") return;
+    addSidebarTab("browser");
+    expandRightSidebar();
+    if (setRightSidebarView) setRightSidebarView("browser");
+  }, [browserActivityKey]);
+
   function handleShowHtml(content) {
     expandRightSidebar();
     addSidebarTab("html");
@@ -3254,6 +3264,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
   if (tabs.has("map"))         viewOptions.push({ id: "map",         label: t("chat.side.map") });
   if (tabs.has("code-editor")) viewOptions.push({ id: "code-editor", label: t("chat.side.codeEditor") });
   if (tabs.has("diff-viewer")) viewOptions.push({ id: "diff-viewer", label: t("chat.side.diffViewer") });
+  if (tabs.has("browser"))     viewOptions.push({ id: "browser",     label: t("chat.side.browser") });
 
   const viewIds = viewOptions.map(function (o) { return o.id; });
 
@@ -3348,6 +3359,14 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
           mode: diffData.mode,
           left: diffData.left,
           right: diffData.right,
+          onClose: function () { onViewChange("overview"); },
+        })}
+      </div>;
+    }
+    if (view === "browser") {
+      return <div className="side-section side-section--flush" style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", borderBottom: 0 }}>
+        {typeof window.BrowserViewportPanel !== "undefined" && React.createElement(window.BrowserViewportPanel, {
+          roundId: roundId,
           onClose: function () { onViewChange("overview"); },
         })}
       </div>;

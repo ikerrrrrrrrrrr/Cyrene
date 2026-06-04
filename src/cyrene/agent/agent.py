@@ -45,6 +45,7 @@ from cyrene.agent.state import (
     _MAX_TOOL_ROUNDS,
     _publish_runtime_event,
     _streaming_reply_requested,
+    _ui_round_assistant_meta,
     _ui_round_hide_initial_detail,
 )
 from cyrene.llm import _assistant_text, _truncate
@@ -230,6 +231,12 @@ async def _run_main_agent(
         final_text = (await _final_reply_from_history(base_messages, max_tokens=None)).strip()
         if final_text and not _is_placeholder_reply(final_text):
             return final_text
+        meta = _ui_round_assistant_meta.get()
+        if isinstance(meta, dict) and meta.get("system_initiated"):
+            # System-initiated rounds (e.g. the proactive heartbeat) stay silent
+            # when the agent has nothing real to say: return empty so the caller
+            # delivers nothing instead of a fabricated "Done." placeholder.
+            return ""
         return fallback
 
     def _session_messages_to_save(current_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

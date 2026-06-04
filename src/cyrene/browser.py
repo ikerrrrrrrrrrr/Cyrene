@@ -41,8 +41,42 @@ logger = logging.getLogger(__name__)
 _PLAYWRIGHT_AVAILABLE: bool | None = None
 
 # Screenshot/frame tuning — keep base64 frames small enough to ride the SSE bus.
-_FRAME_QUALITY = 60
-_VIEWPORT = {"width": 1280, "height": 800}
+# Defaults below; each is overridable through the config store (env keys).
+_DEFAULT_FRAME_QUALITY = 60
+_DEFAULT_WIDTH = 1280
+_DEFAULT_HEIGHT = 800
+
+
+def _cfg(key: str, default: str) -> str:
+    try:
+        from cyrene.config_store import get_env
+        return str(get_env(key, default) or default)
+    except Exception:
+        return default
+
+
+def _cfg_int(key: str, default: int) -> int:
+    try:
+        return int(_cfg(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _headless_default() -> bool:
+    """Normal (non-takeover) headed/headless mode. Default headless; the takeover
+    flow temporarily restarts headed regardless."""
+    return _cfg("CYRENE_BROWSER_HEADLESS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _frame_quality() -> int:
+    return _cfg_int("CYRENE_BROWSER_SCREENCAST_QUALITY", _DEFAULT_FRAME_QUALITY)
+
+
+def _viewport() -> dict[str, int]:
+    return {
+        "width": _cfg_int("CYRENE_BROWSER_WIDTH", _DEFAULT_WIDTH),
+        "height": _cfg_int("CYRENE_BROWSER_HEIGHT", _DEFAULT_HEIGHT),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +143,8 @@ class _BrowserSession:
         self._context: Any = None
         self._page: Any = None
         self._mode: str = "headless"
+        self._takeover_active = False
+        self._closing_deliberately = False
         self._action_lock = asyncio.Lock()
         self._mode_lock = asyncio.Lock()
         # Screencast (M2): live JPEG frames fanned out to WebSocket subscribers.
@@ -125,16 +161,18 @@ class _BrowserSession:
         d.mkdir(parents=True, exist_ok=True)
         return str(d)
 
-    async def _ensure_started(self, *, headless: bool = True) -> None:
+    async def _ensure_started(self, *, headless: bool | None = None) -> None:
         if self._context is not None:
             return
         from playwright.async_api import async_playwright
 
+        if headless is None:
+            headless = _headless_default()
         self._pw = await async_playwright().start()
         self._context = await self._pw.chromium.launch_persistent_context(
             self.profile_dir,
             headless=headless,
-            viewport=_VIEWPORT,
+            viewport=_viewport(),
         )
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()
@@ -151,6 +189,104 @@ class _BrowserSession:
             return self._page.url
         except Exception:
             return ""
+
+    # -- Login takeover (M3): headless <-> headed restart -------------------
+    #
+    # A persistent ``user_data_dir`` may only back one Chromium instance at a
+    # time, so switching headless<->headed means fully closing the current
+    # context before relaunching against the same profile. Cookies/localStorage
+    # live on disk, so the agent stays authenticated after the user logs in.
+
+    async def _relaunch(self, *, headless: bool, url: str = "") -> None:
+        await self._teardown_screencast()
+        if self._context is not None:
+            self._closing_deliberately = True
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            finally:
+                self._closing_deliberately = False
+            self._context = None
+            self._page = None
+        if self._pw is None:
+            from playwright.async_api import async_playwright
+            self._pw = await async_playwright().start()
+        self._context = await self._pw.chromium.launch_persistent_context(
+            self.profile_dir,
+            headless=headless,
+            viewport=_viewport(),
+        )
+        pages = self._context.pages
+        self._page = pages[0] if pages else await self._context.new_page()
+        self._mode = "headless" if headless else "headed"
+        if url:
+            try:
+                await self._page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                logger.debug("relaunch goto failed for %s", url, exc_info=True)
+
+    async def switch_to_headed(self, url: str = "") -> None:
+        """Bring up a real, visible browser window for the user to log in.
+
+        Screencast is torn down (it resumes in headless after the takeover), so
+        the chat panel shows the takeover prompt rather than the login pixels.
+        """
+        async with self._mode_lock:
+            await self._ensure_started()
+            target = url or (self._page.url if self._page is not None else "")
+            await self._relaunch(headless=False, url=target)
+            self._takeover_active = True
+            try:
+                self._context.on("close", self._on_headed_close)
+            except Exception:
+                pass
+            try:
+                await self._page.bring_to_front()
+            except Exception:
+                pass
+            await self._os_focus()
+
+    def _on_headed_close(self, *_args: Any) -> None:
+        """User closed the takeover window manually (vs. our deliberate relaunch)."""
+        if self._takeover_active and not self._closing_deliberately:
+            try:
+                asyncio.create_task(self._publish_takeover_cancelled())
+            except Exception:
+                pass
+
+    async def _publish_takeover_cancelled(self) -> None:
+        self._takeover_active = False
+        try:
+            from cyrene import debug
+            await debug.publish_event({"type": "browser_takeover_cancelled"})
+        except Exception:
+            pass
+
+    async def end_takeover(self, url: str = "") -> None:
+        """Return to headless after the user finished logging in, same profile."""
+        async with self._mode_lock:
+            target = url or (self._page.url if self._page is not None else "")
+            await self._relaunch(headless=_headless_default(), url=target)
+            self._takeover_active = False
+            if self._frame_subs:
+                async with self._screencast_lock:
+                    if not self._screencasting:
+                        await self._attach_screencast()
+
+    async def _os_focus(self) -> None:
+        """Best-effort: raise the Chromium app to the foreground (macOS only)."""
+        import sys
+        if sys.platform != "darwin":
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "osascript", "-e", 'tell application "Chromium" to activate',
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+        except Exception:
+            pass
 
     async def navigate(self, url: str, *, max_chars: int = 8000) -> dict[str, Any]:
         async with self._action_lock:
@@ -208,7 +344,7 @@ class _BrowserSession:
             page = self._page
             if page is None:
                 return
-            raw = await page.screenshot(type="jpeg", quality=_FRAME_QUALITY)
+            raw = await page.screenshot(type="jpeg", quality=_frame_quality())
             image = "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
             norm_box = None
             if isinstance(box, dict) and box:
@@ -221,7 +357,7 @@ class _BrowserSession:
             await debug.publish_event({
                 "type": "browser_frame",
                 "round_id": _current_round_id.get(),
-                "url": url or self._page.url,
+                "url": url or page.url,
                 "title": title,
                 "action": action,
                 "target": target,
@@ -238,19 +374,25 @@ class _BrowserSession:
         """Register *queue* as a frame subscriber; start CDP screencast on demand."""
         async with self._screencast_lock:
             self._frame_subs.add(queue)
-            if self._screencasting:
-                return
-            await self._ensure_started()
-            self._cdp = await self._context.new_cdp_session(self._page)
-            self._cdp.on("Page.screencastFrame", self._on_screencast_frame)
-            await self._cdp.send("Page.startScreencast", {
-                "format": "jpeg",
-                "quality": _FRAME_QUALITY,
-                "maxWidth": _VIEWPORT["width"],
-                "maxHeight": _VIEWPORT["height"],
-                "everyNthFrame": 1,
-            })
-            self._screencasting = True
+            # During a login takeover the live view is intentionally paused, and
+            # the page is mid-restart — defer attaching until end_takeover.
+            if not self._screencasting and not self._takeover_active:
+                await self._attach_screencast()
+
+    async def _attach_screencast(self) -> None:
+        """(Re)attach a CDP screencast to the current page. Caller guards concurrency."""
+        await self._ensure_started()
+        self._cdp = await self._context.new_cdp_session(self._page)
+        self._cdp.on("Page.screencastFrame", self._on_screencast_frame)
+        vp = _viewport()
+        await self._cdp.send("Page.startScreencast", {
+            "format": "jpeg",
+            "quality": _frame_quality(),
+            "maxWidth": vp["width"],
+            "maxHeight": vp["height"],
+            "everyNthFrame": 1,
+        })
+        self._screencasting = True
 
     async def stop_screencast(self, queue: "asyncio.Queue") -> None:
         """Unregister *queue*; tear the CDP screencast down when the last one leaves."""
@@ -343,6 +485,19 @@ async def close_session() -> None:
     if _session is not None:
         await _session.close()
         _session = None
+
+
+async def end_browser_takeover(url: str = "") -> None:
+    """Return the shared session to headless after a login takeover (M3 resume hook)."""
+    session = _get_session()
+    if session._context is not None:
+        await session.end_takeover(url)
+    # Clear the panel's "waiting for login" placeholder so the live view returns.
+    try:
+        from cyrene import debug
+        await debug.publish_event({"type": "browser_takeover_cancelled"})
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

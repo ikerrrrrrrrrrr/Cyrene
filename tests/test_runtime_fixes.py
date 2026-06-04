@@ -790,6 +790,10 @@ async def test_heartbeat_proactive_check_uses_main_agent_loop(monkeypatch):
     monkeypatch.setattr(scheduler, "_save_lottery_state", lambda: None)
     monkeypatch.setattr(scheduler, "_is_daytime", lambda: True)
     monkeypatch.setattr(scheduler, "_silence_hours", lambda: 96.0)
+    monkeypatch.setattr(scheduler, "notify", AsyncMock())
+    scheduler._LOTTERY_STATE.update(
+        consecutive_unanswered=0, cooldown_until=0.0, last_proactive_time=0.0, probability=0.0,
+    )
 
     async def fake_context(_db_path=""):
         return "## Recent memories about the user\n- user is preparing a launch"
@@ -810,6 +814,9 @@ async def test_heartbeat_proactive_check_uses_main_agent_loop(monkeypatch):
     assert "scheduler-initiated proactive check-in" in seen["prompt"]
     assert "Recent memories about the user" in seen["prompt"]
     assert "If you speak, the final reply will be shown directly to the user" in seen["prompt"]
+    # A delivered message advances the unanswered streak by exactly one.
+    assert scheduler._LOTTERY_STATE["consecutive_unanswered"] == 1
+    assert scheduler._LOTTERY_STATE["last_proactive_time"] > 0
 
 
 async def test_heartbeat_proactive_check_stays_silent_when_agent_skips(monkeypatch):
@@ -822,6 +829,9 @@ async def test_heartbeat_proactive_check_stays_silent_when_agent_skips(monkeypat
     monkeypatch.setattr(scheduler, "_save_lottery_state", lambda: None)
     monkeypatch.setattr(scheduler, "_is_daytime", lambda: True)
     monkeypatch.setattr(scheduler, "_silence_hours", lambda: 96.0)
+    scheduler._LOTTERY_STATE.update(
+        consecutive_unanswered=0, cooldown_until=0.0, last_proactive_time=0.0, probability=0.0,
+    )
 
     async def fake_context(_db_path):
         return "## Recent conversation\n- user already closed the loop"
@@ -839,9 +849,14 @@ async def test_heartbeat_proactive_check_stays_silent_when_agent_skips(monkeypat
 
     await scheduler._heartbeat_proactive_check(bot=None, db_path="db.sqlite3")
 
+    # Agent returned no text -> nothing is delivered and the unanswered streak
+    # does not advance.
     assert seen["notified"] is False
+    assert scheduler._LOTTERY_STATE["consecutive_unanswered"] == 0
     assert "scheduler-initiated proactive check-in" in seen["prompt"]
-    assert "do not interrupt" in seen["prompt"].lower()
+    # The softened prompt still lets the agent bow out via `quit` when reaching
+    # out would feel intrusive.
+    assert "quit" in seen["prompt"].lower()
 
 
 async def test_execute_task_fallback_persists_webui_reminder(monkeypatch, tmp_path):
@@ -3483,7 +3498,11 @@ async def test_run_agent_clears_stale_interrupt_before_starting(monkeypatch):
     assert seen["interrupt_before_start"] is False
 
 
-async def test_run_main_agent_returns_background_notice_when_monitoring_is_interrupted(monkeypatch):
+async def test_run_main_agent_summarizes_and_cancels_subagents_when_monitoring_is_interrupted(monkeypatch):
+    # New behavior (主代理活动检测): when the user interrupts while the main agent
+    # is monitoring subagents, the agent cancels the running subagents immediately
+    # and proceeds to the summary phase (it no longer returns an early "still working
+    # in the background" notice — that path was removed).
     from cyrene import agent
     from cyrene.agent import state as _agent_state
     from cyrene.agent import session as _agent_session
@@ -3494,8 +3513,11 @@ async def test_run_main_agent_returns_background_notice_when_monitoring_is_inter
     from cyrene import inbox
     from cyrene import subagent
 
-    interrupt_event = asyncio.Event()
-    monkeypatch.setattr(_agent_state, "_interrupt_event", interrupt_event)
+    # The monitoring loop waits on the module-level ``_interrupt_event`` (a from-import
+    # of the shared state object), so we signal that *same* shared event rather than
+    # monkeypatching a fresh one onto the state module — a replacement object would
+    # never reach agent.py's binding. The autouse conftest fixture clears this event
+    # before each test, so using it is isolated.
 
     responses = iter([
         {
@@ -3508,6 +3530,7 @@ async def test_run_main_agent_returns_background_notice_when_monitoring_is_inter
         },
     ])
     saved = []
+    cancelled = []
 
     async def fake_call_llm(messages, tools=None, max_tokens=32000):
         return next(responses)
@@ -3518,25 +3541,38 @@ async def test_run_main_agent_returns_background_notice_when_monitoring_is_inter
     async def fake_save(messages):
         saved.append(messages)
 
-    async def fake_snapshot():
+    async def fake_snapshot(round_id=None):
         return {"alice": {"status": "running", "task": "research"}}
+
+    async def fake_cancel_subagent_tasks(round_id=None):
+        cancelled.append(round_id)
+
+    async def fake_summary(**kwargs):
+        return "summary done"
+
+    async def fake_flow_snapshot(round_id=None):
+        return {}
 
     _patch_call_llm(monkeypatch, fake_call_llm)
     _patch_execute_tool(monkeypatch, fake_execute_tool)
     _patch_save_session(monkeypatch, fake_save)
-    monkeypatch.setattr(subagent, "collect_results", lambda: asyncio.sleep(0, result="summary"))
-    monkeypatch.setattr(subagent, "clear", lambda: asyncio.sleep(0))
     monkeypatch.setattr(subagent, "get_snapshot", fake_snapshot)
+    monkeypatch.setattr(subagent, "cancel_subagent_tasks", fake_cancel_subagent_tasks)
+    monkeypatch.setattr(subagent, "run_summary_subagent", fake_summary)
+    monkeypatch.setattr(subagent, "build_flow_snapshot", fake_flow_snapshot)
+    monkeypatch.setattr(subagent, "clear", lambda round_id=None: asyncio.sleep(0))
     monkeypatch.setattr(subagent, "get_raw_messages", lambda aid: asyncio.sleep(0, result=[]))
     monkeypatch.setattr(subagent, "reactivate", lambda aid: asyncio.sleep(0, result=False))
     monkeypatch.setattr(inbox, "get_unread_count", lambda aid: 0)
 
     task = asyncio.create_task(agent._run_main_agent("check", [], None, 0, "db.sqlite3"))
     await asyncio.sleep(0.1)
-    interrupt_event.set()
+    _agent_state._interrupt_event.set()
     result = await task
 
-    assert result == "[Sub-agents are still working in the background. You can continue the conversation.]"
+    # Interrupt -> running subagents cancelled, session persisted, summary returned.
+    assert result == "summary done"
+    assert cancelled, "interrupt should cancel running subagents"
     assert saved
 
 

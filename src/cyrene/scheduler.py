@@ -27,7 +27,6 @@ from pathlib import Path
 
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from croniter import croniter
 
 from cyrene import db
 from cyrene.agent import append_system_message, run_heartbeat_agent, run_steward_agent, run_task_agent
@@ -35,6 +34,7 @@ from cyrene.channels.wechat import get_current_client
 from cyrene.config import BASE_DIR, DATA_DIR, OWNER_ID, SCHEDULER_INTERVAL, STATE_FILE, STEWARD_INTERVAL
 from cyrene.conversations import CONVERSATIONS_DIR, get_recent_conversations
 from cyrene.notifications import notify
+from cyrene.schedule_spec import compute_next_run
 from cyrene.short_term import clear_old_entries, get_context as get_short_term_context
 from cyrene.soul import apply_soul_update, read_shallow_memory, read_soul
 
@@ -392,11 +392,11 @@ def _build_proactive_user_prompt(context: str, silence_hours: float | None, cons
     )
 
     unanswered_note = ""
-    if consecutive_unanswered == 1:
+    if consecutive_unanswered >= 1:
         unanswered_note = (
-            "IMPORTANT: The user did not reply to your last proactive message. "
-            "Only speak now if you have something clearly specific and valuable to say. "
-            "If in doubt, call `quit` — do not interrupt again for no reason."
+            "Note: the user hasn't replied to your last proactive message yet. "
+            "Be considerate — keep this one light and brief, and don't pile on. "
+            "If reaching out again right now would feel pushy, it's fine to call `quit`."
         )
 
     return f"""## Memory context
@@ -407,7 +407,7 @@ def _build_proactive_user_prompt(context: str, silence_hours: float | None, cons
 - If the user mentioned plans, events, or concerns recently — follow up on them naturally.
 - If the user's recent emotional patterns suggest stress or tiredness, be warm and supportive.
 - If there are open topics from the recent conversation, follow up.
-- If there's truly nothing specific to reference, call `quit` and do not interrupt.
+- If there's truly nothing specific to reference, a short, genuine check-in is still fine — keep it warm and natural, not mechanical. Only call `quit` if reaching out right now would feel intrusive or repetitive.
 {silence_note}
 {unanswered_note}
 
@@ -495,30 +495,27 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
             _tmp_wpm.set(False)
             logger.info("Restored write permissions after task %s", task_id)
 
-    # Calculate next_run based on schedule type
+    # Re-arm (or retire) the task based on its schedule type. ``next_run`` is
+    # computed through the shared schedule spec so a recurring task fires at the
+    # same cadence the REST API and agent tool promised at creation time.
     stype = task["schedule_type"]
     svalue = task["schedule_value"]
     now = datetime.now(timezone.utc)
 
     try:
-        if stype == "cron":
-            next_run = croniter(svalue, now).get_next(datetime).isoformat()
-            await db.update_task_after_run(
-                db_path, task_id, result, next_run, "active",
-            )
-        elif stype == "interval":
-            next_run = (now + timedelta(milliseconds=int(svalue))).isoformat()
-            await db.update_task_after_run(
-                db_path, task_id, result, next_run, "active",
-            )
-        elif stype == "once":
+        if stype == "once":
             await db.update_task_after_run(
                 db_path, task_id, result, None, "completed",
             )
         else:
-            logger.warning(
-                "Unknown schedule_type %s for task %s", stype, task_id,
+            next_run = compute_next_run(stype, svalue, now=now)
+            await db.update_task_after_run(
+                db_path, task_id, result, next_run, "active",
             )
+    except ValueError:
+        logger.warning(
+            "Unknown/invalid schedule %s(%s) for task %s", stype, svalue, task_id,
+        )
     except Exception:
         logger.exception(
             "Failed to update task %s after execution", task_id,
@@ -666,17 +663,13 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             logger.debug("Proactive cooldown active, %.1f h remaining", remaining_h)
             return
 
-        # -------- Update consecutive-unanswered counter --------
-        last_proactive_time = float(_LOTTERY_STATE.get("last_proactive_time", 0.0))
-        if last_proactive_time > 0:
-            last_user_dt = _last_user_message_time()
-            if last_user_dt is not None and last_user_dt.timestamp() >= last_proactive_time:
-                # User replied after the last proactive message — reset streak
-                _LOTTERY_STATE["consecutive_unanswered"] = 0
-            else:
-                # No user reply since last proactive message
-                _LOTTERY_STATE["consecutive_unanswered"] = int(_LOTTERY_STATE.get("consecutive_unanswered", 0)) + 1
-
+        # -------- Cooldown trigger --------
+        # ``consecutive_unanswered`` counts proactive messages we actually
+        # delivered without a user reply in between. It is incremented once per
+        # delivery (see the send path below) and cleared by ``reset_lottery``
+        # the moment the user speaks on any channel. Counting real deliveries —
+        # rather than heartbeat ticks — is what stops a single ignored message
+        # from snowballing into a multi-day silence.
         consecutive = int(_LOTTERY_STATE.get("consecutive_unanswered", 0))
         if consecutive >= _PROACTIVE_COOLDOWN_THRESHOLD:
             _LOTTERY_STATE["cooldown_until"] = time.time() + _PROACTIVE_COOLDOWN_SECONDS
@@ -684,8 +677,9 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             _LOTTERY_STATE["probability"] = 0.0
             _save_lottery_state()
             logger.info(
-                "User ignored %d consecutive proactive messages; entering 3-day cooldown",
+                "User ignored %d consecutive proactive messages; backing off for %d days",
                 _PROACTIVE_COOLDOWN_THRESHOLD,
+                _PROACTIVE_COOLDOWN_SECONDS // 86400,
             )
             return
 
@@ -734,7 +728,10 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
             logger.info("Proactive round produced no visible reply")
             return
 
-        # Record the send time so the next check can detect whether the user replied.
+        # A message was actually delivered. Count it toward the unanswered
+        # streak (``reset_lottery`` clears the streak as soon as the user replies
+        # on any channel) and record the send time for diagnostics.
+        _LOTTERY_STATE["consecutive_unanswered"] = int(_LOTTERY_STATE.get("consecutive_unanswered", 0)) + 1
         _LOTTERY_STATE["last_proactive_time"] = time.time()
         _save_lottery_state()
 
