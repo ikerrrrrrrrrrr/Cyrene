@@ -11,6 +11,7 @@ import re
 import shutil
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -600,13 +601,19 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
         _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
         uploaded: list[dict[str, Any]] = []
-        now = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        for index, file in enumerate(files, start=1):
+        for file in files:
             safe_name = _safe_upload_name(file.filename or "")
-            target = _UPLOADS_DIR / f"{now}_{index:02d}_{safe_name}"
-            content = await file.read()
-            target.write_bytes(content)
+            target = _UPLOADS_DIR / f"{uuid.uuid4().hex}_{safe_name}"
+            file_size = 0
+            try:
+                with target.open("wb") as f:
+                    while chunk := await file.read(65536):
+                        f.write(chunk)
+                        file_size += len(chunk)
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
             content_type = str(file.content_type or mimetypes.guess_type(str(target))[0] or "application/octet-stream")
             kind = attachment_kind_from_meta(content_type, target.name)
             width, height = _image_dimensions(target) if kind == "image" else (None, None)
@@ -615,7 +622,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "name": file.filename or safe_name,
                 "path": str(target.resolve()),
                 "content_type": content_type,
-                "size": len(content),
+                "size": file_size,
                 "kind": kind,
                 "url": f"/api/chat/upload/{target.name}",
                 **({"width": width} if isinstance(width, int) else {}),
@@ -632,7 +639,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                     name=file.filename or safe_name,
                     content_type=content_type,
                     kind=kind,
-                    size=len(content),
+                    size=file_size,
                 )
                 asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
             except Exception as e:

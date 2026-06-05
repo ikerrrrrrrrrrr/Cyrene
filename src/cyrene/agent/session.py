@@ -1057,22 +1057,35 @@ async def _compress_old_messages(all_messages: list[dict[str, Any]]) -> None:
     if not to_compress:
         return
 
-    lines = []
+    # Only user messages feed emotion/fact extraction; assistant messages provide context only.
+    user_lines = []
+    context_lines = []
     for m in to_compress:
-        role = "User" if m["role"] == "user" else ASSISTANT_NAME
         content = m.get("content", "")[:200]
-        lines.append(f"{role}: {content}")
-    text = "\n".join(lines)
+        if m["role"] == "user":
+            user_lines.append(f"User: {content}")
+            context_lines.append(f"User: {content}")
+        else:
+            context_lines.append(f"{ASSISTANT_NAME}: {content}")
 
-    prompt = f"""Extract key information from this conversation. Focus on:
+    if not user_lines:
+        return
+
+    text = "\n".join(context_lines)
+    user_text = "\n".join(user_lines)
+
+    prompt = f"""Extract key information from the USER's messages below. Focus on:
 1. Facts about the user (job, preferences, habits)
 2. Emotional patterns or recurring topics
 3. Action items or decisions made
 
 For each finding, classify as: fact | pattern | preference | emotion
 
-Conversation:
+Full conversation context (for reference only):
 {text}
+
+User messages to analyse:
+{user_text}
 
 Output format (one per line, no explanations):
 [fact] user works at a tech company
