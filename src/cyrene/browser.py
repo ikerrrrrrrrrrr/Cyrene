@@ -27,16 +27,90 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import logging
+import os
 import re
+import socket
 import tempfile
 import time
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# SSRF protection
+# ---------------------------------------------------------------------------
+
+_BLOCKED_NETWORKS: tuple[ipaddress._BaseNetwork, ...] = (
+    ipaddress.ip_network("127.0.0.0/8"),    # loopback
+    ipaddress.ip_network("::1/128"),         # IPv6 loopback
+    ipaddress.ip_network("10.0.0.0/8"),      # private class A
+    ipaddress.ip_network("172.16.0.0/12"),   # private class B
+    ipaddress.ip_network("192.168.0.0/16"),  # private class C
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / cloud metadata (169.254.169.254)
+    ipaddress.ip_network("fe80::/10"),       # IPv6 link-local
+    ipaddress.ip_network("fc00::/7"),        # IPv6 unique local
+    ipaddress.ip_network("0.0.0.0/8"),       # "this" network
+    ipaddress.ip_network("100.64.0.0/10"),   # shared address space (RFC 6598)
+    ipaddress.ip_network("240.0.0.0/4"),     # reserved
+)
+
+
+class SSRFBlockedError(ValueError):
+    """Raised when a URL is rejected by the SSRF protection policy."""
+
+
+def _check_url(url: str) -> None:
+    """Validate *url* before any fetch or navigation.
+
+    Raises SSRFBlockedError for non-http(s) schemes and destinations that
+    resolve to loopback, private, link-local, or otherwise reserved IP ranges
+    (including the cloud-metadata endpoint 169.254.169.254).
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception as exc:
+        raise SSRFBlockedError(f"Malformed URL: {exc}") from exc
+
+    if parsed.scheme not in ("http", "https"):
+        raise SSRFBlockedError(
+            f"Blocked scheme {parsed.scheme!r} — only http/https are allowed"
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise SSRFBlockedError("URL has no hostname")
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as exc:
+        raise SSRFBlockedError(f"Cannot resolve {hostname!r}: {exc}") from exc
+
+    for (_family, _type, _proto, _canonname, sockaddr) in addr_infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        for net in _BLOCKED_NETWORKS:
+            if ip in net:
+                raise SSRFBlockedError(
+                    f"Navigation to {hostname!r} ({ip}) is blocked: matches reserved range {net}"
+                )
+
+
+async def _ssrf_redirect_hook(response: httpx.Response) -> None:
+    """httpx response event hook — rejects redirects to blocked destinations."""
+    if 300 <= response.status_code < 400:
+        location = response.headers.get("location", "")
+        if location:
+            _check_url(location)
+
 
 _PLAYWRIGHT_AVAILABLE: bool | None = None
 
@@ -292,6 +366,14 @@ class _BrowserSession:
         async with self._action_lock:
             page = await self.page()
             response = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            final_url = page.url
+            # Guard against server-side redirects to blocked destinations.  The
+            # browser already made the TCP connection, but we suppress the content
+            # so the agent never reads internal service responses.
+            try:
+                _check_url(final_url)
+            except SSRFBlockedError as exc:
+                return {"url": final_url, "status": 0, "title": "", "text": "", "error": str(exc)}
             status = response.status if response else 0
             title = await page.title()
             html = await page.content()
@@ -329,7 +411,15 @@ class _BrowserSession:
     async def screenshot_path(self, *, full_page: bool = True) -> str:
         page = await self.page()
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        await page.screenshot(path=tmp.name, full_page=full_page)
+        tmp.close()  # Playwright writes via path; release fd immediately
+        try:
+            await page.screenshot(path=tmp.name, full_page=full_page)
+        except Exception:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+            raise
         return tmp.name
 
     async def _emit_frame(self, action: str, *, target: str | None = None, box: Any = None, url: str = "", title: str = "") -> None:
@@ -520,6 +610,10 @@ async def navigate(
     Returns::
         {"url": str, "status": int, "title": str, "text": str, "error": str | None}
     """
+    try:
+        _check_url(url)
+    except SSRFBlockedError as exc:
+        return {"url": url, "status": 0, "title": "", "text": "", "error": str(exc)}
     if _ensure_playwright() is not None:
         try:
             session = await get_session()
@@ -545,7 +639,11 @@ async def _httpx_navigate(
         }
         if headers:
             req_headers.update(headers)
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        async with httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=30.0,
+            event_hooks={"response": [_ssrf_redirect_hook]},
+        ) as client:
             response = await client.get(url, headers=req_headers)
             result["status"] = response.status_code
             result["url"] = str(response.url)
@@ -558,6 +656,8 @@ async def _httpx_navigate(
 
             if extract_text:
                 result["text"] = _html_to_text(html, max_chars=max_chars)
+    except SSRFBlockedError as exc:
+        result["error"] = str(exc)
     except httpx.TimeoutException:
         result["error"] = f"Request timed out: {url}"
     except httpx.HTTPError as exc:
@@ -573,6 +673,10 @@ async def screenshot(url: str, *, full_page: bool = True) -> dict[str, Any]:
 
     Returns ``{"ok": True, "path": "/tmp/…png"}`` or ``{"ok": False, "error": "..."}``.
     """
+    try:
+        _check_url(url)
+    except SSRFBlockedError as exc:
+        return {"ok": False, "error": str(exc)}
     if _ensure_playwright() is None:
         return {"ok": False, "error": "Playwright is not installed. Run: pip install playwright && playwright install chromium"}
     try:

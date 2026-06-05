@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from cyrene import tool_legacy as _legacy
@@ -17,7 +18,11 @@ async def _tool_browser_screenshot(args: dict[str, Any], _bot: Any, _chat_id: in
         return "No URL provided."
     result = await screenshot(url)
     if result.get("ok"):
-        return f"Screenshot saved to {result['path']}.\nTitle: {result.get('title', '—')}"
+        try:
+            os.unlink(result["path"])
+        except OSError:
+            pass
+        return f"Screenshot taken.\nTitle: {result.get('title', '—')}"
     return f"Screenshot failed: {result.get('error', 'unknown error')}"
 
 

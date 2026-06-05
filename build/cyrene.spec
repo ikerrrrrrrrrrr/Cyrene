@@ -117,6 +117,11 @@ for _package in (
     "typing_extensions",
     "annotated_types",
     "dotenv",
+    # keyring's OS backends are loaded via entry-points, which PyInstaller's
+    # static analysis can't see. collect_all + copy_metadata (in _collect_package)
+    # bundle them so the frozen app uses the OS keychain instead of silently
+    # degrading to a plaintext .config_key (see config_store._get_fernet).
+    "keyring",
     "telegram",
     "mcp",
     "httpx_sse",
