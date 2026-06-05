@@ -63,18 +63,6 @@ function injectAttachmentLinks(text, attachments) {
   return source;
 }
 
-function traceSummary(msg) {
-  const parts = [];
-  if (msg.thinking) parts.push(window.t ? window.t("chat.reasoning") : "reasoning");
-  if (msg.tools && msg.tools.length) {
-    var n = msg.tools.length;
-    var tc = window.t ? window.t("chat.toolCalls") : "tool calls";
-    parts.push(n + " " + tc);
-  }
-  var label = window.t ? window.t("chat.details") : "details";
-  return parts.length ? label + " · " + parts.join(" · ") : label;
-}
-
 function formatElapsedMs(ms) {
   const total = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
   const m = Math.floor(total / 60);
@@ -639,14 +627,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       .catch(function () {});
   }, [isLiveSession, session.id]);
 
-  /* Reset archive context and scroll state when switching to a new session. */
+  /* Reset transient chat state when switching sessions. */
   useEffect(function () {
-    setArchiveContexts([]);
-    setHasMoreArchive(true);
-    archiveLoadLock.current = false;
     initialScrollDoneRef.current = false;
-    initialArchiveLoadTriggeredRef.current = false;
-    initialPositioningInProgressRef.current = false;
     setMutationDiff({ diff: "", signature: "" });
   }, [session.id]);
 
@@ -702,15 +685,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
   }, [isLiveSession, session.status, session.id]);
 
-  /* Auto-load the first archive batch when entering a live session.
-     The layout effect positions the viewport after archives render. */
-  useEffect(function () {
-    if (!isLiveSession) return;
-    if (initialArchiveLoadTriggeredRef.current) return;
-    initialArchiveLoadTriggeredRef.current = true;
-    triggerArchiveLoad({ initialLoad: true });
-  }, [isLiveSession, session.id]);
-
   useEffect(function () {
     function onOpenEditor(e) {
       var detail = e.detail || {};
@@ -753,7 +727,17 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       break;
     }
     if (!candidate) return;
-    var signature = String(candidate.messageId || candidate.id || "") + ":" + candidate.tools.map(function (tool) {
+    var candidateRequestId = String(candidate.clientRequestId || "");
+    if (!candidateRequestId) {
+      for (var prevIndex = messages.indexOf(candidate) - 1; prevIndex >= 0; prevIndex--) {
+        var prevMsg = messages[prevIndex];
+        if (prevMsg && prevMsg.role === "user" && prevMsg.clientRequestId) {
+          candidateRequestId = String(prevMsg.clientRequestId || "");
+          break;
+        }
+      }
+    }
+    var signature = String(candidateRequestId || candidate.messageId || candidate.id || "") + ":" + candidate.tools.map(function (tool) {
       return String(tool && (tool.toolCallId || tool.name) || "");
     }).join(",");
     if (!signature || signature === autoDiffSignatureRef.current) return;
@@ -761,7 +745,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     autoDiffSignatureRef.current = signature;
     refreshMutationDiffForTools(
       candidate.tools.filter(isCodeMutationTool),
-      signature
+      signature,
+      candidateRequestId
     );
   }, [isLiveSession, session.id, session.chat.messages, setRightSidebarView]);
 
@@ -935,6 +920,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [activeMarkdownName, setActiveMarkdownName] = useState("");
   const [diffData, setDiffData] = useState({ diff: "", mode: "text", left: "", right: "" });
   const [mutationDiff, setMutationDiff] = useState({ diff: "", signature: "" });
+  const [mutationDiffsByRequest, setMutationDiffsByRequest] = useState({});
   const autoDiffSignatureRef = useRef("");
   const gitDiffUnavailableRef = useRef(false);
   const [command, setCommand] = useState("");
@@ -942,20 +928,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [slashIndex, setSlashIndex] = useState(-1);
   const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
   const [mentionedAgents, setMentionedAgents] = useState([]);
-  const [welcomeTab, setWelcomeTab] = useState("overview");
-  const [welcomeRange, setWelcomeRange] = useState("all");
-  const [showInputToken, setShowInputToken] = useState(Math.random() > 0.5);
-  const [archiveContexts, setArchiveContexts] = useState([]);   // loaded newest-first
-  const [hasMoreArchive, setHasMoreArchive] = useState(true);
-  const archiveLoadLock = useRef(false);
-  const archiveEpochRef = useRef(0);
-  const contentSentinelRef = useRef(null);
-  const initialArchiveLoadTriggeredRef = useRef(false);
-  const initialPositioningInProgressRef = useRef(false);
-  const pendingCompensationRef = useRef(null);
   // True during the first ~second after mount.  Ensures scroll-to-latest-user-
   // message uses instant scroll instead of smooth, which is fragile during the
-  // mounting phase when layout is still settling (padding, archive loading).
+  // mounting phase when layout is still settling.
   const mountingRef = useRef(true);
   const restoredRef = useRef(false);
 
@@ -1017,6 +992,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const fileInputRef = useRef(null);
   const userAtBottomRef = useRef(true);
   const initialScrollDoneRef = useRef(false);
+  const latestPinnedUserKeyRef = useRef("");
   // When true, scrollChatToBottom is suppressed — used while the latest user
   // message is animating to the top of the viewport.  Cleared by user wheel.
   const pinnedMessageRef = useRef(false);
@@ -1062,8 +1038,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     const paths = uniqueMutationPathsFromProgress(visibleLiveProgress);
     if (paths.length === 0) return;
     const signature = String(runtimeState.watchRequestId || session.id || "") + ":" + paths.join("|");
-    refreshMutationDiffForPaths(paths, signature);
-  }, [isLiveSession, visibleSending, visibleLiveProgress, runtimeState.watchRequestId, session.id, mutationDiff.signature]);
+    refreshMutationDiffForPaths(paths, signature, runtimeState.watchRequestId);
+  }, [isLiveSession, visibleSending, visibleLiveProgress, runtimeState.watchRequestId, session.id, mutationDiff.signature, mutationDiffsByRequest]);
 
   function isNearBottom(el, threshold) {
     if (!el) return true;
@@ -1076,8 +1052,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   function scrollChatToBottom(settle) {
     var el = scrollRef.current;
     if (!el) return function () {};
-    // Don't scroll while initial archive positioning is in progress
-    if (initialPositioningInProgressRef.current) return function () {};
     // Don't override a pinned user message — scrollToLatestUserMessage is
     // animating it to the top and we must not fight the animation.
     if (pinnedMessageRef.current) return function () {};
@@ -1087,7 +1061,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       return function () {};
     }
     initialScrollDoneRef.current = true;
-    userAtBottomRef.current = true;
+    userAtBottomRef.current = false;
     var timers = [];
     function scrollDown() {
       var target = scrollRef.current;
@@ -1110,9 +1084,21 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   function scrollToLatestUserMessage() {
     var el = scrollRef.current;
     if (!el) return;
-    pinnedMessageRef.current = false;
+    pinnedMessageRef.current = true;
     el.style.setProperty('--scroll-pb-extra', '0px');
+    var userMessages = el.querySelectorAll('.modern-message.user');
+    var latestUser = userMessages.length ? userMessages[userMessages.length - 1] : null;
     var desired = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (latestUser) {
+      var containerRect = el.getBoundingClientRect();
+      var padTop = parseFloat(getComputedStyle(el).paddingTop) || 0;
+      desired = Math.max(0, latestUser.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 2);
+      var maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+      if (desired > maxScroll) {
+        el.style.setProperty('--scroll-pb-extra', Math.ceil(desired - maxScroll + 16) + 'px');
+        var _forceLayout = el.offsetHeight;
+      }
+    }
     if (mountingRef.current) {
       el.scrollTop = desired;
     } else {
@@ -1130,9 +1116,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     var lastRendered = renderedMessages[renderedMessages.length - 1];
     if (lastRendered && lastRendered.role === 'user') {
+      var latestUserKey = messageKey(lastRendered);
+      if (latestPinnedUserKeyRef.current === latestUserKey) return;
+      latestPinnedUserKeyRef.current = latestUserKey;
       scrollToLatestUserMessage();
     }
-  }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length, visibleLiveProgress.length, visibleSending, visibleNotice]);
+  }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length]);
 
   /* Set --scroll-pb before paint and position the viewport in a single layout
      cycle, so the first paint already shows the correct scroll position (no
@@ -1179,6 +1168,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       el.style.setProperty("--scroll-pb", composer.offsetHeight + "px");
       var scrollEl = scrollRef.current;
       if (!scrollEl) return;
+      if (pinnedMessageRef.current) return;
       // If scrollTop is past the content (e.g. padding shrank after a
       // scroll-to-bottom), clamp it back to the valid range.  This prevents
       // the viewport from showing empty background ("going black") until
@@ -1961,7 +1951,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const renderedMessageSignature = renderedMessages.map(function (msg) {
     return [
       messageKey(msg),
-      String(msg && msg.body || "").length,
       msg && msg.streamingReply ? "streaming" : "done",
       msg && msg.attachedRuntime ? String(msg.attachedRuntime.elapsed || "") : "",
     ].join(":");
@@ -1977,32 +1966,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       && String(msg.body || "").trim()
     );
   });
-
-  // ── Build archive context entries (prepended above current messages) ──
-  var archiveRenderEntries = [];
-  if (archiveContexts.length > 0) {
-    var counts = {};
-    // archiveContexts is newest-first; render oldest (last) at top
-    for (var archIdx = archiveContexts.length - 1; archIdx >= 0; archIdx--) {
-      var ctx = archiveContexts[archIdx];
-      // Divider between archive groups
-      if (archIdx < archiveContexts.length - 1) {
-        archiveRenderEntries.push({
-          isArchiveDivider: true,
-          renderKey: "arch_div_" + archIdx,
-        });
-      }
-      ctx.messages.forEach(function (archMsg, msgIdx) {
-        var key = messageKey(archMsg) + "_arch_" + ctx.id + "_" + msgIdx;
-        counts[key] = (counts[key] || 0) + 1;
-        archiveRenderEntries.push({
-          msg: archMsg,
-          renderKey: key + "::" + counts[key],
-        });
-      });
-    }
-  }
-  var hasArchiveContent = archiveRenderEntries.length > 0;
 
   useEffect(function () {
     // When the latest message is from the user, keep it pinned at the top
@@ -2022,192 +1985,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
   }, [visibleSending]);
 
-  async function newSession() {
-    if (!confirm(t("chat.confirmNewSession"))) return;
-    try {
-      initialPositioningInProgressRef.current = true;
-      const r = await fetch("/api/sessions", { method: "POST" });
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const data = await r.json();
-      if (data.sessions) { DATA.sessions = data.sessions; window.bumpData && window.bumpData(); }
-      resetChatRuntime({ abort: true });
-      // Clear scroll state for the fresh session — session.id does not change
-      // for the live session so the usual session-change effect won't fire.
-      pinnedMessageRef.current = false;
-      initialPositioningInProgressRef.current = false;
-      initialScrollDoneRef.current = false;
-      initialArchiveLoadTriggeredRef.current = true;
-      pendingCompensationRef.current = null;
-      archiveEpochRef.current += 1;
-      archiveLoadLock.current = false;
-      setArchiveContexts([]);
-      setHasMoreArchive(true);
-      setDraft("");
-      setAttachments([]);
-      setCommand("");
-      setMentionedAgents([]);
-      setNotice("");
-      var scrollEl = scrollRef.current;
-      if (scrollEl) {
-        scrollEl.style.setProperty('--scroll-pb-extra', '0px');
-        scrollEl.scrollTop = 0;
-      }
-      onSelectSession && onSelectSession(null);
-    } catch (e) {
-      initialPositioningInProgressRef.current = false;
-      alert(t("chat.failedToCreate") + ": " + e.message);
-    }
-  }
-
-  // ── Archive context loading (scroll up to reveal older sessions) ──
-
-  function triggerArchiveLoad(options) {
-    // The message surface intentionally shows only the selected session.
-    // Archived sessions are rendered by selecting that session, not mixed into
-    // the live conversation as context blocks.
-    return;
-    if (!isLiveSession || !hasMoreArchive || archiveLoadLock.current) return;
-
-    var isInitial = options && options.initialLoad;
-
-    archiveLoadLock.current = true;
-    var loadEpoch = archiveEpochRef.current;
-    var cursor = archiveContexts.length > 0
-      ? archiveContexts[archiveContexts.length - 1].id
-      : "";
-    fetch("/api/sessions/archive-context?cursor=" + encodeURIComponent(cursor))
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (archiveEpochRef.current !== loadEpoch) { archiveLoadLock.current = false; return; }
-        if (data.messages && data.messages.length > 0) {
-          // Record archive-container bottom in scroll coordinates (viewport-
-          // relative + scrollTop) so user scroll during fetch doesn't skew it.
-          if (!isInitial) {
-            var el = scrollRef.current;
-            var arch = el && el.querySelector('.archive-container');
-            if (arch) pendingCompensationRef.current = arch.getBoundingClientRect().bottom + el.scrollTop;
-          }
-          if (isInitial) initialPositioningInProgressRef.current = true;
-          setArchiveContexts(function (prev) { return prev.concat([data]); });
-          setHasMoreArchive(data.hasMore);
-        } else {
-          setHasMoreArchive(false);
-          if (isInitial) {
-            initialPositioningInProgressRef.current = false;
-            initialScrollDoneRef.current = false;
-            requestAnimationFrame(function () {
-              scrollChatToBottom(true);
-            });
-          }
-        }
-        archiveLoadLock.current = false;
-      })
-      .catch(function () {
-        archiveLoadLock.current = false;
-        if (isInitial) {
-          initialPositioningInProgressRef.current = false;
-          initialArchiveLoadTriggeredRef.current = false;
-          initialScrollDoneRef.current = false;
-        }
-      });
-  }
-
-  /* Wheel listener — trigger archive load when user scrolls near the top.
-     Using a larger threshold (half viewport) gives the fetch a head start,
-     so the content is ready by the time the user actually reaches the top. */
+  /* Wheel listener: user scroll releases the auto-scroll pin. */
   useEffect(function () {
     var el = scrollRef.current;
     if (!el || !isLiveSession) return;
-    var triggered = false;
     function onWheel(e) {
       // Any user wheel scroll releases the pinned message — the user is
       // taking control, so auto-scrolling can resume.
       if (pinnedMessageRef.current) pinnedMessageRef.current = false;
-      if (e.deltaY >= 0) { triggered = false; return; }
-      if (!isLiveSession || !hasMoreArchive) return;
-      var cur = scrollRef.current;
-      if (!cur) return;
-      // Trigger when scrollTop drops below half the visible height —
-      // earlier than before, so the fetch completes before the user hits 0.
-      var nearTop = cur.scrollTop <= Math.max(5, cur.clientHeight * 0.45);
-      if (nearTop && !triggered && !archiveLoadLock.current) {
-        triggered = true;
-        triggerArchiveLoad();
-      }
     }
     el.addEventListener('wheel', onWheel, {passive: true});
     return function () { el.removeEventListener('wheel', onWheel); };
-  }, [isLiveSession, hasMoreArchive, archiveContexts.length, session.id]);
-
-  /* Initial viewport positioning after auto-loading the first archive batch. */
-  _useLayoutEffect(function () {
-    if (initialPositioningInProgressRef.current && archiveContexts.length > 0) {
-      var el = scrollRef.current;
-      if (!el) { initialPositioningInProgressRef.current = false; return; }
-
-      // Reset any leftover extra padding from previous session before measuring
-      el.style.setProperty('--scroll-pb-extra', '0px');
-      // Force synchronous layout so measurements are correct
-      var forceLayout = el.offsetHeight;
-      var containerRect = el.getBoundingClientRect();
-      var padTop = parseFloat(getComputedStyle(el).paddingTop) || 0;
-      var desired = 0;
-
-      if (renderedMessages.length > 0) {
-        // Session has messages: scroll latest user message to viewport top
-        var allMsgEls = el.querySelectorAll('.msg.user');
-        var lastUserEl = null;
-        for (var i = allMsgEls.length - 1; i >= 0; i--) {
-          if (!allMsgEls[i].closest('.archive-container')) {
-            lastUserEl = allMsgEls[i];
-            break;
-          }
-        }
-        if (lastUserEl) {
-          desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
-        }
-      } else {
-        // No messages: pin sentinel at content-area top (divider & archives above it)
-        var sentinel = contentSentinelRef.current;
-        if (sentinel) {
-          desired = sentinel.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
-        }
-      }
-
-      if (desired > 0) {
-        el.scrollTop = desired;
-        if (el.scrollTop < desired) {
-          // Content too short — add minimal extra padding to make position reachable
-          var shortfall = desired - el.scrollTop;
-          if (shortfall > el.clientHeight) shortfall = el.clientHeight;
-          el.style.setProperty('--scroll-pb-extra', shortfall + 'px');
-          forceLayout = el.offsetHeight;
-          el.scrollTop = desired;
-        }
-      }
-
-      // Mark initial positioning complete
-      initialScrollDoneRef.current = true;
-      userAtBottomRef.current = renderedMessages.length > 0 ? false : true;
-      initialPositioningInProgressRef.current = false;
-      return;
-    }
-
-    // Subsequent loads: compensate by tracking the archive container's bottom
-    // edge in scroll coordinates.  New content pushes it down; we add the
-    // displacement to scrollTop so the visible area stays stable.
-    var prevBottom = pendingCompensationRef.current;
-    if (prevBottom != null && archiveContexts.length > 0) {
-      pendingCompensationRef.current = null;
-      var el2 = scrollRef.current;
-      var arch = el2 && el2.querySelector('.archive-container');
-      if (arch && el2) {
-        var curBottom = arch.getBoundingClientRect().bottom + el2.scrollTop;
-        var shift = curBottom - prevBottom;
-        if (shift > 0) el2.scrollTop += shift;
-      }
-    }
-  }, [archiveContexts, renderedMessages]);
+  }, [isLiveSession, session.id]);
 
   function onChatScroll() {
     var el = scrollRef.current;
@@ -2306,9 +2095,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     return paths;
   }
 
-  async function refreshMutationDiffForPaths(paths, signature) {
+  async function refreshMutationDiffForPaths(paths, signature, requestId) {
     const uniquePaths = (paths || []).filter(Boolean);
-    if (uniquePaths.length === 0 || !signature || signature === mutationDiff.signature) return;
+    const diffRequestId = String(requestId || (signature ? String(signature).split(":")[0] : "") || "");
+    const cachedDiff = diffRequestId ? mutationDiffsByRequest[diffRequestId] : null;
+    if (uniquePaths.length === 0 || !signature || signature === mutationDiff.signature || (cachedDiff && cachedDiff.signature === signature)) return;
     const diffs = [];
     for (let i = 0; i < uniquePaths.length; i += 1) {
       const path = uniquePaths[i];
@@ -2329,13 +2120,25 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     const diff = diffs.join("\n");
     if (!diff.trim()) return;
     setMutationDiff({ diff: diff, signature: signature });
+    if (diffRequestId) {
+      setMutationDiffsByRequest(function (prev) {
+        if (prev[diffRequestId] && prev[diffRequestId].signature === signature) return prev;
+        return {
+          ...prev,
+          [diffRequestId]: {
+            diff: diff,
+            signature: signature,
+          },
+        };
+      });
+    }
     setDiffData({ diff: diff, mode: "text", left: "", right: "" });
     addSidebarTab("diff-viewer");
   }
 
-  function refreshMutationDiffForTools(tools, signature) {
+  function refreshMutationDiffForTools(tools, signature, requestId) {
     const paths = uniqueMutationPathsFromTools(tools);
-    refreshMutationDiffForPaths(paths, signature);
+    refreshMutationDiffForPaths(paths, signature, requestId);
   }
 
   function openMutationDiff(diffText, fileName) {
@@ -2412,9 +2215,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           visibleSending={visibleSending}
           hasStreamingReply={hasStreamingReply}
           hasAssistantReplyBody={hasAssistantReplyBody}
+          activeRequestId={String(runtimeState.watchRequestId || (mutationDiff.signature ? String(mutationDiff.signature).split(":")[0] : "") || "")}
           visibleLiveProgress={visibleLiveProgress}
           visibleNotice={visibleNotice}
           mutationDiff={mutationDiff}
+          mutationDiffsByRequest={mutationDiffsByRequest}
           assistantName={DATA.assistantName}
           isLiveSession={isLiveSession}
           onRetryMessage={retryMessage}
@@ -2484,535 +2289,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           stopActiveRun={stopActiveRun}
           send={send}
         />
-        {false && (
-        <>
-        <div className="chat-scroll" ref={scrollRef} onScroll={onChatScroll}>
-          <div className="thread-header">
-            <span className={"sa-dot " + session.status} style={{ marginTop: 0, width: 6, height: 6 }}></span>
-            <span>{session.title}</span>
-            <span style={{ marginLeft: "auto" }}>{session.id} · started {session.started}</span>
-            <span style={{
-                    cursor: "pointer", color: "var(--text-3)",
-                    border: "1px solid var(--line)", borderRadius: 4,
-                    padding: "2px 8px", fontSize: 10.5, letterSpacing: "0.04em",
-                  }}
-                  onClick={newSession}
-                  onMouseEnter={(e) => (e.target.style.color = "var(--accent)")}
-                  onMouseLeave={(e) => (e.target.style.color = "var(--text-3)")}
-                  title={t("chat.newSessionTitle")}>
-              {t("chat.newSession")}
-            </span>
-          </div>
-          {!isLiveSession && (
-            <div className="archive-banner">
-              <span>{t("chat.viewingArchive")} · {session.started}</span>
-              <span className="archive-banner-action"
-                    onClick={function () { onSelectSession && onSelectSession(null); }}>
-                {t("chat.returnToLive")}
-              </span>
-            </div>
-          )}
-          <div className="archive-container">
-          {archiveRenderEntries.map(function (entry) {
-            if (entry.isArchiveDivider) {
-              return <div key={entry.renderKey} className="context-divider archive-between"><span>{t("chat.earlierConversation") || "↑ 更早的对话"}</span></div>;
-            }
-            return (
-              <Message
-                key={entry.renderKey}
-                msg={entry.msg}
-                assistantName={DATA.assistantName}
-                onShowHtml={handleShowHtml}
-                onShowPdf={handleShowPdf}
-                onShowPpt={handleShowPpt}
-                onShowMap={handleShowMap}
-                onShowCode={handleShowCode}
-                onShowMarkdown={handleShowMarkdown}
-              />
-            );
-          })}
-          </div>
-          {hasArchiveContent && (
-            <div className="context-divider main-divider"><span>{t("chat.historyContext") || "━━━ 历史上下文 ━━━"}</span></div>
-          )}
-          <div ref={contentSentinelRef} style={{height: 0, overflow: 'hidden'}} />
-          {renderedMessageEntries.map((entry, index) => {
-            if (pendingQuestion && entry.msg.questionPrompt) return null;
-            let retryData = null;
-            if ((entry.msg.role === "agent" || entry.msg.role === "system") && entry.msg.body) {
-              for (let i = index - 1; i >= 0; i--) {
-                const prev = renderedMessageEntries[i].msg;
-                if (prev.role === "user" && prev.body) {
-                  retryData = {
-                    text: prev.body,
-                    attachments: prev.attachments || [],
-                    roundId: prev.roundId || "",
-                    requestId: prev.clientRequestId || "",
-                  };
-                  break;
-                }
-              }
-            }
-            const runtime = getChatRuntime();
-            const isRetired = entry.msg.clientRequestId && runtime.retiredRequestIds.indexOf(entry.msg.clientRequestId) !== -1;
-            if (isRetired) return null;
-            return (
-              <Message
-                key={entry.renderKey}
-                msg={entry.msg}
-                assistantName={DATA.assistantName}
-                onRetry={retryData && retryData.requestId ? function () {
-                  var _runtime = getChatRuntime();
-                  if (_runtime.retiredRequestIds.indexOf(retryData.requestId) === -1) {
-                    updateChatRuntime({ retiredRequestIds: _runtime.retiredRequestIds.concat([retryData.requestId]) });
-                  }
-                  send({ text: retryData.text, attachments: retryData.attachments, guideRoundId: "", retry: true, retryRequestId: retryData.requestId });
-                } : null}
-                onShowHtml={handleShowHtml}
-                onShowPdf={handleShowPdf}
-                onShowPpt={handleShowPpt}
-                onShowMap={handleShowMap}
-                onShowCode={handleShowCode}
-                onShowMarkdown={handleShowMarkdown}
-              />
-            );
-          })}
-          {renderedMessages.length === 0 && (
-            <div className="chat-welcome">
-              <h1><span className="welcome-mark"></span>{t("chat.welcomeTitle")}</h1>
-              <div className="welcome-card">
-                <div className="welcome-card-head">
-                  <div className="welcome-tabs">
-                    <button className={welcomeTab === "overview" ? "active" : ""} onClick={() => setWelcomeTab("overview")}>{t("chat.welcomeOverview")}</button>
-                    <button className={welcomeTab === "models" ? "active" : ""} onClick={() => setWelcomeTab("models")}>{t("chat.welcomeModels")}</button>
-                  </div>
-                  <div className="welcome-range">
-                    <button className={welcomeRange === "all" ? "active" : ""} onClick={() => setWelcomeRange("all")}>{t("chat.welcomeRangeAll")}</button>
-                    <button className={welcomeRange === "30d" ? "active" : ""} onClick={() => setWelcomeRange("30d")}>{t("chat.welcomeRange30d")}</button>
-                    <button className={welcomeRange === "7d" ? "active" : ""} onClick={() => setWelcomeRange("7d")}>{t("chat.welcomeRange7d")}</button>
-                  </div>
-                </div>
-                {welcomeTab === "overview" ? (
-                  <div>
-                    <div className="welcome-metrics">
-                      <div><span>{t("chat.welcomeSessions")}</span><strong>{DATA.sessions.length || 1}</strong></div>
-                      <div><span>{t("chat.welcomeMessages")}</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_messages) || renderedMessages.length)}</strong></div>
-                      <div><span>{t("chat.welcomeTotalTokens")}</span><strong>{compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.total_tokens) || 0)}</strong></div>
-                      <div><span>{t("chat.welcomeActiveDays")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.active_days) || "—"}</strong></div>
-                      <div><span>{t("chat.welcomeCurrentStreak")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.current_streak) || "—"}</strong></div>
-                      <div><span>{t("chat.welcomeLongestStreak")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.longest_streak) || "—"}</strong></div>
-                      <div><span>{t("chat.welcomePeakHour")}</span><strong>{(DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.peak_hour) || "—"}</strong></div>
-                      <div><span>{t("chat.welcomeFavoriteModel")}</span><strong>{session.model || "—"}</strong></div>
-                    </div>
-                    {(DATA.dashboard && DATA.dashboard.activity_heatmap) ? (function(h) {
-                      var flat = h.rows.reduce(function(a, r) { return a.concat(r.values); }, []);
-                      var daySlice = welcomeRange === "7d" ? 7 : 28;
-                      var cellCount = daySlice * h.rows.length;
-                      var sliced = flat.slice(flat.length - cellCount);
-                      var slicedCols = daySlice <= 7 ? 7 : (daySlice <= 14 ? 14 : 24);
-                      var mx = sliced.reduce(function(a, v) { return v > a ? v : a; }, 1);
-                      return (
-                        <div className="welcome-heatmap" style={{ gridTemplateColumns: "repeat(" + slicedCols + ", 1fr)" }}>
-                          {sliced.map(function(v, i) {
-                            var ratio = v / mx;
-                            return <span key={i} style={{ backgroundColor: ratio > 0 ? "color-mix(in srgb, var(--accent) " + Math.round(20 + ratio * 60) + "%, var(--bg-2))" : "var(--bg-3)" }}></span>;
-                          })}
-                        </div>
-                      );
-                    })(DATA.dashboard.activity_heatmap) : (
-                      <div className="welcome-heatmap welcome-heatmap--placeholder">
-                        {Array.from({ length: 154 }).map(function (_, index) {
-                          var hot = index > 122 && (index % 7 > 2 || index > 145);
-                          var high = index > 146 || index === 137;
-                          return <span key={index} className={hot ? (high ? "hot high" : "hot") : ""}></span>;
-                        })}
-                      </div>
-                    )}
-                    <p onClick={() => setShowInputToken(!showInputToken)}
-                       style={{ cursor: "pointer", userSelect: "none" }}>
-                      {t("chat.youHaveUsed")} Cyrene {showInputToken ? t("chat.tokenRead") : t("chat.tokenOutput")} {showInputToken ? compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.prompt_tokens) || 0) : compactNumber((DATA.dashboard && DATA.dashboard.usage && DATA.dashboard.usage.completion_tokens) || 0)} token。
-                    </p>
-                  </div>
-                ) : (
-                  <div>
-                    <div className="welcome-metrics" style={{ gridTemplateColumns: "repeat(2, 1fr)", marginBottom: 8 }}>
-                      <div><span>模型</span><strong>{session.model || "—"}</strong></div>
-                      <div><span>{t("chat.welcomeSessions")}</span><strong>{DATA.sessions.length || 1}</strong></div>
-                    </div>
-                    {DATA.dashboard && DATA.dashboard.model_stats && DATA.dashboard.model_stats.length ? (
-                      <div style={{ marginTop: 8 }}>
-                        <div style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.08em" }}>历史模型使用</div>
-                        {DATA.dashboard.model_stats.reduce(function(acc, row) {
-                          var existing = acc.find(function(x) { return x.model === row.model; });
-                          if (existing) { existing.requests += row.requests || 0; } else { acc.push({ model: row.model, requests: row.requests || 0 }); }
-                          return acc;
-                        }, []).sort(function(a, b) { return b.requests - a.requests; }).map(function(m) {
-                          var total = DATA.dashboard.model_stats.reduce(function(s, r) { return s + (r.requests || 0); }, 0);
-                          var pct = total ? Math.round(m.requests / total * 100) : 0;
-                          return (
-                            <div key={m.model} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 13 }}>
-                              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-2)" }}>{m.model}</span>
-                              <span style={{ color: "var(--text-3)", fontSize: 11, minWidth: 30, textAlign: "right" }}>{m.requests} 次</span>
-                              <span style={{ color: "var(--text-4)", fontSize: 11, minWidth: 30, textAlign: "right" }}>{pct}%</span>
-                              <div style={{ width: 60, height: 6, borderRadius: 3, background: "var(--bg-3)", overflow: "hidden" }}>
-                                <div style={{ width: pct + "%", height: "100%", background: "var(--accent)", borderRadius: 3 }}></div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-          {visibleSending && !runtimeAttachedToLastMessage && (
-            <div className="msg agent meta-in-summary">
-              <details className="msg-trace only-trace runtime-trace">
-                <summary className="msg-trace-summary">
-                  <span className="msg-role agent">● {DATA.assistantName}</span>
-                  <span className="msg-trace-caret" style={{marginLeft: 4}}>▸</span>
-                  <span className="trace-summary-fade">{activeTraceDescriptor.summary} · {liveElapsed}</span>
-                </summary>
-                <div className="msg-trace-body">
-                  <div className="thinking">
-                    {watchingGuidance && (
-                      <div className="progress-entry">
-                        <span className="progress-icon">↳</span>
-                        <span className="progress-text">{t("chat.targetRound")}: {activeGuideRoundTitle || activeRequest.guideRoundId}</span>
-                      </div>
-                    )}
-                    {visibleLiveProgress.length === 0 && <div className="progress-entry"><span className="progress-icon">◎</span><span className="progress-text">{activeTraceDescriptor.empty}</span></div>}
-                    {visibleLiveProgress.map(function (p, i) {
-                      return <div key={i} className="progress-entry"><span className="progress-icon">{p.icon}</span><span className="progress-text">{p.text}</span></div>;
-                    })}
-                  </div>
-                </div>
-              </details>
-            </div>
-          )}
-          {visibleNotice && (
-            <div className="msg system">
-              <div className="msg-meta">
-                <span className="msg-role system">system</span>
-                <span className="msg-time">—</span>
-              </div>
-              <div className="msg-body">{visibleNotice}</div>
-            </div>
-          )}
-          {isLiveSession && pendingQuestion && (
-            <QuestionPanel
-              pendingQuestion={pendingQuestion}
-              draft={questionDraft}
-              onDraftChange={setQuestionDraft}
-              onOptionSelect={function (label) { submitQuestionAnswer({ selectedOption: label }); }}
-              onSubmit={function () { submitQuestionAnswer(); }}
-              onKeyDown={onQuestionKey}
-              answering={answeringQuestion}
-              sending={sending}
-              optionCount={questionOptionCount}
-            />
-          )}
-          {visibleSending && (
-            <div className="agent-loading-spinner">
-              <div className="spinner"></div>
-            </div>
-          )}
-        </div>
-
-        {!isLiveSession && (
-          <div className="composer" ref={composerRef} style={{ textAlign: "center", color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 11 }}>
-            <div style={{ padding: "16px 0" }}>
-              {t("chat.archivedSessionMessage")}<a style={{ color: "var(--accent)", cursor: "pointer", textDecoration: "underline" }}
-                  onClick={function () { onSelectSession && onSelectSession(null); }}>{t("chat.liveSessionLink")}</a>{t("chat.toSendMessages")}
-            </div>
-          </div>
+        </>
         )}
-        {isLiveSession && (
-        <div className="composer" ref={composerRef}>
-          <div className="composer-box">
-            <div className="composer-chips">
-              {visibleChips.map((c, i) => (
-                <span className="chip" key={i}>
-                  {c.icon} {contextDisplayLabel(c)} <span className="x" onClick={function () { removeContext(contextKey(c)); }}>×</span>
-                </span>
-              ))}
-              {hasSelectedGuideRound && (
-                <span className="chip chip-guide">
-                  {t("chat.guidanceChipPrefix")} {currentGuideRoundTitle}
-                  <span className="x" onClick={function () { setSelectedGuideRoundId(""); setSelectedGuideRoundTitle(""); setContextPickerOpen(false); }}>×</span>
-                </span>
-              )}
-              {command && findCommand(command) && (
-                <span className="chip chip-command" key="cmd">
-                  {findCommand(command).icon} {findCommand(command).label}
-                  <span className="x" onClick={function () { setCommand(""); }}>×</span>
-                </span>
-              )}
-              <span
-                className={"chip chip-add-context" + (hasAddable ? "" : " disabled")}
-                style={{ borderStyle: "dashed", cursor: hasAddable ? "pointer" : "default" }}
-                onClick={function () {
-                  if (!hasAddable) return;
-                  setContextPickerOpen(!contextPickerOpen);
-                }}
-              >
-                + {t("chat.addContext")}
-              </span>
-            </div>
-            {mentionedAgents.length > 0 && (
-              <div className="composer-mentions">
-                {mentionedAgents.map(function (agentId) {
-                  var agent = session.subagents.find(function (a) { return a.id === agentId; });
-                  if (!agent) return null;
-                  return (
-                    <span className="chip chip-mention" key={"mention-" + agentId}>
-                      <span className={"sa-dot " + agent.status} style={{marginTop: 0}} /> @{agent.name}
-                      <span className="x" onClick={function () { setMentionedAgents(function (prev) { return prev.filter(function (id) { return id !== agentId; }); }); }}>×</span>
-                    </span>
-                  );
-                })}
-              </div>
-            )}
-            {contextPickerOpen && hasAddable && (
-              <div className="context-picker">
-                {addableContexts.length > 0 && (
-                  <div>
-                    <div className="context-picker-head">{t("chat.context")}</div>
-                    {addableContexts.map(function (ctx) {
-                      return (
-                        <button
-                          key={ctx.key}
-                          className="context-option"
-                          onClick={function () { addContext(ctx.key, ""); }}
-                        >
-                          <span style={{ marginRight: 6 }}>{ctx.icon}</span> {contextDisplayLabel(ctx)}
-                        </button>
-                      );
-                    })}
-                    {addableContexts.some(function (c) { return c.hasPicker; }) && (
-                      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 4, marginTop: 2 }}>
-                        <div className="context-picker-head" style={{ paddingLeft: 12 }}>{t("chat.workspaceDirectories")}</div>
-                        {workspaceHistory.map(function (p) {
-                          return (
-                            <button
-                              key={p}
-                              className="context-option"
-                              style={{ paddingLeft: 20, fontFamily: "var(--mono)", fontSize: 10 }}
-                              onClick={function () { addContext("workspace", p); }}
-                            >{p}</button>
-                          );
-                        })}
-                        <button
-                          className="context-option"
-                          style={{ paddingLeft: 20 }}
-                          onClick={function () { pickWorkspaceDir(); }}
-                        >{t("chat.chooseDirectory")}</button>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {liveRounds.length > 0 && (
-                  <div>
-                    <div className="context-picker-head" style={{ marginTop: addableContexts.length > 0 ? 8 : 0 }}>{t("chat.runningRounds")}</div>
-                    {liveRounds.map(function (round) {
-                      var isActive = selectedGuideRoundId === round.id;
-                      return (
-                        <button
-                          key={round.id}
-                          className={"context-option" + (isActive ? " active" : "")}
-                          onClick={function () {
-                            setSelectedGuideRoundId(round.id);
-                            setSelectedGuideRoundTitle(round.title || round.id);
-                            setContextPickerOpen(false);
-                          }}
-                        >
-                          <span className={"sa-dot " + round.status} style={{ marginTop: 0 }}></span>
-                          <span className="context-option-body">
-                            <span className="context-option-title">{round.title}</span>
-                            <span className="context-option-meta">
-                              {round.elapsed} · {round.runningSubagents}/{round.subagentCount} {t("chat.subagents")}
-                              {round.pendingGuidance ? " · " + round.pendingGuidance + " " + t("chat.queued") : ""}
-                            </span>
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-            <textarea
-              ref={taRef}
-              value={draft}
-              onChange={autosize}
-              onKeyDown={onKey}
-              disabled={Boolean(pendingQuestion)}
-              placeholder={
-                pendingQuestion
-                  ? t("chat.answerPending")
-                  : command && findCommand(command)
-                  ? findCommand(command).placeholder
-                  : t("chat.messagePlaceholder", { name: DATA.assistantName })
-              }
-            />
-            {attachments.length > 0 && (
-              <div className="composer-attachments">
-                {attachments.map(function (file, index) {
-                  var isImage = String(file.content_type || "").startsWith("image/");
-                  return (
-                    <div className={"composer-attachment-card" + (isImage ? " image" : "")} key={file.id || (file.name + "_" + index)}>
-                      {isImage && file.url && (
-                        <div className="composer-attachment-thumb">
-                          <img
-                            src={file.url}
-                            alt={attachmentAltText(file)}
-                            style={attachmentThumbStyle(file, 112, 88)}
-                          />
-                        </div>
-                      )}
-                      {!isImage && <div className="composer-attachment-file" aria-label={t("chat.uploadedFile")}></div>}
-                      <span className="x" onClick={function () { removeAttachment(index); }}>×</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            <div className="composer-actions">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                style={{ display: "none" }}
-                onChange={handleAttachmentPick}
-              />
-              <button
-                className="iconbtn"
-                title={uploadingAttachments ? t("chat.uploading") : t("chat.attach")}
-                disabled={Boolean(pendingQuestion) || uploadingAttachments}
-                onClick={function () {
-                  if (fileInputRef.current) fileInputRef.current.click();
-                }}
-              >
-                {uploadingAttachments ? "…" : "+"}
-              </button>
-              <span style={{ position: "relative" }}>
-                <button
-                  className={"iconbtn" + (command || slashMenuOpen ? " active" : "")}
-                  title={command && findCommand(command) ? findCommand(command).label + ": " + findCommand(command).desc : t("chat.slashCommand")}
-                  onClick={function () { setSlashMenuOpen(!slashMenuOpen); }}
-                  style={command || slashMenuOpen ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
-                >/</button>
-                {slashMenuOpen && filteredCommands.length > 0 && (
-                  <div className="slash-menu">
-                    <div className="slash-menu-head">{t("chat.commands")}</div>
-                    {filteredCommands.map(function (cmd, idx) {
-                      var active = command === cmd.id;
-                      var highlighted = slashIndex === idx;
-                      return (
-                        <button
-                          key={cmd.id}
-                          className={"slash-option" + (active ? " active" : "") + (highlighted ? " highlighted" : "")}
-                          onClick={function () {
-                            setCommand(active ? "" : cmd.id);
-                            setSlashMenuOpen(false);
-                          }}
-                          onMouseEnter={function () { setSlashIndex(idx); }}
-                        >
-                          <span className="slash-option-icon">{cmd.icon}</span>
-                          <span className="slash-option-body">
-                            <span className="slash-option-label">{cmd.label}</span>
-                            <span className="slash-option-desc">{cmd.desc}</span>
-                          </span>
-                          {active && <span className="slash-option-check">✓</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </span>
-              <span style={{ position: "relative" }}>
-                <button
-                  className={"iconbtn" + (mentionedAgents.length > 0 ? " active" : "")}
-                  title={mentionedAgents.length > 0 ? t("chat.mentionSubagents") : t("chat.mention")}
-                  disabled={session.subagents.length === 0}
-                  onClick={function () { setMentionMenuOpen(!mentionMenuOpen); }}
-                  style={mentionedAgents.length > 0 ? { color: "var(--accent)", borderColor: "var(--accent)" } : {}}
-                >@</button>
-                {mentionMenuOpen && (
-                  <div className="mention-menu">
-                    <div className="mention-menu-head">{t("chat.mentionMenuHead")}</div>
-                    {session.subagents.length === 0 && (
-                      <div className="mention-option-empty">{t("chat.noSubagentsAvailable")}</div>
-                    )}
-                    {session.subagents.map(function (agent) {
-                      var isSelected = mentionedAgents.indexOf(agent.id) !== -1;
-                      return (
-                        <button
-                          key={agent.id}
-                          className={"mention-option" + (isSelected ? " active" : "")}
-                          onClick={function () {
-                            setMentionedAgents(function (prev) {
-                              var idx = prev.indexOf(agent.id);
-                              if (idx !== -1) return prev.filter(function (id) { return id !== agent.id; });
-                              return prev.concat([agent.id]);
-                            });
-                          }}
-                        >
-                          <span className={"sa-dot " + agent.status} style={{marginTop: 3, flexShrink: 0}} />
-                          <span className="mention-option-body">
-                            <span className="mention-option-name">@{agent.name}</span>
-                            <span className="mention-option-task">{agent.task || agent.status}</span>
-                          </span>
-                          {isSelected && <span className="mention-option-check">✓</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </span>
-              <span style={{ flex: 1 }}></span>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-4)" }}>
-                {session.model}
-              </span>
-              {visibleSending && (
-                <button className="send secondary" disabled={(!draft.trim() && attachments.length === 0) || Boolean(pendingQuestion)} onClick={openNextDialogue}>
-                  {(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.newDialogue")}
-                </button>
-              )}
-              <button
-                className={"send" + (visibleSending ? " stop" : "")}
-                disabled={pendingQuestion ? true : (!visibleSending && !draft.trim() && attachments.length === 0 && command !== "deep-reflect")}
-                onClick={visibleSending ? stopActiveRun : send}
-              >
-                {visibleSending ? t("chat.stop") : <>{(hasSelectedGuideRound || mentionedAgents.length > 0) ? t("chat.guide") : t("chat.send")} <span className="kbd">↵</span></>}
-              </button>
-            </div>
-          </div>
-          <div className="composer-hint">
-            <span>
-              {visibleSending
-                ? ((hasSelectedGuideRound || mentionedAgents.length > 0)
-                    ? t("chat.watchingRunGuide")
-                    : t("chat.watchingRunNew"))
-                : pendingQuestion
-                ? t("chat.waitingForAnswer")
-                : (hasSelectedGuideRound || mentionedAgents.length > 0)
-                ? t("chat.guidanceMode")
-                : t("chat.agentPlansActs", { name: DATA.assistantName })}
-            </span>
-            <span>
-              {visibleSending ? t("chat.running") + " · " : ""}
-              {t("chat.activeSubagents", { n: runningSubagents, pl: runningSubagents !== 1 ? "s" : "" })}
-            </span>
-          </div>
-        </div>
-        )}
-      </>
-      )}
-      </>
-      )}
       </div>
 
       <ChatSide
@@ -3044,347 +2322,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         activeMarkdownName={activeMarkdownName}
         sidebarTabs={sidebarTabs}
       />
-    </div>
-  );
-}
-
-function Message({ msg, assistantName, onRetry, onShowHtml, onShowPdf, onShowPpt, onShowMap, onShowCode, onShowMarkdown }) {
-  const { t } = useI18n();
-
-  if (msg.kind === "compacted") {
-    return (
-      <div className="context-divider main-divider compacted-divider">
-        <span>{t("chat.compactedContext") || "━━ 较早上下文已压缩 ━━"}</span>
-      </div>
-    );
-  }
-
-  // Archived context — read-only, with markdown for agent/system messages
-  if (msg.isArchivedContext) {
-    var archAttachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
-    var archIsAgent = msg.role === "agent" || msg.role === "system";
-    var archExtracted = archIsAgent && msg.body ? extractHtmlBlocks(msg.body) : null;
-    var archHasHtml = archExtracted && archExtracted.hasBlocks;
-    var archBody = archIsAgent && msg.body && !archHasHtml
-      ? renderMarkdown(injectAttachmentLinks(msg.body, archAttachments))
-      : msg.body;
-    return (
-      <div className={"msg " + msg.role + " archived-context"}>
-        <div className="msg-meta">
-          <span className={"msg-role " + msg.role}>
-            {msg.role === "user" ? "▸ " + t("chat.you") :
-             msg.role === "agent" ? "● " + (assistantName || "agent") :
-             msg.role}
-          </span>
-          <span className="msg-time">{msg.time}</span>
-        </div>
-        {archHasHtml ? (
-          <div className="msg-body markdown">
-            {archExtracted.parts.map(function(part, idx) {
-              if (part.type === "markdown" && part.content.trim()) {
-                return <div key={idx} dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(part.content, archAttachments)) }} />;
-              }
-              if (part.type === "html" && part.content) {
-                return <div key={idx} className="html-block-placeholder"><button className="html-show-btn" onClick={function() { onShowHtml && onShowHtml(part.content); }}>{t("chat.html.showBtn")}</button></div>;
-              }
-              return null;
-            })}
-          </div>
-        ) : archBody && archBody !== msg.body ? (
-          <div className="msg-body markdown" dangerouslySetInnerHTML={{__html: archBody}} />
-        ) : msg.body ? (
-          <div className="msg-body">{msg.body}</div>
-        ) : null}
-      </div>
-    );
-  }
-
-  const renderMarkdownBody = !msg.streamingReply;
-  const attachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
-  const markdownBody = renderMarkdownBody && (msg.role === "agent" || msg.role === "system") && msg.body
-    ? renderMarkdown(injectAttachmentLinks(msg.body, attachments))
-    : "";
-  const isRuntimeTrace = Boolean(msg.runtimeTrace);
-  const attachedRuntime = msg.attachedRuntime || null;
-  const hasOwnTrace = Boolean(msg.thinking || (msg.tools && msg.tools.length));
-  const hasTrace = isRuntimeTrace || hasOwnTrace || Boolean(attachedRuntime);
-  const traceLabel = isRuntimeTrace
-    ? (msg.traceSummary + (msg.traceElapsed ? " · " + msg.traceElapsed : ""))
-    : attachedRuntime && !hasOwnTrace
-    ? (attachedRuntime.summary + (attachedRuntime.elapsed ? " · " + attachedRuntime.elapsed : ""))
-    : traceSummary(msg);
-  const runtimeSuffix = attachedRuntime && hasOwnTrace
-    ? " · " + attachedRuntime.summary.replace(/^details\s·\s/, "") + " · " + attachedRuntime.elapsed
-    : "";
-  const onlyTraceMsg = !msg.body;
-  const metaInSummary = hasTrace && msg.role === "agent";
-  const roleLabel = msg.role === "user" ? "▸ " + t("chat.you") :
-    msg.role === "agent" ? "● " + (assistantName || "agent") :
-    msg.role;
-  const timeLabel = attachedRuntime ? attachedRuntime.timeLabel : msg.time;
-  return (
-    <div className={"msg " + msg.role + (metaInSummary ? " meta-in-summary" : "")}>
-      {!metaInSummary && (
-        <div className="msg-meta">
-          <span className={"msg-role " + msg.role}>{roleLabel}</span>
-          <span className="msg-time">{timeLabel}</span>
-        </div>
-      )}
-
-      {hasTrace && (
-        <details className={"msg-trace" + (!msg.body ? " only-trace" : "") + (isRuntimeTrace ? " runtime-trace" : "")}>
-          <summary className="msg-trace-summary">
-            {metaInSummary && (
-              <span className={"msg-role " + msg.role}>{roleLabel}</span>
-            )}
-            <span className="msg-trace-caret">▸</span>
-            <span className="trace-summary-fade">{traceLabel + runtimeSuffix}</span>
-          </summary>
-          <div className="msg-trace-body">
-            {isRuntimeTrace && (
-              <div className="thinking">
-                {(msg.traceEntries || []).map(function (entry, index) {
-                  return (
-                    <div key={index} className="progress-entry">
-                      <span className="progress-icon">{entry.icon}</span>
-                      <span className="progress-text">{entry.text}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {!isRuntimeTrace && msg.thinking && (
-              <div className="thinking">
-                <div className="thinking-head">{t("chat.reasoning")}</div>
-                {msg.thinking}
-              </div>
-            )}
-            {!isRuntimeTrace && msg.tools && msg.tools.map((t, i) => <ToolCard key={i} tool={t} />)}
-            {attachedRuntime && (
-              <div className="thinking">
-                {attachedRuntime.entries.map(function (entry, index) {
-                  return (
-                    <div key={index} className="progress-entry">
-                      <span className="progress-icon">{entry.icon}</span>
-                      <span className="progress-text">{entry.text}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </details>
-      )}
-
-      {(msg.body || msg.streamingReply) ? (
-        msg.body && (msg.role === "agent" || msg.role === "system") && renderMarkdownBody
-          ? (function() {
-              var extracted = extractHtmlBlocks(msg.body);
-              if (!extracted.hasBlocks) {
-                return <div className="msg-body markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(msg.body, attachments)) }} />;
-              }
-              return <div className="msg-body markdown">{extracted.parts.map(function(part, idx) {
-                if (part.type === "markdown" && part.content.trim()) {
-                  return <div key={idx} dangerouslySetInnerHTML={{ __html: renderMarkdown(injectAttachmentLinks(part.content, attachments)) }} />;
-                }
-                if (part.type === "html" && part.content) {
-                  return <div key={idx} className="html-block-placeholder"><button className="html-show-btn" onClick={function() { onShowHtml && onShowHtml(part.content); }}>{t("chat.html.showBtn")}</button></div>;
-                }
-                return null;
-              })}</div>;
-            })()
-          : <div className={"msg-body" + (msg.streamingReply ? " streaming-reply" : "")}>{msg.body}</div>
-      ) : attachments.length > 0 ? (
-        <div className="msg-body msg-body-attach-caption">
-          {attachments.map(function (file, idx) {
-            return (
-              <span className="attach-caption-item" key={file.id || (file.name + "_" + idx)}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-                <span className="attach-caption-name">{file.name || "file"}</span>
-              </span>
-            );
-          })}
-        </div>
-      ) : null}
-      {(msg.role === "agent" || msg.role === "system") && msg.body && !msg.streamingReply && (
-        <div className="msg-actions">
-          <button className="msg-action-btn" onClick={function () { navigator.clipboard.writeText(msg.body); }} title={t("chat.copyAction") || "复制"}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-          </button>
-          {onRetry && (
-            <button className="msg-action-btn" onClick={onRetry} title={t("chat.retryAction") || "重试"}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-          )}
-        </div>
-      )}
-      {attachments.length > 0 && (
-        <div className="msg-attachments">
-          {attachments.map(function (file, index) {
-            var isImage = String(file.content_type || "").startsWith("image/");
-            var isPdf = String(file.content_type || "") === "application/pdf";
-            var isPpt = String(file.content_type || "") === "application/vnd.ms-powerpoint" || String(file.content_type || "") === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-            var isHtml = String(file.content_type || "") === "text/html" || String(file.content_type || "") === "application/xhtml+xml";
-            var isMap = file.kind === "map" || String(file.content_type || "") === "application/geo+json" || String(file.content_type || "") === "application/vnd.geo+json";
-            var _codeExts = new Set(["py","js","ts","jsx","tsx","css","json","yaml","yml","toml","xml","sql","sh","bash","rs","go","java","c","cpp","h","rb","php","swift","kt","txt","csv","ini","cfg","env"]);
-            var _fileExt = String(file.name || "").split(".").pop().toLowerCase();
-            var isMarkdown = file.kind === "markdown" || _fileExt === "md" || _fileExt === "markdown";
-            var isCode = !isMarkdown && (file.kind === "code" || (_codeExts.has(_fileExt) && !isImage && !isPdf && !isPpt && !isHtml && !isMap));
-            var label = String(file.name || "file");
-            var kind = String(file.kind || "file").toUpperCase();
-            return (
-              <div className={"msg-attachment" + (isImage ? " image" : "") + (isPdf ? " pdf" : "") + (isPpt ? " pdf" : "")} key={file.id || (file.name + "_" + index)}>
-                {isImage && file.url ? (
-                  <a className="msg-attachment-image" href={file.url} target="_blank" rel="noreferrer">
-                    <img
-                      src={file.url}
-                      alt={attachmentAltText(file)}
-                      style={attachmentThumbStyle(file, 360, 260)}
-                    />
-                  </a>
-                ) : isPdf && file.url ? (
-                  <button className="pdf-show-btn" onClick={function() { onShowPdf && onShowPdf(file.url, file.name); }}>
-                    {t("chat.pdf.showBtn")}
-                  </button>
-                ) : isPpt && file.url ? (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button className="pdf-show-btn" onClick={function() { onShowPpt && onShowPpt(file.url, file.name); }}>
-                      {t("chat.ppt.showBtn")}
-                    </button>
-                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    </a>
-                  </div>
-                ) : isHtml && file.url ? (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button className="html-show-btn" onClick={function() {
-                      fetch(file.url).then(function(r) { return r.text(); }).then(function(html) {
-                        onShowHtml && onShowHtml(html);
-                      }).catch(function() {});
-                    }}>
-                      {t("chat.html.showBtn")}
-                    </button>
-                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    </a>
-                  </div>
-                ) : isMap ? (
-                  <button className="html-show-btn" onClick={function() { onShowMap && onShowMap(); }}>
-                    {t("chat.map.showBtn")}
-                  </button>
-                ) : isMarkdown && file.url ? (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button className="html-show-btn" onClick={function() { onShowMarkdown && onShowMarkdown(file.url, file.name); }}>
-                      {t("chat.md.showBtn")}
-                    </button>
-                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    </a>
-                  </div>
-                ) : isCode && file.url ? (
-                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                    <button className="html-show-btn" onClick={function() { onShowCode && onShowCode(file.url, file.name); }}>
-                      {t("chat.code.showBtn")}
-                    </button>
-                    <a className="msg-action-btn" href={file.url} download={label} target="_blank" rel="noreferrer" aria-label={label} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", textDecoration: "none", lineHeight: 1 }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                    </a>
-                  </div>
-                ) : (
-                  <a className="msg-attachment-file" href={file.url || "#"} download={label} target="_blank" rel="noreferrer" aria-label={label}>
-                    <span className="msg-attachment-kind">{kind}</span>
-                    <span className="msg-attachment-name">{label}</span>
-                  </a>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function QuestionPanel({ pendingQuestion, draft, onDraftChange, onOptionSelect, onSubmit, onKeyDown, answering, sending, optionCount }) {
-  const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
-  if (!pendingQuestion) return null;
-  const options = Array.isArray(pendingQuestion.options) ? pendingQuestion.options : [];
-  const customDisabled = answering;
-  const questionText = String(pendingQuestion.text || "");
-  const canCollapse = questionText.length > 280;
-  return (
-    <div className="question-panel">
-      <div className="question-panel-head">
-        <span className="question-panel-kicker">{t("chat.clarificationNeeded")}</span>
-        <span className="question-panel-meta">
-          {optionCount ? t("chat.optionsPlusCustom", { n: optionCount, pl: optionCount === 1 ? "" : "s" }) : t("chat.customAnswer")}
-        </span>
-      </div>
-      <div className="question-panel-body">
-        <div className={"question-panel-copy" + (expanded ? " expanded" : "")}>
-          <div className="question-panel-title">{questionText}</div>
-        </div>
-        {canCollapse && (
-          <button
-            className="question-panel-toggle"
-            type="button"
-            onClick={function () { setExpanded(function (value) { return !value; }); }}
-          >
-            {expanded ? t("chat.showLess") : t("chat.showMore")}
-          </button>
-        )}
-        {options.length > 0 && (
-          <div className="question-options">
-            {options.map(function (option) {
-              return (
-                <button
-                  key={option.id}
-                  className="question-option"
-                  disabled={customDisabled}
-                  onClick={function () { onOptionSelect && onOptionSelect(option.label); }}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        <div className="question-custom">
-          <textarea
-            className="question-textarea"
-            value={draft}
-            onChange={function (e) { onDraftChange && onDraftChange(e.target.value); }}
-            onKeyDown={onKeyDown}
-            disabled={customDisabled}
-            placeholder={t("chat.typeYourAnswer")}
-          />
-          <button
-            className="question-submit"
-            disabled={customDisabled || !String(draft || "").trim()}
-            onClick={onSubmit}
-          >
-            {t("chat.answer")} <span className="kbd">↵</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ToolCard({ tool }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="tool-card">
-      <div className="tool-head" onClick={() => setOpen(!open)} style={{ cursor: "pointer" }}>
-        <span>{open ? "▾" : "▸"}</span>
-        <span className="name">{tool.name}</span>
-        <span className="arg">({tool.arg})</span>
-        <span className={"pill " + (tool.status === "running" ? "running" : tool.status === "err" ? "err" : "")}>
-          {tool.status}
-        </span>
-      </div>
-      {open && tool.out && <div className="tool-body">{tool.out}</div>}
     </div>
   );
 }

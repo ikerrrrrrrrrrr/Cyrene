@@ -1942,18 +1942,6 @@ button { font-family: inherit; }
   color: var(--accent);
   animation: cyrene-stream-caret 1s steps(1, end) infinite;
 }
-.msg-trace + .msg-body {
-  margin-top: 16px;
-}
-.msg.agent.meta-in-summary .msg-trace {
-  margin-top: 0;
-}
-.msg.agent.meta-in-summary .msg-trace-body {
-  max-width: fit-content;
-}
-.msg.agent.meta-in-summary .msg-trace-summary .msg-role {
-  font-size: 13px;
-}
 .msg-body.markdown {
   white-space: normal;
 }
@@ -2120,320 +2108,6 @@ html[data-theme="light"] .msg.user .msg-body {
   color: var(--text);
   background: var(--bg-2);
   border-color: var(--text-4);
-}
-
-/* inline tool-call card */
-.tool-card {
-  margin: 8px 0;
-  border: 1px solid var(--line);
-  background: var(--bg-1);
-  border-radius: var(--r-m);
-  overflow: hidden;
-  box-shadow: var(--surface-gloss), var(--shadow-sm);
-}
-.tool-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  border-bottom: 1px solid var(--line);
-}
-.tool-head > span:first-child { flex-shrink: 0; }
-.tool-head .name { color: var(--accent); flex-shrink: 0; }
-.tool-head .arg  {
-  color: var(--text-2);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tool-head .pill {
-  margin-left: auto;
-  flex-shrink: 0;
-  font-size: 10.5px;
-  padding: 2px 7px;
-  border-radius: 10px;
-  background: var(--accent-faint);
-  color: var(--accent);
-  border: 1px solid var(--accent-dim);
-}
-.tool-head .pill.running { color: var(--warn); border-color: rgba(240,184,108,0.4); background: rgba(240,184,108,0.07); }
-.tool-body {
-  padding: 8px 10px;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--text-2);
-  background: rgba(0,0,0,0.15);
-  max-height: 180px;
-  overflow: auto;
-  white-space: pre;
-  line-height: 1.55;
-}
-
-.msg-trace {
-  margin: 12px 0 0;
-  border-radius: var(--r-m);
-  overflow: hidden;
-  overflow-anchor: none;
-  order: 1;
-}
-.msg-trace.only-trace {
-  margin-top: 8px;
-}
-.runtime-trace {
-  margin-top: 4px;
-}
-.runtime-trace .msg-trace-summary {
-  font-size: 10.5px;
-  padding: 3px 10px;
-  color: var(--text-4);
-}
-.runtime-trace .msg-trace-summary .trace-summary-fade {
-  opacity: 0.65;
-}
-.runtime-trace[open] .msg-trace-summary {
-  color: var(--text-2);
-}
-.runtime-trace[open] .trace-summary-fade {
-  opacity: 1;
-}
-.msg-trace[open] .msg-trace-summary {
-  color: var(--text-2);
-}
-.msg-trace-summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-4);
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-.msg-trace-summary::-webkit-details-marker {
-  display: none;
-}
-.msg-trace[open] .msg-trace-summary {
-}
-.msg-trace-caret {
-  color: var(--text-4);
-  transition: transform 120ms ease;
-}
-.msg-trace[open] .msg-trace-caret {
-  transform: rotate(90deg);
-}
-.msg-trace-body {
-  padding: 0 10px 8px;
-}
-
-/* thinking */
-.thinking {
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--text-3);
-  border-radius: var(--r-s);
-  padding: 8px 14px;
-  margin: 10px 0;
-  white-space: pre-wrap;
-  background: var(--bg-1);
-}
-.thinking-head {
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-4);
-  margin-bottom: 6px;
-}
-.progress-entry {
-  display: flex; gap: 8px; align-items: baseline;
-  padding: 3px 0;
-  font-size: 12.5px;
-  line-height: 1.5;
-}
-.progress-icon {
-  flex-shrink: 0;
-  width: 14px;
-  text-align: center;
-  color: var(--text-4);
-}
-.progress-text {
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* pending question */
-.question-panel {
-  margin: 16px 10% 220px;
-  border: 1px solid rgba(133, 189, 168, 0.28);
-  border-radius: var(--r-l);
-  background:
-    linear-gradient(180deg, rgba(133, 189, 168, 0.1), rgba(133, 189, 168, 0.04)),
-    var(--bg-1);
-  overflow: hidden;
-  box-shadow: var(--surface-gloss), var(--shadow-md);
-  display: flex;
-  flex-direction: column;
-  max-height: min(58vh, 720px);
-}
-.question-panel-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 12px 16px 10px;
-  border-bottom: 1px solid rgba(133, 189, 168, 0.18);
-}
-.question-panel-kicker,
-.question-panel-meta {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.question-panel-kicker {
-  color: var(--accent);
-}
-.question-panel-meta {
-  color: var(--text-4);
-}
-.question-panel-body {
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-}
-.question-panel-copy {
-  overflow: auto;
-  min-height: 0;
-  max-height: min(20vh, 240px);
-  padding-right: 6px;
-}
-.question-panel-copy.expanded {
-  max-height: min(36vh, 520px);
-}
-.question-panel-copy::-webkit-scrollbar {
-  width: 10px;
-}
-.question-panel-copy::-webkit-scrollbar-thumb {
-  background: rgba(133, 189, 168, 0.22);
-  border-radius: 999px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.question-panel-title {
-  color: var(--text);
-  font-size: 15px;
-  line-height: 1.55;
-  font-weight: 540;
-  overflow-wrap: anywhere;
-}
-.question-panel-toggle {
-  align-self: flex-start;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font-family: var(--mono);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-}
-.question-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  flex-shrink: 0;
-}
-.question-option {
-  padding: 9px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(133, 189, 168, 0.28);
-  background: rgba(133, 189, 168, 0.08);
-  color: var(--text);
-  cursor: pointer;
-  font-size: 13.5px;
-  font-weight: 520;
-  transition: background 120ms, border-color 120ms, color 120ms;
-}
-.question-option:hover:not(:disabled) {
-  background: rgba(133, 189, 168, 0.16);
-  border-color: rgba(133, 189, 168, 0.4);
-}
-.question-option:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.question-custom {
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-  margin-top: auto;
-  padding-top: 12px;
-  border-top: 1px solid rgba(133, 189, 168, 0.14);
-  position: sticky;
-  bottom: 0;
-}
-.question-textarea {
-  width: 100%;
-  min-height: 56px;
-  max-height: 144px;
-  resize: vertical;
-  border: 1px solid var(--line);
-  border-radius: var(--r-m);
-  background: rgba(0, 0, 0, 0.08);
-  color: var(--text);
-  padding: 12px 14px;
-  line-height: 1.55;
-  font-size: 14px;
-}
-.question-textarea:focus {
-  outline: none;
-  border-color: var(--accent-dim);
-}
-.question-submit {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 9px 16px;
-  border: 0;
-  border-radius: var(--r-m);
-  background: var(--accent);
-  color: var(--accent-text);
-  cursor: pointer;
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 760;
-  white-space: nowrap;
-}
-.question-submit:disabled {
-  background: var(--bg-3);
-  color: var(--text-4);
-  cursor: not-allowed;
-}
-@media (max-width: 720px) {
-  .question-panel {
-    margin: 12px 0 0;
-    max-height: min(54vh, 640px);
-  }
-  .question-panel-copy {
-    max-height: min(18vh, 180px);
-  }
-  .question-panel-copy.expanded {
-    max-height: min(28vh, 320px);
-  }
-  .question-custom {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .question-submit {
-    justify-content: center;
-  }
 }
 
 /* composer */
@@ -2817,74 +2491,6 @@ html[data-text-size="large"] .mention-option-task { font-size: 13px; }
   color: var(--text-4);
 }
 .kbd { border: 1px solid var(--line); padding: 1px 5px; border-radius: 5px; }
-.msg-attachments {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-.msg.agent .msg-attachments,
-.msg.system .msg-attachments {
-  order: 3;
-}
-.msg-attachment {
-  width: fit-content;
-  max-width: 100%;
-  padding: 8px;
-  border-radius: var(--r-m);
-  border: 1px solid var(--line);
-  background: var(--bg-2);
-  color: var(--text-2);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.msg-attachment.image {
-  width: auto;
-}
-.msg-attachment-image {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: fit-content;
-  max-width: 100%;
-  border-radius: var(--r-m);
-  background: var(--bg-3);
-  overflow: hidden;
-}
-.msg-attachment-image img {
-  display: block;
-  max-width: 100%;
-  object-fit: contain;
-}
-.msg-attachment-file {
-  width: 168px;
-  max-width: min(42vw, 168px);
-  height: 72px;
-  border-radius: var(--r-m);
-  border: 1px dashed var(--line-2);
-  background:
-    linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0)),
-    var(--bg-3);
-  color: inherit;
-  text-decoration: none;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 10px 12px;
-}
-.msg-attachment-kind {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--text-4);
-}
-.msg-attachment-name {
-  font-size: 13px;
-  line-height: 1.35;
-  color: var(--text);
-  word-break: break-word;
-}
-
 /* Chat right pane */
 .chat-side {
   display: flex;
@@ -6626,19 +6232,11 @@ html[data-text-size="large"] .who { font-size: 15px; }
 html[data-text-size="large"] .who small { font-size: 12.5px; }
 
 /* chat */
-html[data-text-size="large"] .thread-header { font-size: 14px; }
-html[data-text-size="large"] .msg-meta { font-size: 14px; }
 html[data-text-size="large"] .msg-body { font-size: 18.5px; }
-html[data-text-size="large"] .thinking { font-size: 15px; }
 html[data-text-size="large"] .composer textarea { font-size: 18.5px; }
 html[data-text-size="large"] .chip { font-size: 13.5px; }
 html[data-text-size="large"] .composer-hint { font-size: 13.5px; }
 html[data-text-size="large"] .composer-actions .send { font-size: 14.5px; padding: 9px 18px; }
-html[data-text-size="large"] .tool-head { font-size: 15px; }
-html[data-text-size="large"] .tool-body { font-size: 15px; }
-html[data-text-size="large"] .question-panel-title { font-size: 18.5px; }
-html[data-text-size="large"] .question-option { font-size: 16px; }
-
 /* right side */
 html[data-text-size="large"] .side-head { font-size: 13.5px; }
 html[data-text-size="large"] .cc-terminal__title { font-size: 14px; }
@@ -6949,155 +6547,6 @@ body {
   scrollbar-gutter: stable;
 }
 
-.app[data-screen-label="Cyrene · chat"] .thread-header,
-.app[data-screen-label="Cyrene · chat"] .archive-banner {
-  display: none;
-}
-
-.chat-welcome {
-  width: min(660px, 100%);
-  margin-top: 8px;
-}
-
-.chat-welcome h1 {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 24px;
-  color: var(--text);
-  font-size: 26px;
-  line-height: 1.15;
-  font-weight: 720;
-  letter-spacing: 0;
-}
-
-.welcome-mark {
-  width: 26px;
-  height: 26px;
-  flex: 0 0 auto;
-  background: center / contain no-repeat url("logo-mark.png");
-}
-
-.welcome-card {
-  width: min(510px, 100%);
-  padding: 12px;
-  border-radius: 8px;
-  background: var(--bg-2);
-  color: var(--text);
-}
-
-.welcome-card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-  gap: 12px;
-}
-
-.welcome-tabs,
-.welcome-range {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-2);
-  font-size: 14px;
-  font-weight: 640;
-}
-
-.welcome-tabs button,
-.welcome-range button {
-  padding: 4px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--text-3);
-  font-size: 13px;
-  font-weight: 620;
-  cursor: pointer;
-  font-family: inherit;
-  transition: background 120ms, color 120ms, border-color 120ms;
-}
-
-.welcome-tabs button:hover,
-.welcome-range button:hover {
-  color: var(--text);
-  border-color: var(--text-4);
-}
-
-.welcome-tabs .active,
-.welcome-range .active {
-  background: var(--accent);
-  color: var(--accent-text);
-  border-color: var(--accent);
-}
-
-.welcome-metrics {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 4px;
-}
-
-.welcome-metrics div {
-  min-height: 45px;
-  padding: 6px 7px;
-  border-radius: 5px;
-  background: var(--bg-3);
-  overflow: hidden;
-}
-
-.welcome-metrics span {
-  display: block;
-  color: var(--text-3);
-  font-size: 13px;
-  font-weight: 620;
-  line-height: 1.1;
-  white-space: nowrap;
-}
-
-.welcome-metrics strong {
-  display: block;
-  margin-top: 4px;
-  color: var(--text);
-  font-size: 15px;
-  line-height: 1.1;
-  font-weight: 780;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.welcome-heatmap {
-  margin-top: 8px;
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
-}
-
-.welcome-heatmap--placeholder {
-  grid-template-columns: repeat(22, 1fr);
-}
-
-.welcome-heatmap span {
-  aspect-ratio: 1;
-  border-radius: 2px;
-  background: var(--bg-3);
-}
-
-.welcome-heatmap span.hot {
-  background: color-mix(in srgb, var(--accent) 34%, var(--bg-2));
-}
-
-.welcome-heatmap span.high {
-  background: var(--accent);
-}
-
-.welcome-card p {
-  margin: 10px 0 2px;
-  color: var(--text-3);
-  font-size: 12px;
-  font-weight: 620;
-}
-
 .app[data-screen-label="Cyrene · chat"] .composer {
   position: fixed;
   left: 300px;
@@ -7184,14 +6633,6 @@ body {
     padding: 0 16px 0;
   }
 
-  .chat-welcome h1 {
-    margin-bottom: 20px;
-    font-size: 24px;
-  }
-
-  .welcome-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 html[data-text-size="large"] .btn { font-size: 15px; }
 html[data-text-size="large"] .seg-btn { font-size: 15px; padding: 12px 20px; }
@@ -7459,11 +6900,6 @@ html[data-text-size="large"] .setup-section h2 { font-size: 25px; }
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-.msg-attachment.pdf {
-  display: flex;
-  align-items: center;
-}
-
 .html-view-container {
   flex: 1;
   display: flex;
@@ -7699,7 +7135,6 @@ html[data-theme="dark"] .chat-side-switcher button.active {
   color: var(--text);
 }
 
-html[data-theme="dark"] .welcome-card,
 html[data-theme="dark"] .welcome-metrics div,
 html[data-theme="dark"] .welcome-heatmap span,
 html[data-theme="dark"] .composer-actions .send,
@@ -7862,7 +7297,6 @@ html[data-theme="dark"] .chat-side-switcher,
 html[data-theme="dark"] .settings-nav .nav-item,
 html[data-theme="dark"] .seg,
 html[data-theme="dark"] .seg-btn,
-html[data-theme="dark"] .welcome-card,
 html[data-theme="dark"] .welcome-metrics div,
 html[data-theme="dark"] .welcome-heatmap span {
   border-color: #333333;
@@ -8018,7 +7452,6 @@ html[data-theme="dark"] .chat-side-switcher,
 html[data-theme="dark"] .settings-nav .nav-item,
 html[data-theme="dark"] .seg,
 html[data-theme="dark"] .seg-btn,
-html[data-theme="dark"] .welcome-card,
 html[data-theme="dark"] .welcome-metrics div,
 html[data-theme="dark"] .welcome-heatmap span {
   border-color: #333333;
@@ -8151,7 +7584,6 @@ html[data-theme="dark"] .chat-side-switcher,
 html[data-theme="dark"] .settings-nav .nav-item,
 html[data-theme="dark"] .seg,
 html[data-theme="dark"] .seg-btn,
-html[data-theme="dark"] .welcome-card,
 html[data-theme="dark"] .welcome-metrics div,
 html[data-theme="dark"] .welcome-heatmap span {
   border-color: #333333;
@@ -9096,7 +8528,6 @@ html[data-theme="dark"] .canvas-wrap {
 }
 
 html[data-theme="dark"] .chat-side-switcher,
-html[data-theme="dark"] .welcome-card,
 html[data-theme="dark"] .welcome-metrics div,
 html[data-theme="dark"] .welcome-heatmap span,
 html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .chip,
@@ -9257,7 +8688,6 @@ html[data-theme="dark"] .chat-side-switcher,
 html[data-theme="dark"] .settings-nav .nav-item,
 html[data-theme="dark"] .seg,
 html[data-theme="dark"] .seg-btn,
-html[data-theme="dark"] .welcome-card,
 html[data-theme="dark"] .welcome-metrics div,
 html[data-theme="dark"] .welcome-heatmap span {
   border-color: #333333;
@@ -9739,111 +9169,6 @@ html[data-theme="dark"] .welcome-range .active {
 
 
 
-.archive-container {
-  width: 100%;
-  overflow-anchor: none;
-}
-.archive-container .msg {
-  /* animation removed to prevent flash during scroll compensation */
-}
-
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .thread-header,
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-banner,
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-container,
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .msg {
-  width: min(100%, var(--chat-content-max)) !important;
-  max-width: var(--chat-content-max) !important;
-  margin-left: auto;
-  margin-right: auto;
-  box-sizing: border-box;
-}
-
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .context-divider,
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .archive-loading {
-  width: min(100%, var(--chat-content-max)) !important;
-  max-width: var(--chat-content-max) !important;
-  margin-left: auto;
-  margin-right: auto;
-  box-sizing: border-box;
-}
-
-/* ── Archive context divider ── */
-.context-divider {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 20px 0 14px;
-  color: var(--text-4);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  user-select: none;
-  pointer-events: none;
-}
-.context-divider::before,
-.context-divider::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--line);
-}
-.context-divider.main-divider {
-  margin: 28px 0 18px;
-  color: var(--accent);
-}
-.context-divider.main-divider::before,
-.context-divider.main-divider::after {
-  background: color-mix(in srgb, var(--accent) 30%, var(--line));
-}
-
-/* ── Archived context messages (read-only, dimmed) ── */
-.msg.archived-context {
-  opacity: 0.75;
-  pointer-events: none;
-  user-select: none;
-}
-.msg.archived-context .msg-body {
-  background: var(--bg-2) !important;
-  border-color: var(--line-dim, var(--line)) !important;
-}
-
-/* ── Archive loading indicator ── */
-.archive-loading {
-  text-align: center;
-  padding: 14px 0 8px;
-  color: var(--text-4);
-  font-family: var(--mono);
-  font-size: 11px;
-  animation: archive-pulse 1.2s ease-in-out infinite;
-}
-@keyframes archive-pulse {
-  0%, 100% { opacity: 0.4; }
-  50% { opacity: 1; }
-}
-
-.app[data-screen-label="Cyrene · chat"] .chat-scroll > .chat-welcome {
-  width: min(660px, 100%);
-  max-width: min(660px, 100%);
-  margin-left: calc(84px - var(--chat-column-pad) - var(--chat-scrollbar-center-comp));
-  margin-right: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
-
-.app[data-screen-label="Cyrene · chat"] .chat-welcome .welcome-card {
-  width: min(510px, 100%);
-  box-sizing: border-box;
-}
-
-.app[data-screen-label="Cyrene · chat"] .msg-body,
-.app[data-screen-label="Cyrene · chat"] .msg-trace,
-.app[data-screen-label="Cyrene · chat"] .msg-attachments {
-  width: 100% !important;
-  box-sizing: border-box;
-}
-
 .app[data-screen-label="Cyrene · chat"] .chat-main > .composer {
   position: absolute;
   left: 0 !important;
@@ -9861,13 +9186,6 @@ html[data-theme="dark"] .welcome-range .active {
 .app[data-screen-label="Cyrene · chat"] .composer-hint {
   width: min(100%, var(--chat-content-max));
   box-sizing: border-box;
-}
-
-.app[data-screen-label="Cyrene · chat"] .question-panel {
-  width: min(calc(100% - (var(--chat-column-pad) * 2) - 48px), var(--chat-question-max));
-  max-width: calc(100% - 32px);
-  box-sizing: border-box;
-  margin: 16px auto 220px;
 }
 
 @media (max-width: 960px) {

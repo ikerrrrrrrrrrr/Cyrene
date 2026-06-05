@@ -296,9 +296,11 @@ function ModernConversation({
   visibleSending,
   hasStreamingReply,
   hasAssistantReplyBody,
+  activeRequestId,
   visibleLiveProgress,
   visibleNotice,
   mutationDiff,
+  mutationDiffsByRequest,
   assistantName,
   isLiveSession,
   onRetryMessage,
@@ -330,6 +332,42 @@ function ModernConversation({
   var preparingReply = messages.some(function (msg) {
     return msg && msg.streamingReply && !String(msg.body || "").trim();
   });
+  var statusRequestId = String(activeRequestId || "");
+  var statusVisible = Boolean(visibleSending && !hasStreamingReply && !hasAssistantReplyBody);
+  var diffMap = mutationDiffsByRequest && typeof mutationDiffsByRequest === "object" ? mutationDiffsByRequest : {};
+  var hasAgentByRequest = {};
+  visibleEntries.forEach(function (item) {
+    var msg = item.entry && item.entry.msg;
+    var requestId = String(msg && msg.clientRequestId || "");
+    if (requestId && msg && (msg.role === "agent" || msg.role === "system")) hasAgentByRequest[requestId] = true;
+  });
+  var insertedStatusRequests = {};
+
+  function diffForRequest(requestId) {
+    var key = String(requestId || "");
+    var stored = key ? diffMap[key] : null;
+    if (stored && String(stored.diff || "").trim()) return stored;
+    if (key && mutationDiff && String(mutationDiff.signature || "").split(":")[0] === key && String(mutationDiff.diff || "").trim()) {
+      return mutationDiff;
+    }
+    return null;
+  }
+
+  function runtimeStatusNode(requestId, key) {
+    var requestDiff = diffForRequest(requestId);
+    var isActiveStatus = Boolean(statusVisible && requestId && requestId === statusRequestId);
+    return (
+      <ModernRuntimeStatus
+        key={key}
+        visible={isActiveStatus}
+        progressEntries={visibleLiveProgress}
+        lang={lang}
+        diffText={requestDiff && requestDiff.diff}
+        onOpenDiff={onOpenDiff}
+        preparingReply={preparingReply}
+      />
+    );
+  }
 
   function retryDataFor(originalIndex) {
     var entry = entries[originalIndex];
@@ -349,36 +387,57 @@ function ModernConversation({
     return null;
   }
 
+  var conversationNodes = [];
+  if (!showWelcome) {
+    visibleEntries.forEach(function (item) {
+      var retryData = retryDataFor(item.originalIndex);
+      var msg = item.entry && item.entry.msg;
+      var msgRequestId = String(msg && msg.clientRequestId || "");
+      var hasRequestDiff = Boolean(diffForRequest(msgRequestId));
+      var shouldRenderForRequest = Boolean(msgRequestId && ((statusVisible && msgRequestId === statusRequestId) || hasRequestDiff));
+      var isStatusUser = Boolean(shouldRenderForRequest && msg && msg.role === "user");
+      var isStatusAgent = Boolean(shouldRenderForRequest && msg && (msg.role === "agent" || msg.role === "system"));
+      var messageNode = (
+        <ModernMessage
+          key={item.entry.renderKey}
+          msg={msg}
+          assistantName={assistantName}
+          archived={!isLiveSession}
+          onRetry={retryData && retryData.requestId ? function () { onRetryMessage && onRetryMessage(retryData); } : null}
+          onShowHtml={onShowHtml}
+          onShowPdf={onShowPdf}
+          onShowPpt={onShowPpt}
+          onShowMap={onShowMap}
+          onShowCode={onShowCode}
+          onShowMarkdown={onShowMarkdown}
+        />
+      );
+      if (isStatusAgent && !insertedStatusRequests[msgRequestId]) {
+        insertedStatusRequests[msgRequestId] = true;
+        conversationNodes.push(
+          <React.Fragment key={"with-status-before-" + item.entry.renderKey}>
+            {runtimeStatusNode(msgRequestId, "runtime-status-before-" + item.entry.renderKey)}
+            {messageNode}
+          </React.Fragment>
+        );
+        return;
+      }
+      conversationNodes.push(messageNode);
+      if (isStatusUser && !hasAgentByRequest[msgRequestId] && !insertedStatusRequests[msgRequestId]) {
+        insertedStatusRequests[msgRequestId] = true;
+        conversationNodes.push(runtimeStatusNode(msgRequestId, "runtime-status-after-" + item.entry.renderKey));
+      }
+    });
+    if (statusVisible && statusRequestId && !insertedStatusRequests[statusRequestId]) {
+      conversationNodes.push(runtimeStatusNode(statusRequestId, "runtime-status-fallback"));
+    }
+  }
+
   return (
     <div className="chat-scroll modern-chat-scroll" ref={scrollRef} onScroll={onScroll}>
       <div className={"modern-chat-stage" + (showWelcome ? " empty" : "")}>
-        {!showWelcome && visibleEntries.map(function (item) {
-          var retryData = retryDataFor(item.originalIndex);
-          return (
-            <ModernMessage
-              key={item.entry.renderKey}
-              msg={item.entry.msg}
-              assistantName={assistantName}
-              archived={!isLiveSession}
-              onRetry={retryData && retryData.requestId ? function () { onRetryMessage && onRetryMessage(retryData); } : null}
-              onShowHtml={onShowHtml}
-              onShowPdf={onShowPdf}
-              onShowPpt={onShowPpt}
-              onShowMap={onShowMap}
-              onShowCode={onShowCode}
-              onShowMarkdown={onShowMarkdown}
-            />
-          );
-        })}
+        {conversationNodes}
         {showWelcome && <ModernWelcome lang={lang} />}
-        <ModernRuntimeStatus
-          visible={Boolean(visibleSending && !hasStreamingReply && !hasAssistantReplyBody)}
-          progressEntries={visibleLiveProgress}
-          lang={lang}
-          diffText={mutationDiff && mutationDiff.diff}
-          onOpenDiff={onOpenDiff}
-          preparingReply={preparingReply}
-        />
         {visibleNotice && <div className="modern-system-notice">{visibleNotice}</div>}
       </div>
     </div>
