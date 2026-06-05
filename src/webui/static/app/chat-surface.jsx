@@ -295,6 +295,7 @@ function ModernConversation({
   pendingQuestion,
   visibleSending,
   hasStreamingReply,
+  hasAssistantReplyBody,
   visibleLiveProgress,
   visibleNotice,
   mutationDiff,
@@ -371,7 +372,7 @@ function ModernConversation({
         })}
         {showWelcome && <ModernWelcome lang={lang} />}
         <ModernRuntimeStatus
-          visible={Boolean(visibleSending && !hasStreamingReply)}
+          visible={Boolean(visibleSending && !hasStreamingReply && !hasAssistantReplyBody)}
           progressEntries={visibleLiveProgress}
           lang={lang}
           diffText={mutationDiff && mutationDiff.diff}
