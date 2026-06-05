@@ -322,9 +322,8 @@ async def _run_chat_agent(
         main_system = _MAIN_AGENT_PROMPT
         now = datetime.now().astimezone()
         temporal_context = (
-            "## Current Date and Relative Time\n"
-            f"- Current local date: {now:%Y-%m-%d}.\n"
-            f"- Current local time: {now:%Y-%m-%d %H:%M:%S %Z}.\n"
+            "## Current Date\n"
+            f"- Current local date: {now:%Y-%m-%d} ({now:%A}).\n"
             "- Interpret relative phrases such as today, recently, this week, last week, 最近, 最近一周, 今天, 本周 relative to this date.\n"
             "- For current weather or travel recommendations, search for current forecast/current conditions. Do not invent or substitute old years unless the user explicitly asks for historical weather."
         )

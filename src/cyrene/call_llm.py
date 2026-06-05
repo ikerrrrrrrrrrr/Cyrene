@@ -176,11 +176,26 @@ def _resolve_candidates(model_type: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+_INTERNAL_MSG_KEYS = frozenset({
+    "message_id", "round_id", "round_title", "client_request_id",
+    "hidden_from_ui", "system_initiated", "usage", "attachments",
+    "compacted_block", "llm_compacted", "report_expanded_for_turn",
+    "report_ref", "report_archive_session_id", "report_round_id",
+    "report_title", "deep_reflection_record", "reflection_id",
+    "subagent_flow_snapshot", "proactive",
+})
+
+
+def _strip_internal_fields(message: dict) -> dict:
+    """Remove Cyrene-internal fields that must not be sent to the LLM."""
+    return {k: v for k, v in message.items() if k not in _INTERNAL_MSG_KEYS}
+
+
 def _sanitize_messages_for_llm(messages: list[dict]) -> list[dict]:
     """Ensure valid tool_calls/tool message pairing with unique tool_call_ids."""
     import uuid as _uuid
 
-    messages = strip_context_metadata(messages)
+    messages = [_strip_internal_fields(m) for m in strip_context_metadata(messages)]
     seen_ids: set[str] = set()
     result: list[dict[str, Any]] = []
     i = 0
