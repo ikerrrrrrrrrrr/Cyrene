@@ -44,7 +44,10 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
     from cyrene.channels.wechat import setup_wechat as _setup_wechat
     from webui.routes import register_routes
 
+    from webui.auth import LocalAuthMiddleware
+
     app = FastAPI(title="Cyrene")
+    app.add_middleware(LocalAuthMiddleware)
     app.state.instance_id = instance_id
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 

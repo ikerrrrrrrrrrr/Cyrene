@@ -1,7 +1,13 @@
-const { app, BrowserWindow, dialog, ipcMain, Notification } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Notification, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+
+// Desktop-local auth token. Generated once at module load and shared with the
+// Python backend via env (CYRENE_AUTH_TOKEN). Injected as the X-Cyrene-Token
+// header on every request to the local backend (see installAuthHeaderInjector).
+// The renderer never sees this token.
+const AUTH_TOKEN = require('crypto').randomBytes(32).toString('hex');
 
 const isDev = process.env.ELECTRON_DEV === '1';
 const isWindows = process.platform === 'win32';
@@ -10,6 +16,7 @@ const supportsLoginItem = process.platform === 'darwin' || process.platform === 
 let mainWindow = null;
 let pythonProcess = null;
 let pendingPortResolve = null;
+let backendPort = null;
 let isShuttingDown = false;
 let isQuitting = false;
 let launchHidden = process.argv.includes('--hidden');
@@ -109,6 +116,7 @@ function spawnPython() {
   const childEnv = {
     ...process.env,
     CYRENE_APP_EXECUTABLE: app.getPath('exe'),
+    CYRENE_AUTH_TOKEN: AUTH_TOKEN,
   };
 
   if (binaryPath) {
@@ -133,6 +141,10 @@ function spawnPython() {
     const match = text.match(/^PORT=(\d+)$/m);
     if (match) {
       port = parseInt(match[1], 10);
+      // Store globally so a later waitForPort() can resolve even if the
+      // PORT event arrived before any window registered a pending resolver
+      // (e.g. launch-at-login hidden startup).
+      backendPort = port;
       if (pendingPortResolve) {
         pendingPortResolve(port);
         pendingPortResolve = null;
@@ -159,12 +171,14 @@ function spawnPython() {
       pendingPortResolve(null);
       pendingPortResolve = null;
     }
+    backendPort = null;
     app.quit();
   });
 
   pythonProcess.on('exit', (code) => {
     console.log(`[electron] Python backend exited (code=${code})`);
     pythonProcess = null;
+    backendPort = null;
     if (code === 42) {
       // Exit code 42 = intentional restart after update.
       // Exit immediately to release the single-instance lock so the
@@ -218,6 +232,10 @@ function killPython() {
 // ---------------------------------------------------------------------------
 
 function waitForPort(timeoutMs = 30000) {
+  // Port already reported (event may have arrived before this call) — resolve now.
+  if (backendPort !== null) {
+    return Promise.resolve(backendPort);
+  }
   return new Promise((resolve, reject) => {
     pendingPortResolve = resolve;
     setTimeout(() => {
@@ -227,6 +245,23 @@ function waitForPort(timeoutMs = 30000) {
       }
     }, timeoutMs);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Auth header injection
+// ---------------------------------------------------------------------------
+
+// Inject the shared X-Cyrene-Token header on every request to the local
+// backend — document loads, fetch, SSE, and WebSocket upgrades all go through
+// onBeforeSendHeaders. Must be registered BEFORE the window loads the URL.
+function installAuthHeaderInjector() {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: ['http://127.0.0.1:*/*', 'ws://127.0.0.1:*/*'] },
+    (details, callback) => {
+      const requestHeaders = { ...details.requestHeaders, 'X-Cyrene-Token': AUTH_TOKEN };
+      callback({ requestHeaders });
+    }
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +355,7 @@ if (!gotSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    installAuthHeaderInjector();
     applyLaunchAtLogin(readDesktopSettings().launchAtLogin);
     ipcMain.handle('desktop-settings:get', () => getDesktopSettings());
     ipcMain.handle('desktop-settings:update', (_event, updates) => saveDesktopSettings(updates || {}));
