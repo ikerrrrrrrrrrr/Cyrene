@@ -254,6 +254,8 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   });
   const [soulDraft, setSoulDraft] = useStateSet("");
   const [soulStatus, setSoulStatus] = useStateSet("");
+  const [configLoading, setConfigLoading] = useStateSet(true);
+  const [configError, setConfigError] = useStateSet("");
   const [capabilityToggles, setCapabilityToggles] = useStateSet({
     streamThinking: readStoredTweak("cap-streamThinking", true),
     redactSecrets: readStoredTweak("cap-redactSecrets", true),
@@ -395,14 +397,28 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
     } catch (e) {}
   }, [desktopNotificationsEnabled]);
 
-  useEffect(() => {
-    fetch("/api/settings/config").then((r) => r.json()).then((payload) => {
+  function loadConfig() {
+    setConfigLoading(true);
+    setConfigError("");
+    fetch("/api/settings/config").then((r) => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then((payload) => {
       setConfig(payload);
       setSoulDraft(payload.soul_content || "");
       if (payload.notify_telegram !== undefined) setNotifyTelegram(payload.notify_telegram);
       if (payload.notify_wechat !== undefined) setNotifyWechat(payload.notify_wechat);
       if (payload.agent_proactive !== undefined) setAgentProactive(payload.agent_proactive);
-    }).catch(() => {});
+      setConfigLoading(false);
+      setConfigError("");
+    }).catch((e) => {
+      setConfigLoading(false);
+      setConfigError(e.message || t("settings.pathError"));
+    });
+  }
+
+  useEffect(() => {
+    loadConfig();
     fetch("/api/settings/models").then((r) => r.json()).then((payload) => {
       const fallbackApiKey = "";
       const normalized = (payload.primary_candidates || payload.models || []).map(function (model, index) {
@@ -1262,7 +1278,16 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
               />
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
                 <button className="btn primary" onClick={saveSoul}>{t("settings.saveSoul")}</button>
-                <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{soulStatus || config.soul_path}</span>
+                {configError && !soulStatus ? (
+                  <span style={{ fontSize: 11, color: "var(--text-3)", display: "flex", alignItems: "center", gap: 6 }}>
+                    {t("settings.pathError")}
+                    <button className="btn" style={{ padding: "1px 8px", fontSize: 11 }} disabled={configLoading} onClick={loadConfig}>{t("settings.pathRetry")}</button>
+                  </span>
+                ) : (
+                  <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>
+                    {soulStatus || (configLoading ? t("settings.pathLoading") : config.soul_path)}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -1559,24 +1584,31 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 </div>
               </div>
 
+              {configError ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", color: "var(--text-2)", fontSize: 13 }}>
+                  <span>{t("settings.pathError")}<small style={{ opacity: 0.6 }}> ({configError})</small></span>
+                  <button className="btn" style={{ padding: "2px 10px", fontSize: 12 }} disabled={configLoading} onClick={loadConfig}>{t("settings.pathRetry")}</button>
+                </div>
+              ) : null}
+
               <div className="field">
                 <div className="label">{t("settings.baseDir")}<small>{t("settings.baseDirHint")}</small></div>
-                <input className="input mono" value={config.base_dir} readOnly />
+                <input className="input mono" value={configLoading ? t("settings.pathLoading") : config.base_dir} readOnly />
               </div>
 
               <div className="field">
                 <div className="label">{t("settings.dataDir")}<small>{t("settings.dataDirHint")}</small></div>
-                <input className="input mono" value={config.data_dir} readOnly />
+                <input className="input mono" value={configLoading ? t("settings.pathLoading") : config.data_dir} readOnly />
               </div>
 
               <div className="field">
                 <div className="label">{t("settings.workspaceDir")}<small>{t("settings.workspaceDirHint")}</small></div>
-                <input className="input mono" value={config.workspace_dir} readOnly />
+                <input className="input mono" value={configLoading ? t("settings.pathLoading") : config.workspace_dir} readOnly />
               </div>
 
               <div className="field">
                 <div className="label">{t("settings.soulPath")}<small>{t("settings.soulPathHint")}</small></div>
-                <input className="input mono" value={config.soul_path} readOnly />
+                <input className="input mono" value={configLoading ? t("settings.pathLoading") : config.soul_path} readOnly />
               </div>
             </div>
 
