@@ -84,6 +84,25 @@ def _extract_text(msg: dict) -> str:
     return ""
 
 
+def _format_pending_question_wechat(question: dict) -> str:
+    """Format a pending question as a WeChat text message."""
+    text = str(question.get("text", "")).strip()
+    options = question.get("options", []) or []
+
+    if options:
+        lines = [text, ""]
+        for i, opt in enumerate(options, start=1):
+            label = str(opt.get("label", opt) if isinstance(opt, dict) else opt).strip()
+            lines.append(f"{i}. {label}")
+        if question.get("allow_custom", True):
+            lines.append("")
+            lines.append("（也可以直接输入您的回答）")
+    else:
+        lines = [text]
+
+    return "\n".join(lines)
+
+
 async def _handle_message(text: str, sender: str, client: WeChatClient, db_path: str) -> None:
     """Process a single incoming text message.
 
@@ -91,7 +110,13 @@ async def _handle_message(text: str, sender: str, client: WeChatClient, db_path:
     2. Ignore non-owner messages (single-user mode).
     3. Show typing indicator, run the agent loop, send the reply.
     """
-    from cyrene.agent import get_session_labels, run_agent
+    from cyrene.agent import (
+        _AWAITING_USER_SENTINEL,
+        answer_pending_question,
+        get_pending_question,
+        get_session_labels,
+        run_agent,
+    )
     from cyrene.agent.state import _conversation_source
     from cyrene.conversations import archive_exchange
     from cyrene.scheduler import reset_lottery
@@ -117,7 +142,36 @@ async def _handle_message(text: str, sender: str, client: WeChatClient, db_path:
     await client.send_typing(sender)
 
     _conversation_source.set("wechat")
-    response = await run_agent(text, client, sender, db_path)
+
+    # If there is a pending question, route this message as the answer
+    pending = get_pending_question()
+    if pending and str(pending.get("id", "")).strip():
+        question_id = str(pending["id"]).strip()
+        options = pending.get("options") or []
+        answer_text = text.strip()
+        # Map numeric replies to option labels
+        if options and answer_text.isdigit():
+            idx = int(answer_text) - 1
+            if 0 <= idx < len(options):
+                opt = options[idx]
+                answer_text = str(opt.get("label", opt) if isinstance(opt, dict) else opt).strip()
+        try:
+            response = await answer_pending_question(
+                question_id, answer_text, client, sender, db_path
+            )
+        except Exception as exc:
+            logger.warning("answer_pending_question failed: %s", exc)
+            response = f"处理回答时出错：{exc}"
+    else:
+        response = await run_agent(text, client, sender, db_path)
+
+    # If the agent is now waiting for user input, send the question
+    if response == _AWAITING_USER_SENTINEL:
+        new_pending = get_pending_question()
+        if new_pending:
+            question_text = _format_pending_question_wechat(new_pending)
+            await client.send_message(sender, question_text)
+        return
 
     labels = get_session_labels()
     await archive_exchange(
