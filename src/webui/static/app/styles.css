@@ -3824,6 +3824,9 @@ html[data-theme="light"] .canvas-wrap {
   font-size: 13px;
   font-family: var(--mono);
   font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .node-foot {
   padding: 8px 12px;
@@ -3832,6 +3835,13 @@ html[data-theme="light"] .canvas-wrap {
   color: var(--text-4);
   border-top: 1px solid var(--line);
   display: flex; gap: 10px;
+  overflow: hidden;
+}
+.node-foot span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .node-foot b { color: var(--text-3); font-weight: 400; }
 

@@ -93,4 +93,31 @@ async def compute_git_diff(body: GitDiffBody):
     if proc.returncode not in (0, 1):
         raise HTTPException(status_code=400, detail=stderr.decode("utf-8", errors="replace") or "git diff failed")
     diff = stdout.decode("utf-8", errors="replace")
+    if body.path and not body.staged and not diff.strip():
+        # `git diff -- path` does not include untracked files. For the chat
+        # change summary, synthesize a normal unified diff for new text files.
+        resolved = resolved if "resolved" in locals() else (WORKSPACE_DIR / body.path).resolve()
+        try:
+            rel = str(resolved.relative_to(WORKSPACE_DIR.resolve()))
+        except ValueError:
+            rel = body.path
+        if resolved.is_file():
+            tracked_proc = await asyncio.create_subprocess_exec(
+                "git",
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                rel,
+                cwd=str(WORKSPACE_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await tracked_proc.communicate()
+            if tracked_proc.returncode != 0:
+                try:
+                    right_text = resolved.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    right_text = ""
+                if right_text:
+                    diff = _compute_unified_diff("", right_text, left_label="/dev/null", right_label=f"b/{rel}")
     return {"diff": diff, "has_changes": bool(diff.strip()), "path": body.path, "staged": body.staged}

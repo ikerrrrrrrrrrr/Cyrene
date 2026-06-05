@@ -127,10 +127,12 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
   const [selectedEdgeKey, setSelectedEdgeKey] = useStateAg(null);
   const [zoom, setZoom] = useStateAg(0.85);
   const [pan, setPan] = useStateAg({ x: 20, y: 20 });
+  const panRef = useRefAg({ x: 20, y: 20 });
   const [viewport, setViewport] = useStateAg({ width: 1400, height: 900 });
   const wrapRef = useRefAg(null);
   const lastRoundRef = useRefAg(selectedRound);
   const selectionMemoryRef = useRefAg({});
+  panRef.current = pan;
 
   function selectNodeForRound(nodeId) {
     selectionMemoryRef.current[selectedRound] = { nodeId, edgeKey: null };
@@ -263,7 +265,8 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
       if (e.target.closest(".node")) return;
       if (e.target.closest(".canvas-toolbar")) return;
       if (e.target.closest(".canvas-legend")) return;
-      dragRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+      const p = panRef.current;
+      dragRef.current = { x: e.clientX, y: e.clientY, px: p.x, py: p.y };
     }
     function onMove(e) {
       if (!dragRef.current) return;
@@ -279,7 +282,7 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [pan]);
+  }, []);
 
   // Wheel: cmd/ctrl = zoom, plain wheel = scroll/pan, shift+wheel = horizontal pan
   function onWheel(e) {
@@ -295,19 +298,30 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
     }; });
   }
 
-  // Compute node rects with wrapping:
-  // horizontal = preserve backend lane layout per round
-  // vertical   = transpose the same layout for top-to-bottom reading
+  // Compute node rects: column-based grid layout.
+  // Backend x values (40/320/600/900/1220/1540) are bucketed to columns via
+  // Math.round(x/100), giving distinct col keys 0/3/6/9/12/15.
+  // Within each column nodes stack along the cross axis; the first node of every
+  // column is centered on a shared axis so the input→main→output chain runs
+  // straight, while stacks fan out from there with real per-node heights.
   const nodeRects = useMemo(function () {
-    const padding = 20;
-    const roundGapY = 120;
+    const padding = 24;
+    const colGap = 76;     // gap between columns (main flow direction)
+    const rowGap = 30;     // gap between stacked siblings
+    const subagentGap = 96; // gap between stacked subagent cards
+    const staggerX = 116;  // zig-zag offset for subagents (horizontal mode)
+    const staggerY = 64;   // zig-zag offset for subagents (vertical mode)
     const rects = {};
 
-    function nodeSize(n) {
-      return {
-        w: n.kind === "main" ? 220 : n.kind === "subagent" ? 200 : n.kind === "tool" ? 180 : n.kind === "output" ? 200 : 200,
-        h: 86,
-      };
+    function nW(n) {
+      return n.kind === "main" ? 220 : n.kind === "subagent" ? 200 : n.kind === "tool" ? 180 : 200;
+    }
+    // Real rendered height: cards with a footer (subtitle/model) are taller.
+    function nH(n) {
+      return (n.kind === "main" || n.kind === "subagent" || n.kind === "tool") ? 106 : 76;
+    }
+    function gapBefore(n) {
+      return n.kind === "subagent" ? subagentGap : rowGap;
     }
 
     function roundKeyForNode(node) {
@@ -315,65 +329,98 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
       return m ? m[1] : "r0";
     }
 
-    function layoutRound(roundNodes, topOffset) {
-      if (!roundNodes.length) return topOffset;
-      const minX = Math.min.apply(null, roundNodes.map(function (n) { return Number(n.x) || 0; }));
-      const minY = Math.min.apply(null, roundNodes.map(function (n) { return Number(n.y) || 0; }));
-      const subagentOffsets = new Map();
-      roundNodes
-        .filter(function (node) { return node.kind === "subagent"; })
-        .slice()
-        .sort(function (a, b) {
-          if ((a.y || 0) !== (b.y || 0)) return (a.y || 0) - (b.y || 0);
-          return (a.x || 0) - (b.x || 0);
-        })
-        .forEach(function (node, index) {
-          subagentOffsets.set(node.id, staggerLevel(index));
-        });
-      let roundBottom = topOffset;
-
-      for (var i = 0; i < roundNodes.length; i++) {
-        var n = roundNodes[i];
-        var _a = nodeSize(n), w = _a.w, h = _a.h;
-        var relX = (Number(n.x) || 0) - minX;
-        var relY = (Number(n.y) || 0) - minY;
-        if (orientation === "horizontal") relX *= 0.68;
-        if (orientation === "vertical") relY *= 0.68;
-        var x = orientation === "vertical" ? padding + relY : padding + relX;
-        var y = orientation === "vertical" ? topOffset + padding + relX : topOffset + padding + relY;
-        if (n.kind === "subagent") {
-          var lane = subagentOffsets.get(n.id) || 0;
-          if (orientation === "vertical") {
-            x += lane * 78;
-            y += Math.abs(lane) * 26;
-          } else {
-            x += Math.abs(lane) * 30;
-            y += lane * 72;
-          }
-        }
-        rects[n.id] = { x: x, y: y, w: w, h: h };
-        roundBottom = Math.max(roundBottom, y + h);
-      }
-
-      return roundBottom;
+    const byRound = new Map();
+    for (var bi = 0; bi < nodes.length; bi++) {
+      var bn = nodes[bi];
+      var bk = roundKeyForNode(bn);
+      if (!byRound.has(bk)) byRound.set(bk, []);
+      byRound.get(bk).push(bn);
     }
 
-    var roundsMap = new Map();
-    for (var j = 0; j < nodes.length; j++) {
-      var n = nodes[j];
-      var roundKey = roundKeyForNode(n);
-      if (!roundsMap.has(roundKey)) roundsMap.set(roundKey, []);
-      roundsMap.get(roundKey).push(n);
-    }
-
-    var sortedRounds = Array.from(roundsMap.entries())
-      .map(function (entry) { return { key: entry[0], list: entry[1] }; })
+    var sortedRounds = Array.from(byRound.entries())
+      .map(function (e) { return { key: e[0], list: e[1] }; })
       .sort(function (a, b) { return Number(a.key.slice(1)) - Number(b.key.slice(1)); });
 
     var roundTop = 0;
-    for (var k = 0; k < sortedRounds.length; k++) {
-      var roundBottom = layoutRound(sortedRounds[k].list, roundTop);
-      roundTop = roundBottom + roundGapY;
+    for (var ri = 0; ri < sortedRounds.length; ri++) {
+      var roundNodes = sortedRounds[ri].list;
+      if (!roundNodes.length) continue;
+
+      var colMap = new Map();
+      for (var j = 0; j < roundNodes.length; j++) {
+        var rn = roundNodes[j];
+        var ck = Math.round((Number(rn.x) || 0) / 100);
+        if (!colMap.has(ck)) colMap.set(ck, []);
+        colMap.get(ck).push(rn);
+      }
+
+      // Per column: sort by backend y, precompute max width/height.
+      var cols = Array.from(colMap.entries())
+        .sort(function (a, b) { return a[0] - b[0]; })
+        .map(function (e) {
+          var list = e[1].slice().sort(function (a, b) { return (Number(a.y) || 0) - (Number(b.y) || 0); });
+          return {
+            key: e[0],
+            list: list,
+            maxW: Math.max.apply(null, list.map(nW)),
+            maxH: Math.max.apply(null, list.map(nH)),
+            // zig-zag only when more than one subagent shares the column
+            stagger: list.filter(function (n) { return n.kind === "subagent"; }).length > 1,
+          };
+        });
+
+      var roundBottom = roundTop;
+
+      if (orientation === "horizontal") {
+        // Column x positions advance left→right; staggered columns reserve extra width.
+        var curX = padding;
+        for (var ci = 0; ci < cols.length; ci++) {
+          cols[ci].pos = curX;
+          curX += cols[ci].maxW + (cols[ci].stagger ? staggerX : 0) + colGap;
+        }
+        // Shared horizontal axis = center of the tallest first-row node.
+        var axisH = 0;
+        for (var ci = 0; ci < cols.length; ci++) axisH = Math.max(axisH, nH(cols[ci].list[0]));
+        var axisCenter = roundTop + padding + axisH / 2;
+        for (var ci = 0; ci < cols.length; ci++) {
+          var col = cols[ci];
+          var prevBottom = null;
+          for (var ni = 0; ni < col.list.length; ni++) {
+            var cn = col.list[ni];
+            var h = nH(cn);
+            var cy = ni === 0 ? (axisCenter - h / 2) : (prevBottom + gapBefore(cn));
+            var sx = (col.stagger && cn.kind === "subagent" && ni % 2 === 1) ? staggerX : 0;
+            rects[cn.id] = { x: col.pos + sx, y: cy, w: nW(cn), h: h };
+            prevBottom = cy + h;
+            roundBottom = Math.max(roundBottom, prevBottom);
+          }
+        }
+      } else {
+        // Column y positions advance top→bottom; staggered bands reserve extra height.
+        var curY = roundTop + padding;
+        for (var ci = 0; ci < cols.length; ci++) {
+          cols[ci].pos = curY;
+          curY += cols[ci].maxH + (cols[ci].stagger ? staggerY : 0) + colGap;
+        }
+        // Shared vertical axis = center of the widest first node.
+        var axisW = 0;
+        for (var ci = 0; ci < cols.length; ci++) axisW = Math.max(axisW, nW(cols[ci].list[0]));
+        var axisCenterX = padding + axisW / 2;
+        for (var ci = 0; ci < cols.length; ci++) {
+          var col = cols[ci];
+          var prevRight = null;
+          for (var ni = 0; ni < col.list.length; ni++) {
+            var cn = col.list[ni];
+            var w = nW(cn);
+            var cx = ni === 0 ? (axisCenterX - w / 2) : (prevRight + gapBefore(cn));
+            var sy = (col.stagger && cn.kind === "subagent" && ni % 2 === 1) ? staggerY : 0;
+            rects[cn.id] = { x: cx, y: col.pos + sy, w: w, h: nH(cn) };
+            prevRight = cx + w;
+            roundBottom = Math.max(roundBottom, col.pos + sy + nH(cn));
+          }
+        }
+      }
+      roundTop = roundBottom + 80;
     }
     return rects;
   }, [nodes, orientation]);
@@ -400,16 +447,24 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
           var x1 = a.x + a.w / 2, y1 = a.y + a.h;
           var x2 = b.x + b.w / 2, y2 = b.y;
           if (b.y < a.y) { y1 = a.y; y2 = b.y + b.h; }
-          var dy = Math.max(30, (y2 - y1) / 2);
-          path = "M " + x1 + " " + y1 + " C " + x1 + " " + (y1 + dy) + ", " + x2 + " " + (y2 - dy) + ", " + x2 + " " + y2;
           lp = { x: (x1 + x2) / 2, y: (y1 + y2) / 2 - 4 };
+          if (Math.abs(x2 - x1) < 2) {
+            path = "M " + x1 + " " + y1 + " L " + x2 + " " + y2;
+          } else {
+            var dy = Math.max(30, (y2 - y1) / 2);
+            path = "M " + x1 + " " + y1 + " C " + x1 + " " + (y1 + dy) + ", " + x2 + " " + (y2 - dy) + ", " + x2 + " " + y2;
+          }
         } else {
           var _x1 = a.x + a.w, _y1 = a.y + a.h / 2;
           var _x2 = b.x, _y2 = b.y + b.h / 2;
           if (b.x < a.x) { _x1 = a.x; _x2 = b.x + b.w; }
-          var dx = Math.max(40, (_x2 - _x1) / 2);
-          path = "M " + _x1 + " " + _y1 + " C " + (_x1 + dx) + " " + _y1 + ", " + (_x2 - dx) + " " + _y2 + ", " + _x2 + " " + _y2;
           lp = { x: (_x1 + _x2) / 2, y: (_y1 + _y2) / 2 - 6 };
+          if (Math.abs(_y2 - _y1) < 2) {
+            path = "M " + _x1 + " " + _y1 + " L " + _x2 + " " + _y2;
+          } else {
+            var dx = Math.max(40, (_x2 - _x1) / 2);
+            path = "M " + _x1 + " " + _y1 + " C " + (_x1 + dx) + " " + _y1 + ", " + (_x2 - dx) + " " + _y2 + ", " + _x2 + " " + _y2;
+          }
         }
       }
       var edgeKey = edgeSelectionKey(e);
@@ -445,7 +500,7 @@ function AgentsPage({ orientation = "horizontal", selectedSessionId, rightSideba
     var buffer = 300;
     return nodes.filter(function (n) {
       var r = nodeRects[n.id];
-      if (!r) return true;
+      if (!r) return false;
       return !(r.x + r.w < vpLeft - buffer || r.x > vpRight + buffer ||
                r.y + r.h < vpTop - buffer || r.y > vpBottom + buffer);
     });
@@ -704,8 +759,8 @@ function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
           <div className="kv">
             <span className="k">{t("agents.model")}</span><span className="v">{d.model}</span>
             <span className="k">{t("agents.temp")}</span><span className="v">{d.temp}</span>
-            <span className="k">{t("agents.tokensIn")}</span><span className="v">{d.tokensIn}</span>
-            <span className="k">{t("agents.tokensOut")}</span><span className="v">{d.tokensOut}</span>
+            <span className="k">{t("agents.tokensIn")}</span><span className="v">{d.tokensIn || "—"}</span>
+            <span className="k">{t("agents.tokensOut")}</span><span className="v">{d.tokensOut || "—"}</span>
           </div>
         </div>
         <CommsSection nodeId={node.id} flow={flow} nodeMap={nodeMap} onSelectNode={onSelectNode} />
@@ -776,7 +831,7 @@ function InspectorDetails({ node, d, flow, nodeMap, onSelectNode }) {
       </div>
       <div className="insp-section">
         <div className="kv">
-          <span className="k">{t("agents.tokensIn")}</span><span className="v">{d.tokens}</span>
+          <span className="k">{t("agents.tokensIn")}</span><span className="v">{d.tokens || "—"}</span>
           <span className="k">{t("agents.sentAt")}</span><span className="v">{d.time}</span>
         </div>
       </div>
@@ -795,6 +850,7 @@ function InspectorIO({ node, d }) {
           node.kind === "main" ? d.systemPrompt :
           node.kind === "subagent" ? d.task :
           node.kind === "input" ? d.text :
+          node.kind === "output" ? (d.content || "—") :
           "—"
         }</pre>
       </div>
@@ -802,8 +858,10 @@ function InspectorIO({ node, d }) {
         <div className="insp-label">{t("agents.output")}</div>
         <pre className="code-block">{
           node.kind === "tool" ? (d.output || "—") :
-          node.kind === "main" ? d.reasoning :
-          node.kind === "output" ? d.content :
+          node.kind === "main" ? (d.reasoning || "—") :
+          node.kind === "subagent" ? (d.result || d.reasoning || "—") :
+          node.kind === "output" ? (d.content || "—") :
+          node.kind === "input" ? (d.text || "—") :
           "—"
         }</pre>
       </div>

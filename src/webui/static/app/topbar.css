@@ -1,0 +1,113 @@
+/* Floating top chrome: keep page controls visible without a card-like header. */
+.topbar,
+.app[data-screen-label="Cyrene · chat"] .topbar,
+html[data-theme="dark"] .topbar,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar {
+  min-height: 54px;
+  padding: 8px 18px;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.topbar::before {
+  display: none !important;
+}
+
+.topbar-title,
+html[data-theme="dark"] .topbar-title {
+  color: var(--text-2);
+  text-shadow: 0 1px 2px color-mix(in srgb, var(--bg) 74%, transparent);
+}
+
+.topbar-title b,
+html[data-theme="dark"] .topbar-title b {
+  color: var(--text);
+}
+
+.topbar-separator {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 4px;
+}
+
+.topbar .statlight,
+.topbar .iconbtn,
+.topbar .theme-toggle-btn,
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .statlight,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-toggle-btn {
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-2);
+}
+
+.topbar .statlight {
+  padding: 0 10px;
+  border: 1px solid #e5e5e1;
+  border-radius: 10px;
+}
+
+.topbar .iconbtn,
+.topbar .theme-toggle-btn {
+  border: 1px solid #dededb;
+}
+
+.topbar .iconbtn {
+  border-radius: 9px;
+}
+
+.topbar .theme-toggle-btn {
+  border-radius: 10px;
+}
+
+.topbar .iconbtn:hover,
+.topbar .iconbtn.active,
+.topbar .iconbtn:not(.disabled):focus-visible,
+.topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn.active,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-toggle-btn:hover {
+  border-color: #d1d1cd;
+  background: color-mix(in srgb, var(--text) 7%, transparent) !important;
+  box-shadow: none !important;
+  color: var(--text) !important;
+}
+
+html[data-theme="dark"] .topbar .statlight,
+html[data-theme="dark"] .topbar .iconbtn,
+html[data-theme="dark"] .topbar .theme-toggle-btn,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .statlight,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-toggle-btn {
+  border-color: #333333;
+}
+
+html[data-theme="dark"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .topbar .iconbtn.active,
+html[data-theme="dark"] .topbar .theme-toggle-btn:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn:hover,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .iconbtn.active,
+html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-toggle-btn:hover {
+  border-color: #444444;
+}
+
+.setup-topbar {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+.setup-topbar .theme-toggle-btn {
+  background: transparent !important;
+  box-shadow: none !important;
+}

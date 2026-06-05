@@ -1,0 +1,701 @@
+/* Modern chat message surface. Sidebar, topbar, and side panels stay owned elsewhere. */
+
+.app[data-screen-label="Cyrene · chat"] .chat-main {
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+  box-shadow: none;
+}
+
+.app[data-screen-label="Cyrene · chat"] .modern-chat-scroll {
+  padding-top: clamp(26px, 6vh, 76px);
+  padding-bottom: calc(var(--scroll-pb, 148px) + var(--scroll-pb-extra, 0px) + 20px);
+  background: var(--bg);
+  scroll-behavior: smooth;
+}
+
+.modern-chat-stage {
+  width: min(100%, var(--chat-content-max, 860px));
+  min-height: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 16px;
+}
+
+.modern-chat-stage.empty {
+  justify-content: center;
+  transform: translateY(-6vh);
+}
+
+.modern-welcome {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 38vh;
+  color: var(--text);
+  font-size: clamp(34px, 4.4vw, 50px);
+  line-height: 1.08;
+  font-weight: 580;
+  text-align: center;
+  letter-spacing: 0;
+}
+
+.modern-rotating-text {
+  display: inline-block;
+  animation: modern-phrase-fade 5s ease-in-out both;
+}
+
+@keyframes modern-phrase-fade {
+  0% { opacity: 0; transform: translateY(6px) scale(.94); }
+  12%, 84% { opacity: 1; transform: translateY(0) scale(1.055); }
+  100% { opacity: 0; transform: translateY(-6px) scale(.96); }
+}
+
+.modern-message {
+  display: flex;
+  width: 100%;
+  animation: modern-message-enter 260ms ease-out both;
+}
+
+.modern-message.user {
+  justify-content: flex-end;
+}
+
+.modern-message.agent,
+.modern-message.system {
+  justify-content: flex-start;
+}
+
+.modern-message.archived {
+  opacity: 0.92;
+}
+
+.modern-message-inner {
+  min-width: 0;
+  max-width: min(720px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.modern-message.user .modern-message-inner {
+  align-items: flex-end;
+  max-width: min(72%, 680px);
+}
+
+.modern-message.user .modern-msg-body {
+  padding: 11px 14px;
+  border-radius: 16px 16px 5px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 20%, transparent);
+  animation: modern-user-bubble-flight 520ms cubic-bezier(.2,.8,.18,1) both;
+}
+
+.modern-message.agent .modern-msg-body,
+.modern-message.system .modern-msg-body {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.modern-message.system .modern-msg-body {
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.modern-msg-body {
+  width: fit-content;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 16px;
+  line-height: 1.72;
+  font-weight: 500;
+}
+
+.modern-msg-body.markdown {
+  width: 100%;
+  white-space: normal;
+}
+
+.modern-msg-body.markdown > :first-child { margin-top: 0; }
+.modern-msg-body.markdown > :last-child { margin-bottom: 0; }
+
+.modern-msg-body.markdown p,
+.modern-msg-body.markdown ul,
+.modern-msg-body.markdown ol,
+.modern-msg-body.markdown blockquote,
+.modern-msg-body.markdown pre,
+.modern-msg-body.markdown table,
+.modern-msg-body.markdown hr {
+  margin: 0 0 14px;
+}
+
+.modern-msg-body.markdown ul,
+.modern-msg-body.markdown ol {
+  padding-left: 24px;
+}
+
+.modern-msg-body.markdown li + li {
+  margin-top: 6px;
+}
+
+.modern-msg-body.markdown a {
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.modern-msg-body.markdown code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+}
+
+.modern-msg-body.markdown pre {
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--shell-bg);
+  border: 1px solid var(--line);
+}
+
+.modern-msg-body.markdown pre code {
+  display: block;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.modern-msg-body.markdown blockquote {
+  padding-left: 14px;
+  border-left: 3px solid var(--accent-dim);
+  color: var(--text-2);
+}
+
+.modern-msg-body.markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+
+.modern-msg-body.markdown th,
+.modern-msg-body.markdown td {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.modern-msg-body.streaming-reply {
+  opacity: 0;
+  animation: modern-agent-stream-in 220ms ease-out 80ms both;
+}
+
+.modern-msg-body.streaming-reply::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1.1em;
+  margin-left: 3px;
+  transform: translateY(3px);
+  background: var(--accent);
+  border-radius: 999px;
+  animation: cyrene-stream-caret 1s steps(1, end) infinite;
+}
+
+.modern-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.modern-message.user .modern-attachments {
+  justify-content: flex-end;
+}
+
+.modern-attachment {
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.modern-attachment.image {
+  display: block;
+  overflow: hidden;
+  padding: 0;
+}
+
+.modern-attachment.image img {
+  display: block;
+  object-fit: contain;
+}
+
+.modern-attachment.action,
+.modern-attachment.file {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.modern-attachment.action:hover,
+.modern-attachment.file:hover {
+  color: var(--text);
+  border-color: var(--accent-dim);
+}
+
+.modern-msg-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 7px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.modern-message:hover .modern-msg-actions {
+  opacity: 1;
+}
+
+.modern-msg-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-4);
+  cursor: pointer;
+}
+
+.modern-msg-action:hover {
+  background: var(--bg-2);
+  color: var(--text-2);
+}
+
+.modern-context-divider {
+  display: flex;
+  justify-content: center;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
+  margin: 6px 0;
+}
+
+.modern-system-notice {
+  align-self: center;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 8px 10px;
+}
+
+.modern-status-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 2px 0 0;
+  animation: modern-status-enter 180ms ease-out both;
+}
+
+.modern-status-stack.files-only {
+  margin-top: -4px;
+}
+
+.modern-runtime-status {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.modern-modified-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(560px, 100%);
+  animation: modern-file-row-slide 220ms ease-out both;
+}
+
+.modern-modified-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  width: 100%;
+  border: 0;
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--text-2);
+  padding: 5px 10px;
+  font-family: var(--mono);
+  cursor: pointer;
+  text-align: left;
+}
+
+.modern-modified-file:hover {
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.modern-modified-name {
+  min-width: 0;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modern-diff-stat {
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.modern-diff-stat.add { color: #2ea043; }
+.modern-diff-stat.del { color: #f85149; }
+
+.agent-loading-spinner {
+  display: none !important;
+}
+
+.modern-composer {
+  padding-bottom: 16px;
+}
+
+.app[data-screen-label="Cyrene · chat"] .modern-composer {
+  padding-left: var(--chat-column-pad);
+  padding-right: var(--chat-column-pad);
+}
+
+.modern-composer-box,
+.modern-question-box,
+.modern-archive-composer {
+  width: min(100%, var(--chat-content-max, 860px));
+  box-sizing: border-box;
+  border: 1px solid var(--material-border);
+  border-radius: 18px;
+  background: var(--surface-2);
+  box-shadow: 0 16px 34px color-mix(in srgb, var(--surface-shadow-soft) 88%, transparent);
+}
+
+.modern-composer-box:focus-within,
+.modern-question-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--material-border-strong));
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent),
+    0 18px 34px color-mix(in srgb, var(--surface-shadow) 42%, transparent);
+}
+
+.modern-composer-box {
+  padding: 10px;
+}
+
+.modern-composer-hint {
+  width: min(100%, var(--chat-content-max, 860px));
+  box-sizing: border-box;
+}
+
+.modern-composer textarea,
+.modern-question-answer textarea {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  resize: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.modern-composer textarea {
+  min-height: 26px;
+  max-height: 190px;
+}
+
+.modern-composer-chips,
+.modern-composer-mentions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.modern-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.modern-composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.modern-composer-actions .iconbtn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+
+.modern-popover-anchor {
+  position: relative;
+}
+
+.modern-composer-spacer {
+  flex: 1;
+}
+
+.modern-composer-model {
+  max-width: 180px;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modern-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.modern-send.secondary {
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-2);
+}
+
+.modern-send.stop {
+  border: 1px solid rgba(201, 120, 120, 0.32);
+  background: rgba(201, 120, 120, 0.14);
+  color: var(--err);
+}
+
+.modern-send:disabled {
+  background: var(--bg-3);
+  color: var(--text-4);
+  cursor: not-allowed;
+}
+
+.modern-question-box {
+  padding: 12px;
+}
+
+.modern-question-copy {
+  color: var(--text);
+}
+
+.modern-question-text {
+  max-height: min(18vh, 180px);
+  overflow: auto;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.modern-question-text.expanded {
+  max-height: min(34vh, 420px);
+}
+
+.modern-question-toggle {
+  margin-top: 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.modern-question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.modern-question-options button {
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px;
+  background: var(--accent-faint);
+  color: var(--text);
+  padding: 7px 11px;
+  cursor: pointer;
+}
+
+.modern-question-answer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.modern-question-answer textarea {
+  min-height: 46px;
+  max-height: 136px;
+}
+
+.modern-question-answer button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.modern-question-answer button:disabled {
+  background: var(--bg-3);
+  color: var(--text-4);
+  cursor: not-allowed;
+}
+
+.modern-archive-composer {
+  padding: 14px 16px;
+  text-align: center;
+  color: var(--text-4);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.modern-archive-composer button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.modern-context-picker,
+.modern-menu {
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: 0 18px 42px color-mix(in srgb, var(--surface-shadow) 46%, transparent);
+}
+
+.modern-picker-section {
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  padding-top: 4px;
+}
+
+.context-option.mono {
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+@keyframes modern-message-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes modern-user-bubble-flight {
+  0% {
+    opacity: 0;
+    transform: translate3d(26px, 62px, 0) scale(.96);
+    border-radius: 18px;
+  }
+  44% {
+    opacity: 1;
+    transform: translate3d(8px, 18px, 0) scale(.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes modern-agent-stream-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes modern-status-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes modern-file-row-slide {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 720px) {
+  .app[data-screen-label="Cyrene · chat"] .modern-chat-scroll {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .modern-message.user .modern-message-inner {
+    max-width: min(88%, 620px);
+  }
+
+  .modern-welcome {
+    font-size: 25px;
+  }
+
+  .modern-composer-actions {
+    flex-wrap: wrap;
+  }
+
+  .modern-composer-model {
+    display: none;
+  }
+
+  .modern-question-answer {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modern-rotating-text,
+  .modern-message,
+  .modern-message.user .modern-msg-body,
+  .modern-msg-body.streaming-reply,
+  .modern-status-stack,
+  .modern-modified-files {
+    animation: none !important;
+  }
+}

@@ -3827,6 +3827,21 @@ def _build_live_flow_round(
     output_id = f"{prefix}n_out"
     main_completed = bool(latest_agent)
 
+    _llm_resp = latest_main_llm.get("response") if latest_main_llm else None
+    _llm_text = (
+        str(_llm_resp.get("reasoning_content") or _llm_resp.get("content") or "")
+        if isinstance(_llm_resp, dict) else ""
+    )
+    _main_reasoning = (
+        str(latest_assistant_raw.get("reasoning_content") or "")
+        if latest_assistant_raw and latest_assistant_raw.get("reasoning_content")
+        else _llm_text
+        if _llm_text
+        else str(latest_phase.get("detail") or "")
+        if latest_phase and latest_phase.get("detail")
+        else "Session step completed."
+    )
+
     tool_nodes, tool_edges = _build_tool_nodes_for_owner(
         owner_node_id=main_id,
         owner_title=f"main agent · {ASSISTANT_NAME}",
@@ -3857,17 +3872,9 @@ def _build_live_flow_round(
                     f"You are {ASSISTANT_NAME}. Two-phase loop: lightweight tool decision, "
                     "then full tool loop with subagent spawn. Chat filter applies SOUL.md voice."
                 ),
-                "reasoning": (
-                    latest_assistant_raw.get("reasoning_content")
-                    if latest_assistant_raw and latest_assistant_raw.get("reasoning_content")
-                    else latest_main_llm.get("response")
-                    if latest_main_llm and latest_main_llm.get("response")
-                    else latest_phase.get("detail")
-                    if latest_phase and latest_phase.get("detail")
-                    else "Session step completed."
-                ),
-                "tokensIn": main_usage.get("prompt_tokens") if main_usage.get("prompt_tokens") is not None else "—",
-                "tokensOut": main_usage.get("completion_tokens") if main_usage.get("completion_tokens") is not None else "—",
+                "reasoning": _main_reasoning,
+                "tokensIn": main_usage.get("prompt_tokens") or "—",
+                "tokensOut": main_usage.get("completion_tokens") or "—",
                 "model": _get_model(), "temp": 0.2,
             },
         },
@@ -3921,8 +3928,8 @@ def _build_live_flow_round(
                 "parent": "main agent",
                 "role": "summary" if is_summary_agent else "worker",
                 "spawnedAt": sa.get("createdAt", "—"),
-                "tokensIn": sub_usage.get("prompt_tokens") if sub_usage.get("prompt_tokens") is not None else "—",
-                "tokensOut": sub_usage.get("completion_tokens") if sub_usage.get("completion_tokens") is not None else "—",
+                "tokensIn": sub_usage.get("prompt_tokens") or "—",
+                "tokensOut": sub_usage.get("completion_tokens") or "—",
                 "model": _get_model(),
                 "reasoning": latest_subassistant.get("reasoning_content") if latest_subassistant else "",
                 "result": sa.get("result", ""),

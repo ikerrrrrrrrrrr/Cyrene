@@ -419,14 +419,14 @@ function hasVisibleAssistantReplyForRequest(messages, requestId) {
 function formatProgressEvent(event) {
   switch (event.type) {
     case "phase_transition":
-      return { icon: "●", text: event.detail || event.from + " → " + event.to };
+      return { icon: "●", text: event.detail || event.from + " → " + event.to, type: "phase_transition", from: event.from, to: event.to };
     case "tool_call": {
       const args = event.args || {};
       const argPreview = Object.values(args).filter(Boolean).map(String).join(", ").slice(0, 60);
-      return { icon: "▸", text: event.tool + (argPreview ? "(" + argPreview + ")" : "()") };
+      return { icon: "▸", text: event.tool + (argPreview ? "(" + argPreview + ")" : "()"), type: "tool_call", tool: event.tool, args: args };
     }
     case "llm_call":
-      return { icon: "◎", text: (event.caller || "agent") + " · " + (event.phase || "thinking") };
+      return { icon: "◎", text: (event.caller || "agent") + " · " + (event.phase || "thinking"), type: "llm_call", caller: event.caller, phase: event.phase };
     default:
       return null;
   }
@@ -647,6 +647,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     initialScrollDoneRef.current = false;
     initialArchiveLoadTriggeredRef.current = false;
     initialPositioningInProgressRef.current = false;
+    setMutationDiff({ diff: "", signature: "" });
   }, [session.id]);
 
   /* Restore runtime trace state on page refresh if the session is still running.
@@ -758,30 +759,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (!signature || signature === autoDiffSignatureRef.current) return;
     if (gitDiffUnavailableRef.current) return;
     autoDiffSignatureRef.current = signature;
-    fetch("/api/code/git-diff", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    })
-      .then(function (r) {
-        if (!r.ok) {
-          if (r.status === 404) gitDiffUnavailableRef.current = true;
-          throw new Error("HTTP " + r.status);
-        }
-        return r.json();
-      })
-      .then(function (data) {
-        if (!data || !data.has_changes || !data.diff) return;
-        setDiffData({
-          diff: data.diff || "",
-          mode: "text",
-          left: "",
-          right: "",
-        });
-        addSidebarTab("diff-viewer");
-        setRightSidebarView("diff-viewer");
-      })
-      .catch(function () {});
+    refreshMutationDiffForTools(
+      candidate.tools.filter(isCodeMutationTool),
+      signature
+    );
   }, [isLiveSession, session.id, session.chat.messages, setRightSidebarView]);
 
   // ── Round change: clear content tabs ───────────────────────────────────
@@ -953,6 +934,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [activeMarkdownContent, setActiveMarkdownContent] = useState("");
   const [activeMarkdownName, setActiveMarkdownName] = useState("");
   const [diffData, setDiffData] = useState({ diff: "", mode: "text", left: "", right: "" });
+  const [mutationDiff, setMutationDiff] = useState({ diff: "", signature: "" });
   const autoDiffSignatureRef = useRef("");
   const gitDiffUnavailableRef = useRef(false);
   const [command, setCommand] = useState("");
@@ -1075,6 +1057,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     ? pendingQuestion.options.length
     : 0;
 
+  useEffect(function () {
+    if (!isLiveSession || !visibleSending || gitDiffUnavailableRef.current) return;
+    const paths = uniqueMutationPathsFromProgress(visibleLiveProgress);
+    if (paths.length === 0) return;
+    const signature = String(runtimeState.watchRequestId || session.id || "") + ":" + paths.join("|");
+    refreshMutationDiffForPaths(paths, signature);
+  }, [isLiveSession, visibleSending, visibleLiveProgress, runtimeState.watchRequestId, session.id, mutationDiff.signature]);
+
   function isNearBottom(el, threshold) {
     if (!el) return true;
     // When content is too short to overflow, the user cannot be "at the
@@ -1120,48 +1110,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   function scrollToLatestUserMessage() {
     var el = scrollRef.current;
     if (!el) return;
-    // If already animating a user message to the top, skip — calling scrollTo
-    // again would cancel the in-progress smooth animation.
-    if (pinnedMessageRef.current) return;
-    // Find the latest user message element (outside of archive containers)
-    var allUserEls = el.querySelectorAll('.msg.user');
-    var lastUserEl = null;
-    for (var i = allUserEls.length - 1; i >= 0; i--) {
-      if (!allUserEls[i].closest('.archive-container')) {
-        lastUserEl = allUserEls[i];
-        break;
-      }
-    }
-    if (!lastUserEl) return;
-    // Clear extra padding so measurements are accurate
+    pinnedMessageRef.current = false;
     el.style.setProperty('--scroll-pb-extra', '0px');
-    el.offsetHeight;
-    var containerRect = el.getBoundingClientRect();
-    var padTop = parseFloat(getComputedStyle(el).paddingTop) || 0;
-    var desired = lastUserEl.getBoundingClientRect().top - containerRect.top + el.scrollTop - padTop + 4;
-    var maxScroll = el.scrollHeight - el.clientHeight;
-    // If content below the user message is too short to let it reach the
-    // viewport top, add temporary bottom padding (same strategy as the
-    // initial-positioning layout effect).
-    if (desired > maxScroll) {
-      var shortfall = desired - maxScroll;
-      if (shortfall > el.clientHeight) shortfall = el.clientHeight;
-      el.style.setProperty('--scroll-pb-extra', shortfall + 'px');
-      el.offsetHeight; // force layout recalc
-      maxScroll = el.scrollHeight - el.clientHeight;
-      desired = Math.min(desired, maxScroll);
-    }
-    // Pin the message and animate it to the top.  pinnedMessageRef prevents
-    // scrollChatToBottom from fighting the animation while the reply streams.
-    // During mount, jump instantly instead of smooth-scrolling — layout is
-    // still settling (archive loading, --scroll-pb) and smooth can land wrong.
-    pinnedMessageRef.current = true;
+    var desired = Math.max(0, el.scrollHeight - el.clientHeight);
     if (mountingRef.current) {
-      el.scrollTop = Math.max(0, desired);
+      el.scrollTop = desired;
     } else {
-      el.scrollTo({ top: Math.max(0, desired), behavior: 'smooth' });
+      el.scrollTo({ top: desired, behavior: 'smooth' });
     }
-    userAtBottomRef.current = false;
+    userAtBottomRef.current = true;
   }
 
   /* When user sends a message: scroll the user message to viewport top so the agent
@@ -2009,6 +1966,17 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       msg && msg.attachedRuntime ? String(msg.attachedRuntime.elapsed || "") : "",
     ].join(":");
   }).join("|");
+  const hasStreamingReply = renderedMessages.some(function (msg) {
+    return Boolean(msg && msg.streamingReply && String(msg.body || "").trim());
+  });
+  const hasAssistantReplyBody = renderedMessages.some(function (msg) {
+    return Boolean(
+      msg
+      && msg.role === "agent"
+      && String(msg.clientRequestId || "") === String(runtimeState.watchRequestId || "")
+      && String(msg.body || "").trim()
+    );
+  });
 
   // ── Build archive context entries (prepended above current messages) ──
   var archiveRenderEntries = [];
@@ -2094,6 +2062,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   // ── Archive context loading (scroll up to reveal older sessions) ──
 
   function triggerArchiveLoad(options) {
+    // The message surface intentionally shows only the selected session.
+    // Archived sessions are rendered by selecting that session, not mixed into
+    // the live conversation as context blocks.
+    return;
     if (!isLiveSession || !hasMoreArchive || archiveLoadLock.current) return;
 
     var isInitial = options && options.initialLoad;
@@ -2306,6 +2278,95 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }).catch(function() {});
   }
 
+  function uniqueMutationPathsFromTools(tools) {
+    const seen = new Set();
+    const paths = [];
+    (tools || []).forEach(function (tool) {
+      if (!isCodeMutationTool(tool)) return;
+      const filePath = extractToolFilePath(tool && tool.rawArgs);
+      if (!filePath || seen.has(filePath)) return;
+      seen.add(filePath);
+      paths.push(filePath);
+    });
+    return paths;
+  }
+
+  function uniqueMutationPathsFromProgress(progressEntries) {
+    const seen = new Set();
+    const paths = [];
+    (progressEntries || []).forEach(function (entry) {
+      if (!entry || entry.type !== "tool_call") return;
+      const tool = { name: entry.tool, status: "done", rawArgs: entry.args || {} };
+      if (!isCodeMutationTool(tool)) return;
+      const filePath = extractToolFilePath(tool.rawArgs);
+      if (!filePath || seen.has(filePath)) return;
+      seen.add(filePath);
+      paths.push(filePath);
+    });
+    return paths;
+  }
+
+  async function refreshMutationDiffForPaths(paths, signature) {
+    const uniquePaths = (paths || []).filter(Boolean);
+    if (uniquePaths.length === 0 || !signature || signature === mutationDiff.signature) return;
+    const diffs = [];
+    for (let i = 0; i < uniquePaths.length; i += 1) {
+      const path = uniquePaths[i];
+      try {
+        const r = await fetch("/api/code/git-diff", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: path }),
+        });
+        if (!r.ok) {
+          if (r.status === 404) gitDiffUnavailableRef.current = true;
+          continue;
+        }
+        const data = await r.json();
+        if (data && data.has_changes && data.diff) diffs.push(data.diff);
+      } catch (_e) {}
+    }
+    const diff = diffs.join("\n");
+    if (!diff.trim()) return;
+    setMutationDiff({ diff: diff, signature: signature });
+    setDiffData({ diff: diff, mode: "text", left: "", right: "" });
+    addSidebarTab("diff-viewer");
+  }
+
+  function refreshMutationDiffForTools(tools, signature) {
+    const paths = uniqueMutationPathsFromTools(tools);
+    refreshMutationDiffForPaths(paths, signature);
+  }
+
+  function openMutationDiff(diffText, fileName) {
+    const diff = String(diffText || mutationDiff.diff || "");
+    if (!diff.trim()) return;
+    expandRightSidebar();
+    addSidebarTab("diff-viewer");
+    setDiffData({
+      diff: diff,
+      mode: "text",
+      left: fileName || "",
+      right: fileName || "",
+    });
+    setRightSidebarView("diff-viewer");
+  }
+
+  function retryMessage(retryData) {
+    if (!retryData || !retryData.requestId) return;
+    var _runtime = getChatRuntime();
+    if (_runtime.retiredRequestIds.indexOf(retryData.requestId) === -1) {
+      updateChatRuntime({ retiredRequestIds: _runtime.retiredRequestIds.concat([retryData.requestId]) });
+    }
+    send({
+      text: retryData.text,
+      attachments: retryData.attachments,
+      guideRoundId: "",
+      retry: true,
+      retryRequestId: retryData.requestId,
+    });
+  }
+
   var visibleChips = (session.chat.contextChips || []).filter(function (c) { return !hiddenContexts[contextKey(c)]; });
   var visibleKeys = visibleChips.map(function (c) { return contextKey(c); });
   var addableContexts = [];
@@ -2341,6 +2402,89 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
             }}
           />
         ) : (
+        <>
+        <ModernConversation
+          scrollRef={scrollRef}
+          onScroll={onChatScroll}
+          renderedMessageEntries={renderedMessageEntries}
+          renderedMessages={renderedMessages}
+          pendingQuestion={pendingQuestion}
+          visibleSending={visibleSending}
+          hasStreamingReply={hasStreamingReply}
+          hasAssistantReplyBody={hasAssistantReplyBody}
+          visibleLiveProgress={visibleLiveProgress}
+          visibleNotice={visibleNotice}
+          mutationDiff={mutationDiff}
+          assistantName={DATA.assistantName}
+          isLiveSession={isLiveSession}
+          onRetryMessage={retryMessage}
+          onOpenDiff={openMutationDiff}
+          onShowHtml={handleShowHtml}
+          onShowPdf={handleShowPdf}
+          onShowPpt={handleShowPpt}
+          onShowMap={handleShowMap}
+          onShowCode={handleShowCode}
+          onShowMarkdown={handleShowMarkdown}
+        />
+        <ModernChatComposer
+          isLiveSession={isLiveSession}
+          onReturnLive={function () { onSelectSession && onSelectSession(null); }}
+          composerRef={composerRef}
+          pendingQuestion={pendingQuestion}
+          questionDraft={questionDraft}
+          onQuestionDraftChange={setQuestionDraft}
+          onQuestionOptionSelect={function (label) { submitQuestionAnswer({ selectedOption: label }); }}
+          onQuestionSubmit={function () { submitQuestionAnswer(); }}
+          onQuestionKeyDown={onQuestionKey}
+          answeringQuestion={answeringQuestion}
+          questionOptionCount={questionOptionCount}
+          visibleChips={visibleChips}
+          contextDisplayLabel={contextDisplayLabel}
+          contextKey={contextKey}
+          removeContext={removeContext}
+          hasSelectedGuideRound={hasSelectedGuideRound}
+          currentGuideRoundTitle={currentGuideRoundTitle}
+          setSelectedGuideRoundId={setSelectedGuideRoundId}
+          setSelectedGuideRoundTitle={setSelectedGuideRoundTitle}
+          setContextPickerOpen={setContextPickerOpen}
+          command={command}
+          findCommand={findCommand}
+          setCommand={setCommand}
+          hasAddable={hasAddable}
+          contextPickerOpen={contextPickerOpen}
+          addableContexts={addableContexts}
+          addContext={addContext}
+          workspaceHistory={workspaceHistory}
+          pickWorkspaceDir={pickWorkspaceDir}
+          liveRounds={liveRounds}
+          selectedGuideRoundId={selectedGuideRoundId}
+          mentionedAgents={mentionedAgents}
+          setMentionedAgents={setMentionedAgents}
+          runningSubagents={runningSubagents}
+          assistantName={DATA.assistantName}
+          session={session}
+          taRef={taRef}
+          draft={draft}
+          onDraftChange={autosize}
+          onKeyDown={onKey}
+          attachments={attachments}
+          removeAttachment={removeAttachment}
+          fileInputRef={fileInputRef}
+          onAttachmentPick={handleAttachmentPick}
+          uploadingAttachments={uploadingAttachments}
+          slashMenuOpen={slashMenuOpen}
+          setSlashMenuOpen={setSlashMenuOpen}
+          filteredCommands={filteredCommands}
+          slashIndex={slashIndex}
+          setSlashIndex={setSlashIndex}
+          mentionMenuOpen={mentionMenuOpen}
+          setMentionMenuOpen={setMentionMenuOpen}
+          visibleSending={visibleSending}
+          openNextDialogue={openNextDialogue}
+          stopActiveRun={stopActiveRun}
+          send={send}
+        />
+        {false && (
         <>
         <div className="chat-scroll" ref={scrollRef} onScroll={onChatScroll}>
           <div className="thread-header">
@@ -2865,6 +3009,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           </div>
         </div>
         )}
+      </>
+      )}
       </>
       )}
       </div>
