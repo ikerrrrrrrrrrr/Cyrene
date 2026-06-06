@@ -1,15 +1,14 @@
 // Evolution page — installed skills, CC learning, and learned-skill workbench
-function EvolutionPage() {
+function EvolutionPage({ tab, setTab }) {
   useDataVersion();
   const { t } = useI18n();
-  const [tab, setTab] = useStateSet("skills");
   const [workbenchTab, setWorkbenchTab] = useStateSet("learned");
   const [scripts, setScripts] = useStateSet([]);
   const [patterns, setPatterns] = useStateSet([]);
   const [learnedSkills, setLearnedSkills] = useStateSet([]);
   const [ccData, setCcData] = useStateSet(null);
   const [installedSkills, setInstalledSkills] = useStateSet(window.DATA?.skills || []);
-  const [loading, setLoading] = useStateSet((window.DATA?.skills?.length || 0) === 0);
+  const [loading, setLoading] = useStateSet(false);
   const [query, setQuery] = useStateSet("");
   const [selectedSkillId, setSelectedSkillId] = useStateSet("");
   const [skillError, setSkillError] = useStateSet("");
@@ -402,12 +401,6 @@ function EvolutionPage() {
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   };
 
-  const tabs = [
-    { id: "skills", label: t("evolution.skills") },
-    { id: "cc", label: t("evolution.ccLearning") },
-    { id: "patterns", label: t("evolution.workbench") },
-  ];
-
   const workbenchTabs = [
     { id: "learned", label: t("evolution.autoSkills") },
     { id: "patterns", label: t("evolution.learningHistory") },
@@ -426,18 +419,6 @@ function EvolutionPage() {
 
   return (
     <div className="evolution-page">
-      <div className="seg evolution-tabbar">
-        {tabs.map((item) => (
-          <button
-            key={item.id}
-            className={"seg-btn " + (tab === item.id ? "active" : "")}
-            onClick={() => setTab(item.id)}
-          >
-            {item.label}
-          </button>
-        ))}
-      </div>
-
       <div className="evolution-scroll">
         {tab === "skills" && (
           <div className="skills-layout">

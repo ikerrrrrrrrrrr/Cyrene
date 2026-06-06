@@ -684,22 +684,13 @@
 
     if (!entities || entities.length === 0) return null;
 
-    return React.createElement("div", { className: "entity-summary-bar" },
-      React.createElement("span", { className: "entity-summary-item" },
-        React.createElement("strong", null, counts.total), " ", t("entities.total")
-      ),
-      React.createElement("span", { className: "entity-summary-sep" }),
-      React.createElement("span", { className: "entity-summary-item" },
-        React.createElement("strong", null, counts.active), " ", t("entities.active")
-      ),
-      counts.topType && React.createElement(React.Fragment, null,
-        React.createElement("span", { className: "entity-summary-sep" }),
-        React.createElement("span", { className: "entity-summary-item" },
-          t("entities.mostType") + ": ", React.createElement("strong", null,
-            t("entityType." + counts.topType) || counts.topType
-          )
-        ),
-      )
+    return React.createElement("span", { className: "entity-summary-bar" },
+      React.createElement("strong", null, counts.total),
+      " " + t("entities.total"),
+      React.createElement("strong", null, counts.active),
+      " " + t("entities.active"),
+      counts.topType && (t("entities.mostType") + ": "),
+      counts.topType && React.createElement("strong", null, t("entityType." + counts.topType) || counts.topType)
     );
   }
 
@@ -792,7 +783,6 @@
     return React.createElement("div", { className: "page entities-page" },
       React.createElement("div", { className: "entities-header" },
         React.createElement("div", { className: "entities-header-left" },
-          React.createElement("h2", { className: "entities-title" }, t("entities.title")),
           React.createElement(EntitySummaryBar, { entities: displayEntities, t: t }),
         ),
         React.createElement("div", { className: "entities-header-right" },

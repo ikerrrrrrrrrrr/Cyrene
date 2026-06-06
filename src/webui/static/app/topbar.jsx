@@ -6,9 +6,16 @@ function Topbar({
   realtimeStatus,
   rightSidebarCollapsed,
   onToggleRightSidebar,
+  evolutionTab,
+  setEvolutionTab,
 }) {
   useDataVersion();
   const { t } = useI18n();
+  const evolutionTabs = [
+    { id: "skills", label: t("evolution.skills") },
+    { id: "cc", label: t("evolution.ccLearning") },
+    { id: "patterns", label: t("evolution.workbench") },
+  ];
   const session = activeSession || { title: "—", subagents: [] };
   const runningSubagents = (session.subagents || []).filter((s) => s.status === "running").length;
   const fallbackStatus = session.status === "err" ? "error" : (session.status || "idle");
@@ -20,8 +27,8 @@ function Topbar({
     page === "sessions" ? <>{t("topbar.sessions")}<span className="crumb-sep">/</span><b>{session.title}</b></> :
     page === "memory" ? <>{t("topbar.memory")}<span className="crumb-sep">/</span><b>{t("topbar.pipeline")}</b></> :
     page === "context_debug" ? <>{t("topbar.contextDebug")}<span className="crumb-sep">/</span><b>{t("contextDebug.calls")}</b></> :
-    page === "evolution" ? <>{t("topbar.evolution")}<span className="crumb-sep">/</span><b>evolve</b></> :
-    page === "tasks" ? <>{t("nav.tasks")}<span className="crumb-sep">/</span><b>{t("tasks.title")}</b></> :
+    page === "evolution" ? <b>{t("topbar.evolution")}</b> :
+    page === "tasks" ? <b>{t("tasks.title")}</b> :
     page === "entities" ? <>{t("nav.entities")}<span className="crumb-sep">/</span><b>{t("entities.title")}</b></> :
     page === "knowledge" ? <>{t("nav.knowledge")}<span className="crumb-sep">/</span><b>{t("knowledge.title")}</b></> :
     <>{t("topbar.settings")}<span className="crumb-sep">/</span><b>{t("topbar.workspace")}</b></>;
@@ -30,6 +37,19 @@ function Topbar({
     <div className="topbar">
       <span className="topbar-title">{title}</span>
       <div className="topbar-right">
+        {page === "evolution" && (
+          <div className="seg evolution-topbar-tabs">
+            {evolutionTabs.map((item) => (
+              <button
+                key={item.id}
+                className={"seg-btn" + (evolutionTab === item.id ? " active" : "")}
+                onClick={() => setEvolutionTab(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        )}
         <span className="statlight">
           <span className={"dot " + status}></span> {t("topbar.status." + status)}
         </span>

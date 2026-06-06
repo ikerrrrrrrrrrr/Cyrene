@@ -63,15 +63,14 @@ function ScheduledTasksPage() {
   return (
     <div className="page tasks-page">
       <div className="page-head">
-        <h2>{t("tasks.title")}</h2>
         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <div className="tasks-view-toggle">
-            <button className={"tasks-view-btn" + (viewMode === "list" ? " active" : "")} onClick={() => setViewMode("list")}>{t("tasks.viewList")}</button>
-            <button className={"tasks-view-btn" + (viewMode === "calendar" ? " active" : "")} onClick={() => setViewMode("calendar")}>{t("tasks.viewCalendar")}</button>
-          </div>
-          <button className="iconbtn tasks-add-btn" onClick={() => { setEditingId(null); setShowForm(true); }}>
+          <button className="btn primary tasks-add-btn" onClick={() => { setEditingId(null); setShowForm(true); }}>
             + {t("tasks.newTask")}
           </button>
+          <div className="seg tasks-view-tabs">
+            <button className={"seg-btn" + (viewMode === "list" ? " active" : "")} onClick={() => setViewMode("list")}>{t("tasks.viewList")}</button>
+            <button className={"seg-btn" + (viewMode === "calendar" ? " active" : "")} onClick={() => setViewMode("calendar")}>{t("tasks.viewCalendar")}</button>
+          </div>
         </div>
       </div>
 

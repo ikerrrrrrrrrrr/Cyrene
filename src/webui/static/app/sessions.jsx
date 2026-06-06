@@ -1,6 +1,12 @@
 // Sessions page — overview of every run
 const { useState: useStateSes } = React;
 
+function tokensTotal(tok) {
+  if (!tok || tok === "—") return tok || "—";
+  const m = String(tok).match(/(\S+)\s+total/);
+  return m ? m[1] : tok;
+}
+
 function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents, rightSidebarCollapsed = false }) {
   useDataVersion();
   const { t } = useI18n();
@@ -103,7 +109,6 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents, rightS
               <tr>
                 <th style={{ width: 28 }}></th>
                 <th>{t("sessions.title")}</th>
-                <th>{t("sessions.id")}</th>
                 <th>{t("sessions.started")}</th>
                 <th>{t("sessions.duration")}</th>
                 <th style={{ textAlign: "right" }}>{t("sessions.tools")}</th>
@@ -123,11 +128,10 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents, rightS
                     <div className="cell-title">{s.title}</div>
                     <div className="cell-preview">{s.preview}</div>
                   </td>
-                  <td className="cell-mono">{s.id}</td>
-                  <td className="cell-mono">{s.started}</td>
-                  <td className="cell-mono">{s.dur}</td>
-                  <td className="cell-mono" style={{ textAlign: "right" }}>{s.summary.toolCalls}</td>
-                  <td className="cell-mono" style={{ textAlign: "right" }}>{s.summary.tokens}</td>
+                  <td className="cell-mono" style={{ whiteSpace: "nowrap" }}>{s.started}</td>
+                  <td className="cell-mono" style={{ whiteSpace: "nowrap" }}>{s.dur}</td>
+                  <td className="cell-mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{s.summary.toolCalls}</td>
+                  <td className="cell-mono" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{tokensTotal(s.summary.tokens)}</td>
                   <td className="cell-mono" style={{ textAlign: "right", color: "var(--text)" }}>{s.summary.spend}</td>
                   <td className="cell-mono" style={{ color: "var(--text-3)" }}>{s.model}</td>
                   <td style={{ textAlign: "right" }}>
@@ -143,7 +147,7 @@ function SessionsPage({ selectedSessionId, onSelectSession, onOpenAgents, rightS
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan="10" style={{
+                  <td colSpan="9" style={{
                     padding: "40px 16px", textAlign: "center",
                     color: "var(--text-4)", fontFamily: "var(--mono)"
                   }}>
@@ -175,17 +179,25 @@ function SummaryTile({ label, value, dotClass }) {
 
 function SessionDetailPane({ session, onOpenAgents, onDelete }) {
   if (!session) return null;
+  const { t } = useI18n();
   const msgs = (session.chat && session.chat.messages) || [];
   const lastMsg = msgs[msgs.length - 1];
   const assistantName = (DATA && DATA.assistantName) || "agent";
   const isLive = session.id === "run_live";
+
+  function statusLabel(s) {
+    if (s === "done") return t("sessions.done");
+    if (s === "running") return t("sessions.running");
+    if (s === "err") return t("sessions.err");
+    return s;
+  }
 
   return (
     <div className="session-detail">
       <div className="session-detail-head">
         <div className="session-detail-status">
           <span className={"sa-dot " + session.status} style={{ marginTop: 0, width: 8, height: 8 }}></span>
-          <span className="session-status-text">{session.status}</span>
+          <span className="session-status-text">{statusLabel(session.status)}</span>
         </div>
         <h2 className="session-detail-title">{session.title}</h2>
         <div className="session-detail-id">{session.id} · {session.model}</div>
@@ -193,31 +205,31 @@ function SessionDetailPane({ session, onOpenAgents, onDelete }) {
           <button className="btn primary"
                   style={{ flex: 1, justifyContent: "center" }}
                   onClick={() => onOpenAgents && onOpenAgents(session.id)}>
-            open flowchart →
+            {t("sessions.openFlowchart")}
           </button>
           <button className="btn danger"
                   style={{ justifyContent: "center" }}
                   onClick={() => onDelete && onDelete(session.id)}
-                  title={isLive ? "Clear current session" : "Delete archive"}>
-            {isLive ? "clear" : "delete"}
+                  title={isLive ? t("sessions.clearTooltip") : t("sessions.deleteTooltip")}>
+            {isLive ? t("sessions.clear") : t("sessions.delete")}
           </button>
         </div>
       </div>
 
       <div className="session-section">
-        <div className="session-section-title">Stats</div>
+        <div className="session-section-title">{t("sessions.stats")}</div>
         <div className="kv">
-          <span className="k">started</span><span className="v">{session.started}</span>
-          <span className="k">duration</span><span className="v">{session.dur}</span>
-          <span className="k">tool calls</span><span className="v">{session.summary.toolCalls}</span>
-          <span className="k">requests</span><span className="v">{session.summary.requests ?? "—"}</span>
-          <span className="k">tokens</span><span className="v">{session.summary.tokens}</span>
-          <span className="k">spend</span><span className="v">{session.summary.spend}</span>
+          <span className="k">{t("sessions.started")}</span><span className="v">{session.started}</span>
+          <span className="k">{t("sessions.duration")}</span><span className="v">{session.dur}</span>
+          <span className="k">{t("sessions.toolCalls")}</span><span className="v">{session.summary.toolCalls}</span>
+          <span className="k">{t("sessions.requests")}</span><span className="v">{session.summary.requests ?? "—"}</span>
+          <span className="k">{t("sessions.tokens")}</span><span className="v">{session.summary.tokens}</span>
+          <span className="k">{t("sessions.spend")}</span><span className="v">{session.summary.spend}</span>
         </div>
       </div>
 
       <div className="session-section">
-        <div className="session-section-title">Context</div>
+        <div className="session-section-title">{t("sessions.context")}</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {session.chat.contextChips.map((c, i) => (
             <span className="chip" key={i}>{c.icon} {c.label}</span>
@@ -227,7 +239,7 @@ function SessionDetailPane({ session, onOpenAgents, onDelete }) {
 
       {session.subagents.length > 0 && (
         <div className="session-section">
-          <div className="session-section-title">Subagents · {session.subagents.length}</div>
+          <div className="session-section-title">{t("sessions.subagents")} · {session.subagents.length}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {session.subagents.map((sa) => (
               <div key={sa.id} className="mini-subagent">
@@ -244,11 +256,11 @@ function SessionDetailPane({ session, onOpenAgents, onDelete }) {
 
       {lastMsg && (
         <div className="session-section">
-          <div className="session-section-title">Last message</div>
+          <div className="session-section-title">{t("sessions.lastMessage")}</div>
           <div className="last-msg">
             <div className="last-msg-meta">
               <span className={"msg-role " + (lastMsg.role === "user" ? "user" : "agent")}>
-                {lastMsg.role === "user" ? "▸ you" : "● " + assistantName}
+                {lastMsg.role === "user" ? "▸ " + t("chat.you") : "● " + assistantName}
               </span>
               <span style={{ color: "var(--text-4)", fontFamily: "var(--mono)", fontSize: 10.5 }}>{lastMsg.time}</span>
             </div>

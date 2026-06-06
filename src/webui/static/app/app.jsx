@@ -291,6 +291,7 @@ function App() {
   useDataVersion();
   const { lang } = useI18n();
   const [page, setPage] = useStateApp(readStoredUiPage);
+  const [evolutionTab, setEvolutionTab] = useStateApp("skills");
   const [selectedSessionId, setSelectedSessionId] = useStateApp(readStoredSessionId);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-left-sidebar-collapsed", false); });
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useStateApp(function () { return readStoredBool("cyrene-right-sidebar-collapsed", false); });
@@ -497,6 +498,8 @@ function App() {
             setRightSidebarCollapsed(function (value) { return !value; });
           }}
           canCollapseRightSidebar={canCollapseRightSidebar}
+          evolutionTab={evolutionTab}
+          setEvolutionTab={setEvolutionTab}
         />
         {page === "dashboard" && <DashboardPage />}
         {page === "chat"     && <ChatPage
@@ -513,14 +516,16 @@ function App() {
                                   rightSidebarCollapsed={false}
                                   onOpenAgents={(sessionId) => {
                                     selectSession(sessionId);
-                                    setPage("agents");
+                                    setRightSidebarCollapsed(false);
+                                    setRightSidebarView("agents");
+                                    setPage("chat");
                                   }} />}
         {page === "memory"   && <MemoryPage />}
         {page === "context_debug" && React.createElement(
           window.ContextDebuggerPage || (function () { return React.createElement("div", { className: "page" }, "Loading context debugger..."); }),
           {}
         )}
-        {page === "evolution" && <EvolutionPage />}
+        {page === "evolution" && <EvolutionPage tab={evolutionTab} setTab={setEvolutionTab} />}
         {page === "tasks" && React.createElement(
           window.ScheduledTasksPage || (function () { return React.createElement("div", { className: "page" }, "Loading tasks..."); }),
           {}
@@ -572,7 +577,7 @@ function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed,
   const sessionCount = (DATA.sessions || []).length;
   const activeRecentSessionId = selectedSessionId || DATA.sessions[0]?.id || null;
   const allItems = [
-    { id: "dashboard", label: t("nav.dashboard"), icon: "◫", key: "1" },
+    { id: "dashboard", label: t("nav.dashboard"), icon: "◫", key: "1", devOnly: true },
     { id: "chat",     label: t("nav.chat"),     icon: "▸", key: "2" },
     { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "3", devOnly: true },
     { id: "tasks",    label: t("nav.tasks"),    icon: "◎", key: "4" },

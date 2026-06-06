@@ -173,7 +173,7 @@ const TRANSLATIONS = {
     "topbar.skills": "Skills",
     "topbar.memory": "Memory",
     "topbar.contextDebug": "Context",
-    "topbar.evolution": "Evolution",
+    "topbar.evolution": "Learning",
     "topbar.settings": "Settings",
     "topbar.library": "library",
     "topbar.pipeline": "pipeline",
@@ -702,9 +702,11 @@ const TRANSLATIONS = {
     "sessions.context": "Context",
     "sessions.subagents": "Subagents",
     "sessions.lastMessage": "Last message",
-    "sessions.openFlowchart": "open flowchart →",
+    "sessions.openFlowchart": "open in chat →",
     "sessions.clear": "clear",
     "sessions.delete": "delete",
+    "sessions.toolCalls": "tool calls",
+    "sessions.requests": "requests",
 
     // ── Memory Page ──────────────────────────────────────────────────────
     "memory.pipeline": "Memory Pipeline",
@@ -1370,7 +1372,7 @@ const TRANSLATIONS = {
     "topbar.skills": "技能",
     "topbar.memory": "记忆",
     "topbar.contextDebug": "上下文",
-    "topbar.evolution": "进化",
+    "topbar.evolution": "学习",
     "topbar.settings": "设置",
     "topbar.library": "库",
     "topbar.pipeline": "流水线",
@@ -1881,9 +1883,11 @@ const TRANSLATIONS = {
     "sessions.context": "上下文",
     "sessions.subagents": "子代理",
     "sessions.lastMessage": "最后一条消息",
-    "sessions.openFlowchart": "打开流程图 →",
+    "sessions.openFlowchart": "在对话中打开 →",
     "sessions.clear": "清除",
     "sessions.delete": "删除",
+    "sessions.toolCalls": "工具调用",
+    "sessions.requests": "请求数",
 
     // ── 记忆页 ──────────────────────────────────────────────────────────
     "memory.pipeline": "记忆流水线",
