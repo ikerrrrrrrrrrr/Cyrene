@@ -64,6 +64,9 @@ These are read from the config store (env keys); defaults shown:
 | `CYRENE_BROWSER_SCREENCAST_QUALITY` | `60` | JPEG quality (1–100) for live frames. |
 | `CYRENE_BROWSER_WIDTH` | `1280` | Viewport / screencast width. |
 | `CYRENE_BROWSER_HEIGHT` | `800` | Viewport / screencast height. |
+| `CYRENE_BROWSER_USER_AGENT` | auto | Override the browser User-Agent. By default Cyrene strips Playwright's `HeadlessChrome` token and advertises the bundled Chromium as desktop Chrome, because some sites otherwise show a false "upgrade your browser" page. |
+| `CYRENE_BROWSER_LOCALE` | `zh-CN` | Browser locale passed to Playwright. |
+| `CYRENE_BROWSER_ACCEPT_LANGUAGE` | `zh-CN,zh;q=0.9,en;q=0.8` | `Accept-Language` header used by the browser session. |
 
 The profile directory is `<DATA_DIR>/browser_profile`.
 

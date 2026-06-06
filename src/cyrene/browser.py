@@ -30,13 +30,14 @@ import base64
 import ipaddress
 import logging
 import os
+import platform
 import re
 import socket
 import tempfile
 import time
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -63,6 +64,19 @@ _BLOCKED_NETWORKS: tuple[ipaddress._BaseNetwork, ...] = (
 
 class SSRFBlockedError(ValueError):
     """Raised when a URL is rejected by the SSRF protection policy."""
+
+
+def _normalize_http_url(url: str) -> str:
+    """Normalize user-entered browser URLs before validation/navigation."""
+    value = str(url or "").strip()
+    if not value:
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme:
+        return value
+    if value.startswith("//"):
+        return "https:" + value
+    return "https://" + value
 
 
 def _check_url(url: str) -> None:
@@ -109,7 +123,7 @@ async def _ssrf_redirect_hook(response: httpx.Response) -> None:
     if 300 <= response.status_code < 400:
         location = response.headers.get("location", "")
         if location:
-            _check_url(location)
+            _check_url(urljoin(str(response.url), location))
 
 
 _PLAYWRIGHT_AVAILABLE: bool | None = None
@@ -119,6 +133,8 @@ _PLAYWRIGHT_AVAILABLE: bool | None = None
 _DEFAULT_FRAME_QUALITY = 60
 _DEFAULT_WIDTH = 1280
 _DEFAULT_HEIGHT = 800
+_DEFAULT_BROWSER_VERSION = "147.0.0.0"
+_CHROME_VERSION_CACHE: str | None = None
 
 
 def _cfg(key: str, default: str) -> str:
@@ -151,6 +167,65 @@ def _viewport() -> dict[str, int]:
         "width": _cfg_int("CYRENE_BROWSER_WIDTH", _DEFAULT_WIDTH),
         "height": _cfg_int("CYRENE_BROWSER_HEIGHT", _DEFAULT_HEIGHT),
     }
+
+
+def _ua_platform() -> str:
+    system = platform.system().lower()
+    if system == "windows":
+        return "Windows NT 10.0; Win64; x64"
+    if system == "linux":
+        return "X11; Linux x86_64"
+    return "Macintosh; Intel Mac OS X 10_15_7"
+
+
+def _browser_user_agent(chromium_version: str | None = None) -> str:
+    """Return a desktop Chrome UA instead of Playwright's HeadlessChrome UA.
+
+    Some sites route ``HeadlessChrome/...`` to generic "upgrade your browser"
+    pages even when the bundled Chromium version is current.
+    """
+    override = _cfg("CYRENE_BROWSER_USER_AGENT", "").strip()
+    if override:
+        return override
+    version = (chromium_version or "").strip() or _DEFAULT_BROWSER_VERSION
+    return (
+        f"Mozilla/5.0 ({_ua_platform()}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{version} Safari/537.36"
+    )
+
+
+def _browser_locale() -> str:
+    return _cfg("CYRENE_BROWSER_LOCALE", "zh-CN").strip() or "zh-CN"
+
+
+def _browser_accept_language() -> str:
+    return _cfg("CYRENE_BROWSER_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9,en;q=0.8").strip() or "zh-CN,zh;q=0.9,en;q=0.8"
+
+
+async def _detect_chromium_version(chromium: Any) -> str:
+    """Best-effort Chromium version lookup from the Playwright executable."""
+    global _CHROME_VERSION_CACHE
+    if _CHROME_VERSION_CACHE:
+        return _CHROME_VERSION_CACHE
+    executable = str(getattr(chromium, "executable_path", "") or "").strip()
+    if not executable:
+        return ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            executable,
+            "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        text = (stdout or b"").decode("utf-8", errors="ignore") + " " + (stderr or b"").decode("utf-8", errors="ignore")
+        match = re.search(r"(\d+\.\d+\.\d+\.\d+)", text)
+        if match:
+            _CHROME_VERSION_CACHE = match.group(1)
+            return _CHROME_VERSION_CACHE
+    except Exception:
+        logger.debug("Chromium version detection failed", exc_info=True)
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -243,14 +318,21 @@ class _BrowserSession:
         if headless is None:
             headless = _headless_default()
         self._pw = await async_playwright().start()
-        self._context = await self._pw.chromium.launch_persistent_context(
-            self.profile_dir,
-            headless=headless,
-            viewport=_viewport(),
-        )
+        self._context = await self._launch_persistent_context(headless=headless)
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()
         self._mode = "headless" if headless else "headed"
+
+    async def _launch_persistent_context(self, *, headless: bool) -> Any:
+        chromium_version = await _detect_chromium_version(self._pw.chromium)
+        return await self._pw.chromium.launch_persistent_context(
+            self.profile_dir,
+            headless=headless,
+            viewport=_viewport(),
+            user_agent=_browser_user_agent(chromium_version),
+            locale=_browser_locale(),
+            extra_http_headers={"Accept-Language": _browser_accept_language()},
+        )
 
     async def page(self) -> Any:
         await self._ensure_started()
@@ -286,11 +368,7 @@ class _BrowserSession:
         if self._pw is None:
             from playwright.async_api import async_playwright
             self._pw = await async_playwright().start()
-        self._context = await self._pw.chromium.launch_persistent_context(
-            self.profile_dir,
-            headless=headless,
-            viewport=_viewport(),
-        )
+        self._context = await self._launch_persistent_context(headless=headless)
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()
         self._mode = "headless" if headless else "headed"
@@ -610,6 +688,7 @@ async def navigate(
     Returns::
         {"url": str, "status": int, "title": str, "text": str, "error": str | None}
     """
+    url = _normalize_http_url(url)
     try:
         _check_url(url)
     except SSRFBlockedError as exc:
@@ -673,6 +752,7 @@ async def screenshot(url: str, *, full_page: bool = True) -> dict[str, Any]:
 
     Returns ``{"ok": True, "path": "/tmp/…png"}`` or ``{"ok": False, "error": "..."}``.
     """
+    url = _normalize_http_url(url)
     try:
         _check_url(url)
     except SSRFBlockedError as exc:

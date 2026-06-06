@@ -164,6 +164,102 @@ async def test_navigate_falls_back_to_httpx_without_playwright(monkeypatch):
     assert result["status"] == 200
 
 
+async def test_navigate_normalizes_bare_domain_before_validation(monkeypatch):
+    from cyrene import browser
+
+    monkeypatch.setattr(browser, "_PLAYWRIGHT_AVAILABLE", False)
+
+    called: dict = {}
+
+    async def fake_httpx(url, **_kw):
+        called["url"] = url
+        return {"url": url, "status": 200, "title": "x", "text": "y", "error": None}
+
+    monkeypatch.setattr(browser, "_httpx_navigate", fake_httpx)
+
+    result = await browser.navigate("example.com/page")
+
+    assert called["url"] == "https://example.com/page"
+    assert result["url"] == "https://example.com/page"
+
+
+async def test_screenshot_normalizes_bare_domain(monkeypatch):
+    from cyrene import browser
+
+    monkeypatch.setattr(browser, "_PLAYWRIGHT_AVAILABLE", True)
+
+    captured: dict = {}
+
+    class _FakeSession:
+        async def navigate(self, url):
+            captured["url"] = url
+            return {"url": url, "status": 200, "title": "x", "text": "", "error": None}
+
+        async def screenshot_path(self, full_page=True):
+            return "/tmp/fake.png"
+
+        async def page(self):
+            return _FakePage("https://example.com/")
+
+    async def fake_get_session():
+        return _FakeSession()
+
+    monkeypatch.setattr(browser, "get_session", fake_get_session)
+
+    result = await browser.screenshot("example.com")
+
+    assert result["ok"] is True
+    assert captured["url"] == "https://example.com"
+
+
+def test_default_browser_user_agent_is_modern_chrome(monkeypatch):
+    from cyrene import browser
+
+    def fake_cfg(key, default):
+        return default
+
+    monkeypatch.setattr(browser, "_cfg", fake_cfg)
+
+    ua = browser._browser_user_agent("147.0.7727.15")
+
+    assert "Chrome/147.0.7727.15" in ua
+    assert "HeadlessChrome" not in ua
+
+
+async def test_launch_context_uses_desktop_ua_and_locale(monkeypatch):
+    from cyrene import browser
+
+    captured: dict = {}
+
+    class _FakeChromium:
+        executable_path = ""
+
+        async def launch_persistent_context(self, profile_dir, **kwargs):
+            captured["profile_dir"] = profile_dir
+            captured.update(kwargs)
+            return MagicMock(pages=[_FakePage()])
+
+    class _FakePlaywright:
+        chromium = _FakeChromium()
+
+    session = browser._BrowserSession()
+    session._pw = _FakePlaywright()
+
+    async def fake_detect_version(_chromium):
+        return "147.0.7727.15"
+
+    monkeypatch.setattr(browser, "_detect_chromium_version", fake_detect_version)
+
+    context = await session._launch_persistent_context(headless=True)
+
+    assert context.pages
+    assert captured["headless"] is True
+    assert captured["locale"] == "zh-CN"
+    assert captured["extra_http_headers"]["Accept-Language"].startswith("zh-CN")
+    assert "Chrome/147.0.7727.15" in captured["user_agent"]
+    assert "HeadlessChrome" not in captured["user_agent"]
+
+
 async def test_click_delegates_to_session(monkeypatch):
     """When a page is open, browser.click drives the session and emits a frame."""
     pytest.importorskip("playwright")
@@ -436,6 +532,36 @@ def test_check_url_allows_public_urls():
     _check_url("https://example.com/page")
     _check_url("http://www.google.com/")
     _check_url("https://api.github.com/repos")
+
+
+async def test_redirect_hook_allows_relative_location():
+    import httpx
+
+    from cyrene.browser import _ssrf_redirect_hook
+
+    response = httpx.Response(
+        302,
+        headers={"location": "/login"},
+        request=httpx.Request("GET", "https://example.com/start"),
+    )
+
+    await _ssrf_redirect_hook(response)
+
+
+async def test_redirect_hook_blocks_protocol_relative_private_location():
+    import httpx
+    import pytest
+
+    from cyrene.browser import SSRFBlockedError, _ssrf_redirect_hook
+
+    response = httpx.Response(
+        302,
+        headers={"location": "//169.254.169.254/latest/meta-data/"},
+        request=httpx.Request("GET", "https://example.com/start"),
+    )
+
+    with pytest.raises(SSRFBlockedError):
+        await _ssrf_redirect_hook(response)
 
 
 async def test_navigate_returns_error_for_blocked_url(monkeypatch):
