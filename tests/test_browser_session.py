@@ -226,6 +226,21 @@ def test_default_browser_user_agent_is_modern_chrome(monkeypatch):
     assert "HeadlessChrome" not in ua
 
 
+def test_browser_runtime_error_filters_install_commands():
+    from cyrene import browser
+
+    message = browser.browser_runtime_unavailable_message(
+        "BrowserType.launch: Executable doesn't exist\n"
+        "Please run the following command to download browsers:\n"
+        "    playwright install chromium\n"
+        "pip install playwright"
+    )
+
+    assert "Cyrene browser runtime is unavailable" in message
+    assert "playwright install" not in message
+    assert "pip install" not in message
+
+
 async def test_launch_context_uses_desktop_ua_and_locale(monkeypatch):
     from cyrene import browser
 

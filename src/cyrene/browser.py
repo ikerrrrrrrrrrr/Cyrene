@@ -17,10 +17,8 @@ Live-view / takeover design lives in ``~/.claude/plans/browser-live-view-takeove
 This module currently implements M1 (persistent session + frame events); screencast
 WebSocket (M2) and native-window login takeover (M3) slot in on top of ``_BrowserSession``.
 
-Playwright setup::
-
-    pip install playwright
-    playwright install chromium
+Playwright is supplied by the Cyrene runtime/environment. If it cannot be loaded,
+browser automation degrades to text-only HTTP fetching where possible.
 """
 
 from __future__ import annotations
@@ -200,6 +198,31 @@ def _browser_locale() -> str:
 
 def _browser_accept_language() -> str:
     return _cfg("CYRENE_BROWSER_ACCEPT_LANGUAGE", "zh-CN,zh;q=0.9,en;q=0.8").strip() or "zh-CN,zh;q=0.9,en;q=0.8"
+
+
+def browser_runtime_unavailable_message(exc: Exception | str | None = None) -> str:
+    """Return a concise browser-runtime error without install commands."""
+    base = "Cyrene browser runtime is unavailable."
+    if exc is None:
+        return base
+    text = str(exc).strip()
+    if not text:
+        return base
+    cleaned: list[str] = []
+    for line in text.splitlines():
+        lower = line.lower()
+        if "playwright install" in lower or "pip install" in lower or "please run" in lower:
+            continue
+        if line.strip().startswith(("╔", "║", "╚")):
+            continue
+        cleaned.append(line)
+    detail = " ".join(part.strip() for part in cleaned if part.strip())
+    detail = re.sub(r"\s+", " ", detail).strip()
+    if not detail:
+        return base
+    if len(detail) > 500:
+        detail = detail[:500].rstrip() + "..."
+    return f"{base} {detail}"
 
 
 async def _detect_chromium_version(chromium: Any) -> str:
@@ -758,7 +781,7 @@ async def screenshot(url: str, *, full_page: bool = True) -> dict[str, Any]:
     except SSRFBlockedError as exc:
         return {"ok": False, "error": str(exc)}
     if _ensure_playwright() is None:
-        return {"ok": False, "error": "Playwright is not installed. Run: pip install playwright && playwright install chromium"}
+        return {"ok": False, "error": browser_runtime_unavailable_message()}
     try:
         session = await get_session()
         await session.navigate(url)
@@ -767,33 +790,33 @@ async def screenshot(url: str, *, full_page: bool = True) -> dict[str, Any]:
         return {"ok": True, "path": path, "title": title}
     except Exception as exc:
         logger.exception("screenshot failed for %s", url)
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": browser_runtime_unavailable_message(exc)}
 
 
 async def click(selector: str) -> dict[str, Any]:
     """Click an element on the current page by CSS selector."""
     if _ensure_playwright() is None:
-        return {"ok": False, "error": "Playwright is not installed."}
+        return {"ok": False, "error": browser_runtime_unavailable_message()}
     session = _get_session()
     if session._page is None:
         return {"ok": False, "error": "No page open. Call browser_navigate first."}
     try:
         return await session.click(selector)
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": browser_runtime_unavailable_message(exc)}
 
 
 async def type_text(selector: str, text: str, *, submit: bool = False) -> dict[str, Any]:
     """Type *text* into an element and optionally submit."""
     if _ensure_playwright() is None:
-        return {"ok": False, "error": "Playwright is not installed."}
+        return {"ok": False, "error": browser_runtime_unavailable_message()}
     session = _get_session()
     if session._page is None:
         return {"ok": False, "error": "No page open. Call browser_navigate first."}
     try:
         return await session.type_text(selector, text, submit=submit)
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": browser_runtime_unavailable_message(exc)}
 
 
 # ---------------------------------------------------------------------------

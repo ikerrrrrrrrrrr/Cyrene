@@ -1320,14 +1320,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         from cyrene import browser as _browser
 
         if _browser._ensure_playwright() is None:
-            await websocket.send_json({"type": "error", "error": "Playwright is not installed."})
+            await websocket.send_json({"type": "error", "error": _browser.browser_runtime_unavailable_message()})
             await websocket.close()
             return
 
         try:
             session = await _browser.get_session()
         except Exception as exc:
-            await websocket.send_json({"type": "error", "error": f"Browser launch failed: {exc}"})
+            await websocket.send_json({"type": "error", "error": f"Browser launch failed: {_browser.browser_runtime_unavailable_message(exc)}"})
             await websocket.close()
             return
 

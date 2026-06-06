@@ -412,7 +412,8 @@ async def _run_chat_agent(
                 if client_request_id:
                     reflection_record["client_request_id"] = client_request_id
                 main_text = str(reflection_record.get("content") or "Deep reflection is complete.")
-                await _save_session_messages([*visible_history, user_entry, reflection_record])
+                history = [*visible_history, user_entry, reflection_record]
+                await _save_session_messages(history)
             except Exception as exc:
                 logger.warning("Manual deep reflection failed", exc_info=True)
                 main_text = f"深度反思失败：{exc}" if any("\u4e00" <= ch <= "\u9fff" for ch in visible_command_text) else f"Deep reflection failed: {exc}"
@@ -426,27 +427,48 @@ async def _run_chat_agent(
                 _ensure_message_identity([assistant_entry])
                 await _save_session_messages([*visible_history, user_entry, assistant_entry])
 
+                if refresh_labels:
+                    _schedule_session_label_refresh(visible_command_text, round_id)
+                final_output = main_text
+                await _publish_runtime_event({
+                    "type": "chat_message",
+                    "client_request_id": client_request_id,
+                })
+                if behavior_turn_context is not None:
+                    try:
+                        from cyrene import behavior_learning as _behavior_learning
+                        latest_labels = get_session_labels(round_id)
+                        await _behavior_learning.complete_turn(
+                            turn_id=behavior_turn_context["turn_id"],
+                            assistant_response=final_output,
+                            session_title=latest_labels.get("session_title", ""),
+                            round_title=latest_labels.get("round_title", ""),
+                        )
+                        await _kick_behavior_learning_processing()
+                    except Exception:
+                        logger.warning("Failed to finalize behavior-learning turn", exc_info=True)
+                return final_output
+
             if refresh_labels:
                 _schedule_session_label_refresh(visible_command_text, round_id)
-            final_output = main_text
-            await _publish_runtime_event({
-                "type": "chat_message",
-                "client_request_id": client_request_id,
-            })
-            if behavior_turn_context is not None:
-                try:
-                    from cyrene import behavior_learning as _behavior_learning
-                    latest_labels = get_session_labels(round_id)
-                    await _behavior_learning.complete_turn(
-                        turn_id=behavior_turn_context["turn_id"],
-                        assistant_response=final_output,
-                        session_title=latest_labels.get("session_title", ""),
-                        round_title=latest_labels.get("round_title", ""),
-                    )
-                    await _kick_behavior_learning_processing()
-                except Exception:
-                    logger.warning("Failed to finalize behavior-learning turn", exc_info=True)
-            return final_output
+            focus_text = str(user_message or "").strip()
+            if any("\u4e00" <= ch <= "\u9fff" for ch in visible_command_text):
+                user_message = (
+                    "深度反思已完成。请从上面的 Deep reflection packet 继续自动工作，"
+                    "不要只告知用户反思已完成；直接采取下一步行动或给出实质性结果。"
+                )
+                if focus_text:
+                    user_message += f"\n用户指定的反思重点：{focus_text}"
+            else:
+                user_message = (
+                    "Deep reflection is complete. Continue working automatically from the Deep reflection packet above. "
+                    "Do not merely tell the user reflection is complete; take the next useful step or provide a substantive result."
+                )
+                if focus_text:
+                    user_message += f"\nUser-specified reflection focus: {focus_text}"
+            public_user_message = None
+            public_attachments = []
+            persist_user_message = False
 
         # Command-specific prompt injection
         if command == "deep-research":

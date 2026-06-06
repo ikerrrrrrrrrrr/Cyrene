@@ -369,3 +369,73 @@ async def test_deep_reflect_mixed_with_quit_preserves_tool_result_pairing(monkey
     }
     assert {"reflect1", "quit1"}.issubset(tool_result_ids)
     assert any(message.get("deep_reflection_record") for message in saved_after_reflection)
+
+
+@pytest.mark.asyncio
+async def test_manual_deep_reflect_continues_main_agent_after_record(monkeypatch) -> None:
+    from cyrene.agent import agent as agent_core
+    from cyrene.agent import coordinator as agent_coordinator
+    import cyrene.agent.deep_reflection as deep_reflection
+
+    clean_packet = {
+        "schema": "cyrene.deep_reflection.v1",
+        "objective": "Finish the original task",
+        "user_requirements": ["Finish the original task"],
+        "goal_gap": "The user manually requested deep reflection.",
+        "current_state": "Prior failure details compressed.",
+        "compressed_attempts": [],
+        "excluded_paths": ["Do not stop after saying reflection is done."],
+        "tools_used": [],
+        "promising_directions": ["Continue automatically."],
+        "next_step": "Continue automatically.",
+        "open_questions": [],
+    }
+
+    async def fake_clean_llm(messages, tools=None, max_tokens=1800, secondary=True, **kwargs):
+        return {"content": json.dumps(clean_packet), "usage": {}}
+
+    saved_messages: list[list[dict]] = []
+    seen: dict[str, object] = {}
+    history = [
+        {"role": "user", "message_id": "u1", "content": "Finish the original task", "round_id": "round_old"},
+        {"role": "assistant", "message_id": "a1", "content": "I got stuck.", "round_id": "round_old"},
+    ]
+
+    async def fake_save(messages):
+        saved_messages.append(messages)
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", **kwargs):
+        seen["user_message"] = user_message
+        seen["history"] = history
+        seen["persist_user_message"] = kwargs.get("persist_user_message")
+        seen["public_user_message"] = kwargs.get("public_user_message")
+        return "continued automatically"
+
+    monkeypatch.setattr(deep_reflection, "_call_llm", fake_clean_llm)
+    monkeypatch.setattr(deep_reflection, "_publish_runtime_event", AsyncMock())
+    monkeypatch.setattr(agent_coordinator, "_load_session_messages", lambda: list(history))
+    monkeypatch.setattr(agent_coordinator, "_save_session_messages", fake_save)
+    monkeypatch.setattr(agent_coordinator, "get_context", lambda max_chars=5000: "")
+    monkeypatch.setattr(agent_coordinator, "get_memory_context", lambda include_short_term=True: "")
+    monkeypatch.setattr(agent_coordinator, "build_skill_prompt_block", lambda: "")
+    monkeypatch.setattr(agent_coordinator, "_schedule_session_label_refresh", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(agent_coordinator, "_publish_runtime_event", AsyncMock())
+    monkeypatch.setattr(agent_core, "_run_main_agent", fake_run_main_agent)
+
+    result = await agent_coordinator._run_chat_agent(
+        "/深度反思 聚焦原任务",
+        None,
+        0,
+        "db.sqlite3",
+        client_request_id="req_manual_reflect",
+    )
+
+    assert result == "continued automatically"
+    assert "已完成深度反思" not in result
+    assert saved_messages
+    assert any(message.get("content") == "/深度反思 聚焦原任务" for message in saved_messages[0])
+    assert any(message.get("deep_reflection_record") for message in saved_messages[0])
+    assert seen["persist_user_message"] is False
+    assert seen["public_user_message"] is None
+    assert "继续自动工作" in str(seen["user_message"])
+    assert any(message.get("deep_reflection_record") for message in seen["history"])

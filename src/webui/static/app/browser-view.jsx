@@ -82,7 +82,7 @@ function BrowserViewportPanel({ roundId, onClose }) {
         {error ? (
           <div style={{ margin: "auto", maxWidth: 360, padding: 24, textAlign: "center", color: "var(--text-3)", fontSize: 12 }}>
             浏览器实时视图不可用：{error}
-            <div style={{ marginTop: 8, color: "var(--text-4)", fontSize: 11 }}>需要安装 Playwright：<code>playwright install chromium</code></div>
+            <div style={{ marginTop: 8, color: "var(--text-4)", fontSize: 11 }}>请查看后端日志或重启 Cyrene 后重试。</div>
           </div>
         ) : takeover.pending ? (
           <div className="browser-takeover" style={{ margin: "auto", maxWidth: 420, padding: 24, textAlign: "center", color: "var(--text-3)" }}>

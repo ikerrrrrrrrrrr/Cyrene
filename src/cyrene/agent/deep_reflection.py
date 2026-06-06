@@ -95,6 +95,12 @@ async def create_deep_reflection_record(
     lang_text: str = "",
 ) -> dict[str, Any]:
     """Create a visible transcript record from clean-context reflection."""
+    await _publish_runtime_event({
+        "type": "phase_transition",
+        "from": "execution",
+        "to": "deep_reflection",
+        "detail": "正在进行深度反思" if re.search(r"[\u4e00-\u9fff]", str(lang_text or focus or user_requirement or goal_gap or "")) else "Running deep reflection",
+    })
     evidence = build_reflection_evidence(
         messages,
         scope=scope,
