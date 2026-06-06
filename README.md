@@ -35,12 +35,14 @@ It runs as a local daemon with a Web UI (and optional Telegram/WeChat bot), conn
 | **Three-tier memory** — context window → short-term → long-term | Stable |
 | **Parallel sub-agents** — spawn agents with full tool access, inbox coordination | Stable |
 | **Deep research** — multi-round research pipeline with PDF report export | Stable |
+| **Deep Reflection** — multi-round context reframing for complex or ambiguous queries | Beta |
 | **Built-in web search** — SearXNG via SimpleXNG, no Docker needed | Stable |
 | **MCP protocol** — connect any stdio/SSE MCP server | Stable |
 | **Task scheduler** — cron, interval, one-shot tasks + proactive lottery system | Stable |
 | **Behavior learning** — learns reusable skills from conversation patterns | Beta |
+| **Browser live view** — WebSocket screencasting of agent's browser; headed takeover for login | Beta |
 | **Web UI** — real-time chat, agent flow timeline, sessions, settings | Stable |
-| **Electron desktop app** — CI builds for macOS/Windows/Linux | Beta |
+| **Electron desktop app** — CI builds for macOS/Windows/Linux; OS keyring auth | Beta |
 | **Telegram bot** — full agent access via Telegram | Stable |
 | **WeChat bot** — basic WeChat integration | Alpha |
 | **Map engine** — AMap/Leaflet interactive map with pins | Beta |
@@ -50,7 +52,7 @@ It runs as a local daemon with a Web UI (and optional Telegram/WeChat bot), conn
 ## Limitations (current as of v0.5.0)
 
 - **Single-user** — one workspace, one SOUL.md, no user isolation
-- **Local-only Web UI** — binds to `127.0.0.1`, no authentication layer
+- **Local-only Web UI** — binds to `127.0.0.1`; desktop app uses OS keyring auth, raw web server has no auth layer
 - **No data retention policy** — session history grows indefinitely
 - **Limited error recovery** — agent crashes are silently caught, user isn't notified
 - **No API versioning** — all endpoints under bare `/api/`
@@ -64,7 +66,7 @@ It runs as a local daemon with a Web UI (and optional Telegram/WeChat bot), conn
 
 ### Option A: Pre-built (macOS / Windows / Linux)
 
-Download the latest release for your platform from the [Releases page](https://github.com/ikerrrrrrrrrrr/Cyrene/releases).
+Download the latest release for your platform from the [Releases page](https://github.com/Yongchu-Yitao/Cyrene/releases).
 
 ### Option B: From source
 
@@ -98,7 +100,8 @@ Open `http://localhost:4242`. First launch runs an onboarding wizard that guides
 - **Runtime** — Python 3.12+, FastAPI, Uvicorn, SQLite
 - **LLM** — OpenAI-compatible API (default: DeepSeek, works with Claude/GPT/Qwen)
 - **Search** — SearXNG via SimpleXNG (bundled, no Docker)
-- **Desktop** — Electron + electron-builder
+- **Browser** — Playwright (headless/headed), WebSocket screencasting
+- **Desktop** — Electron + electron-builder, OS keyring (keyring)
 - **Channels** — python-telegram-bot, WeChat (itchat)
 - **Encryption** — Fernet (cryptography) for config store
 
