@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Notification, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Notification, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -262,6 +262,11 @@ function installAuthHeaderInjector() {
       callback({ requestHeaders });
     }
   );
+
+  // Deny all permission requests (camera, microphone, geolocation, etc.)
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +337,37 @@ async function createMainWindow() {
   // Navigate to the local Python server
   const url = `http://127.0.0.1:${port}`;
   mainWindow.loadURL(url);
+
+  // Restrict navigation to the local backend — block any attempt to leave 127.0.0.1:<port>
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    try {
+      const target = new URL(navigationUrl);
+      if (target.hostname !== '127.0.0.1' || target.port !== String(port)) {
+        event.preventDefault();
+      }
+    } catch (_) {
+      event.preventDefault();
+    }
+  });
+
+  // Control popup window creation from the renderer:
+  // - local backend URLs: allow (image previews, attachments)
+  // - external http/https: open in system browser via shell
+  // - everything else (file://, data:, …): deny
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const target = new URL(url);
+      if (target.hostname === '127.0.0.1' && target.port === String(port)) {
+        return { action: 'allow' };
+      }
+      if (target.protocol === 'https:' || target.protocol === 'http:') {
+        shell.openExternal(url);
+      }
+    } catch (_) {
+      // malformed URL — fall through to deny
+    }
+    return { action: 'deny' };
+  });
 }
 
 // ---------------------------------------------------------------------------

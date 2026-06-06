@@ -24,9 +24,9 @@ Security guarantees
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -120,13 +120,16 @@ async def export_backup(
         if include_db and DB_PATH.exists():
             tmp_fd, tmp_name = tempfile.mkstemp(suffix=".db")
             tmp_db_path = Path(tmp_name)
-            import os
             os.close(tmp_fd)
             src = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
-            dst = sqlite3.connect(tmp_db_path)
-            src.backup(dst)
-            src.close()
-            dst.close()
+            try:
+                dst = sqlite3.connect(tmp_db_path)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
 
         with ZipFile(backup_path, "w", ZIP_DEFLATED) as zf:
             for source, arcname in _EXPORT_INCLUDE:
@@ -157,6 +160,11 @@ async def export_backup(
         return {"ok": True, "path": str(backup_path), "size": size, "entries": entries}
     except Exception as exc:
         logger.exception("Backup failed")
+        # Remove a partial/corrupt zip so list_backups() never surfaces it.
+        try:
+            backup_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         return {"ok": False, "error": str(exc)}
     finally:
         if tmp_db_path is not None:
@@ -227,7 +235,7 @@ async def restore_backup(zip_path: str, *, dry_run: bool = False) -> dict[str, A
                         errors.append(f"{name}: path traversal blocked")
                         continue
                     restored.append(name)
-                return {"ok": True, "restored": restored, "errors": errors, "version": version, "dry_run": True}
+                return {"ok": len(errors) == 0, "restored": restored, "errors": errors, "version": version, "dry_run": True}
 
             # --- Acquire writer lock and pause scheduler (#53) ---
             return await _restore_with_locks(zf, payload, version)
@@ -303,8 +311,10 @@ def _restore_staged(zf: ZipFile, payload: list[str], version: str) -> dict[str, 
         if staged_db.exists():
             try:
                 conn = sqlite3.connect(staged_db)
-                result = conn.execute("PRAGMA integrity_check").fetchone()
-                conn.close()
+                try:
+                    result = conn.execute("PRAGMA integrity_check").fetchone()
+                finally:
+                    conn.close()
                 if result is None or result[0] != "ok":
                     return {
                         "ok": False,
@@ -329,7 +339,7 @@ def _restore_staged(zf: ZipFile, payload: list[str], version: str) -> dict[str, 
 
         if move_errors:
             logger.error("Restore move phase failed: %s", move_errors)
-            return {"ok": False, "errors": move_errors, "version": version}
+            return {"ok": False, "restored": [], "errors": move_errors, "version": version}
 
     logger.info("Restored %d files from backup (version %s)", len(restored), version)
     return {"ok": True, "restored": restored, "errors": [], "version": version}

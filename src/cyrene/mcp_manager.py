@@ -14,7 +14,29 @@ import asyncio
 import json
 import logging
 import os
+import pathlib
 from typing import Any
+
+# Environment variables that are safe to pass to MCP subprocesses.
+# Secrets (API keys, tokens, passwords) are intentionally excluded.
+_SAFE_ENV_KEYS = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL",
+    "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+    "TERM", "TMPDIR", "TEMP", "TMP", "TZ",
+    "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+    "SYSTEMROOT", "WINDIR",  # Windows
+})
+
+# Executable names that must not be used as an MCP command.
+_BLOCKED_EXECUTABLES = frozenset({
+    "bash", "sh", "zsh", "fish", "dash", "ksh", "tcsh",
+    "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+    "python", "python3", "python.exe",  # avoid arbitrary script execution
+    "node", "node.exe",
+    "ruby", "perl",
+    # env/xargs/script can be used to indirectly invoke blocked executables
+    "env", "xargs", "script",
+})
 
 from cyrene.config import DATA_DIR
 from cyrene.version import get_version
@@ -42,6 +64,25 @@ async def start_mcp() -> None:
     """Start all enabled MCP servers via the global manager."""
     manager = get_manager()
     await manager.start()
+
+
+async def restart_mcp() -> None:
+    """Properly stop existing connections and start fresh from config.
+
+    Use this from async contexts (e.g. FastAPI route handlers) instead of
+    the synchronous stop_mcp() + start_mcp() combination, which would call
+    asyncio.run() inside an already-running event loop and silently leave
+    old subprocess connections as orphans.
+    """
+    global _manager
+    if _manager is not None:
+        try:
+            await _manager.stop()
+        except Exception:
+            logger.exception("MCP manager stop failed during restart")
+        finally:
+            _manager = None
+    await start_mcp()
 
 
 def stop_mcp() -> None:
@@ -168,16 +209,34 @@ class MCPServerConnection:
         if not command:
             raise ValueError(f"MCP server '{self.name}' has no command configured")
 
+        # Reject shell interpreters and scripting runtimes as MCP commands.
+        exe_stem = pathlib.Path(command).stem.lower()
+        if exe_stem in _BLOCKED_EXECUTABLES:
+            raise ValueError(
+                f"MCP server '{self.name}': command '{command}' is not allowed "
+                f"(blocked executable). Use a dedicated MCP server binary instead."
+            )
+
         full_args = [command] + args
         _cwd = self.config.get("cwd") or None
-        _env = dict(os.environ)
+
+        # Build a minimal environment — only safe system variables plus any
+        # keys the user explicitly opted in via the server's "env" config dict.
+        # This prevents leaking API keys, bot tokens, and other secrets that
+        # live in the parent process environment into MCP subprocesses.
+        _env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
         _env["PYTHONUNBUFFERED"] = "1"
+        for k, v in (self.config.get("env") or {}).items():
+            _env[str(k)] = str(v)
 
         self._process = await asyncio.create_subprocess_exec(
             *full_args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            # DEVNULL avoids a potential deadlock: if stderr were a PIPE and the
+            # subprocess wrote enough to fill the OS buffer before we read it,
+            # the subprocess would block and the JSON-RPC handshake would hang.
+            stderr=asyncio.subprocess.DEVNULL,
             cwd=_cwd,
             env=_env,
         )
@@ -275,7 +334,10 @@ class MCPServerConnection:
             if self._session is None:
                 raise RuntimeError(f"MCP server '{self.name}' is not connected")
             from mcp.types import TextContent
-            result = await self._session.call_tool(name, arguments or {})
+            result = await asyncio.wait_for(
+                self._session.call_tool(name, arguments or {}),
+                timeout=30.0,
+            )
             if result.isError:
                 error_text = " | ".join(
                     item.text for item in result.content if isinstance(item, TextContent)
@@ -335,10 +397,12 @@ class MCPManager:
 
     def __init__(self) -> None:
         self._servers: dict[str, MCPServerConnection] = {}
+        self._lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Load config and connect all enabled servers."""
         servers = get_mcp_servers()
+        new_connections: dict[str, MCPServerConnection] = {}
         for cfg in servers:
             name = str(cfg.get("name", "")).strip()
             if not name:
@@ -350,18 +414,24 @@ class MCPManager:
             conn = MCPServerConnection(name, transport, cfg)
             try:
                 await conn.connect()
-                self._servers[name] = conn
+                new_connections[name] = conn
             except Exception:
                 logger.warning("Failed to connect MCP server '%s'", name, exc_info=True)
 
+        async with self._lock:
+            self._servers = new_connections
+
     async def stop(self) -> None:
         """Disconnect all servers."""
-        for name, conn in list(self._servers.items()):
+        async with self._lock:
+            snapshot = dict(self._servers)
+            self._servers.clear()
+
+        for name, conn in snapshot.items():
             try:
                 await conn.disconnect()
             except Exception:
                 logger.exception("Failed to disconnect MCP server '%s'", name)
-        self._servers.clear()
 
     def get_tool_defs(self) -> list[dict[str, Any]]:
         """Aggregate tool definitions from all connected servers."""
@@ -373,10 +443,13 @@ class MCPManager:
     async def execute_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """Find the server that owns *name* and call it.
 
-        Uses "first match wins" — iterates servers in insertion order
-        and calls the first one that has a tool with *name*.
+        Takes a snapshot of the server dict under the lock so that a concurrent
+        stop/start cannot mutate the collection while we iterate.
         """
-        for conn in self._servers.values():
+        async with self._lock:
+            snapshot = list(self._servers.values())
+
+        for conn in snapshot:
             if conn.has_tool(name):
                 return await conn.call_tool(name, arguments)
         raise ValueError(f"MCP tool '{name}' not found on any connected server")

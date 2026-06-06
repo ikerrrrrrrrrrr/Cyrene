@@ -14,7 +14,7 @@ from cyrene.context_trace import strip_context_metadata, summarize_context_trace
 
 logger = logging.getLogger(__name__)
 
-VERBOSE = True
+VERBOSE = False
 _log_file: Path | None = None
 
 

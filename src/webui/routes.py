@@ -2389,14 +2389,11 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
     @router.put("/api/settings/mcp")
     async def api_update_mcp_servers(request: Request):
-        from cyrene.mcp_manager import save_mcp_servers as _save_servers
-        from cyrene.mcp_manager import get_manager as _get_mcp_mgr, stop_mcp as _stop_mcp, start_mcp as _start_mcp
+        from cyrene.mcp_manager import save_mcp_servers as _save_servers, restart_mcp as _restart_mcp
         body = await request.json()
         servers = body.get("servers", [])
         _save_servers(servers)
-        # Restart MCP manager with new config
-        _stop_mcp()
-        await _start_mcp()
+        await _restart_mcp()
         return {"ok": True}
 
     # ---- Scheduled tasks ----
