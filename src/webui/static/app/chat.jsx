@@ -2704,7 +2704,6 @@ function PdfViewPanel({ pdfUrl, pdfName }) {
     var el = scrollRef.current;
     if (!el) return;
     function onWheel(e) {
-      if (!e.ctrlKey && e.deltaMode !== 0) return;
       if (!e.ctrlKey) return;
       e.preventDefault();
       var factor = e.deltaY > 0 ? 0.9 : 1.1;
