@@ -3376,8 +3376,15 @@ def _is_trace_only_agent_message(msg: dict[str, Any]) -> bool:
 def _dedupe_repeated_messages(messages: list[dict]) -> list[dict]:
     deduped: list[dict] = []
     seen_ids: set[tuple[str, str]] = set()
+    seen_tool_keys: dict[tuple, int] = {}
     for msg in messages:
         message_id = str(msg.get("messageId", "")).strip() or str(msg.get("id", "")).strip()
+        tool_key = _ui_tool_message_key(msg)
+        if tool_key and tool_key in seen_tool_keys:
+            deduped[seen_tool_keys[tool_key]] = msg
+            continue
+        if tool_key:
+            seen_tool_keys[tool_key] = len(deduped)
         if message_id:
             dedupe_key = (str(msg.get("role", "")).strip(), message_id)
             if dedupe_key in seen_ids:
@@ -3385,6 +3392,23 @@ def _dedupe_repeated_messages(messages: list[dict]) -> list[dict]:
             seen_ids.add(dedupe_key)
         deduped.append(msg)
     return deduped
+
+
+def _ui_tool_message_key(msg: dict) -> tuple | None:
+    if not isinstance(msg, dict):
+        return None
+    role = str(msg.get("role", "")).strip()
+    round_id = str(msg.get("roundId", "")).strip()
+    if role == "agent":
+        tools = msg.get("tools") if isinstance(msg.get("tools"), list) else []
+        tool_ids = tuple(
+            str(tool.get("toolCallId", "")).strip()
+            for tool in tools
+            if isinstance(tool, dict) and str(tool.get("toolCallId", "")).strip()
+        )
+        if tool_ids and len(tool_ids) == len(tools):
+            return ("agent_tools", round_id, tool_ids)
+    return None
 
 
 def _merge_adjacent_trace_only_messages(messages: list[dict]) -> list[dict]:

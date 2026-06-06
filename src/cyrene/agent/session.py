@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 def _messages_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
     left_id = str(left.get("message_id", "")).strip()
     right_id = str(right.get("message_id", "")).strip()
+    left_live_key = _live_tool_message_key(left)
+    right_live_key = _live_tool_message_key(right)
+    if left_live_key and right_live_key and left_live_key == right_live_key:
+        return True
     if left_id and right_id and left_id == right_id:
         return True
     if left_id or right_id:
@@ -68,6 +72,50 @@ def _messages_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
         and bool(left.get("question_prompt")) == bool(right.get("question_prompt"))
         and bool(left.get("intermediate_reply")) == bool(right.get("intermediate_reply"))
     )
+
+
+def _assistant_tool_call_ids(message: dict[str, Any]) -> tuple[str, ...]:
+    calls = message.get("tool_calls") if isinstance(message, dict) else None
+    if not isinstance(calls, list) or not calls:
+        return ()
+    ids = tuple(
+        str(call.get("id", "")).strip()
+        for call in calls
+        if isinstance(call, dict) and str(call.get("id", "")).strip()
+    )
+    return ids if len(ids) == len(calls) else ()
+
+
+def _live_tool_message_key(message: dict[str, Any]) -> tuple[Any, ...] | None:
+    if not isinstance(message, dict):
+        return None
+    round_id = str(message.get("round_id", "")).strip()
+    role = str(message.get("role", "")).strip()
+    if role == "tool":
+        tool_call_id = str(message.get("tool_call_id", "")).strip()
+        if tool_call_id:
+            return ("tool", round_id, tool_call_id)
+    if role == "assistant":
+        call_ids = _assistant_tool_call_ids(message)
+        if call_ids:
+            return ("assistant_tool_calls", round_id, call_ids)
+    return None
+
+
+def _dedupe_live_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen_index: dict[tuple[Any, ...], int] = {}
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        key = _live_tool_message_key(message)
+        if key and key in seen_index:
+            deduped[seen_index[key]] = message
+            continue
+        if key:
+            seen_index[key] = len(deduped)
+        deduped.append(message)
+    return _dedupe_messages_by_id(deduped)
 
 
 def _shared_tail_prefix_len(current_tail: list[dict[str, Any]], base_tail: list[dict[str, Any]]) -> int:
@@ -98,7 +146,7 @@ def _merge_live_block(existing_block: list[dict[str, Any]], incoming_block: list
                 break
         if not replaced:
             merged.append(dict(incoming))
-    return _dedupe_messages_by_id(merged)
+    return _dedupe_live_tool_messages(merged)
 
 def _load_session_state() -> dict[str, Any]:
     try:
@@ -562,7 +610,7 @@ async def _write_session_messages_locked(state: dict[str, Any], messages: list[d
     _ensure_archive_session_id(state)
     messages = _compress_report_messages_for_storage(messages)
     messages = _ensure_message_identity(messages)
-    messages = _dedupe_messages_by_id(messages)
+    messages = _dedupe_live_tool_messages(messages)
     trimmed = _compact_messages_for_storage(messages)
     state["messages"] = trimmed
     if not str(state.get("session_title", "")).strip():

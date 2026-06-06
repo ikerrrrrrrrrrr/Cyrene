@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Patch missing PIL dependency before any cyrene import
 sys.modules.setdefault("PIL", MagicMock())
+sys.modules["PIL"].__version__ = "0"
 sys.modules["PIL"].Image = MagicMock()
 
 
@@ -184,6 +185,59 @@ def test_merge_appends_new_messages():
     result = _merge_message_sequence(existing, incoming)
     assert len(result) == 2
     assert result[1]["message_id"] == "m2"
+
+
+def test_live_message_equivalence_uses_tool_call_identity():
+    from cyrene.agent.session import _messages_equivalent
+
+    left = {
+        "role": "assistant",
+        "message_id": "m1",
+        "round_id": "round_1",
+        "content": "checking",
+        "tool_calls": [{"id": "call_1", "function": {"name": "WebSearch"}}],
+    }
+    right = {
+        "role": "assistant",
+        "message_id": "m2",
+        "round_id": "round_1",
+        "content": "checking",
+        "tool_calls": [{"id": "call_1", "function": {"name": "WebSearch"}}],
+    }
+
+    assert _messages_equivalent(left, right)
+
+
+def test_merge_live_block_dedupes_repeated_tool_call_batches():
+    from cyrene.agent.session import _merge_live_block
+
+    existing = [
+        {
+            "role": "assistant",
+            "message_id": "m1",
+            "round_id": "round_1",
+            "content": "checking",
+            "tool_calls": [{"id": "call_1", "function": {"name": "WebSearch"}}],
+        },
+        {"role": "tool", "message_id": "t1", "round_id": "round_1", "tool_call_id": "call_1", "content": "old"},
+    ]
+    incoming = [
+        {
+            "role": "assistant",
+            "message_id": "m2",
+            "round_id": "round_1",
+            "content": "checking",
+            "tool_calls": [{"id": "call_1", "function": {"name": "WebSearch"}}],
+        },
+        {"role": "tool", "message_id": "t2", "round_id": "round_1", "tool_call_id": "call_1", "content": "new"},
+    ]
+
+    result = _merge_live_block(existing, incoming)
+
+    assert len(result) == 2
+    assert result[0]["message_id"] == "m2"
+    assert result[1]["message_id"] == "t2"
+    assert result[1]["content"] == "new"
 
 
 # ===========================================================================

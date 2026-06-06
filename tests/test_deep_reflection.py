@@ -16,6 +16,7 @@ from cyrene.agent.deep_reflection import (
     build_reflection_evidence,
     make_reflection_record,
     project_history_for_llm,
+    run_clean_reflection,
     serialize_evidence,
 )
 
@@ -115,6 +116,44 @@ def test_projection_suppresses_failure_episode_but_preserves_visible_messages() 
     assert "I tried the wrong direction" not in _text_blob(projected)
     assert "[Deep reflection packet]" in _text_blob(projected)
     assert not any(message.get("role") == "tool" and message.get("tool_call_id") == "c1" for message in projected)
+
+
+@pytest.mark.asyncio
+async def test_clean_reflection_falls_back_when_worker_returns_invalid_json(monkeypatch) -> None:
+    import cyrene.agent.deep_reflection as deep_reflection
+
+    evidence = build_reflection_evidence(
+        [
+            {"role": "user", "message_id": "u1", "content": "Fix the broken export."},
+            {
+                "role": "assistant",
+                "message_id": "a1",
+                "content": "I tried the old export path.",
+                "tool_calls": [{"id": "c1", "function": {"name": "Bash", "arguments": '{"cmd":"old-export"}'}}],
+            },
+            {"role": "tool", "message_id": "t1", "tool_call_id": "c1", "content": "Tool failed: export not found"},
+        ],
+        goal_gap="The export is still broken.",
+        focus="Find the current export path.",
+    )
+
+    call_kwargs: dict = {}
+
+    async def fake_clean_llm(messages, tools=None, max_tokens=1800, secondary=True, **kwargs):
+        call_kwargs.update(kwargs)
+        return {"content": "I should reflect, but this is not JSON.", "usage": {"total_tokens": 3}, "model": "fake-secondary"}
+
+    monkeypatch.setattr(deep_reflection, "_call_llm", fake_clean_llm)
+
+    packet, usage = await run_clean_reflection(evidence)
+
+    assert packet["schema"] == "cyrene.deep_reflection.v1"
+    assert packet["objective"] == "Fix the broken export."
+    assert packet["goal_gap"] == "The export is still broken."
+    assert "Find the current export path." in packet["next_step"]
+    assert packet["compressed_attempts"]
+    assert usage["total_tokens"] == 3
+    assert call_kwargs["thinking"] == "disabled"
 
 
 @pytest.mark.asyncio

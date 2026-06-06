@@ -275,6 +275,55 @@ function modernMessageHasMapTool(msg) {
   });
 }
 
+function modernToolArgPreview(tool) {
+  var rawArgs = tool && tool.rawArgs;
+  var text = "";
+  if (rawArgs && typeof rawArgs === "object") {
+    if (Array.isArray(rawArgs)) {
+      text = JSON.stringify(rawArgs);
+    } else {
+      text = Object.keys(rawArgs).slice(0, 4).map(function (key) {
+        var value = rawArgs[key];
+        if (value && typeof value === "object") value = JSON.stringify(value);
+        return key + ": " + String(value || "");
+      }).filter(Boolean).join(", ");
+    }
+  }
+  if (!text) text = String(tool && tool.arg || "").trim();
+  return text.length > 160 ? text.slice(0, 157) + "..." : text;
+}
+
+function ModernToolCalls({ tools, lang }) {
+  var visibleTools = Array.isArray(tools) ? tools.filter(function (tool) {
+    return tool && String(tool.name || "").trim();
+  }) : [];
+  if (!visibleTools.length) return null;
+  return (
+    <div className="modern-tool-calls">
+      {visibleTools.map(function (tool, index) {
+        var label = modernToolLabel(tool.name, lang);
+        var preview = modernToolArgPreview(tool);
+        var output = String(tool.out || "").trim();
+        return (
+          <div className="modern-tool-call" key={String(tool.toolCallId || tool.name || "tool") + ":" + index}>
+            <div className="modern-tool-call-main">
+              <span className="modern-tool-call-icon">▸</span>
+              <span className="modern-tool-call-name">{label}</span>
+              {preview && <span className="modern-tool-call-args">{preview}</span>}
+            </div>
+            {output && (
+              <details className="modern-tool-call-output">
+                <summary>{lang === "zh" ? "结果" : "Result"}</summary>
+                <pre>{output}</pre>
+              </details>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function modernIsFinalAgentReply(msg) {
   return Boolean(
     msg
@@ -625,6 +674,7 @@ function ModernComposerHint({ visibleSending, pendingQuestion, hasSelectedGuideR
 function ModernMessage({ msg, archived, showActions, showMapAction, onRetry, onShowHtml, onShowPdf, onShowPpt, onShowMap, onShowCode, onShowMarkdown }) {
   var i18n = useI18n();
   var t = i18n.t;
+  var lang = i18n.lang;
   if (!msg) return null;
   if (msg.kind === "compacted") {
     return <div className="modern-context-divider"><span>{t("chat.compactedContext") || "较早上下文已压缩"}</span></div>;
@@ -634,7 +684,8 @@ function ModernMessage({ msg, archived, showActions, showMapAction, onRetry, onS
   var attachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
   var isAgentLike = role === "agent" || role === "system";
   var isFinalAgentReply = Boolean(showActions && modernIsFinalAgentReply(msg));
-  if (isAgentLike && !msg.body && attachments.length === 0) return null;
+  var hasToolCalls = modernMessageHasTools(msg);
+  if (isAgentLike && !msg.body && attachments.length === 0 && !hasToolCalls) return null;
 
   var renderMarkdownBody = isAgentLike && msg.body && !msg.streamingReply;
   var bodyNode = null;
@@ -673,6 +724,7 @@ function ModernMessage({ msg, archived, showActions, showMapAction, onRetry, onS
     <div className={"modern-message " + role + (archived ? " archived" : "") + (msg.streamingReply ? " streaming" : "")}>
       <div className="modern-message-inner">
         {bodyNode}
+        {isAgentLike && <ModernToolCalls tools={msg.tools} lang={lang} />}
         <ModernAttachments
           attachments={attachments}
           onShowHtml={onShowHtml}

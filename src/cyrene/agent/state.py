@@ -141,7 +141,14 @@ def _llm_phase_name(tools: list | None) -> str:
     return "phase1" if tools is _LIGHT_TOOL_DEFS else ("phase2" if tools else "no_tools")
 
 
-async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens: int | None = 32000, *, secondary: bool = False) -> dict:
+async def _call_llm(
+    messages: list[dict],
+    tools: list | None = None,
+    max_tokens: int | None = 32000,
+    *,
+    secondary: bool = False,
+    thinking: str = "auto",
+) -> dict:
     from cyrene.call_llm import call_llm as _unified_call_llm
 
     return await _unified_call_llm(
@@ -149,6 +156,7 @@ async def _call_llm(messages: list[dict], tools: list | None = None, max_tokens:
         tools=tools,
         max_tokens=max_tokens,
         model_type="secondary" if secondary else "primary",
+        thinking=thinking,
         caller=_caller_type.get(),
         phase=_llm_phase_name(tools),
         round_id=_current_round_id.get(),

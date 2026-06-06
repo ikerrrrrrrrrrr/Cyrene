@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 from uuid import uuid4
@@ -20,6 +21,8 @@ from cyrene.llm import _assistant_text
 _MAX_SOURCE_MESSAGES = 36
 _MAX_TEXT_PREVIEW = 700
 _SENSITIVE_ARG_KEYS = {"token", "key", "secret", "password", "authorization", "cookie", "api_key", "access_token", "refresh_token"}
+
+logger = logging.getLogger(__name__)
 
 
 def has_deep_reflection_record(messages: list[dict[str, Any]]) -> bool:
@@ -130,6 +133,7 @@ async def run_clean_reflection(evidence: dict[str, Any]) -> tuple[dict[str, Any]
             tools=None,
             max_tokens=1800,
             secondary=True,
+            thinking="disabled",
         )
     finally:
         _caller_type.reset(token)
@@ -137,7 +141,12 @@ async def run_clean_reflection(evidence: dict[str, Any]) -> tuple[dict[str, Any]
     text = (_assistant_text(response) or "").strip()
     payload = _extract_json_object(text)
     if not isinstance(payload, dict) or not payload:
-        raise ValueError("Deep reflection worker did not return valid JSON.")
+        logger.warning(
+            "Deep reflection worker returned invalid JSON; using evidence fallback. model=%s preview=%r",
+            response.get("model") or (response.get("usage") or {}).get("model") or "",
+            _compact_text(text, 500),
+        )
+        return _fallback_packet_from_evidence(evidence), dict(response.get("usage") or {})
     packet = _normalize_packet(payload, evidence)
     return packet, dict(response.get("usage") or {})
 
@@ -408,6 +417,28 @@ def _normalize_packet(payload: dict[str, Any], evidence: dict[str, Any]) -> dict
         "open_questions": _list_of_strings(payload.get("open_questions")),
     }
     return packet
+
+
+def _fallback_packet_from_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+    focus = _compact_text(evidence.get("focus"), _MAX_TEXT_PREVIEW)
+    objective = _compact_text(evidence.get("objective"), _MAX_TEXT_PREVIEW)
+    promising = []
+    if focus:
+        promising.append(f"Use the user's reflection focus as the next direction: {focus}")
+    if objective:
+        promising.append(f"Re-anchor on the original objective: {objective}")
+    promising.append("Continue from the compressed evidence and avoid repeating insufficient attempts as-is.")
+
+    return _normalize_packet(
+        {
+            "current_state": "The reflection worker did not return strict JSON, so Cyrene generated this packet from deterministic compressed evidence.",
+            "excluded_paths": ["Do not replay the compressed failed or insufficient attempts without a changed strategy."],
+            "promising_directions": promising,
+            "next_step": focus or "Choose the highest-leverage next action that directly closes the goal gap.",
+            "open_questions": [],
+        },
+        evidence,
+    )
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
