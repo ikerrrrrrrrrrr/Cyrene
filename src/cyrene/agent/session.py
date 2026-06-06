@@ -144,6 +144,18 @@ def _merge_live_block(existing_block: list[dict[str, Any]], incoming_block: list
                 merged[index] = dict(incoming)
                 replaced = True
                 break
+            if (
+                _live_tool_message_key(existing) is None
+                and _live_tool_message_key(incoming) is None
+                and _messages_equivalent({**existing, "message_id": ""}, {**incoming, "message_id": ""})
+            ):
+                replacement = dict(incoming)
+                existing_id = str(existing.get("message_id", "")).strip()
+                if existing_id:
+                    replacement["message_id"] = existing_id
+                merged[index] = replacement
+                replaced = True
+                break
         if not replaced:
             merged.append(dict(incoming))
     return _dedupe_live_tool_messages(merged)

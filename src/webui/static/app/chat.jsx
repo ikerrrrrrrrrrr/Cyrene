@@ -2741,12 +2741,13 @@ function PdfViewPanel({ pdfUrl, pdfName }) {
         <button className="pdf-zoom-btn" onClick={function () { setScale(function (s) { return Math.min(5, s + 0.25); }); }} title="Zoom in">+</button>
       </div>
       {objectUrl ? (
-        <div ref={scrollRef} style={{ flex: 1, overflow: "auto", position: "relative" }}>
-          <div style={{ width: scale >= 1 ? (scale * 100) + "%" : "100%", height: scale >= 1 ? (scale * 100) + "%" : "100%", minWidth: scale >= 1 ? (scale * 100) + "%" : "100%", minHeight: scale >= 1 ? (scale * 100) + "%" : "100%" }}>
-            <embed className="pdf-view-iframe" src={objectUrl} type="application/pdf" title={pdfName || "PDF"} style={{ transform: scale < 1 ? "scale(" + scale + ")" : "none", transformOrigin: "top left", width: "100%", height: "100%" }} />
+        <div ref={scrollRef} style={{ flex: 1, overflow: "auto" }}>
+          {/* Inner div is the containing block for the overlay so it covers the full embed */}
+          <div style={{ position: "relative", width: scale >= 1 ? (scale * 100) + "%" : "100%", height: scale >= 1 ? (scale * 100) + "%" : "100%", minWidth: scale >= 1 ? (scale * 100) + "%" : "100%", minHeight: scale >= 1 ? (scale * 100) + "%" : "100%" }}>
+            <embed className="pdf-view-iframe" src={objectUrl} type="application/pdf" title={pdfName || "PDF"} style={{ transform: scale < 1 ? "scale(" + scale + ")" : "none", transformOrigin: "top left", width: "100%", height: "100%", pointerEvents: "none" }} />
+            {/* Overlay inside content div: covers the FULL embed, not just the visible viewport */}
+            <div ref={overlayRef} style={{ position: "absolute", inset: 0, zIndex: 10, touchAction: "none" }} />
           </div>
-          {/* Transparent touch capture overlay */}
-          <div ref={overlayRef} style={{ position: "absolute", inset: 0, zIndex: 10, touchAction: "none" }} />
         </div>
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)", fontSize: 12 }}>
