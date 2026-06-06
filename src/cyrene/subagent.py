@@ -1061,7 +1061,7 @@ async def _run_subagent(
     )
     from cyrene.agent.state import (
         _deep_research_mode, _current_command,
-        _call_llm, _caller_type, _current_agent_id, _current_round_id, _MAX_TOOL_ROUNDS,
+        _call_llm, _caller_type, _current_agent_id, _current_round_id, _get_max_tool_rounds,
     )
     from cyrene.llm import _assistant_text, _truncate
     from cyrene.tools import get_active_tool_defs_for_actor, is_tool_allowed_for_actor, _execute_tool
@@ -1160,7 +1160,8 @@ You are a **participant** in this discussion. Rules:
         await save_messages(agent_id, messages)
 
     try:
-        for _ in range(_MAX_TOOL_ROUNDS):
+        max_rounds = _get_max_tool_rounds()
+        for _round in range(max_rounds):
             # 每次 LLM 调用前注入注册表和 inbox 作为独立消息，保持 messages[0] 稳定
             registry_ctx = await get_context(exclude=agent_id, round_id=round_id)
             inbox_text = _get_inbox(agent_id)
@@ -1170,7 +1171,8 @@ You are a **participant** in this discussion. Rules:
                 m.get("role") == "user" and (
                     str(m.get("content", "")).startswith("[活跃子 agent]") or
                     str(m.get("content", "")).startswith("[收件箱]") or
-                    str(m.get("content", "")).startswith("[Coordination Checkpoint]")
+                    str(m.get("content", "")).startswith("[Coordination Checkpoint]") or
+                    str(m.get("content", "")).startswith("[快到工具调用上限")
                 )
             )]
             # 注入新上下文
@@ -1198,6 +1200,19 @@ You are a **participant** in this discussion. Rules:
                     ),
                 })
                 tool_calls_since_checkpoint = 0
+
+            # 快到上限时提醒 agent 收尾，让它能在截断前产出有效结果
+            rounds_left = max_rounds - _round
+            if rounds_left == 3:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"[快到工具调用上限，还剩约 {rounds_left} 轮。"
+                        "请用现有信息给出最好的结果，然后调用 quit 退出。"
+                        "quit 前的文本里说明：已完成什么、还差什么（如有）。"
+                        "不要再启动耗时的新工具调用。]"
+                    ),
+                })
 
             response = await _call_llm(messages, tools=get_active_tool_defs_for_actor("subagent"), max_tokens=None, secondary=use_secondary)
 
@@ -1300,7 +1315,18 @@ You are a **participant** in this discussion. Rules:
             if tcs:
                 await _save_if_registered()
         else:
-            final_text = "Sub-agent hit loop limit."
+            # 警告注入后 LLM 可能已在最后几轮里给出了部分结果，提取出来
+            last_content = ""
+            for msg in reversed(messages):
+                if msg.get("role") == "assistant":
+                    content = str(msg.get("content") or "").strip()
+                    if content:
+                        last_content = content
+                        break
+            if last_content:
+                final_text = f"[已到工具调用上限，任务可能未完成]\n{last_content}"
+            else:
+                final_text = "[已到工具调用上限，任务未完成。]"
     except Exception as e:
         logger.exception("Sub-agent %s crashed", agent_id)
         final_text = f"Sub-agent crashed: {e}"

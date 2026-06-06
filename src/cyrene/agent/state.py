@@ -54,7 +54,12 @@ _session_epoch: int = 0
 _interrupt_event = asyncio.Event()
 
 _MAX_HISTORY_MESSAGES = 40
-_MAX_TOOL_ROUNDS = 16
+_MAX_TOOL_ROUNDS = 15  # kept for backward-compat; prefer _get_max_tool_rounds()
+
+
+def _get_max_tool_rounds() -> int:
+    from cyrene.settings_store import get as _get_setting
+    return max(5, min(200, int(_get_setting("max_tool_rounds", 15) or 15)))
 
 _pending_compressors: set[asyncio.Task] = set()
 _pending_label_refreshes: set[asyncio.Task] = set()

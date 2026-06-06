@@ -285,6 +285,9 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   const [resettingData, setResettingData] = useStateSet(false);
   const [backupList, setBackupList] = useStateSet([]);
   const [backupMsg, setBackupMsg] = useStateSet("");
+  const [exportSessionId, setExportSessionId] = useStateSet("");
+  const [exportFormat, setExportFormat] = useStateSet("markdown");
+  const [exportMsg, setExportMsg] = useStateSet("");
 
   function formatBytes(bytes) {
     var n = Number(bytes || 0);
@@ -627,6 +630,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
           spawn_policy: config.spawn_policy || "conservative",
           heartbeat_interval: Number(config.heartbeat_interval) || 1800,
           agent_proactive: agentProactive,
+          max_tool_rounds: Number(config.max_tool_rounds) || 15,
         }),
       });
       if (!response.ok) throw new Error("HTTP " + response.status);
@@ -1346,6 +1350,14 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 style={{ maxWidth: 160 }} />
             </div>
 
+            <div className="field">
+              <div className="label">{t("settings.maxToolRounds")}<small>{t("settings.maxToolRoundsHint")}</small></div>
+              <input className="input mono" type="number" min="5" max="200" step="1"
+                value={config.max_tool_rounds != null ? config.max_tool_rounds : 15}
+                onChange={(e) => setConfig({ ...config, max_tool_rounds: Number(e.target.value) || 15 })}
+                style={{ maxWidth: 160 }} />
+            </div>
+
             <div className="settings-actions">
               <button className="btn primary" onClick={saveAgents}>{t("settings.saveApply")}</button>
               <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{agentsSaved}</span>
@@ -1694,6 +1706,68 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                     <button className="btn danger" style={{padding:"2px 8px",fontSize:12}} onClick={async function(){if(!confirm(t("settings.backupDeleteConfirm"))) return; await fetch("/api/backup/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:b.name})}); loadBackups();}}>{t("settings.delete")}</button>
                   </div>})}
                 </div>
+              )}
+            </div>
+
+            <div style={{ paddingTop: 16 }}>
+              <div className="settings-block-head">
+                <div>
+                  <h3>{t("settings.sessionExport")}</h3>
+                  <p>{t("settings.sessionExportSubtitle")}</p>
+                </div>
+              </div>
+
+              {DATA.sessions && DATA.sessions.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div className="field field--compact">
+                    <div className="label">{t("settings.sessionExportSelectLabel")}</div>
+                    <select
+                      className="select"
+                      value={exportSessionId}
+                      onChange={function(e) { setExportSessionId(e.target.value); setExportMsg(""); }}
+                      style={{ maxWidth: 420 }}
+                    >
+                      <option value="">{t("settings.sessionExportSelectPlaceholder")}</option>
+                      {DATA.sessions.map(function(s) {
+                        return (
+                          <option key={s.id} value={s.id}>
+                            {s.title || s.id}{s.started && s.started !== "—" ? " (" + s.started + ")" : ""}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  <div className="field field--compact">
+                    <div className="label">{t("settings.sessionExportFormatLabel")}</div>
+                    <div className="seg">
+                      <button className={"seg-btn " + (exportFormat === "markdown" ? "active" : "")} onClick={function() { setExportFormat("markdown"); }}>Markdown</button>
+                      <button className={"seg-btn " + (exportFormat === "json" ? "active" : "")} onClick={function() { setExportFormat("json"); }}>JSON</button>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <button
+                      className="btn primary"
+                      disabled={!exportSessionId}
+                      onClick={function() {
+                        if (!exportSessionId) return;
+                        setExportMsg("");
+                        var url = "/api/sessions/" + encodeURIComponent(exportSessionId) + "/export?format=" + exportFormat;
+                        var a = document.createElement("a");
+                        a.href = url;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        setExportMsg(t("settings.sessionExportBtn") + " ✓");
+                        setTimeout(function() { setExportMsg(""); }, 2000);
+                      }}
+                    >{t("settings.sessionExportBtn")}</button>
+                    {exportMsg ? <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>{exportMsg}</span> : null}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: "12px 0", color: "var(--text-4)", fontSize: 13 }}>{t("settings.sessionExportNoSessions")}</div>
               )}
             </div>
           </div>

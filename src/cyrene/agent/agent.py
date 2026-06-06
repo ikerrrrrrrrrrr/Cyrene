@@ -44,7 +44,7 @@ from cyrene.agent.state import (
     _emit_reply_stream_event,
     _interrupt_event,
     _LIGHT_TOOL_DEFS,
-    _MAX_TOOL_ROUNDS,
+    _get_max_tool_rounds,
     _publish_runtime_event,
     _streaming_reply_requested,
     _ui_round_assistant_meta,
@@ -374,7 +374,7 @@ async def _run_main_agent(
         await _publish_runtime_event(event)
         messages = [system_entry, *history, dict(llm_user_entry)]
 
-        for _ in range(_MAX_TOOL_ROUNDS):
+        for _ in range(_get_max_tool_rounds()):
             response = await _call_llm(project_history_for_llm(messages), tools=get_active_tool_defs())
             entry: dict = {"role": "assistant", "content": response.get("content") or ""}
             if response.get("reasoning_content"):

@@ -25,7 +25,6 @@ from cyrene.agent.state import (
     _caller_type,
     _interrupt_event,
     _MAIN_INBOX_AGENT_ID,
-    _MAX_TOOL_ROUNDS,
     _pending_label_refreshes,
     _publish_runtime_event,
     _reply_stream_writer,

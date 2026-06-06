@@ -67,7 +67,7 @@ from cyrene.agent.state import (
     _deep_research_mode,
     _interrupt_event,
     _LIGHT_TOOL_DEFS,
-    _MAX_TOOL_ROUNDS,
+    _get_max_tool_rounds,
     _pending_interrupt_clearers,
     _pending_intermediate_user_replies,
     _persist_base_messages,
@@ -140,7 +140,7 @@ async def _run_execution_agent_locked(task: str, bot: Any, chat_id: int, db_path
     ]
 
     final_text = "Done."
-    for _ in range(_MAX_TOOL_ROUNDS):
+    for _ in range(_get_max_tool_rounds()):
         response = await _call_llm(messages, tools=get_active_tool_defs())
 
         assistant_entry: dict[str, Any] = {"role": "assistant"}

@@ -147,6 +147,7 @@ _DEFAULT_SETTINGS: dict = {
     "workspace_active": True,
     "soul_active": True,
     "agent_proactive": True,
+    "max_tool_rounds": 15,
 }
 
 _EDITABLE_ENV_KEYS = {

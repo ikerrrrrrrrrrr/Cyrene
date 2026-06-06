@@ -25,7 +25,6 @@ from cyrene.agent.state import (
     _MAIN_INBOX_AGENT_ID,
     _main_inbox_worker,
     _MAX_HISTORY_MESSAGES,
-    _MAX_TOOL_ROUNDS,
     _pending_compressors,
     _pending_interrupt_clearers,
     _pending_label_refreshes,
