@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.5.0] - 2026-06-07
+
+### Added
+
+- **Browser live view** — WebSocket-based live browser screencasting directly in chat; headless→headed takeover for native-window login flows.
+- **Deep Reflection** — New agent capability for multi-round context reframing, improving reasoning on ambiguous or complex queries.
+- **Desktop authentication** — Local auth middleware with OS keyring integration (macOS/Windows/Linux); port persistence across restarts.
+- **Session export** — Export full session history to file; tool round refactoring for cleaner agent state.
+- **SSRF protection** — Blocks server-side request forgery on user-supplied URLs; screenshot temp-file cleanup.
+- **Content hash deduplication** — Documents tracked by content hash to prevent duplicate uploads in knowledge base.
+
+### Changed
+
+- **PDF viewer** — Embedded panel with pinch-to-zoom, touch events, and iframe isolation for attachment previews.
+- **Permission system** — Permission snapshot before skill execution; high-risk tool confirmation flow; workspace scope guard for read/write/shell ops.
+- **MCP management** — Server restart button; per-server environment variable editing in settings UI.
+- **WeChat channel** — Pending question formatting and improved response routing for group chats.
+- **Chat interface** — `watchRequestId` in runtime snapshot for scroll anchoring; mutation diff for assistant reply updates; internal field stripping before LLM calls.
+- **macOS notifications** — Desktop notifications via `terminal-notifier` on macOS.
+
+### Fixed
+
+- Model failure handling in streaming responses now surfaces errors to the user rather than silently dropping them.
+- DSML tool markup in final reply with retry mechanism for malformed responses.
+
 ## [0.4.7] - 2026-05-24
 
 ### Added
