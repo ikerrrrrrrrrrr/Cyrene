@@ -670,8 +670,22 @@ async def _run_main_agent(
                 await _save_session_messages(_session_messages_to_save(messages))
                 return final_text
 
+        final_text = await _ensure_text_reply(
+            {"content": ""},
+            messages,
+            fallback=(
+                "I could not complete the full tool workflow before reaching the tool limit, "
+                "but I have summarized the available results above."
+            ),
+        )
+        final_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
+        if client_request_id:
+            final_entry["client_request_id"] = client_request_id
+        if round_id:
+            final_entry["round_id"] = round_id
+        messages.append(_apply_assistant_meta(final_entry))
         await _save_session_messages(_session_messages_to_save(messages))
-        return "Stopped after hitting the tool loop limit."
+        return final_text
 
     # Deep research first round: if LLM output text instead of calling ask_user, retry
     if _deep_research_first_round.get() and not ask_user_call and not use_tools_call:

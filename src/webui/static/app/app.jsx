@@ -554,23 +554,36 @@ function App() {
   );
 }
 
+function readDeveloperMode() {
+  try { return localStorage.getItem("cyrene-developer-mode") === "1"; } catch(e) { return false; }
+}
+
 function Sidebar({ page, setPage, selectedSessionId, onSelectSession, collapsed, onToggleCollapsed, onOpenSearch }) {
   useDataVersion();
   const { t } = useI18n();
+  const [devMode, setDevMode] = useStateApp(readDeveloperMode);
+
+  useEffectApp(function () {
+    function onDevModeChange() { setDevMode(readDeveloperMode()); }
+    window.addEventListener("cyrene-developer-mode-change", onDevModeChange);
+    return function () { window.removeEventListener("cyrene-developer-mode-change", onDevModeChange); };
+  }, []);
+
   const sessionCount = (DATA.sessions || []).length;
   const activeRecentSessionId = selectedSessionId || DATA.sessions[0]?.id || null;
-  const items = [
+  const allItems = [
     { id: "dashboard", label: t("nav.dashboard"), icon: "◫", key: "1" },
     { id: "chat",     label: t("nav.chat"),     icon: "▸", key: "2" },
-    { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "3" },
+    { id: "agents",   label: t("nav.agentFlow"),   icon: "⌘", key: "3", devOnly: true },
     { id: "tasks",    label: t("nav.tasks"),    icon: "◎", key: "4" },
     { id: "sessions", label: t("nav.sessions"), icon: "≡", key: "5", badge: sessionCount > 0 ? String(sessionCount) : null },
     { id: "memory",   label: t("nav.memory"),   icon: "▤", key: "6" },
-    { id: "context_debug", label: t("nav.contextDebug"), icon: "◇", key: "7" },
+    { id: "context_debug", label: t("nav.contextDebug"), icon: "◇", key: "7", devOnly: true },
     { id: "evolution", label: t("nav.evolution"), icon: "⟁", key: "8", cssClass: "evo-icon" },
     { id: "entities", label: t("nav.entities"), icon: "⊙", key: "9" },
     { id: "knowledge", label: t("nav.knowledge"), icon: "✦", key: "0" },
   ];
+  const items = allItems.filter(function (it) { return !it.devOnly || devMode; });
   const brandName = (DATA.assistantName || "CYRENE").toUpperCase();
   return (
     <div className={"sidebar" + (collapsed ? " collapsed" : "")}>

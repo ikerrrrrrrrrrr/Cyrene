@@ -173,7 +173,9 @@ def make_reflection_record(
 
 
 def project_history_for_llm(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return an LLM-only projection that hides reflected failure details."""
+    """Return an LLM-only projection that hides reflected failure details and permission elevation messages."""
+    messages = [m for m in messages if isinstance(m, dict) and not bool(m.get("hidden_from_llm"))]
+
     records: list[tuple[int, dict[str, Any]]] = [
         (index, message)
         for index, message in enumerate(messages)

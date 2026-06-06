@@ -2050,6 +2050,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 ).strip()
                 if not model_identifier:
                     continue
+                model_base_url = str(model.get("base_url") or fallback_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
+                raw_model_api_key = _strip_wrapping_quotes(str(model.get("api_key") or "").strip())
+                if raw_model_api_key:
+                    model_api_key = raw_model_api_key
+                elif model_base_url.rstrip("/") == (fallback_base_url or DEFAULT_OPENAI_BASE_URL).rstrip("/"):
+                    model_api_key = fallback_api_key
+                else:
+                    model_api_key = ""
                 normalized_items.append(
                     {
                         "id": str(model.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
@@ -2058,8 +2066,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                         "desc": str(model.get("desc") or "").strip(),
                         "ctx": str(model.get("ctx") or "").strip(),
                         "price": str(model.get("price") or "").strip(),
-                        "api_key": _strip_wrapping_quotes(str(model.get("api_key") or fallback_api_key).strip()),
-                        "base_url": str(model.get("base_url") or fallback_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                        "api_key": model_api_key,
+                        "base_url": model_base_url,
                     }
                 )
             return normalized_items
@@ -2078,6 +2086,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         ctx_limit = int(raw_secondary.get("ctx_limit") or 0)
         max_concurrency = int(raw_secondary.get("max_concurrency") or 0)
         if sec_model:
+            sec_base_url = str(raw_secondary.get("base_url") or base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
+            sec_raw_api_key = _strip_wrapping_quotes(str(raw_secondary.get("api_key") or "").strip())
+            if sec_raw_api_key:
+                sec_api_key = sec_raw_api_key
+            elif sec_base_url.rstrip("/") == (base_url or DEFAULT_OPENAI_BASE_URL).rstrip("/"):
+                sec_api_key = active_api_key
+            else:
+                sec_api_key = ""
             normalized_secondary = {
                 "id": "secondary",
                 "name": str(raw_secondary.get("name") or sec_model).strip(),
@@ -2085,8 +2101,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 "desc": "",
                 "ctx": "",
                 "price": "",
-                "api_key": _strip_wrapping_quotes(str(raw_secondary.get("api_key") or active_api_key).strip()),
-                "base_url": str(raw_secondary.get("base_url") or base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL,
+                "api_key": sec_api_key,
+                "base_url": sec_base_url,
                 "ctx_limit": ctx_limit,
                 "max_concurrency": max_concurrency,
             }
@@ -2941,7 +2957,8 @@ def _build_archive_sessions(
                 (str(section.get("session_title", "")).strip() for section in group_sections if section.get("session_title")),
                 "",
             )
-            title = group_session_title or file_session_title or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
+            is_legacy = archive_session_id.startswith("legacy_")
+            title = group_session_title or (file_session_title if is_legacy else "") or ((last_user["body"][:60] + ("…" if len(last_user["body"]) > 60 else "")) if last_user else date_str)
             preview = messages[-1].get("body", "")[:80] if messages else ""
             current_round_id = next((str(m.get("round_id", "")).strip() for m in reversed(messages) if m.get("round_id")), "")
             current_round_title = next(
@@ -3005,7 +3022,6 @@ def _split_archive_entry_blocks(content: str) -> list[str]:
 def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
     """Parse a conversations/YYYY-MM-DD.md file into archive sections with metadata."""
     sections_out: list[dict[str, Any]] = []
-    file_session_title = _parse_archive_session_title(content)
     round_index = 0
 
     for section in _split_archive_entry_blocks(content):
@@ -3022,7 +3038,7 @@ def _parse_archive_sections(content: str) -> list[dict[str, Any]]:
         round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
         round_title = _parse_archive_meta(section, "round_title")
         archive_session_id = _parse_archive_meta(section, "archive_session_id")
-        session_title = _parse_archive_meta(section, "session_title") or file_session_title
+        session_title = _parse_archive_meta(section, "session_title")
         body_start = section.find("## ")
         raw_entry = section[body_start:].strip() if body_start >= 0 else section.strip()
         sections_out.append({

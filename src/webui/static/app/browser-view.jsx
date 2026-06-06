@@ -66,7 +66,7 @@ function BrowserViewportPanel({ roundId, onClose }) {
     action === "type" ? ("输入到 " + (target || "")) : action;
 
   const barStyle = { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderBottom: "1px solid var(--line)", fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)", flexShrink: 0 };
-  const stageStyle = { flex: 1, position: "relative", overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", background: "#0a0a0a" };
+  const stageStyle = { flex: 1, position: "relative", overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", background: "var(--bg-1)" };
 
   return (
     <div className="browser-view" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -92,7 +92,7 @@ function BrowserViewportPanel({ roundId, onClose }) {
             <div style={{ fontSize: 12 }}>请在弹出的浏览器窗口完成登录，然后在下方的提问处点「我已完成登录」。</div>
           </div>
         ) : (
-          <img ref={imgRef} alt="browser" style={{ maxWidth: "100%", display: "block" }} />
+          <img ref={imgRef} alt="browser" style={{ width: "100%", height: "auto", display: "block", background: "#fff" }} />
         )}
       </div>
 

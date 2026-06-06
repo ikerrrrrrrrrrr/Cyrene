@@ -61,7 +61,13 @@ def _normalized_candidate(raw: dict[str, Any], index: int = 0, *, active_model: 
     if not model:
         model = active_model
     base_url = str(raw.get("base_url") or active_base_url or DEFAULT_OPENAI_BASE_URL).strip() or DEFAULT_OPENAI_BASE_URL
-    api_key = _strip_wrapping_quotes(str(raw.get("api_key") or active_api_key or "").strip())
+    raw_api_key = _strip_wrapping_quotes(str(raw.get("api_key") or "").strip())
+    if raw_api_key:
+        api_key = raw_api_key
+    elif base_url.rstrip("/") == (active_base_url or DEFAULT_OPENAI_BASE_URL).rstrip("/"):
+        api_key = active_api_key
+    else:
+        api_key = ""
     return {
         "id": str(raw.get("id") or f"candidate-{index + 1}").strip() or f"candidate-{index + 1}",
         "model": model,
@@ -106,7 +112,9 @@ def _resolve_secondary_candidates() -> list[dict[str, Any]]:
         base_url = str(os.environ.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL) or "").strip() or DEFAULT_OPENAI_BASE_URL
     api_key = _strip_wrapping_quotes(str(secondary.get("api_key") or "").strip())
     if not api_key:
-        api_key = _strip_wrapping_quotes(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
+        primary_base = (os.environ.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL) or "").strip().rstrip("/") or DEFAULT_OPENAI_BASE_URL.rstrip("/")
+        if base_url.rstrip("/") == primary_base:
+            api_key = _strip_wrapping_quotes(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
     ctx_limit = int(secondary.get("ctx_limit") or 0)
     max_concurrency = int(secondary.get("max_concurrency") or 0)
     return [{

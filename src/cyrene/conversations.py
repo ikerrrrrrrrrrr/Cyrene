@@ -221,7 +221,8 @@ def _parse_archive_sections(content: str, date_str: str) -> list[dict[str, str]]
             continue
 
         archive_session_id = _parse_archive_meta(section, "archive_session_id")
-        session_title = _parse_archive_meta(section, "session_title") or file_session_title
+        is_legacy = not archive_session_id
+        session_title = _parse_archive_meta(section, "session_title") or (file_session_title if is_legacy else "")
         round_id = _parse_archive_meta(section, "round_id") or f"archive_round_{round_index}"
         round_title = _parse_archive_meta(section, "round_title")
         sections_out.append({

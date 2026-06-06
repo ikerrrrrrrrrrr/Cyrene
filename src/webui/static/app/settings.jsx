@@ -36,6 +36,14 @@ function readStoredDesktopNotificationsEnabled() {
   }
 }
 
+function readStoredDeveloperMode() {
+  try {
+    return localStorage.getItem("cyrene-developer-mode") === "1";
+  } catch (e) {
+    return false;
+  }
+}
+
 function createEmptyModelCandidate() {
   return {
     id: "candidate-" + Date.now() + "-" + Math.random().toString(16).slice(2, 6),
@@ -312,6 +320,7 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
   });
   const [desktopNotificationsEnabled, setDesktopNotificationsEnabled] = useStateSet(readStoredDesktopNotificationsEnabled);
   const [desktopNotificationStatus, setDesktopNotificationStatus] = useStateSet("");
+  const [developerMode, setDeveloperMode] = useStateSet(readStoredDeveloperMode);
   const [notifyTelegram, setNotifyTelegram] = useStateSet(true);
   const [notifyWechat, setNotifyWechat] = useStateSet(true);
   const [agentProactive, setAgentProactive] = useStateSet(true);
@@ -396,6 +405,13 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
       localStorage.setItem("cyrene-desktop-notifications", desktopNotificationsEnabled ? "1" : "0");
     } catch (e) {}
   }, [desktopNotificationsEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("cyrene-developer-mode", developerMode ? "1" : "0");
+      window.dispatchEvent(new Event("cyrene-developer-mode-change"));
+    } catch (e) {}
+  }, [developerMode]);
 
   function loadConfig() {
     setConfigLoading(true);
@@ -845,6 +861,13 @@ function SettingsPage({ tweaks, setTweak, actualTheme, accentPresets }) {
                 <div className="settings-control-stack">
                   <div className={"toggle " + (desktopNotificationsEnabled ? "on" : "")} onClick={toggleDesktopNotifications}></div>
                   {desktopNotificationStatus ? <span className="hint">{desktopNotificationStatus}</span> : null}
+                </div>
+              </div>
+
+              <div className="field field--compact">
+                <div className="label">{t("settings.developerMode")}<small>{t("settings.developerModeHint")}</small></div>
+                <div className="settings-control-stack">
+                  <div className={"toggle " + (developerMode ? "on" : "")} onClick={() => setDeveloperMode(!developerMode)}></div>
                 </div>
               </div>
 

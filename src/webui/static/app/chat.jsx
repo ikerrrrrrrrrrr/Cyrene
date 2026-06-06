@@ -355,6 +355,29 @@ function isTraceOnlyAssistantMessage(msg) {
   );
 }
 
+function isMapToolName(name) {
+  var raw = String(name || "").trim();
+  return raw === "pin_location" || raw === "connect_pins";
+}
+
+function messageHasMapTool(msg) {
+  var tools = Array.isArray(msg && msg.tools) ? msg.tools : [];
+  return tools.some(function (tool) {
+    return isMapToolName(tool && tool.name);
+  });
+}
+
+function isFinalVisibleAssistantReply(msg) {
+  return Boolean(
+    msg
+    && msg.role === "agent"
+    && !msg.runtimeTrace
+    && !msg.intermediateReply
+    && !msg.questionPrompt
+    && String(msg.body || "").trim()
+  );
+}
+
 function buildAttachedRuntime(activeTraceDescriptor, liveElapsed, visibleLiveProgress, watchingGuidance, activeGuideRoundTitle, activeRequest) {
   const entries = [];
   if (watchingGuidance) {
@@ -395,11 +418,7 @@ function hasVisibleAssistantReplyForRequest(messages, requestId) {
   if (!targetRequestId) return false;
   return (messages || []).some(function (msg) {
     return msg
-      && msg.role === "agent"
-      && !msg.runtimeTrace
-      && !msg.intermediateReply
-      && !msg.questionPrompt
-      && (msg.body || msg.thinking || (msg.tools && msg.tools.length))
+      && isFinalVisibleAssistantReply(msg)
       && String(msg.clientRequestId || "") === targetRequestId;
   });
 }
@@ -951,7 +970,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   var ALL_COMMANDS = [
     { id: "quick-answer",    icon: "⚡", label: t("chat.commandQuickAnswer"),    desc: t("chat.commandQuickAnswerDesc"),    placeholder: t("chat.quickAnswerPlaceholder") },
     { id: "deep-research",   icon: "🔬", label: t("chat.commandDeepResearch"),   desc: t("chat.commandDeepResearchDesc"),   placeholder: t("chat.deepResearchPlaceholder") },
-    { id: "deep-reflect",    icon: "R",  label: t("chat.commandDeepReflect"),    desc: t("chat.commandDeepReflectDesc"),    placeholder: t("chat.deepReflectPlaceholder") },
+    { id: "deep-reflect",    icon: "💭", label: t("chat.commandDeepReflect"),    desc: t("chat.commandDeepReflectDesc"),    placeholder: t("chat.deepReflectPlaceholder") },
     { id: "help-me-decide",  icon: "🤔", label: t("chat.commandHelpMeDecide"),   desc: t("chat.commandHelpMeDecideDesc"),   placeholder: t("chat.helpMeDecidePlaceholder") },
     { id: "learning-plan",   icon: "📚", label: t("chat.commandLearningPlan"),   desc: t("chat.commandLearningPlanDesc"),   placeholder: t("chat.learningPlanPlaceholder") },
     { id: "daily-review",    icon: "🌙", label: t("chat.commandDailyReview"),    desc: t("chat.commandDailyReviewDesc"),    placeholder: t("chat.dailyReviewPlaceholder") },
@@ -1104,7 +1123,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     } else {
       el.scrollTo({ top: desired, behavior: 'smooth' });
     }
-    userAtBottomRef.current = true;
+    userAtBottomRef.current = false;
+  }
+
+  function resetEmptyConversationViewport() {
+    var el = scrollRef.current;
+    pinnedMessageRef.current = false;
+    latestPinnedUserKeyRef.current = "";
+    userAtBottomRef.current = false;
+    initialScrollDoneRef.current = false;
+    if (!el) return;
+    el.style.setProperty('--scroll-pb-extra', '0px');
+    el.scrollTop = 0;
   }
 
   /* When user sends a message: scroll the user message to viewport top so the agent
@@ -1112,7 +1142,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
      the first render, not just SSE updates. */
   useEffect(function () {
     if (renderedMessages.length === 0) {
-      return scrollChatToBottom(false);
+      resetEmptyConversationViewport();
+      return;
     }
     var lastRendered = renderedMessages[renderedMessages.length - 1];
     if (lastRendered && lastRendered.role === 'user') {
@@ -1961,15 +1992,23 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const hasAssistantReplyBody = renderedMessages.some(function (msg) {
     return Boolean(
       msg
-      && msg.role === "agent"
+      && isFinalVisibleAssistantReply(msg)
       && String(msg.clientRequestId || "") === String(runtimeState.watchRequestId || "")
-      && String(msg.body || "").trim()
     );
   });
+
+  _useLayoutEffect(function () {
+    if (!isLiveSession || visibleSending || pendingQuestion || renderedMessages.length !== 0) return;
+    resetEmptyConversationViewport();
+  }, [isLiveSession, visibleSending, Boolean(pendingQuestion), renderedMessages.length, session.started, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length]);
 
   useEffect(function () {
     // When the latest message is from the user, keep it pinned at the top
     // instead of scrolling to bottom — scrollToLatestUserMessage handles this case.
+    if (renderedMessages.length === 0) {
+      resetEmptyConversationViewport();
+      return;
+    }
     var lastRendered = renderedMessages[renderedMessages.length - 1];
     if (lastRendered && lastRendered.role === 'user') return;
     return scrollChatToBottom(!visibleSending);
@@ -2017,6 +2056,18 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     expandRightSidebar();
     if (setRightSidebarView) setRightSidebarView("browser");
   }, [browserActivityKey]);
+
+  const currentRoundHasMapActivity = (session.chat.messages || []).some(function (msg) {
+    if (!msg || msg.role !== "agent" || !messageHasMapTool(msg)) return false;
+    if (!session.currentRoundId) return true;
+    return String(msg.roundId || "") === String(session.currentRoundId || "");
+  });
+  useEffect(function () {
+    if (!currentRoundHasMapActivity) return;
+    addSidebarTab("map");
+    expandRightSidebar();
+    if (setRightSidebarView) setRightSidebarView("map");
+  }, [currentRoundHasMapActivity, session.currentRoundId]);
 
   function handleShowHtml(content) {
     expandRightSidebar();

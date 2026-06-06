@@ -171,6 +171,116 @@ async def test_execute_tool_awaits_event_publish(monkeypatch):
     tools.TOOL_HANDLERS.pop("__test_tool__", None)
 
 
+async def test_tool_loop_limit_persists_final_assistant_message(tmp_path, monkeypatch):
+    from cyrene.agent import agent as _agent_core
+    from cyrene.agent import state as _agent_state
+
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"_session_epoch": _agent_state._session_epoch, "messages": []}), encoding="utf-8")
+    _patch_state_file(monkeypatch, state_file)
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_core, "_MAX_TOOL_ROUNDS", 1)
+
+    async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
+        names = {item.get("function", {}).get("name") for item in (tools or [])}
+        if tools is None:
+            return {"content": "final answer from gathered tool results"}
+        if "use_tools" in names:
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "phase1",
+                    "function": {"name": "use_tools", "arguments": "{\"task\":\"check\"}"},
+                }],
+            }
+        return {
+            "content": "",
+            "tool_calls": [{
+                "id": "tool1",
+                "function": {"name": "WebSearch", "arguments": "{\"query\":\"x\"}"},
+            }],
+        }
+
+    async def fake_execute_tool(*args, **kwargs):
+        return "tool result"
+
+    _patch_call_llm(monkeypatch, fake_call_llm)
+    monkeypatch.setattr(_agent_core, "_execute_tool", fake_execute_tool)
+    monkeypatch.setattr(_agent_core, "get_active_tool_defs", lambda: [
+        {"type": "function", "function": {"name": "WebSearch", "parameters": {}}},
+        {"type": "function", "function": {"name": "quit", "parameters": {}}},
+    ])
+
+    result = await _agent_core._run_main_agent(
+        "check",
+        [],
+        None,
+        0,
+        "db.sqlite3",
+        system_prompt="test system",
+        client_request_id="req_limit",
+    )
+
+    assert result == "final answer from gathered tool results"
+    saved = json.loads(state_file.read_text(encoding="utf-8"))
+    assert saved["messages"][-1]["role"] == "assistant"
+    assert saved["messages"][-1]["content"] == result
+    assert saved["messages"][-1]["client_request_id"] == "req_limit"
+
+
+def test_merge_live_block_preserves_distinct_empty_tool_call_assistants():
+    from cyrene.agent.session import _merge_live_block
+
+    existing = [
+        {
+            "role": "assistant",
+            "content": "",
+            "round_id": "round_a",
+            "message_id": "assistant_1",
+            "tool_calls": [{
+                "id": "call_1",
+                "function": {"name": "WebSearch", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "round_id": "round_a",
+            "message_id": "tool_1",
+            "tool_call_id": "call_1",
+            "content": "first result",
+        },
+    ]
+    incoming = [
+        {
+            "role": "assistant",
+            "content": "",
+            "round_id": "round_a",
+            "message_id": "assistant_2",
+            "tool_calls": [{
+                "id": "call_2",
+                "function": {"name": "browser_navigate", "arguments": "{}"},
+            }],
+        },
+        {
+            "role": "tool",
+            "round_id": "round_a",
+            "message_id": "tool_2",
+            "tool_call_id": "call_2",
+            "content": "second result",
+        },
+    ]
+
+    merged = _merge_live_block(existing, incoming)
+
+    assistant_ids = [
+        message["message_id"]
+        for message in merged
+        if message.get("role") == "assistant"
+    ]
+    assert assistant_ids == ["assistant_1", "assistant_2"]
+    assert [message.get("tool_call_id") for message in merged if message.get("role") == "tool"] == ["call_1", "call_2"]
+
+
 async def test_subagent_cannot_send_user_visible_message(monkeypatch):
     from cyrene import agent
     from cyrene.agent import state as _agent_state
@@ -4059,3 +4169,100 @@ async def test_stream_agent_reply_still_publishes_done_on_success(monkeypatch):
     statuses = [e.get("status") for e in events if e.get("type") == "session_update"]
     assert "done" in statuses, statuses
     assert "error" not in statuses, statuses
+
+
+# ---------------------------------------------------------------------------
+# Issue #38 — Credential isolation between model providers
+# ---------------------------------------------------------------------------
+
+
+def test_normalized_candidate_same_provider_inherits_key():
+    """Same base_url → api_key inherited from active provider."""
+    from cyrene.call_llm import _normalized_candidate, DEFAULT_OPENAI_BASE_URL
+
+    result = _normalized_candidate(
+        {"model": "some-model"},
+        active_model="primary",
+        active_base_url=DEFAULT_OPENAI_BASE_URL,
+        active_api_key="primary-secret",
+    )
+    assert result["api_key"] == "primary-secret"
+
+
+def test_normalized_candidate_cross_provider_no_key_not_inherited():
+    """Different base_url without explicit api_key → empty string, not inherited."""
+    from cyrene.call_llm import _normalized_candidate, DEFAULT_OPENAI_BASE_URL
+
+    result = _normalized_candidate(
+        {"model": "other-model", "base_url": "https://other-provider.example/v1"},
+        active_model="primary",
+        active_base_url=DEFAULT_OPENAI_BASE_URL,
+        active_api_key="primary-secret",
+    )
+    assert result["api_key"] == ""
+
+
+def test_normalized_candidate_cross_provider_explicit_key_used():
+    """Different base_url with explicit api_key → that key is used, not the active one."""
+    from cyrene.call_llm import _normalized_candidate, DEFAULT_OPENAI_BASE_URL
+
+    result = _normalized_candidate(
+        {"model": "other-model", "base_url": "https://other-provider.example/v1", "api_key": "other-secret"},
+        active_model="primary",
+        active_base_url=DEFAULT_OPENAI_BASE_URL,
+        active_api_key="primary-secret",
+    )
+    assert result["api_key"] == "other-secret"
+
+
+def test_resolve_secondary_candidates_cross_provider_no_key_not_inherited(monkeypatch):
+    """Secondary model on different base_url without api_key must not inherit OPENAI_API_KEY."""
+    from cyrene import call_llm
+    from cyrene.call_llm import DEFAULT_OPENAI_BASE_URL
+
+    monkeypatch.setattr(call_llm, "get_secondary_model", lambda: {
+        "model": "secondary-model",
+        "base_url": "https://secondary-provider.example/v1",
+    })
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL)
+
+    candidates = call_llm._resolve_secondary_candidates()
+    assert candidates
+    assert candidates[0]["api_key"] == ""
+
+
+def test_resolve_secondary_candidates_same_provider_inherits_key(monkeypatch):
+    """Secondary model on same base_url without api_key inherits OPENAI_API_KEY."""
+    from cyrene import call_llm
+    from cyrene.call_llm import DEFAULT_OPENAI_BASE_URL
+
+    monkeypatch.setattr(call_llm, "get_secondary_model", lambda: {
+        "model": "secondary-model",
+        "base_url": DEFAULT_OPENAI_BASE_URL,
+    })
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL)
+
+    candidates = call_llm._resolve_secondary_candidates()
+    assert candidates
+    assert candidates[0]["api_key"] == "primary-secret"
+
+
+def test_resolve_vision_candidates_cross_provider_no_key_not_inherited(monkeypatch):
+    """Vision-only model on different base_url without api_key must not inherit OPENAI_API_KEY."""
+    from cyrene import call_llm
+    from cyrene.call_llm import DEFAULT_OPENAI_BASE_URL
+
+    monkeypatch.setattr(call_llm, "get_models", lambda: [])
+    monkeypatch.setattr(call_llm, "get_vision_models", lambda: [
+        {"model": "vision-model", "base_url": "https://vision-provider.example/v1"},
+    ])
+    monkeypatch.setenv("OPENAI_API_KEY", "primary-secret")
+    monkeypatch.setenv("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL)
+    monkeypatch.setenv("OPENAI_MODEL", "primary-model")
+
+    candidates = call_llm._resolve_vision_candidates()
+    vision = next((c for c in candidates if c.get("model") == "vision-model"), None)
+    assert vision is not None
+    assert vision["api_key"] == ""

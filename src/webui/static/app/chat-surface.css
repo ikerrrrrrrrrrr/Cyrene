@@ -44,13 +44,53 @@
 
 .modern-rotating-text {
   display: inline-block;
+}
+
+.modern-rotating-text.welcome-phrase {
   animation: modern-phrase-fade 5s ease-in-out both;
+}
+
+.modern-rotating-text.status-phrase {
+  animation: modern-status-phrase-fade 2.3s ease-in-out both;
+}
+
+.modern-rotating-text.static:not(.tool-status-phrase) {
+  animation: none;
+  opacity: 1;
+  transform: none;
+}
+
+.modern-rotating-text.tool-status-phrase {
+  background: linear-gradient(
+    100deg,
+    var(--text-3) 0%,
+    var(--text-3) 38%,
+    var(--text) 50%,
+    var(--text-3) 62%,
+    var(--text-3) 100%
+  );
+  background-size: 220% 100%;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: modern-tool-status-sheen 1.9s ease-in-out infinite;
 }
 
 @keyframes modern-phrase-fade {
   0% { opacity: 0; transform: translateY(6px) scale(.94); }
   12%, 84% { opacity: 1; transform: translateY(0) scale(1.055); }
   100% { opacity: 0; transform: translateY(-6px) scale(.96); }
+}
+
+@keyframes modern-status-phrase-fade {
+  0% { opacity: 0; transform: translateY(2px); }
+  8%, 92% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-2px); }
+}
+
+@keyframes modern-tool-status-sheen {
+  0% { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
 }
 
 .modern-message {
@@ -88,9 +128,10 @@
 .modern-message.user .modern-msg-body {
   padding: 11px 14px;
   border-radius: 16px 16px 5px 16px;
-  background: var(--accent);
-  color: var(--accent-text);
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 20%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-2));
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line));
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--accent) 8%, transparent);
   animation: modern-user-bubble-flight 520ms cubic-bezier(.2,.8,.18,1) both;
 }
 
@@ -323,7 +364,7 @@
   height: 22px;
   display: flex;
   align-items: center;
-  color: var(--text-4);
+  color: var(--text-3);
   font-family: var(--mono);
   font-size: 12px;
 }
@@ -698,5 +739,10 @@
   .modern-status-stack,
   .modern-modified-files {
     animation: none !important;
+  }
+
+  .modern-rotating-text.tool-status-phrase {
+    background: none;
+    color: var(--text-3);
   }
 }

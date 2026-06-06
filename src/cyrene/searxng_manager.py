@@ -262,7 +262,7 @@ def _merge_no_proxy(existing: str) -> str:
 
 def _build_simplexng_launch_cmd(port: int, host: str, *, settings_path: Path | None = None) -> list[str]:
     """Build a launch command compatible with different SimpleXNG package layouts."""
-    args = ["-p", str(port), "-H", host, "--flask"]
+    args = ["-p", str(port), "-H", host]
     if settings_path is not None:
         args.extend(["--settings", str(settings_path)])
 

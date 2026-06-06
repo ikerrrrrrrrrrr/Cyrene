@@ -13,11 +13,8 @@ from typing import Any
 
 import requests
 
-from cyrene import debug
 from cyrene.call_llm import call_llm as _unified_call_llm
-from cyrene.config import (
-    SEARCH_PROXY, SEARXNG_AUTO_START, SEARXNG_HOST, SEARXNG_PORT,
-)
+from cyrene.config import SEARCH_PROXY
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +83,10 @@ async def _generate_queries(topic: str) -> list[str]:
 
 def _get_simplexng_url() -> str:
     """Resolve the app-managed SimpleXNG search API URL."""
-    if SEARXNG_AUTO_START:
-        return f"http://{SEARXNG_HOST}:{SEARXNG_PORT}"
+    from cyrene.searxng_manager import get_manager
+    manager = get_manager()
+    if manager.is_running:
+        return manager.url
     return ""
 
 

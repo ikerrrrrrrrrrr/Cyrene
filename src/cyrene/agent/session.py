@@ -56,6 +56,8 @@ def _messages_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
     right_id = str(right.get("message_id", "")).strip()
     if left_id and right_id and left_id == right_id:
         return True
+    if left_id or right_id:
+        return False
     return (
         str(left.get("role", "")).strip() == str(right.get("role", "")).strip()
         and str(left.get("content", "")).strip() == str(right.get("content", "")).strip()
@@ -739,6 +741,15 @@ def _normalize_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
     return question
 
 
+_PERMISSION_ELEVATION_KINDS: frozenset[str] = frozenset({
+    "scope_elevation",
+    "write_permission_request",
+    "read_elevation",
+    "subshell_elevation",
+    "delete_confirmation",
+})
+
+
 async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
     question = _normalize_pending_question(payload)
     assistant_entry: dict[str, Any] = {
@@ -754,6 +765,9 @@ async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
         assistant_entry["round_title"] = question["round_title"]
     if question["options"]:
         assistant_entry["question_options"] = list(question["options"])
+    meta = payload.get("meta")
+    if isinstance(meta, dict) and str(meta.get("kind", "")).strip() in _PERMISSION_ELEVATION_KINDS:
+        assistant_entry["hidden_from_llm"] = True
 
     _ensure_message_identity([assistant_entry])
     question["message_id"] = assistant_entry["message_id"]

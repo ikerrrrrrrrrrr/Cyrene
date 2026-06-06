@@ -83,68 +83,148 @@ var CYRENE_CHAT_PHRASES = {
 
 var CYRENE_TOOL_NAME_I18N = {
   zh: {
-    Read: "读取文件",
-    Write: "写入文件",
-    Edit: "编辑文件",
+    AnalyzeAttachment: "分析附件",
+    ApproveScript: "启用脚本",
     Bash: "执行命令",
+    CheckClaudeCode: "检查 Claude Code",
+    CloseShell: "关闭 Shell",
+    CodeReview: "代码审查",
+    DeepReflect: "深度反思",
+    Edit: "编辑文件",
+    FindReferences: "查找引用",
+    FormatCode: "格式化代码",
+    GetFileSymbols: "获取文件符号",
+    GitBranch: "管理 Git 分支",
+    GitCommit: "提交 Git",
+    GitDiff: "查看 Git 差异",
+    GitLog: "查看 Git 日志",
+    GitStatus: "查看 Git 状态",
     Glob: "查找文件",
     Grep: "搜索文本",
-    AnalyzeAttachment: "分析附件",
+    IndexCodebase: "索引代码库",
+    InstallSkill: "安装技能",
+    LearnPatterns: "学习模式",
+    LearnSkill: "学习技能",
+    LintCode: "检查代码",
+    ListScripts: "列出脚本",
+    ListShells: "列出 Shell",
+    ListSkills: "列出技能",
+    PromptClaudeCode: "提示 Claude Code",
+    Read: "读取文件",
+    RecallMemory: "回忆记忆",
+    RejectScript: "停用脚本",
+    RunScript: "运行脚本",
+    SearchKnowledge: "搜索知识库",
+    SearchSymbol: "搜索符号",
+    SendShell: "发送 Shell 命令",
+    StartClaudeCode: "启动 Claude Code",
+    StartShell: "启动 Shell",
+    UninstallSkill: "卸载技能",
     WebFetch: "获取网页",
     WebSearch: "搜索网页",
-    StartShell: "启动 Shell",
-    SendShell: "发送 Shell 命令",
-    ListShells: "列出 Shell",
-    CloseShell: "关闭 Shell",
-    RecallMemory: "回忆记忆",
-    spawn_subagent: "创建子代理",
-    send_agent_message: "发送代理消息",
-    broadcast_agent_message: "广播代理消息",
+    Write: "写入文件",
     ask_user: "询问用户",
-    send_message: "发送进度消息",
-    send_file: "发送文件",
-    browser_navigate: "打开网页",
-    browser_screenshot: "截取网页",
+    broadcast_agent_message: "广播代理消息",
     browser_click: "点击网页",
+    browser_navigate: "打开网页",
+    browser_request_takeover: "请求浏览器接管",
+    browser_screenshot: "截取网页",
     browser_type: "输入网页内容",
-    schedule_task: "创建计划",
+    cancel_task: "取消计划",
+    connect_pins: "连接地图标记",
+    delete_entity: "删除实体",
+    list_entities: "列出实体",
     list_tasks: "列出计划",
     pause_task: "暂停计划",
+    pin_location: "标记地图位置",
+    query_entities: "查询实体",
+    query_round: "查询回合",
+    quit: "结束任务",
     resume_task: "恢复计划",
-    cancel_task: "取消计划",
-    quit: "结束任务"
+    schedule_task: "创建计划",
+    send_agent_message: "发送代理消息",
+    send_file: "发送文件",
+    send_message: "发送进度消息",
+    send_message_to_user: "发送用户消息",
+    send_notification: "发送通知",
+    send_telegram: "发送 Telegram",
+    send_wechat_file: "发送微信文件",
+    spawn_subagent: "创建子代理",
+    track_entity: "跟踪实体",
+    update_entity: "更新实体",
+    use_tools: "启用工具"
   },
   en: {
-    Read: "Read file",
-    Write: "Write file",
-    Edit: "Edit file",
+    AnalyzeAttachment: "Analyze attachment",
+    ApproveScript: "Approve script",
     Bash: "Run command",
+    CheckClaudeCode: "Check Claude Code",
+    CloseShell: "Close shell",
+    CodeReview: "Review code",
+    DeepReflect: "Deep reflect",
+    Edit: "Edit file",
+    FindReferences: "Find references",
+    FormatCode: "Format code",
+    GetFileSymbols: "Get file symbols",
+    GitBranch: "Manage Git branch",
+    GitCommit: "Commit changes",
+    GitDiff: "Show Git diff",
+    GitLog: "Show Git log",
+    GitStatus: "Show Git status",
     Glob: "Find files",
     Grep: "Search text",
-    AnalyzeAttachment: "Analyze attachment",
+    IndexCodebase: "Index codebase",
+    InstallSkill: "Install skill",
+    LearnPatterns: "Learn patterns",
+    LearnSkill: "Learn skill",
+    LintCode: "Lint code",
+    ListScripts: "List scripts",
+    ListShells: "List shells",
+    ListSkills: "List skills",
+    PromptClaudeCode: "Prompt Claude Code",
+    Read: "Read file",
+    RecallMemory: "Recall memory",
+    RejectScript: "Reject script",
+    RunScript: "Run script",
+    SearchKnowledge: "Search knowledge",
+    SearchSymbol: "Search symbols",
+    SendShell: "Send shell command",
+    StartClaudeCode: "Start Claude Code",
+    StartShell: "Start shell",
+    UninstallSkill: "Uninstall skill",
     WebFetch: "Fetch web page",
     WebSearch: "Search web",
-    StartShell: "Start shell",
-    SendShell: "Send shell command",
-    ListShells: "List shells",
-    CloseShell: "Close shell",
-    RecallMemory: "Recall memory",
-    spawn_subagent: "Spawn subagent",
-    send_agent_message: "Send agent message",
-    broadcast_agent_message: "Broadcast agent message",
+    Write: "Write file",
     ask_user: "Ask user",
-    send_message: "Send progress message",
-    send_file: "Send file",
-    browser_navigate: "Navigate browser",
-    browser_screenshot: "Take screenshot",
+    broadcast_agent_message: "Broadcast agent message",
     browser_click: "Click browser",
+    browser_navigate: "Navigate browser",
+    browser_request_takeover: "Request browser takeover",
+    browser_screenshot: "Take screenshot",
     browser_type: "Type in browser",
-    schedule_task: "Schedule task",
+    cancel_task: "Cancel task",
+    connect_pins: "Connect map pins",
+    delete_entity: "Delete entity",
+    list_entities: "List entities",
     list_tasks: "List tasks",
     pause_task: "Pause task",
+    pin_location: "Pin map location",
+    query_entities: "Query entities",
+    query_round: "Query round",
+    quit: "Finish task",
     resume_task: "Resume task",
-    cancel_task: "Cancel task",
-    quit: "Finish task"
+    schedule_task: "Schedule task",
+    send_agent_message: "Send agent message",
+    send_file: "Send file",
+    send_message: "Send progress message",
+    send_message_to_user: "Send user message",
+    send_notification: "Send notification",
+    send_telegram: "Send Telegram message",
+    send_wechat_file: "Send WeChat file",
+    spawn_subagent: "Spawn subagent",
+    track_entity: "Track entity",
+    update_entity: "Update entity",
+    use_tools: "Enable tools"
   }
 };
 
@@ -155,16 +235,17 @@ function modernPhraseSet(kind, lang) {
 
 function ModernRotatingText({ items, interval = 2600, className = "" }) {
   var safeItems = Array.isArray(items) && items.length ? items : [""];
+  var isSingleItem = safeItems.length <= 1;
   var [index, setIndex] = useModernState(0);
   useModernEffect(function () {
-    if (safeItems.length <= 1) return;
+    if (isSingleItem) return;
     var timer = window.setInterval(function () {
       setIndex(function (value) { return value + 1; });
     }, interval);
     return function () { window.clearInterval(timer); };
-  }, [safeItems.join("|"), interval]);
+  }, [safeItems.join("|"), interval, isSingleItem]);
   var text = safeItems[index % safeItems.length] || "";
-  return <span key={text} className={"modern-rotating-text " + className}>{text}</span>;
+  return <span key={isSingleItem ? "static" : text} className={"modern-rotating-text " + className + (isSingleItem ? " static" : "")}>{text}</span>;
 }
 
 function modernToolLabel(name, lang) {
@@ -180,6 +261,30 @@ function latestToolProgress(progressEntries) {
     if (entries[i] && entries[i].type === "tool_call" && entries[i].tool) return entries[i];
   }
   return null;
+}
+
+function modernMessageHasTools(msg) {
+  return Boolean(msg && Array.isArray(msg.tools) && msg.tools.length > 0);
+}
+
+function modernMessageHasMapTool(msg) {
+  var tools = Array.isArray(msg && msg.tools) ? msg.tools : [];
+  return tools.some(function (tool) {
+    var name = String(tool && tool.name || "").trim();
+    return name === "pin_location" || name === "connect_pins";
+  });
+}
+
+function modernIsFinalAgentReply(msg) {
+  return Boolean(
+    msg
+    && msg.role === "agent"
+    && msg.body
+    && !msg.streamingReply
+    && !msg.intermediateReply
+    && !msg.questionPrompt
+    && !msg.runtimeTrace
+  );
 }
 
 function splitUnifiedDiffByFile(diffText) {
@@ -256,7 +361,7 @@ function ModernModifiedFiles({ diffText, onOpenDiff }) {
 function ModernWelcome({ lang }) {
   return (
     <div className="modern-welcome">
-      <ModernRotatingText items={modernPhraseSet("welcome", lang)} interval={5000} />
+      <ModernRotatingText items={modernPhraseSet("welcome", lang)} interval={5000} className="welcome-phrase" />
     </div>
   );
 }
@@ -274,11 +379,11 @@ function ModernRuntimeStatus({ visible, progressEntries, lang, diffText, onOpenD
       {visible && (
         <div className="modern-runtime-status">
           {statusText ? (
-            <ModernRotatingText items={[statusText]} interval={2600} />
+            <ModernRotatingText items={[statusText]} interval={2600} className="status-phrase tool-status-phrase" />
           ) : preparingReply ? (
-            <ModernRotatingText items={modernPhraseSet("preparing", lang)} interval={2300} />
+            <ModernRotatingText items={modernPhraseSet("preparing", lang)} interval={2300} className="status-phrase" />
           ) : (
-            <ModernRotatingText items={modernPhraseSet("thinking", lang)} interval={2300} />
+            <ModernRotatingText items={modernPhraseSet("thinking", lang)} interval={2300} className="status-phrase" />
           )}
         </div>
       )}
@@ -355,7 +460,7 @@ function ModernConversation({
 
   function runtimeStatusNode(requestId, key) {
     var requestDiff = diffForRequest(requestId);
-    var isActiveStatus = Boolean(statusVisible && requestId && requestId === statusRequestId);
+    var isActiveStatus = Boolean(statusVisible && (!statusRequestId || requestId === statusRequestId || requestId === "__active__"));
     return (
       <ModernRuntimeStatus
         key={key}
@@ -372,20 +477,51 @@ function ModernConversation({
   function retryDataFor(originalIndex) {
     var entry = entries[originalIndex];
     if (!entry || !entry.msg) return null;
-    if ((entry.msg.role !== "agent" && entry.msg.role !== "system") || !entry.msg.body) return null;
+    if (
+      entry.msg.role !== "agent"
+      || !entry.msg.body
+      || entry.msg.intermediateReply
+      || entry.msg.questionPrompt
+      || entry.msg.runtimeTrace
+    ) return null;
+    var replyRequestId = String(entry.msg.clientRequestId || "");
+    if (!replyRequestId) return null;
+    for (var laterIndex = originalIndex + 1; laterIndex < entries.length; laterIndex++) {
+      var later = entries[laterIndex] && entries[laterIndex].msg;
+      if (
+        later
+        && later.role === "agent"
+        && String(later.clientRequestId || "") === replyRequestId
+        && String(later.body || "").trim()
+        && !later.intermediateReply
+        && !later.questionPrompt
+        && !later.runtimeTrace
+      ) return null;
+    }
     for (var i = originalIndex - 1; i >= 0; i--) {
       var prev = entries[i] && entries[i].msg;
-      if (prev && prev.role === "user" && prev.body) {
+      if (prev && prev.role === "user" && prev.body && String(prev.clientRequestId || "") === replyRequestId) {
         return {
           text: prev.body,
           attachments: prev.attachments || [],
           roundId: prev.roundId || "",
-          requestId: prev.clientRequestId || ""
+          requestId: replyRequestId
         };
       }
     }
     return null;
   }
+
+  var mapToolByRequest = {};
+  var mapToolByRound = {};
+  visibleEntries.forEach(function (item) {
+    var msg = item.entry && item.entry.msg;
+    if (!modernMessageHasMapTool(msg)) return;
+    var requestId = String(msg && msg.clientRequestId || "");
+    var roundId = String(msg && msg.roundId || "");
+    if (requestId) mapToolByRequest[requestId] = true;
+    if (roundId) mapToolByRound[roundId] = true;
+  });
 
   var conversationNodes = [];
   if (!showWelcome) {
@@ -397,12 +533,22 @@ function ModernConversation({
       var shouldRenderForRequest = Boolean(msgRequestId && ((statusVisible && msgRequestId === statusRequestId) || hasRequestDiff));
       var isStatusUser = Boolean(shouldRenderForRequest && msg && msg.role === "user");
       var isStatusAgent = Boolean(shouldRenderForRequest && msg && (msg.role === "agent" || msg.role === "system"));
+      var isIntermediateAgent = Boolean(isStatusAgent && (msg.intermediateReply || (modernMessageHasTools(msg) && !retryData)));
+      var msgRoundId = String(msg && msg.roundId || "");
+      var showMapAction = Boolean(
+        retryData
+        && msg
+        && msg.role === "agent"
+        && (modernMessageHasMapTool(msg) || mapToolByRequest[msgRequestId] || mapToolByRound[msgRoundId])
+      );
       var messageNode = (
         <ModernMessage
           key={item.entry.renderKey}
           msg={msg}
           assistantName={assistantName}
           archived={!isLiveSession}
+          showActions={Boolean(retryData)}
+          showMapAction={showMapAction}
           onRetry={retryData && retryData.requestId ? function () { onRetryMessage && onRetryMessage(retryData); } : null}
           onShowHtml={onShowHtml}
           onShowPdf={onShowPdf}
@@ -412,6 +558,16 @@ function ModernConversation({
           onShowMarkdown={onShowMarkdown}
         />
       );
+      if (isIntermediateAgent && !insertedStatusRequests[msgRequestId]) {
+        insertedStatusRequests[msgRequestId] = true;
+        conversationNodes.push(
+          <React.Fragment key={"with-status-after-" + item.entry.renderKey}>
+            {messageNode}
+            {runtimeStatusNode(msgRequestId, "runtime-status-after-" + item.entry.renderKey)}
+          </React.Fragment>
+        );
+        return;
+      }
       if (isStatusAgent && !insertedStatusRequests[msgRequestId]) {
         insertedStatusRequests[msgRequestId] = true;
         conversationNodes.push(
@@ -428,8 +584,8 @@ function ModernConversation({
         conversationNodes.push(runtimeStatusNode(msgRequestId, "runtime-status-after-" + item.entry.renderKey));
       }
     });
-    if (statusVisible && statusRequestId && !insertedStatusRequests[statusRequestId]) {
-      conversationNodes.push(runtimeStatusNode(statusRequestId, "runtime-status-fallback"));
+    if (statusVisible && (!statusRequestId || !insertedStatusRequests[statusRequestId])) {
+      conversationNodes.push(runtimeStatusNode(statusRequestId || "__active__", "runtime-status-fallback"));
     }
   }
 
@@ -466,7 +622,7 @@ function ModernComposerHint({ visibleSending, pendingQuestion, hasSelectedGuideR
   );
 }
 
-function ModernMessage({ msg, archived, onRetry, onShowHtml, onShowPdf, onShowPpt, onShowMap, onShowCode, onShowMarkdown }) {
+function ModernMessage({ msg, archived, showActions, showMapAction, onRetry, onShowHtml, onShowPdf, onShowPpt, onShowMap, onShowCode, onShowMarkdown }) {
   var i18n = useI18n();
   var t = i18n.t;
   if (!msg) return null;
@@ -477,6 +633,7 @@ function ModernMessage({ msg, archived, onRetry, onShowHtml, onShowPdf, onShowPp
   var role = msg.role || "system";
   var attachments = Array.isArray(msg && msg.attachments) ? msg.attachments : [];
   var isAgentLike = role === "agent" || role === "system";
+  var isFinalAgentReply = Boolean(showActions && modernIsFinalAgentReply(msg));
   if (isAgentLike && !msg.body && attachments.length === 0) return null;
 
   var renderMarkdownBody = isAgentLike && msg.body && !msg.streamingReply;
@@ -525,7 +682,12 @@ function ModernMessage({ msg, archived, onRetry, onShowHtml, onShowPdf, onShowPp
           onShowCode={onShowCode}
           onShowMarkdown={onShowMarkdown}
         />
-        {isAgentLike && msg.body && !msg.streamingReply && (
+        {showMapAction && (
+          <div className="modern-attachments">
+            <button type="button" className="modern-attachment action" onClick={function () { onShowMap && onShowMap(); }}>{t("chat.map.showBtn")}</button>
+          </div>
+        )}
+        {isFinalAgentReply && (
           <div className="modern-msg-actions">
             <button type="button" className="modern-msg-action" onClick={function () { navigator.clipboard.writeText(msg.body); }} title={t("chat.copyAction") || "复制"}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
