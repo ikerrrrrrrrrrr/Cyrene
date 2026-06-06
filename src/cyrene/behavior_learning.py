@@ -230,6 +230,7 @@ CREATE TABLE IF NOT EXISTS learned_skill_runs (
     user_feedback TEXT NOT NULL DEFAULT '',
     dry_run INTEGER NOT NULL DEFAULT 0,
     consistency_score REAL NOT NULL DEFAULT 0,
+    permission_snapshot TEXT NOT NULL DEFAULT 'workspace_only',
     created_at TEXT NOT NULL,
     FOREIGN KEY (skill_id) REFERENCES learned_skills(skill_id)
 );
@@ -386,6 +387,18 @@ _TRIVIAL_SKILL_TOOLS: frozenset[str] = frozenset({
     "send_message",
     "send_message_to_user",
     "query_round",
+})
+
+# Tools that carry meaningful side-effects and must never be replayed silently.
+# A learned skill whose steps include any of these requires fresh user approval;
+# the skill router falls back to the normal agent loop instead of auto-executing.
+_HIGH_RISK_TOOLS: frozenset[str] = frozenset({
+    # Arbitrary shell / command execution
+    "Bash", "run_shell", "run_command", "start_shell", "send_shell",
+    # File write operations (outside-workspace risk)
+    "Write", "write_file", "Edit", "edit_file",
+    # Persistent scheduled task creation
+    "schedule_task",
 })
 
 _CORRECTION_TERMS = (
@@ -856,6 +869,14 @@ async def _ensure_tables() -> None:
     async with _conn() as conn:
         await conn.executescript(_CREATE_TABLES)
         await conn.commit()
+        # Migration: add permission_snapshot to pre-existing learned_skill_runs tables
+        try:
+            await conn.execute(
+                "ALTER TABLE learned_skill_runs ADD COLUMN permission_snapshot TEXT NOT NULL DEFAULT 'workspace_only'"
+            )
+            await conn.commit()
+        except Exception:
+            pass
 
 
 async def _seed_core_vocabulary() -> None:
@@ -2568,6 +2589,17 @@ async def _refresh_generated_skill_names_with_llm() -> None:
         await conn.commit()
 
 
+def _infer_skill_risk_level(steps: list[dict[str, Any]]) -> str:
+    """Return 'high' if any enabled step references a high-risk tool, else 'none'."""
+    for step in steps:
+        if not bool(step.get("enabled", True)):
+            continue
+        tool = str((step.get("implementation_reference") or {}).get("tool_name") or "")
+        if tool in _HIGH_RISK_TOOLS:
+            return "high"
+    return "none"
+
+
 def _skill_trigger_from_prototype(prototype: dict[str, Any], turn_examples: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "intent_types": [str((prototype.get("intent") or {}).get("type") or "")],
@@ -2616,12 +2648,13 @@ async def _skill_definition_from_pattern(pattern_id: str, skill_type: str) -> di
         current_description=fallback_description,
     )
     status = "draft" if skill_type == "draft" else "shadow"
+    inferred_risk = _infer_skill_risk_level(steps)
     return {
         "name": name,
         "description": description or fallback_description,
         "status": status,
         "skill_type": skill_type,
-        "risk_level": "none",
+        "risk_level": inferred_risk,
         "requires_llm": prototype.get("llm_dependency") not in {"low", "none"},
         "trigger": trigger,
         "input_schema": input_schema,
@@ -2638,7 +2671,7 @@ async def _skill_definition_from_pattern(pattern_id: str, skill_type: str) -> di
         },
         "steps": steps,
         "guards": {
-            "risk_level": "none",
+            "risk_level": inferred_risk,
             "required_context": [],
             "forbidden_conditions": [],
             "confidence_threshold": _ROUTER_JUDGE_THRESHOLD,
@@ -3601,6 +3634,12 @@ async def _sanitize_skill_definition(definition: dict[str, Any]) -> dict[str, An
     for key in ("steps", "tests", "editable_fields"):
         if not isinstance(sanitized.get(key), list):
             sanitized[key] = []
+    # Re-infer risk level from actual steps — high-risk tools cannot be silently downgraded.
+    # This ensures the stored risk_level stays accurate even after manual step edits.
+    if _infer_skill_risk_level(sanitized.get("steps") or []) == "high":
+        sanitized["risk_level"] = "high"
+        if isinstance(sanitized.get("guards"), dict):
+            sanitized["guards"]["risk_level"] = "high"
     return sanitized
 
 
@@ -3905,14 +3944,15 @@ async def try_route_and_execute_skill(
         llm_fallback=bool((skill.get("parameter_extractor") or {}).get("llm_fallback", True)),
     )
     if not extraction["complete"]:
+        from cyrene.settings_store import get_write_permission_mode as _get_perm_mode
         run_id = _new_id("skill_run")
         async with _conn() as conn:
             await conn.execute(
                 """
                 INSERT INTO learned_skill_runs
                 (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
-                 fallback_used, user_feedback, dry_run, consistency_score, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'fallback', ?, 1, '', 0, 0, ?)
+                 fallback_used, user_feedback, dry_run, consistency_score, permission_snapshot, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'fallback', ?, 1, '', 0, 0, ?, ?)
                 """,
                 (
                     run_id,
@@ -3922,6 +3962,7 @@ async def try_route_and_execute_skill(
                     float(similarity["total"]),
                     "missing_required",
                     f"missing parameters: {', '.join(extraction['missing_required'])}",
+                    _get_perm_mode(),
                     _now_iso(),
                 ),
             )
@@ -3930,10 +3971,31 @@ async def try_route_and_execute_skill(
         await _maybe_propose_patch(skill["skill_id"], int(skill["version"]), "missing_required_parameters")
         return None
     params = extraction["params"]
+
+    # Require fresh user approval for any skill that contains high-risk steps.
+    # Returning None lets the normal agent loop handle execution with its own
+    # workspace-scope guard and permission prompts.
+    skill_risk = str(skill.get("risk_level") or "none")
+    has_risky_step = any(
+        str((step.get("implementation_reference") or {}).get("tool_name") or "") in _HIGH_RISK_TOOLS
+        for step in skill.get("steps", [])
+        if bool(step.get("enabled", True))
+    )
+    if skill_risk == "high" or has_risky_step:
+        logger.info(
+            "Skill %s contains high-risk steps; falling back to agent for fresh approval.",
+            skill["skill_id"],
+        )
+        await _update_skill_run_stats(skill["skill_id"], execution_status="fallback")
+        return None
+
     await mark_turn_skill_routed(skill["skill_id"])
+    from cyrene.settings_store import get_write_permission_mode as _get_perm_mode
     from cyrene.agent.guidance import _final_user_reply_from_history
     from cyrene.agent.message import _apply_assistant_meta
     from cyrene.tools import _execute_tool
+
+    permission_snapshot = _get_perm_mode()
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": effective_system},
@@ -4017,8 +4079,8 @@ async def try_route_and_execute_skill(
                         """
                         INSERT INTO learned_skill_runs
                         (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
-                         fallback_used, user_feedback, dry_run, consistency_score, created_at)
-                        VALUES (?, ?, ?, ?, ?, 'complete', 'failure', ?, 1, '', 0, 0, ?)
+                         fallback_used, user_feedback, dry_run, consistency_score, permission_snapshot, created_at)
+                        VALUES (?, ?, ?, ?, ?, 'complete', 'failure', ?, 1, '', 0, 0, ?, ?)
                         """,
                         (
                             run_id,
@@ -4027,6 +4089,7 @@ async def try_route_and_execute_skill(
                             current_turn,
                             float(similarity["total"]),
                             failure_reason or f"{tool_name} failed",
+                            permission_snapshot,
                             _now_iso(),
                         ),
                     )
@@ -4047,8 +4110,8 @@ async def try_route_and_execute_skill(
             """
             INSERT INTO learned_skill_runs
             (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
-             fallback_used, user_feedback, dry_run, consistency_score, created_at)
-            VALUES (?, ?, ?, ?, ?, 'complete', 'success', '', 0, '', 0, ?, ?)
+             fallback_used, user_feedback, dry_run, consistency_score, permission_snapshot, created_at)
+            VALUES (?, ?, ?, ?, ?, 'complete', 'success', '', 0, '', 0, ?, ?, ?)
             """,
             (
                 run_id,
@@ -4057,6 +4120,7 @@ async def try_route_and_execute_skill(
                 current_turn,
                 float(similarity["total"]),
                 round(extraction["confidence"], 4),
+                permission_snapshot,
                 _now_iso(),
             ),
         )
@@ -4107,8 +4171,8 @@ async def _validate_shadow_skill_for_turn(skill: dict[str, Any], turn_row: dict[
             """
             INSERT INTO learned_skill_runs
             (run_id, skill_id, version, turn_id, match_score, parameter_status, execution_status, failure_reason,
-             fallback_used, user_feedback, dry_run, consistency_score, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', 1, ?, ?)
+             fallback_used, user_feedback, dry_run, consistency_score, permission_snapshot, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, '', 1, ?, 'workspace_only', ?)
             """,
             (
                 run_id,
