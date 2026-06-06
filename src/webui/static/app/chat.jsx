@@ -468,6 +468,7 @@ function getChatRuntimeSnapshot() {
     retainedMessages: runtime.retainedMessages.slice(),
     liveProgress: runtime.liveProgress.slice(),
     activeRequest: runtime.activeRequest ? { ...runtime.activeRequest } : null,
+    watchRequestId: runtime.watchRequestId || "",
   };
 }
 
@@ -2010,8 +2011,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var lastRendered = renderedMessages[renderedMessages.length - 1];
     if (lastRendered && lastRendered.role === 'user') return;
     if (shouldKeepPinnedRequestAnchored(renderedMessages)) {
-      pinnedMessageRef.current = true;
-      scrollToLatestUserMessage({ smooth: false });
+      if (visibleSending) {
+        pinnedMessageRef.current = true;
+        scrollToLatestUserMessage({ smooth: false });
+      }
       return;
     }
     return scrollChatToBottom(!visibleSending);
