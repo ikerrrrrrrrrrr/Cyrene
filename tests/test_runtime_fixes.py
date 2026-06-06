@@ -632,6 +632,38 @@ def test_normalize_dsml_tool_calls_rejects_unknown_tools():
     assert cll._normalize_dsml_tool_calls(message, [{"type": "function", "function": {"name": "WebSearch"}}]) == message
 
 
+async def test_final_reply_retries_visible_dsml_tool_markup(monkeypatch):
+    from cyrene.agent import guidance
+
+    calls: list[list[dict]] = []
+
+    async def fake_call_llm(messages, tools=None, max_tokens=None):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": (
+                    '<｜｜DSML｜｜tool_calls>\n'
+                    '<｜｜DSML｜｜invoke name="WebSearch">\n'
+                    '<｜｜DSML｜｜parameter name="query" string="true">Hong Kong to Prague direct flight Cathay Pacific 2026</｜｜DSML｜｜parameter>\n'
+                    '</｜｜DSML｜｜invoke>\n'
+                    '</｜｜DSML｜｜tool_calls>'
+                ),
+            }
+        return {"role": "assistant", "content": "目前没有确认的国泰香港到布拉格直飞结果。"}
+
+    monkeypatch.setattr(guidance, "_call_llm", fake_call_llm)
+
+    text = await guidance._final_reply_from_history([
+        {"role": "user", "content": "查香港到布拉格机票"},
+        {"role": "tool", "tool_call_id": "w1", "content": "Search returned no direct-flight result."},
+    ])
+
+    assert text == "目前没有确认的国泰香港到布拉格直飞结果。"
+    assert len(calls) == 2
+    assert "DSML/tool-call markup" in calls[1][-1]["content"]
+
+
 def test_retry_safe_guide_round_id_drops_completed_round_target():
     from webui import routes
 

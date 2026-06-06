@@ -52,6 +52,11 @@ from cyrene.llm import _assistant_text
 
 logger = logging.getLogger(__name__)
 
+_VISIBLE_DSML_TOOL_BLOCK_RE = re.compile(
+    r"<(?:｜｜|\|\|)DSML(?:｜｜|\|\|)tool_calls>.*?</(?:｜｜|\|\|)DSML(?:｜｜|\|\|)tool_calls>",
+    re.DOTALL,
+)
+
 
 # ---------------------------------------------------------------------------
 # Guidance ack / error text
@@ -494,8 +499,7 @@ async def _final_user_reply_from_history(messages: list[dict], max_tokens: int |
             ),
         },
     ]
-    response = await (_call_llm_stream(prompt_messages, max_tokens=max_tokens) if _streaming_reply_requested() else _call_llm(prompt_messages, tools=None, max_tokens=max_tokens))
-    return _assistant_text(response).strip()
+    return await _validated_final_no_tool_reply(prompt_messages, max_tokens=max_tokens)
 
 
 async def _final_plain_reply_from_history(messages: list[dict], max_tokens: int | None = None) -> str:
@@ -510,8 +514,7 @@ async def _final_plain_reply_from_history(messages: list[dict], max_tokens: int 
             ),
         },
     ]
-    response = await (_call_llm_stream(prompt_messages, max_tokens=max_tokens) if _streaming_reply_requested() else _call_llm(prompt_messages, tools=None, max_tokens=max_tokens))
-    return _assistant_text(response).strip()
+    return await _validated_final_no_tool_reply(prompt_messages, max_tokens=max_tokens)
 
 
 def _tool_result_fallback_text(messages: list[dict]) -> str:
@@ -541,8 +544,37 @@ def _tool_result_fallback_text(messages: list[dict]) -> str:
 
 
 async def _final_reply_from_history(messages: list[dict], max_tokens: int | None = None) -> str:
-    response = await (_call_llm_stream(messages, max_tokens=max_tokens) if _streaming_reply_requested() else _call_llm(messages, tools=None, max_tokens=max_tokens))
-    return _assistant_text(response).strip() or "Done."
+    return (await _validated_final_no_tool_reply(messages, max_tokens=max_tokens)) or "Done."
+
+
+def _strip_visible_dsml_tool_blocks(text: str) -> str:
+    return _VISIBLE_DSML_TOOL_BLOCK_RE.sub("", str(text or "")).strip()
+
+
+async def _validated_final_no_tool_reply(messages: list[dict], max_tokens: int | None = None) -> str:
+    """Generate final user-visible text without leaking textual DSML tool markup."""
+    response = await _call_llm(messages, tools=None, max_tokens=max_tokens)
+    text = _assistant_text(response).strip()
+    if not _VISIBLE_DSML_TOOL_BLOCK_RE.search(text):
+        return text
+
+    retry_messages = [
+        *messages,
+        {"role": "assistant", "content": text},
+        {
+            "role": "user",
+            "content": (
+                "Your previous message was DSML/tool-call markup, but tools are not available in this final-answer step. "
+                "Write the final answer to the user in plain text only, using the already gathered context. "
+                "Do not output XML, DSML, JSON tool calls, or any tool-call markup."
+            ),
+        },
+    ]
+    retry_response = await _call_llm(retry_messages, tools=None, max_tokens=max_tokens)
+    retry_text = _assistant_text(retry_response).strip()
+    if _VISIBLE_DSML_TOOL_BLOCK_RE.search(retry_text):
+        return _strip_visible_dsml_tool_blocks(retry_text)
+    return retry_text
 
 
 # ---------------------------------------------------------------------------
