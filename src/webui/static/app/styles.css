@@ -11275,15 +11275,32 @@ html[data-theme="dark"] .welcome-range .active {
   flex-direction: column;
   gap: 12px;
   height: 100%;
+  min-height: 0;
 }
 
 .kb-graph {
-  height: 600px;
+  flex: 1;
+  min-height: 480px;
   border: 1px solid var(--line);
   border-radius: var(--r-m);
   background: var(--bg-2);
   overflow: hidden;
   position: relative;
+}
+
+.vis-tooltip {
+  background: color-mix(in srgb, var(--bg-1) 92%, transparent) !important;
+  border: 1px solid var(--line-2) !important;
+  border-radius: 6px !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28) !important;
+  color: var(--text) !important;
+  font-family: var(--font) !important;
+  font-size: 12px !important;
+  line-height: 1.35 !important;
+  max-width: 300px !important;
+  padding: 7px 9px !important;
+  pointer-events: none !important;
+  white-space: normal !important;
 }
 
 .kb-map-placeholder {

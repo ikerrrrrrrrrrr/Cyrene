@@ -46,6 +46,7 @@ def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
                 target = _UPLOADS_DIR / f"{now}_{index:02d}_{safe_name}"
                 content = await file.read()
                 target.write_bytes(content)
+                content_hash = store.content_hash_bytes(content)
 
                 content_type = str(
                     file.content_type or mimetypes.guess_type(str(target))[0] or "application/octet-stream"
@@ -60,10 +61,14 @@ def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
                     content_type=content_type,
                     kind=kind,
                     size=len(content),
+                    content_hash=content_hash,
                 )
+                if doc.get("path") and str(Path(doc["path"]).resolve()) != str(target.resolve()):
+                    target.unlink(missing_ok=True)
                 documents.append(doc)
 
-                asyncio.create_task(ingest.index_document(db_path, doc["id"]))
+                if doc.get("status") in {"pending", "error"}:
+                    asyncio.create_task(ingest.index_document(db_path, doc["id"]))
             except Exception as e:
                 return JSONResponse({"error": f"Failed to upload {file.filename}: {str(e)}"}, status_code=400)
 
@@ -88,6 +93,7 @@ def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
             content_type = mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream"
             kind = attachment_kind_from_meta(content_type, resolved_path.name)
             size = resolved_path.stat().st_size
+            content_hash = store.content_hash_file(resolved_path)
 
             doc = await store.upsert_document_by_path(
                 db_path,
@@ -97,9 +103,11 @@ def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
                 content_type=content_type,
                 kind=kind,
                 size=size,
+                content_hash=content_hash,
             )
 
-            asyncio.create_task(ingest.index_document(db_path, doc["id"]))
+            if doc.get("status") in {"pending", "error"}:
+                asyncio.create_task(ingest.index_document(db_path, doc["id"]))
             return doc
         except Exception as e:
             return JSONResponse({"error": f"Failed to import: {str(e)}"}, status_code=400)
@@ -220,7 +228,7 @@ def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
             return JSONResponse({"error": f"Search failed: {str(e)}"}, status_code=400)
 
     @router.get("/api/knowledge/graph")
-    async def api_get_graph(include_auto: bool = False):
+    async def api_get_graph(include_auto: bool = True):
         """Get the knowledge graph."""
         try:
             graph = await store.get_graph(db_path, include_auto=include_auto)

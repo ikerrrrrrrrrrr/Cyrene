@@ -188,6 +188,52 @@ class TestUpsertIdempotency:
         all_docs = await store.list_documents(temp_db)
         assert len(all_docs) == 1
 
+    @pytest.mark.asyncio
+    async def test_upsert_deduplicates_same_content_hash(self, temp_db):
+        """Test upsert with identical content hash returns the existing row."""
+        digest = store.content_hash_bytes(b"same document bytes")
+        doc1 = await store.upsert_document_by_path(
+            temp_db,
+            path="/tmp/doc1.md",
+            source="chat_upload",
+            name="doc1.md",
+            content_hash=digest,
+        )
+
+        doc2 = await store.upsert_document_by_path(
+            temp_db,
+            path="/tmp/renamed-doc1.md",
+            source="kb_upload",
+            name="renamed-doc1.md",
+            content_hash=digest,
+        )
+
+        assert doc1["id"] == doc2["id"]
+        assert doc2["path"] == "/tmp/doc1.md"
+        all_docs = await store.list_documents(temp_db)
+        assert len(all_docs) == 1
+
+    @pytest.mark.asyncio
+    async def test_deduplicate_documents_backfills_existing_rows(self, temp_db, tmp_path):
+        """Existing path-only duplicate rows are collapsed by content hash."""
+        file1 = tmp_path / "doc1.txt"
+        file2 = tmp_path / "doc2.txt"
+        file1.write_bytes(b"legacy duplicate bytes")
+        file2.write_bytes(b"legacy duplicate bytes")
+
+        doc1 = await store.create_document(temp_db, name="doc1.txt", path=str(file1))
+        doc2 = await store.create_document(temp_db, name="doc2.txt", path=str(file2))
+        assert doc1["id"] != doc2["id"]
+
+        result = await store.deduplicate_documents(temp_db)
+
+        assert result["updated_hashes"] == 1
+        assert result["removed_duplicates"] == 1
+        all_docs = await store.list_documents(temp_db)
+        assert len(all_docs) == 1
+        assert all_docs[0]["id"] == doc1["id"]
+        assert all_docs[0]["content_hash"] == store.content_hash_file(file1)
+
 
 class TestChunks:
     """Test chunk operations."""

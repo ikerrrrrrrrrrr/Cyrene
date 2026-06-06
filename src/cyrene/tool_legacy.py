@@ -615,6 +615,7 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
             content_type = mimetypes.guess_type(str(doc_file))[0] or "application/octet-stream"
             from cyrene.attachments import attachment_kind_from_meta
             kind = attachment_kind_from_meta(content_type, doc_file.name)
+            content_hash = store.content_hash_file(doc_file)
             doc = await store.upsert_document_by_path(
                 _db_path,
                 path=str(doc_file.resolve()),
@@ -624,8 +625,10 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
                 kind=kind,
                 size=doc_file.stat().st_size if doc_file.exists() else 0,
                 metadata={"sent_to_chat": True},
+                content_hash=content_hash,
             )
-            asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
+            if doc.get("status") in {"pending", "error"}:
+                asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
     except Exception as e:
         logger.debug(f"Failed to register generated file in knowledge base: {e}")
 

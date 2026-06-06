@@ -632,6 +632,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             # Register document in knowledge base
             try:
                 from cyrene.knowledge import store, ingest
+                content_hash = store.content_hash_file(target)
                 doc = await store.upsert_document_by_path(
                     _db_path,
                     path=str(target.resolve()),
@@ -640,8 +641,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                     content_type=content_type,
                     kind=kind,
                     size=file_size,
+                    content_hash=content_hash,
                 )
-                asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
+                if doc.get("path") and str(Path(doc["path"]).resolve()) != str(target.resolve()):
+                    target.unlink(missing_ok=True)
+                if doc.get("status") in {"pending", "error"}:
+                    asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
             except Exception as e:
                 logger.debug(f"Failed to register document in knowledge base: {e}")
 

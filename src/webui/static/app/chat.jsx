@@ -1013,6 +1013,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const userAtBottomRef = useRef(true);
   const initialScrollDoneRef = useRef(false);
   const latestPinnedUserKeyRef = useRef("");
+  const pinnedRequestIdRef = useRef("");
   // When true, scrollChatToBottom is suppressed — used while the latest user
   // message is animating to the top of the viewport.  Cleared by user wheel.
   const pinnedMessageRef = useRef(false);
@@ -1101,7 +1102,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     };
   }
 
-  function scrollToLatestUserMessage() {
+  function scrollToLatestUserMessage(options) {
     var el = scrollRef.current;
     if (!el) return;
     pinnedMessageRef.current = true;
@@ -1119,7 +1120,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         var _forceLayout = el.offsetHeight;
       }
     }
-    if (mountingRef.current) {
+    var smooth = options && options.smooth !== undefined ? Boolean(options.smooth) : !mountingRef.current;
+    if (!smooth) {
       el.scrollTop = desired;
     } else {
       el.scrollTo({ top: desired, behavior: 'smooth' });
@@ -1127,10 +1129,17 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     userAtBottomRef.current = false;
   }
 
+  function pinRenderedUserMessage(msg, options) {
+    latestPinnedUserKeyRef.current = messageKey(msg);
+    pinnedRequestIdRef.current = String(msg && msg.clientRequestId || "");
+    scrollToLatestUserMessage(options);
+  }
+
   function resetEmptyConversationViewport() {
     var el = scrollRef.current;
     pinnedMessageRef.current = false;
     latestPinnedUserKeyRef.current = "";
+    pinnedRequestIdRef.current = "";
     userAtBottomRef.current = false;
     initialScrollDoneRef.current = false;
     if (!el) return;
@@ -1150,16 +1159,13 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (lastRendered && lastRendered.role === 'user') {
       var latestUserKey = messageKey(lastRendered);
       if (latestPinnedUserKeyRef.current === latestUserKey) return;
-      latestPinnedUserKeyRef.current = latestUserKey;
-      scrollToLatestUserMessage();
+      pinRenderedUserMessage(lastRendered);
     }
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length]);
 
   /* Set --scroll-pb before paint and position the viewport in a single layout
      cycle, so the first paint already shows the correct scroll position (no
-     flash of the conversation top before effects kick in).  The timeout releases
-     pinnedMessageRef after mount settles, allowing later corrections if archive
-     loading shifted the layout. */
+     flash of the conversation top before effects kick in). */
   _useLayoutEffect(function () {
     // 1. Sync --scroll-pb so initial height is correct
     var el = scrollRef.current;
@@ -1172,17 +1178,14 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (renderedMessages.length > 0) {
       var lastRendered = renderedMessages[renderedMessages.length - 1];
       if (lastRendered && lastRendered.role === 'user') {
-        scrollToLatestUserMessage();
+        pinRenderedUserMessage(lastRendered, { smooth: false });
       }
     }
     var cleanup = scrollChatToBottom(true);
-    // 3. Release pinnedMessageRef after settling
+    // 3. Leave the user-message pin intact. Later render effects keep the
+    // same request anchored while assistant/status nodes are inserted below it.
     var timer = setTimeout(function () {
       mountingRef.current = false;
-      if (pinnedMessageRef.current) {
-        pinnedMessageRef.current = false;
-        scrollChatToBottom(true);
-      }
     }, 600);
     return function () {
       cleanup();
@@ -1965,6 +1968,33 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     return Boolean(msg && msg.streamingReply && String(msg.body || "").trim());
   });
 
+  function shouldKeepPinnedRequestAnchored(messages) {
+    var pinnedRequestId = String(pinnedRequestIdRef.current || "");
+    if (!pinnedRequestId) return false;
+    var sawPinnedUser = false;
+    var sawSameRequestReply = false;
+    for (var i = 0; i < messages.length; i += 1) {
+      var msg = messages[i];
+      var requestId = String(msg && msg.clientRequestId || "");
+      if (msg && msg.role === "user" && requestId === pinnedRequestId) {
+        sawPinnedUser = true;
+        continue;
+      }
+      if (!sawPinnedUser) continue;
+      if (msg && msg.role === "user" && requestId !== pinnedRequestId) return false;
+      if (requestId === pinnedRequestId && msg && (msg.role === "agent" || msg.role === "system")) {
+        sawSameRequestReply = true;
+      }
+    }
+    return Boolean(
+      sawPinnedUser
+      && (
+        sawSameRequestReply
+        || (visibleSending && String(runtimeState.watchRequestId || "") === pinnedRequestId)
+      )
+    );
+  }
+
   _useLayoutEffect(function () {
     if (!isLiveSession || visibleSending || pendingQuestion || renderedMessages.length !== 0) return;
     resetEmptyConversationViewport();
@@ -1979,14 +2009,19 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     var lastRendered = renderedMessages[renderedMessages.length - 1];
     if (lastRendered && lastRendered.role === 'user') return;
+    if (shouldKeepPinnedRequestAnchored(renderedMessages)) {
+      pinnedMessageRef.current = true;
+      scrollToLatestUserMessage({ smooth: false });
+      return;
+    }
     return scrollChatToBottom(!visibleSending);
   }, [renderedMessageSignature, visibleSending]);
 
-  // Release pinnedMessageRef when the agent finishes replying, and clear the
-  // temporary extra bottom padding (no longer needed once reply content exists).
+  // Keep any extra bottom padding while the user message remains pinned. For
+  // short replies that padding is what allows the sent message to stay at the
+  // top instead of being clamped back down by the scroll container.
   useEffect(function () {
-    if (!visibleSending && pinnedMessageRef.current) {
-      pinnedMessageRef.current = false;
+    if (!visibleSending && !pinnedMessageRef.current) {
       var el = scrollRef.current;
       if (el) el.style.setProperty('--scroll-pb-extra', '0px');
     }
@@ -1999,7 +2034,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     function onWheel(e) {
       // Any user wheel scroll releases the pinned message — the user is
       // taking control, so auto-scrolling can resume.
-      if (pinnedMessageRef.current) pinnedMessageRef.current = false;
+      if (pinnedMessageRef.current) {
+        pinnedMessageRef.current = false;
+        pinnedRequestIdRef.current = "";
+        el.style.setProperty('--scroll-pb-extra', '0px');
+      }
     }
     el.addEventListener('wheel', onWheel, {passive: true});
     return function () { el.removeEventListener('wheel', onWheel); };

@@ -206,6 +206,36 @@ class TestKnowledgeRoutes:
         assert response.status_code in [400, 422]
 
     @pytest.mark.asyncio
+    async def test_upload_duplicate_file_reuses_document(self, client, temp_db, tmp_path, monkeypatch):
+        """Uploading identical bytes twice should return the canonical document."""
+        import webui.routes_knowledge as routes_knowledge
+
+        monkeypatch.setattr(routes_knowledge, "_UPLOADS_DIR", tmp_path)
+
+        payload = b"knowledge base duplicate content"
+        first = client.post(
+            "/api/knowledge/documents",
+            files={"files": ("first.txt", payload, "text/plain")},
+        )
+        second = client.post(
+            "/api/knowledge/documents",
+            files={"files": ("second.txt", payload, "text/plain")},
+        )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        first_doc = first.json()["documents"][0]
+        second_doc = second.json()["documents"][0]
+        assert first_doc["id"] == second_doc["id"]
+
+        from cyrene.knowledge import store
+
+        all_docs = await store.list_documents(temp_db)
+        assert len(all_docs) == 1
+        assert all_docs[0]["content_hash"]
+        assert len(list(tmp_path.iterdir())) == 1
+
+    @pytest.mark.asyncio
     async def test_import_missing_path(self, client):
         """Test importing with missing path."""
         response = client.post("/api/knowledge/import", json={})

@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS kb_documents (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
     path          TEXT NOT NULL,
+    content_hash  TEXT DEFAULT '',
     content_type  TEXT DEFAULT '',
     kind          TEXT DEFAULT 'file',
     size          INTEGER DEFAULT 0,
@@ -223,6 +224,14 @@ async def init_db(db_path: str) -> None:
             await db.execute("ALTER TABLE scheduled_tasks ADD COLUMN permission_mode TEXT DEFAULT 'workspace_only'")
         except Exception:
             pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE kb_documents ADD COLUMN content_hash TEXT DEFAULT ''")
+        except Exception:
+            pass  # Column already exists
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_kb_documents_content_hash "
+            "ON kb_documents(content_hash) WHERE content_hash <> ''"
+        )
         await db.commit()
     await _maybe_backfill_analytics(db_path)
 

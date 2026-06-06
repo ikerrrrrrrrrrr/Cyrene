@@ -529,8 +529,8 @@
 
   // ── Graph API Calls ───────────────────────────────────────────────
 
-  async function fetchGraph(includeAuto) {
-    var qs = new URLSearchParams({ include_auto: includeAuto ? "true" : "false" }).toString();
+  async function fetchGraph() {
+    var qs = new URLSearchParams({ include_auto: "true" }).toString();
     var url = "/api/knowledge/graph?" + qs;
     try {
       var r = await fetch(url);
@@ -598,9 +598,6 @@
     var networkRef = useRefK(null);
     var nodesRef = useRefK(null);
     var edgesRef = useRefK(null);
-    var includeAuto = useStateK(false);
-    var setIncludeAuto = includeAuto[1];
-    var includeAutoVal = includeAuto[0];
     var selectedEdgeId = useStateK(null);
     var setSelectedEdgeId = selectedEdgeId[1];
     var selectedEdgeIdVal = selectedEdgeId[0];
@@ -618,7 +615,12 @@
 
     var getNodeColor = function (kind) {
       var c = kindColors[kind] || kindColors.file;
-      return { background: c.background, border: c.border, highlight: { background: c.background, border: "#ffffff" }, hover: { background: c.background, border: "#ffffff" } };
+      return {
+        background: c.background,
+        border: c.border,
+        highlight: { background: c.background, border: themeAccent },
+        hover: { background: c.background, border: themeAccent }
+      };
     };
 
     // vis-network draws on <canvas> and cannot resolve CSS variables, so read the
@@ -630,18 +632,35 @@
     var themeText = _cssVar("--text", "#e6e6e6");
     var themeAccent = _cssVar("--accent", "#5ec59e");
 
+    var compactGraphLabel = function (label) {
+      var text = String(label || "");
+      return text.length > 26 ? text.slice(0, 23) + "..." : text;
+    };
+
+    var frameGraph = function (network, animated) {
+      if (!network) return;
+      try {
+        network.fit({
+          animation: animated ? { duration: 260, easingFunction: "easeInOutQuad" } : false,
+          maxZoomLevel: 1.12
+        });
+      } catch (e) {}
+    };
+
     // Load graph data into the given DataSets so each request updates the instances
     // bound to vis-network rather than transient component state.
-    var loadGraphInto = function (nodesDS, edgesDS, includeAutoFlag) {
+    var loadGraphInto = function (nodesDS, edgesDS) {
       if (!nodesDS || !edgesDS) return;
-      fetchGraph(includeAutoFlag).then(function (data) {
+      fetchGraph().then(function (data) {
         var nodeData = (data.nodes || []).map(function (n) {
+          var fullLabel = n.label || n.id;
           return {
             id: n.id,
-            label: n.label || n.id,
-            title: n.label || n.id,
+            label: compactGraphLabel(fullLabel),
+            title: fullLabel + "\n" + (n.kind || "file"),
             color: getNodeColor(n.kind),
-            kind: n.kind || "file"
+            kind: n.kind || "file",
+            mass: 1.45
           };
         });
 
@@ -651,8 +670,8 @@
             id: e.id,
             from: e.from,
             to: e.to,
-            label: isAuto ? (e.weight ? e.weight.toFixed(2) : "similar") : (e.relation || "related"),
-            title: e.relation || "related",
+            label: isAuto ? "" : (e.relation || "related"),
+            title: (e.relation || "related") + "\n" + (isAuto ? "auto · " + (e.weight ? e.weight.toFixed(2) : "similar") : "manual"),
             dashes: isAuto ? [6, 4] : false,
             color: { color: isAuto ? "#8aa0c0" : themeAccent, opacity: 0.95 },
             width: isAuto ? 1.5 : 2.5,
@@ -664,6 +683,11 @@
         edgesDS.clear();
         nodesDS.add(nodeData);
         edgesDS.add(edgeData);
+        if (networkRef.current) {
+          networkRef.current.setOptions({ physics: { enabled: true } });
+          networkRef.current.stabilize(Math.min(520, Math.max(180, nodeData.length * 14)));
+          setTimeout(function () { frameGraph(networkRef.current, true); }, 80);
+        }
       });
     };
 
@@ -688,23 +712,27 @@
         physics: {
           enabled: true,
           forceAtlas2Based: {
-            gravitationalConstant: -45,
-            centralGravity: 0.015,
-            springLength: 110,
-            springConstant: 0.12
+            gravitationalConstant: -58,
+            centralGravity: 0.048,
+            springLength: 164,
+            springConstant: 0.044,
+            damping: 0.82,
+            avoidOverlap: 1.75
           },
-          maxVelocity: 50,
+          maxVelocity: 28,
+          minVelocity: 0.25,
           solver: "forceAtlas2Based",
-          timestep: 0.35,
-          stabilization: { iterations: 150 }
+          timestep: 0.32,
+          adaptiveTimestep: false,
+          stabilization: { enabled: true, iterations: 620, updateInterval: 25, fit: true }
         },
         interaction: {
           hover: true,
           navigationButtons: false,
           keyboard: false,
-          zoomView: true,
+          zoomView: false,
           dragView: true,
-          tooltipDelay: 150
+          tooltipDelay: 250
         },
         manipulation: {
           enabled: false,
@@ -731,13 +759,16 @@
           smooth: { type: "continuous" },
           color: { color: "#808a99", highlight: themeAccent, hover: themeAccent },
           width: 1.5,
+          hoverWidth: 0.4,
+          selectionWidth: 1,
           font: { size: 12, color: themeText, strokeWidth: 3, strokeColor: "rgba(0,0,0,0.25)" }
         },
         nodes: {
           shape: "dot",
-          size: 16,
+          size: 13,
           borderWidth: 2,
-          font: { size: 13, color: themeText, face: "inherit" }
+          borderWidthSelected: 3,
+          font: { size: 11, color: themeText, face: "inherit", vadjust: 2 }
         }
       };
 
@@ -746,7 +777,8 @@
 
       // Frame the graph once physics settles (avoids nodes drifting off-canvas)
       network.on("stabilizationIterationsDone", function () {
-        try { network.fit({ animation: false }); } catch (e) {}
+        frameGraph(network, false);
+        try { network.stopSimulation(); } catch (e) {}
       });
 
       // Node click: open the document detail on the right, staying on the map
@@ -801,12 +833,12 @@
       };
     }, []);
 
-    // Reload graph when includeAuto toggles
+    // Load graph once after the vis-network instance is ready. Auto edges are always included.
     useEffectK(function () {
       if (networkRef.current && nodesRef.current && edgesRef.current) {
-        loadGraphInto(nodesRef.current, edgesRef.current, includeAutoVal);
+        loadGraphInto(nodesRef.current, edgesRef.current);
       }
-    }, [includeAutoVal]);
+    }, []);
 
     var handleAddEdgeMode = function () {
       if (!networkRef.current) return;
@@ -838,7 +870,9 @@
 
     var handleRelayout = function () {
       if (!networkRef.current) return;
-      networkRef.current.stabilize();
+      networkRef.current.setOptions({ physics: { enabled: true } });
+      networkRef.current.stabilize(320);
+      setTimeout(function () { frameGraph(networkRef.current, true); }, 120);
     };
 
     var nodeStatusColor = function (status) {
@@ -865,14 +899,6 @@
     return React.createElement("div", { className: "kb-map-tab" },
       // Toolbar
       React.createElement("div", { className: "kb-toolbar" },
-        React.createElement("label", { className: "kb-toolbar-item" },
-          React.createElement("input", {
-            type: "checkbox",
-            checked: includeAutoVal,
-            onChange: function (e) { setIncludeAuto(e.target.checked); }
-          }),
-          " " + t("knowledge.graph.autoEdges")
-        ),
         React.createElement("button", {
           className: "btn",
           onClick: handleAddEdgeMode

@@ -5,6 +5,7 @@ Mirrors the style of cyrene.entities with aiosqlite, JSON serialization, and ISO
 """
 
 import json
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,6 +60,7 @@ def _row_to_document(row: aiosqlite.Row) -> dict:
         "id": row["id"],
         "name": row["name"],
         "path": row["path"],
+        "content_hash": row["content_hash"] if "content_hash" in row.keys() else "",
         "content_type": row["content_type"],
         "kind": row["kind"],
         "size": row["size"],
@@ -108,6 +110,23 @@ def _row_to_relation(row: aiosqlite.Row) -> dict:
     }
 
 
+def content_hash_bytes(content: bytes) -> str:
+    """Return the SHA-256 digest for file bytes."""
+    return hashlib.sha256(content).hexdigest()
+
+
+def content_hash_file(path: str | Path) -> str:
+    """Return the SHA-256 digest for a file, or an empty string if unreadable."""
+    h = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
+
+
 async def create_document(
     db_path: str,
     *,
@@ -120,6 +139,7 @@ async def create_document(
     title: str = "",
     tags: list[str] | None = None,
     metadata: dict | None = None,
+    content_hash: str = "",
 ) -> dict:
     """Create a new document and return it."""
     doc_id = _new_id()
@@ -133,15 +153,16 @@ async def create_document(
         await db.execute(
             """
             INSERT INTO kb_documents (
-                id, name, path, content_type, kind, size, status, source, title,
+                id, name, path, content_hash, content_type, kind, size, status, source, title,
                 tags, char_count, chunk_count, entity_id, error, created_at, updated_at,
                 indexed_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
                 name,
                 path,
+                content_hash,
                 content_type,
                 kind,
                 size,
@@ -171,6 +192,22 @@ async def get_document(db_path: str, doc_id: str) -> dict | None:
     async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute("SELECT * FROM kb_documents WHERE id = ?", (doc_id,))
+        row = await cursor.fetchone()
+        return _row_to_document(row) if row else None
+
+
+async def get_document_by_content_hash(db_path: str, content_hash: str) -> dict | None:
+    """Get the canonical document for a content hash."""
+    digest = str(content_hash or "").strip()
+    if not digest:
+        return None
+
+    async with aiosqlite.connect(db_path, timeout=30) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM kb_documents WHERE content_hash = ? ORDER BY created_at ASC LIMIT 1",
+            (digest,),
+        )
         row = await cursor.fetchone()
         return _row_to_document(row) if row else None
 
@@ -240,6 +277,9 @@ async def update_document(db_path: str, doc_id: str, **fields) -> dict | None:
         elif key == "metadata":
             set_clauses.append("metadata = ?")
             values.append(_serialize_dict(value if isinstance(value, dict) else {}))
+        elif key == "content_hash":
+            set_clauses.append("content_hash = ?")
+            values.append(str(value or ""))
         elif key in (
             "status",
             "title",
@@ -313,6 +353,74 @@ async def delete_document(db_path: str, doc_id: str, *, remove_file: bool = True
     return True
 
 
+async def deduplicate_documents(db_path: str) -> dict:
+    """Backfill content hashes and remove duplicate document records.
+
+    Existing databases may have path-only rows created before content hashing.
+    This keeps the earliest row for each byte-identical file, removes duplicate
+    KB records/chunks/relations, and only deletes duplicate files that live in
+    Cyrene-managed upload/export directories.
+    """
+    from cyrene.attachments import is_uploaded_attachment_path, is_exported_attachment_path
+
+    updated_hashes = 0
+    removed_duplicates = 0
+    removed_files = 0
+
+    async with aiosqlite.connect(db_path, timeout=30) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM kb_documents ORDER BY created_at ASC")
+        rows = await cursor.fetchall()
+
+        canonical_by_hash: dict[str, str] = {}
+        duplicate_rows: list[aiosqlite.Row] = []
+
+        for row in rows:
+            digest = str(row["content_hash"] or "").strip()
+            if not digest:
+                digest = content_hash_file(row["path"])
+            if not digest:
+                continue
+
+            canonical_id = canonical_by_hash.get(digest)
+            if canonical_id and canonical_id != row["id"]:
+                duplicate_rows.append(row)
+                continue
+
+            canonical_by_hash[digest] = row["id"]
+            if row["content_hash"] != digest:
+                await db.execute("UPDATE kb_documents SET content_hash = ?, updated_at = ? WHERE id = ?", (digest, _now(), row["id"]))
+                updated_hashes += 1
+
+        for row in duplicate_rows:
+            doc_id = row["id"]
+            await db.execute("DELETE FROM kb_chunks_fts WHERE document_id = ?", (doc_id,))
+            await db.execute("DELETE FROM kb_chunks WHERE document_id = ?", (doc_id,))
+            await db.execute("DELETE FROM kb_relations WHERE src_id = ? OR dst_id = ?", (doc_id, doc_id))
+            await db.execute("DELETE FROM kb_documents WHERE id = ?", (doc_id,))
+            removed_duplicates += 1
+
+        await db.commit()
+
+    for row in duplicate_rows:
+        path = str(row["path"] or "")
+        if not path or not (is_uploaded_attachment_path(path) or is_exported_attachment_path(path)):
+            continue
+        try:
+            file_path = Path(path)
+            if file_path.exists():
+                file_path.unlink()
+                removed_files += 1
+        except Exception:
+            pass
+
+    return {
+        "updated_hashes": updated_hashes,
+        "removed_duplicates": removed_duplicates,
+        "removed_files": removed_files,
+    }
+
+
 async def upsert_document_by_path(
     db_path: str,
     *,
@@ -320,9 +428,11 @@ async def upsert_document_by_path(
     source: str,
     **fields,
 ) -> dict:
-    """Idempotent upsert by absolute path.
+    """Idempotent upsert by content hash, then absolute path.
 
-    Uses the UNIQUE INDEX idx_kb_documents_path to ensure one row per path.
+    If ``content_hash`` is supplied and already exists, the existing canonical
+    document is returned. Otherwise the UNIQUE INDEX idx_kb_documents_path
+    ensures one row per path.
     Returns the document row (newly created or updated).
     """
     now = _now()
@@ -336,20 +446,35 @@ async def upsert_document_by_path(
     title = fields.get("title", "")
     tags = fields.get("tags")
     metadata = fields.get("metadata")
+    content_hash = str(fields.get("content_hash") or "").strip()
 
     async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
+
+        if content_hash:
+            cursor = await db.execute(
+                "SELECT * FROM kb_documents WHERE content_hash = ? ORDER BY created_at ASC LIMIT 1",
+                (content_hash,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                await db.execute("UPDATE kb_documents SET updated_at = ? WHERE id = ?", (now, row["id"]))
+                await db.commit()
+                cursor = await db.execute("SELECT * FROM kb_documents WHERE id = ?", (row["id"],))
+                row = await cursor.fetchone()
+                return _row_to_document(row) if row else {}
 
         # Try INSERT ON CONFLICT
         await db.execute(
             """
             INSERT INTO kb_documents (
-                id, name, path, content_type, kind, size, status, source, title,
+                id, name, path, content_hash, content_type, kind, size, status, source, title,
                 tags, char_count, chunk_count, entity_id, error, created_at, updated_at,
                 indexed_at, metadata
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 name = excluded.name,
+                content_hash = excluded.content_hash,
                 content_type = excluded.content_type,
                 kind = excluded.kind,
                 size = excluded.size,
@@ -362,6 +487,7 @@ async def upsert_document_by_path(
                 doc_id,
                 name,
                 path,
+                content_hash,
                 content_type,
                 kind,
                 size,
@@ -399,6 +525,7 @@ async def sync_filesystem(db_path: str) -> dict:
     from cyrene.attachments import UPLOADS_DIR, EXPORTS_DIR, attachment_kind_from_meta
     import mimetypes
 
+    dedupe_result = await deduplicate_documents(db_path)
     added = 0
     dirs_to_scan = []
 
@@ -411,9 +538,11 @@ async def sync_filesystem(db_path: str) -> dict:
     async with aiosqlite.connect(db_path, timeout=30) as db:
         db.row_factory = aiosqlite.Row
 
-        # Get all existing paths
-        cursor = await db.execute("SELECT path FROM kb_documents")
-        existing_paths = {row["path"] for row in await cursor.fetchall()}
+        # Get all existing paths and content hashes.
+        cursor = await db.execute("SELECT path, content_hash FROM kb_documents")
+        rows = await cursor.fetchall()
+        existing_paths = {row["path"] for row in rows}
+        existing_hashes = {row["content_hash"] for row in rows if row["content_hash"]}
 
         for source, dir_path in dirs_to_scan:
             for file_path in dir_path.rglob("*"):
@@ -422,6 +551,9 @@ async def sync_filesystem(db_path: str) -> dict:
 
                 abs_path = str(file_path.resolve())
                 if abs_path in existing_paths:
+                    continue
+                content_hash = content_hash_file(file_path)
+                if content_hash and content_hash in existing_hashes:
                     continue
 
                 # New file: register it
@@ -433,15 +565,16 @@ async def sync_filesystem(db_path: str) -> dict:
                 await db.execute(
                     """
                     INSERT INTO kb_documents (
-                        id, name, path, content_type, kind, size, status, source, title,
+                        id, name, path, content_hash, content_type, kind, size, status, source, title,
                         tags, char_count, chunk_count, entity_id, error, created_at, updated_at,
                         indexed_at, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         doc_id,
                         file_path.name,
                         abs_path,
+                        content_hash,
                         content_type,
                         kind,
                         file_path.stat().st_size,
@@ -460,6 +593,7 @@ async def sync_filesystem(db_path: str) -> dict:
                     ),
                 )
                 added += 1
+                existing_hashes.add(content_hash)
 
         await db.commit()
 
@@ -468,7 +602,7 @@ async def sync_filesystem(db_path: str) -> dict:
         total_row = await cursor.fetchone()
         total = total_row["cnt"] if total_row else 0
 
-    return {"added": added, "total": total}
+    return {"added": added, "total": total, **dedupe_result}
 
 
 async def replace_chunks(
