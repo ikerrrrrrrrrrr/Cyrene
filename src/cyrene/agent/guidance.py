@@ -41,6 +41,7 @@ from cyrene.agent.session import (
     _load_session_messages,
     _load_session_state,
     _pending_question_resume_context,
+    _pending_question_is_permission_elevation,
     _restore_pending_question,
     _save_session_messages,
     _schedule_session_label_refresh,
@@ -847,9 +848,9 @@ async def answer_pending_question(
         except Exception:
             await _restore_pending_question(pending)
             raise
-    if isinstance(pending_meta, dict) and str(pending_meta.get("kind", "")).strip() == "write_permission_request":
+    if isinstance(pending_meta, dict) and _pending_question_is_permission_elevation(cleared):
         try:
-            return await _handle_write_permission_answer(
+            return await _handle_permission_elevation_answer(
                 round_id=round_id,
                 pending=cleared,
                 answer_text=content,
@@ -978,33 +979,114 @@ async def _handle_write_permission_answer(
     client_request_id: str,
     context: dict[str, Any],
 ) -> str:
+    return await _handle_permission_elevation_answer(
+        round_id=round_id,
+        pending=pending,
+        answer_text=answer_text,
+        client_request_id=client_request_id,
+        context=context,
+    )
+
+
+def _permission_answer_granted(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in {
+        "拒绝", "保持仅限 workspace", "拒绝，保持 workspace_only", "workspace_only",
+        "cancel", "no", "n", "stop",
+    }:
+        return False
+    return normalized in {
+        "仅这次允许", "allow once", "仅此次", "这次", "once",
+        "始终允许", "always allow", "always", "永久允许", "allow",
+        "允许这次", "允许这次读取", "允许执行", "允许删除", "仅此任务允许 full_access",
+        "同意", "确认", "好", "好的", "可以", "行", "yes", "y", "ok", "okay",
+        "allow_once",
+    }
+
+
+async def _handle_permission_elevation_answer(
+    *,
+    round_id: str,
+    pending: dict[str, Any],
+    answer_text: str,
+    client_request_id: str,
+    context: dict[str, Any],
+) -> str:
     from cyrene.agent.coordinator import _run_chat_agent
     from cyrene.settings_store import set_write_permission_mode
     from cyrene.agent.state import _temporary_full_access
 
     normalized = str(answer_text or "").strip().lower()
-    # "仅这次允许" —— 只在此 round 内有效，round 结束时自动清理
-    if normalized in {"仅这次允许", "allow once", "仅此次", "这次", "once"}:
+    meta = pending.get("meta") if isinstance(pending.get("meta"), dict) else {}
+    permission_kind = str(meta.get("kind", "")).strip()
+    tool_name = str(meta.get("tool_name", "") or "").strip()
+    operation = str(meta.get("operation", "") or "").strip()
+    path_hint = str(meta.get("path_hint", "") or "").strip()
+    reason = str(meta.get("reason", "") or "").strip()
+
+    granted = _permission_answer_granted(answer_text)
+    if permission_kind == "write_permission_request":
+        # "仅这次允许" —— 只在此 round 内有效，round 结束时自动清理
+        if normalized in {"仅这次允许", "allow once", "仅此次", "这次", "once"}:
+            _temporary_full_access.set(True)
+            system = (
+                "The user granted elevated write/delete permission for this round only. "
+                "Retry the blocked action if it is still required."
+            )
+        # "始终允许" —— 全局永久生效
+        elif normalized in {"始终允许", "always allow", "always", "永久允许", "allow"}:
+            set_write_permission_mode("full_access")
+            system = (
+                "The user granted permanent elevated write/delete permission. "
+                "Retry the blocked action if it is still required."
+            )
+        else:
+            set_write_permission_mode("workspace_only")
+            system = (
+                "The user denied elevated write/delete permission. "
+                "Stay within the workspace and choose a safer alternative."
+            )
+    elif permission_kind == "read_elevation":
+        if granted:
+            _temporary_full_access.set(True)
+            system = (
+                "The user granted temporary read access to paths outside the workspace for this round. "
+                "Retry the blocked read action if it is still required."
+            )
+        else:
+            system = (
+                "The user denied read access outside the workspace. "
+                "Do not retry; stay within the workspace and choose a safe alternative."
+            )
+    elif granted:
         _temporary_full_access.set(True)
         system = (
-            "The user granted elevated write/delete permission for this round only. "
-            "Retry the blocked action if it is still required."
-        )
-    # "始终允许" —— 全局永久生效
-    elif normalized in {"始终允许", "always allow", "always", "永久允许", "allow"}:
-        set_write_permission_mode("full_access")
-        system = (
-            "The user granted permanent elevated write/delete permission. "
+            "The user granted the internal permission/confirmation request for this round. "
             "Retry the blocked action if it is still required."
         )
     else:
-        set_write_permission_mode("workspace_only")
         system = (
-            "The user denied elevated write/delete permission. "
-            "Stay within the workspace and choose a safer alternative."
+            "The user denied the internal permission/confirmation request for this round. "
+            "Do not retry the blocked action; stay within the current safety constraints and choose a safer alternative."
         )
+    details = []
+    if permission_kind:
+        details.append(f"Permission kind: {permission_kind}")
+    if tool_name:
+        details.append(f"Tool: {tool_name}")
+    if operation:
+        details.append(f"Operation: {operation}")
+    if path_hint:
+        details.append(f"Target/path hint: {path_hint}")
+    if reason:
+        details.append(f"Reason/request detail: {reason}")
+    if details:
+        system += "\n" + "\n".join(details)
+
     return await _run_chat_agent(
-        str(answer_text or "").strip(),
+        "[Internal permission decision received. Continue the same round using the system instruction above.]",
         None,
         0,
         "",
@@ -1014,6 +1096,6 @@ async def _handle_write_permission_answer(
         persist_base_messages=context.get("persist_base_messages") or [],
         persist_insert_at=context.get("persist_insert_at"),
         client_request_id=client_request_id,
-        persist_user_message=True,
+        persist_user_message=False,
         command=str(context.get("command", "") or "").strip(),
     )

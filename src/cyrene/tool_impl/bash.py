@@ -25,9 +25,11 @@ TOOL_DEF = next(td for td in _legacy.TOOL_DEFS if td["function"]["name"] == TOOL
 
 
 async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.agent.state import _temporary_full_access
     command = str(args["command"])
+    _full_access = _temporary_full_access.get()
     # 命令替换无法提前验证路径，先拦截并询问用户
-    if _is_dangerous_subshell(command):
+    if not _full_access and _is_dangerous_subshell(command):
         return await _request_scope_elevation(
             tool_name="Bash",
             path_hint="",
@@ -41,7 +43,7 @@ async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     except ValueError:
         return await _request_write_elevation(tool_name="Bash", path_hint="", reason=command[:240])
     # 即使是 workspace 内的文件删除操作，也需要用户确认
-    if _command_is_file_deletion(command):
+    if not _full_access and _command_is_file_deletion(command):
         delete_result = await _request_delete_confirmation(tool_name="Bash", command=command)
         status = json.loads(delete_result)
         if str(status.get("status", "")).strip() == "awaiting_user":

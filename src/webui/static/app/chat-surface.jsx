@@ -421,7 +421,6 @@ function ModernConversation({
   pendingQuestion,
   visibleSending,
   hasStreamingReply,
-  hasAssistantReplyBody,
   activeRequestId,
   visibleLiveProgress,
   visibleNotice,
@@ -459,7 +458,7 @@ function ModernConversation({
     return msg && msg.streamingReply && !String(msg.body || "").trim();
   });
   var statusRequestId = String(activeRequestId || "");
-  var statusVisible = Boolean(visibleSending && !hasStreamingReply && !hasAssistantReplyBody);
+  var statusVisible = Boolean(visibleSending && !hasStreamingReply);
   var diffMap = mutationDiffsByRequest && typeof mutationDiffsByRequest === "object" ? mutationDiffsByRequest : {};
   var hasAgentByRequest = {};
   visibleEntries.forEach(function (item) {
@@ -554,7 +553,18 @@ function ModernConversation({
       var shouldRenderForRequest = Boolean(msgRequestId && ((statusVisible && msgRequestId === statusRequestId) || hasRequestDiff));
       var isStatusUser = Boolean(shouldRenderForRequest && msg && msg.role === "user");
       var isStatusAgent = Boolean(shouldRenderForRequest && msg && (msg.role === "agent" || msg.role === "system"));
-      var isIntermediateAgent = Boolean(isStatusAgent && (msg.intermediateReply || (modernMessageHasTools(msg) && !retryData)));
+      var isActivePartialAgent = Boolean(
+        isStatusAgent
+        && visibleSending
+        && msgRequestId
+        && msgRequestId === statusRequestId
+        && String(msg && msg.body || "").trim()
+      );
+      var isIntermediateAgent = Boolean(isStatusAgent && (
+        msg.intermediateReply
+        || isActivePartialAgent
+        || (modernMessageHasTools(msg) && !retryData)
+      ));
       var msgRoundId = String(msg && msg.roundId || "");
       var showMapAction = Boolean(
         retryData
@@ -735,11 +745,12 @@ function ModernAttachments({ attachments, onShowHtml, onShowPdf, onShowPpt, onSh
         var isImage = contentType.startsWith("image/");
         var isPdf = contentType === "application/pdf";
         var isPpt = contentType === "application/vnd.ms-powerpoint" || contentType === "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        var isDocx = contentType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || contentType === "application/msword";
         var isHtml = contentType === "text/html" || contentType === "application/xhtml+xml";
         var isMap = file.kind === "map" || contentType === "application/geo+json" || contentType === "application/vnd.geo+json";
         var ext = String(file.name || "").split(".").pop().toLowerCase();
         var isMarkdown = file.kind === "markdown" || ext === "md" || ext === "markdown";
-        var isCode = !isMarkdown && (file.kind === "code" || (_SIDEBAR_CODE_EXTS.has(ext) && !isImage && !isPdf && !isPpt && !isHtml && !isMap));
+        var isCode = !isMarkdown && (file.kind === "code" || (_SIDEBAR_CODE_EXTS.has(ext) && !isImage && !isPdf && !isPpt && !isDocx && !isHtml && !isMap));
         var label = String(file.name || "file");
         if (isImage && file.url) {
           return (
@@ -753,6 +764,9 @@ function ModernAttachments({ attachments, onShowHtml, onShowPdf, onShowPpt, onSh
         }
         if (isPpt && file.url) {
           return <button type="button" className="modern-attachment action" key={file.id || label + "_" + index} onClick={function () { onShowPpt && onShowPpt(file.url, file.name); }}>{t("chat.ppt.showBtn")}</button>;
+        }
+        if (isDocx && file.url) {
+          return <button type="button" className="modern-attachment action" key={file.id || label + "_" + index} onClick={function () { onShowPpt && onShowPpt(file.url, file.name); }}>{t("chat.docx.showBtn")}</button>;
         }
         if (isHtml && file.url) {
           return <button type="button" className="modern-attachment action" key={file.id || label + "_" + index} onClick={function () { fetch(file.url).then(function (r) { return r.text(); }).then(function (html) { onShowHtml && onShowHtml(html); }).catch(function () {}); }}>{t("chat.html.showBtn")}</button>;

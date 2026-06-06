@@ -122,20 +122,22 @@ async def _tool_git_commit(args: dict, bot=None, chat_id=None, db_path=None, not
         return json.dumps({"error": "Commit message is required"}, ensure_ascii=False)
 
     from cyrene.tools import _request_scope_elevation
+    from cyrene.agent.state import _temporary_full_access
 
-    # Ask user for confirmation
-    files_hint = ", ".join(files) if files else "all changes"
-    elevation_result = await _request_scope_elevation(
-        tool_name="GitCommit",
-        path_hint=files_hint,
-        operation=f"commit: {message}",
-        reason=f"Commit {files_hint} with message: {message}",
-        permission_kind="git_commit",
-        options=["allow_once"],
-    )
-    status = json.loads(elevation_result)
-    if str(status.get("status", "")).strip() == "awaiting_user":
-        return elevation_result
+    # Ask user for confirmation (skip if already granted this round)
+    if not _temporary_full_access.get():
+        files_hint = ", ".join(files) if files else "all changes"
+        elevation_result = await _request_scope_elevation(
+            tool_name="GitCommit",
+            path_hint=files_hint,
+            operation=f"commit: {message}",
+            reason=f"Commit {files_hint} with message: {message}",
+            permission_kind="git_commit",
+            options=["allow_once"],
+        )
+        status = json.loads(elevation_result)
+        if str(status.get("status", "")).strip() == "awaiting_user":
+            return elevation_result
 
     # Stage files first (if specific files given, add only those)
     if files:

@@ -595,6 +595,7 @@ function classifyAttachmentTab(file) {
   if (ct.startsWith("image/")) return null;
   if (ct === "application/pdf") return "pdf";
   if (ct === "application/vnd.ms-powerpoint" || ct === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return "ppt";
+  if (ct === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || ct === "application/msword") return "ppt";
   if (ct === "text/html" || ct === "application/xhtml+xml") return "html";
   if (file.kind === "map" || ct === "application/geo+json" || ct === "application/vnd.geo+json") return "map";
   if (file.kind === "markdown" || ext === "md" || ext === "markdown") return "markdown";
@@ -1365,6 +1366,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
 
   useEffect(function () {
     if (!isLiveSession) return;
+    if (session.status === "running") return;
     const requestId = runtimeState.watchRequestId;
     if (!requestId) return;
     const hasAssistantReply = (session.chat.messages || []).some(function (msg) {
@@ -1376,7 +1378,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     });
     if (!hasAssistantReply) return;
     completeWatchedRequest(requestId);
-  }, [isLiveSession, session.id, session.chat.messages, runtimeState.watchRequestId]);
+  }, [isLiveSession, session.id, session.status, session.chat.messages, runtimeState.watchRequestId]);
 
   useEffect(function () {
     if (!isLiveSession || session.status === "running") return;
@@ -1530,22 +1532,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           streamCompleted = true;
           if (isWatching) {
             upsertStreamingAgentMessage(requestId, "", true);
-            delete runtime.requests[requestId];
-            const frozenFinalTrace = snapshotRuntimeTrace(getChatRuntime(), {
-              attachToAssistantReplyForRequestId: requestId,
-            });
-            updateChatRuntime({
-              sending: false,
-              liveProgress: [],
-              startedAt: 0,
-              activeRequest: null,
-              watchRequestId: "",
-              retainedMessages: frozenFinalTrace
-                ? getChatRuntime().retainedMessages.concat([frozenFinalTrace])
-                : getChatRuntime().retainedMessages.slice(),
-            });
-            clearChatRuntimeSseSubscription();
           }
+          return;
         }
         if (event.type === "error") {
           // The agent run failed (model timeout/5xx/network). Surface it as a
@@ -1628,6 +1616,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     const selectedOption = String(options && options.selectedOption || "");
     const text = String(options && options.text || questionDraft || "").trim() || selectedOption;
     if (!text) return;
+    const hideAnswerInChat = Boolean(pendingQuestion && pendingQuestion.hideAnswerInChat);
 
     setNotice("");
     setAnsweringQuestion(true);
@@ -1638,7 +1627,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     const controller = new AbortController();
     runtime.requests[requestId] = {
       id: requestId,
-      message: text,
+      message: hideAnswerInChat ? "" : text,
       controller,
       questionId: pendingQuestion.id,
     };
@@ -1656,11 +1645,11 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     updateChatRuntime({
       sending: true,
       startedAt: Date.now(),
-      pendingMessages: [userMsg],
+      pendingMessages: hideAnswerInChat ? [] : [userMsg],
       liveProgress: [],
       activeRequest: {
         id: requestId,
-        message: text,
+        message: hideAnswerInChat ? "" : text,
         guideRoundId: "",
         guideRoundTitle: "",
         guideRequestId: "",
@@ -1716,22 +1705,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           streamCompleted = true;
           if (isWatching) {
             upsertStreamingAgentMessage(requestId, "", true);
-            delete runtime.requests[requestId];
-            const frozenFinalTrace = snapshotRuntimeTrace(getChatRuntime(), {
-              attachToAssistantReplyForRequestId: requestId,
-            });
-            updateChatRuntime({
-              sending: false,
-              liveProgress: [],
-              startedAt: 0,
-              activeRequest: null,
-              watchRequestId: "",
-              retainedMessages: frozenFinalTrace
-                ? getChatRuntime().retainedMessages.concat([frozenFinalTrace])
-                : getChatRuntime().retainedMessages.slice(),
-            });
-            clearChatRuntimeSseSubscription();
           }
+          return;
         }
         if (event.type === "error") {
           // The agent run failed (model timeout/5xx/network). Surface it as a
@@ -1988,13 +1963,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   }).join("|");
   const hasStreamingReply = renderedMessages.some(function (msg) {
     return Boolean(msg && msg.streamingReply && String(msg.body || "").trim());
-  });
-  const hasAssistantReplyBody = renderedMessages.some(function (msg) {
-    return Boolean(
-      msg
-      && isFinalVisibleAssistantReply(msg)
-      && String(msg.clientRequestId || "") === String(runtimeState.watchRequestId || "")
-    );
   });
 
   _useLayoutEffect(function () {
@@ -2265,7 +2233,6 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           pendingQuestion={pendingQuestion}
           visibleSending={visibleSending}
           hasStreamingReply={hasStreamingReply}
-          hasAssistantReplyBody={hasAssistantReplyBody}
           activeRequestId={String(runtimeState.watchRequestId || (mutationDiff.signature ? String(mutationDiff.signature).split(":")[0] : "") || "")}
           visibleLiveProgress={visibleLiveProgress}
           visibleNotice={visibleNotice}
@@ -2669,10 +2636,15 @@ function HtmlViewPanel({ htmlContent, tab, onTabChange }) {
 function PdfViewPanel({ pdfUrl, pdfName }) {
   const { t } = useI18n();
   const [objectUrl, setObjectUrl] = useState(null);
+  const [scale, setScale] = useState(1);
   var urlRef = useRef(null);
+  var scrollRef = useRef(null);
+  var overlayRef = useRef(null);
+  var touchRef = useRef({});
 
   useEffect(function () {
     setObjectUrl(null);
+    setScale(1);
     if (urlRef.current) { URL.revokeObjectURL(urlRef.current); urlRef.current = null; }
     if (!pdfUrl) return;
     var cancelled = false;
@@ -2685,9 +2657,75 @@ function PdfViewPanel({ pdfUrl, pdfName }) {
     return function () { cancelled = true; };
   }, [pdfUrl]);
 
+  // Ctrl+Scroll zoom on desktop; also catches synthetic wheel events from trackpad pinch
+  useEffect(function () {
+    var el = scrollRef.current;
+    if (!el) return;
+    function onWheel(e) {
+      if (!e.ctrlKey && e.deltaMode !== 0) return;
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      var factor = e.deltaY > 0 ? 0.9 : 1.1;
+      setScale(function (prev) { return Math.max(0.3, Math.min(5, prev * factor)); });
+    }
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return function () { el.removeEventListener("wheel", onWheel); };
+  });
+
+  // Touch gesture overlay: single-finger → manual scroll, two-finger → pinch zoom
+  useEffect(function () {
+    var overlay = overlayRef.current;
+    var scrollEl = scrollRef.current;
+    if (!overlay || !scrollEl) return;
+
+    function dist(t) {
+      return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    }
+
+    function onTouchStart(e) {
+      if (e.touches.length === 1) {
+        touchRef.current = {
+          type: "scroll",
+          x: e.touches[0].clientX,
+          y: e.touches[0].clientY,
+          sl: scrollEl.scrollLeft,
+          st: scrollEl.scrollTop,
+        };
+      } else if (e.touches.length === 2) {
+        touchRef.current = { type: "pinch", d0: dist(e.touches), s0: scale };
+      }
+    }
+
+    function onTouchMove(e) {
+      e.preventDefault();
+      var t = touchRef.current;
+      if (!t) return;
+      if (t.type === "scroll" && e.touches.length === 1) {
+        scrollEl.scrollLeft = t.sl - (e.touches[0].clientX - t.x);
+        scrollEl.scrollTop = t.st - (e.touches[0].clientY - t.y);
+      } else if (t.type === "pinch" && e.touches.length === 2) {
+        var ratio = dist(e.touches) / t.d0;
+        setScale(Math.max(0.3, Math.min(5, t.s0 * ratio)));
+      }
+    }
+
+    function onTouchEnd() { touchRef.current = {}; }
+
+    overlay.addEventListener("touchstart", onTouchStart, { passive: true });
+    overlay.addEventListener("touchmove", onTouchMove, { passive: false });
+    overlay.addEventListener("touchend", onTouchEnd, { passive: true });
+    return function () {
+      overlay.removeEventListener("touchstart", onTouchStart);
+      overlay.removeEventListener("touchmove", onTouchMove);
+      overlay.removeEventListener("touchend", onTouchEnd);
+    };
+  });
+
   if (!pdfUrl) {
     return <div className="side-section" style={{ borderBottom: 0, padding: 24, color: "var(--text-3)", fontSize: 12 }}>{t("chat.pdf.noContent")}</div>;
   }
+
+  var pct = Math.round(scale * 100);
 
   return (
     <div className="html-view-container">
@@ -2696,8 +2734,20 @@ function PdfViewPanel({ pdfUrl, pdfName }) {
           {pdfName}
         </div>
       )}
+      {/* Zoom controls */}
+      <div className="pdf-zoom-bar">
+        <button className="pdf-zoom-btn" onClick={function () { setScale(function (s) { return Math.max(0.3, s - 0.25); }); }} title="Zoom out">−</button>
+        <span className="pdf-zoom-label" onClick={function () { setScale(1); }} title="Reset zoom">{pct}%</span>
+        <button className="pdf-zoom-btn" onClick={function () { setScale(function (s) { return Math.min(5, s + 0.25); }); }} title="Zoom in">+</button>
+      </div>
       {objectUrl ? (
-        <embed className="pdf-view-iframe" src={objectUrl} type="application/pdf" title={pdfName || "PDF"} />
+        <div ref={scrollRef} style={{ flex: 1, overflow: "auto", position: "relative" }}>
+          <div style={{ width: scale >= 1 ? (scale * 100) + "%" : "100%", height: scale >= 1 ? (scale * 100) + "%" : "100%", minWidth: scale >= 1 ? (scale * 100) + "%" : "100%", minHeight: scale >= 1 ? (scale * 100) + "%" : "100%" }}>
+            <embed className="pdf-view-iframe" src={objectUrl} type="application/pdf" title={pdfName || "PDF"} style={{ transform: scale < 1 ? "scale(" + scale + ")" : "none", transformOrigin: "top left", width: "100%", height: "100%" }} />
+          </div>
+          {/* Transparent touch capture overlay */}
+          <div ref={overlayRef} style={{ position: "absolute", inset: 0, zIndex: 10, touchAction: "none" }} />
+        </div>
       ) : (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)", fontSize: 12 }}>
           {t("chat.pdf.noContent")}

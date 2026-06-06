@@ -786,6 +786,10 @@ def _normalize_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
     meta = payload.get("meta")
     if isinstance(meta, dict) and meta:
         question["meta"] = dict(meta)
+    if bool(payload.get("hidden_from_chat")):
+        question["hidden_from_chat"] = True
+    if bool(payload.get("hide_answer_in_chat")):
+        question["hide_answer_in_chat"] = True
     return question
 
 
@@ -795,11 +799,39 @@ _PERMISSION_ELEVATION_KINDS: frozenset[str] = frozenset({
     "read_elevation",
     "subshell_elevation",
     "delete_confirmation",
+    "task_permission_request",
+    "git_commit",
 })
+
+
+def _pending_question_is_permission_elevation(payload: dict[str, Any]) -> bool:
+    meta = payload.get("meta")
+    return isinstance(meta, dict) and str(meta.get("kind", "")).strip() in _PERMISSION_ELEVATION_KINDS
 
 
 async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
     question = _normalize_pending_question(payload)
+    is_permission_elevation = _pending_question_is_permission_elevation(payload)
+    if is_permission_elevation:
+        question["hidden_from_chat"] = True
+        question["hide_answer_in_chat"] = True
+        async with _session_state_lock:
+            state = _load_session_state()
+            saved_epoch = state.get("_session_epoch")
+            if saved_epoch is not None and saved_epoch != _state._session_epoch:
+                logger.warning("Stale _upsert_pending_question skipped (session was reset)")
+                return question
+            state["pending_question"] = question
+            _write_session_state(state)
+
+        await _publish_runtime_event({
+            "type": "user_question",
+            "question_id": question["id"],
+            "client_request_id": question.get("client_request_id", ""),
+            "round_id": question.get("round_id", ""),
+        })
+        return question
+
     assistant_entry: dict[str, Any] = {
         "role": "assistant",
         "content": question["text"],
@@ -813,10 +845,6 @@ async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
         assistant_entry["round_title"] = question["round_title"]
     if question["options"]:
         assistant_entry["question_options"] = list(question["options"])
-    meta = payload.get("meta")
-    if isinstance(meta, dict) and str(meta.get("kind", "")).strip() in _PERMISSION_ELEVATION_KINDS:
-        assistant_entry["hidden_from_llm"] = True
-
     _ensure_message_identity([assistant_entry])
     question["message_id"] = assistant_entry["message_id"]
 

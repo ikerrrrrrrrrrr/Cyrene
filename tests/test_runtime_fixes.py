@@ -1532,6 +1532,48 @@ async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):
     assert any(event.get("type") == "user_question" and event.get("question_id") == pending["id"] for event in seen)
 
 
+async def test_permission_pending_question_does_not_persist_chat_message(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene import debug
+
+    seen = []
+
+    async def fake_publish_event(event):
+        seen.append(event)
+
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(debug, "publish_event", fake_publish_event)
+
+    agent.STATE_FILE.write_text(json.dumps({
+        "messages": [
+            {"role": "user", "content": "写到外部路径", "round_id": "round_1", "message_id": "u1"},
+        ]
+    }, ensure_ascii=False), encoding="utf-8")
+
+    question = await agent._upsert_pending_question({
+        "text": "申请写入 workspace 外部路径",
+        "round_id": "round_1",
+        "client_request_id": "req_perm_1",
+        "options": ["仅这次允许", "保持仅限 workspace"],
+        "meta": {
+            "kind": "write_permission_request",
+            "tool_name": "Write",
+            "path_hint": "/tmp/outside.txt",
+            "operation": "写入/删除操作",
+        },
+    })
+
+    state = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))
+
+    assert [msg["content"] for msg in state["messages"]] == ["写到外部路径"]
+    assert state["pending_question"]["id"] == question["id"]
+    assert state["pending_question"]["hidden_from_chat"] is True
+    assert state["pending_question"]["hide_answer_in_chat"] is True
+    assert "message_id" not in state["pending_question"]
+    assert any(event.get("type") == "user_question" and event.get("question_id") == question["id"] for event in seen)
+
+
 async def test_ask_user_wait_state_does_not_persist_assistant_trace(monkeypatch, tmp_path):
     from cyrene import agent
     from cyrene.agent import state as _agent_state
@@ -1680,6 +1722,100 @@ async def test_answer_pending_question_resumes_same_round(monkeypatch, tmp_path)
     assert seen["client_request_id"] == "req_answer_1"
     assert seen["persist_user_message"] is True
     assert seen["command"] == "deep-research"
+
+
+async def test_answer_permission_question_is_hidden_from_context(monkeypatch, tmp_path):
+    from cyrene import agent
+    from cyrene.agent import coordinator as _agent_coordinator
+    from cyrene.agent.state import _temporary_full_access
+
+    seen = {}
+
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    agent.STATE_FILE.write_text(json.dumps({
+        "messages": [
+            {"role": "user", "content": "写到外部路径", "round_id": "round_1", "message_id": "u1"},
+            {"role": "user", "content": "别的轮次", "round_id": "round_2", "message_id": "u2"},
+        ],
+        "pending_question": {
+            "id": "question_perm_1",
+            "text": "申请写入 workspace 外部路径",
+            "round_id": "round_1",
+            "client_request_id": "req_perm_1",
+            "allow_custom": True,
+            "options": [{"id": "option_1", "label": "仅这次允许"}, {"id": "option_2", "label": "保持仅限 workspace"}],
+            "asked_at": "2026-05-19T03:00:00+00:00",
+            "hidden_from_chat": True,
+            "hide_answer_in_chat": True,
+            "meta": {
+                "kind": "write_permission_request",
+                "tool_name": "Write",
+                "path_hint": "/tmp/outside.txt",
+                "operation": "写入/删除操作",
+                "reason": "需要写测试文件",
+            },
+        },
+    }, ensure_ascii=False), encoding="utf-8")
+
+    async def fake_run_chat_agent(
+        user_message,
+        bot,
+        chat_id,
+        db_path,
+        ephemeral_system="",
+        forced_round_id="",
+        history_override=None,
+        persist_base_messages=None,
+        persist_insert_at=None,
+        client_request_id="",
+        persist_user_message=True,
+        public_prompt=None,
+        refresh_labels=True,
+        hide_initial_detail=False,
+        assistant_message_meta=None,
+        lang="",
+        command="",
+    ):
+        seen["user_message"] = user_message
+        seen["ephemeral_system"] = ephemeral_system
+        seen["forced_round_id"] = forced_round_id
+        seen["history_override"] = history_override
+        seen["persist_base_messages"] = persist_base_messages
+        seen["persist_insert_at"] = persist_insert_at
+        seen["client_request_id"] = client_request_id
+        seen["persist_user_message"] = persist_user_message
+        return "继续完成后的最终答案"
+
+    monkeypatch.setattr(_agent_coordinator, "_run_chat_agent", fake_run_chat_agent)
+
+    try:
+        result = await agent.answer_pending_question(
+            "question_perm_1",
+            "仅这次允许",
+            None,
+            0,
+            "db.sqlite3",
+            client_request_id="req_answer_perm_1",
+        )
+    finally:
+        _temporary_full_access.set(False)
+
+    state = json.loads(agent.STATE_FILE.read_text(encoding="utf-8"))
+
+    assert result == "继续完成后的最终答案"
+    assert "pending_question" not in state
+    assert seen["user_message"] == "[Internal permission decision received. Continue the same round using the system instruction above.]"
+    assert "仅这次允许" not in seen["user_message"]
+    assert "granted elevated write/delete permission" in seen["ephemeral_system"]
+    assert "Permission kind: write_permission_request" in seen["ephemeral_system"]
+    assert "Tool: Write" in seen["ephemeral_system"]
+    assert seen["forced_round_id"] == "round_1"
+    assert [msg["content"] for msg in seen["history_override"]] == ["写到外部路径"]
+    assert [msg["content"] for msg in seen["persist_base_messages"]] == ["写到外部路径", "别的轮次"]
+    assert seen["persist_insert_at"] == 2
+    assert seen["client_request_id"] == "req_answer_perm_1"
+    assert seen["persist_user_message"] is False
 
 
 def test_build_current_session_exposes_pending_question(monkeypatch, tmp_path):

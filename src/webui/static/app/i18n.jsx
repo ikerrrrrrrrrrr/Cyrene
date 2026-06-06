@@ -579,6 +579,9 @@ const TRANSLATIONS = {
     "chat.ppt.sideTitle": "PPT",
     "chat.ppt.noContent": "No PPT selected",
 
+    // ── DOCX Sidebar ─────────────────────────────────────────────────────
+    "chat.docx.showBtn": "View DOCX",
+
     // ── Map Attachment ────────────────────────────────────────────────────
     "chat.map.showBtn": "Show Map",
 
@@ -1781,6 +1784,9 @@ const TRANSLATIONS = {
     "chat.ppt.showBtn": "查看 PPT",
     "chat.ppt.sideTitle": "PPT",
     "chat.ppt.noContent": "暂无 PPT",
+
+    // ── DOCX 侧栏 ────────────────────────────────────────────────────────
+    "chat.docx.showBtn": "查看 DOCX",
 
     // ── 地图附件 ─────────────────────────────────────────────────────────
     "chat.map.showBtn": "显示地图",

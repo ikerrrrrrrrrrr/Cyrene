@@ -40,7 +40,7 @@ from cyrene.attachments import (
     run_vision_chat,
 )
 from cyrene.config import _strip_wrapping_quotes
-from cyrene.agent.state import _conversation_source
+from cyrene.agent.state import _conversation_source, _attachment_paths_by_name
 from cyrene.agent import (
     _AWAITING_USER_SENTINEL,
     _append_session_message,
@@ -711,6 +711,24 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "empty message"}, status_code=400)
         all_images = bool(normalized_attachments) and all(str(item.get("kind") or "") == "image" for item in normalized_attachments)
         message_with_attachments = (message or "[Attachment upload]") + _attachment_prompt_block(normalized_attachments)
+
+        # Populate attachment path map so tool read guards auto-allow uploaded files
+        # without requiring a permission prompt, even when the agent derives a wrong
+        # path (e.g. /tmp/filename instead of the webui_uploads path).
+        if normalized_attachments:
+            att_map: dict[str, str] = {}
+            for item in normalized_attachments:
+                full_path = str(item.get("path") or "").strip()
+                if not full_path:
+                    continue
+                from pathlib import Path as _Path
+                uuid_name = _Path(full_path).name
+                att_map[uuid_name] = full_path
+                # Strip uuid prefix (format: "<hex>_<original>") to also match by original name
+                parts = uuid_name.split("_", 1)
+                if len(parts) == 2:
+                    att_map[parts[1]] = full_path
+            _attachment_paths_by_name.set(att_map)
 
         reset_lottery()
         if mentions and message:
@@ -2904,6 +2922,7 @@ def _ui_pending_question(raw_pending: Any) -> dict[str, Any] | None:
         "roundTitle": str(raw_pending.get("round_title", "")).strip(),
         "clientRequestId": str(raw_pending.get("client_request_id", "")).strip(),
         "allowCustom": bool(raw_pending.get("allow_custom", True)),
+        "hideAnswerInChat": bool(raw_pending.get("hide_answer_in_chat")),
         "options": options_out,
     }
 

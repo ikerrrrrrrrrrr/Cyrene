@@ -26,9 +26,11 @@ async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
     from cyrene.agent.state import _current_round_id
 
     cwd = str(_resolve_workspace_path(str(args.get("cwd", ".") or ".")))
+    from cyrene.agent.state import _temporary_full_access
     command = str(args.get("command", "") or "")
+    _full_access = _temporary_full_access.get()
     if command:
-        if _is_dangerous_subshell(command):
+        if not _full_access and _is_dangerous_subshell(command):
             return await _request_scope_elevation(
                 tool_name="StartShell",
                 path_hint="",
@@ -41,7 +43,7 @@ async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
             _guard_shell_command_workspace_write(command)
         except ValueError:
             return await _request_write_elevation(tool_name="StartShell", path_hint=cwd, reason=command[:240])
-        if _command_is_file_deletion(command):
+        if not _full_access and _command_is_file_deletion(command):
             delete_result = await _request_delete_confirmation(tool_name="StartShell", command=command)
             status = json.loads(delete_result)
             if str(status.get("status", "")).strip() == "awaiting_user":

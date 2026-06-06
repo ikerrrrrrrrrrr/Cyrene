@@ -463,6 +463,19 @@ def _json_result(payload: Any) -> str:
 def _resolve_tool_path(path_str: str) -> Path:
     if is_uploaded_attachment_path(path_str) or is_exported_attachment_path(path_str):
         return Path(path_str).resolve()
+    # Auto-resolve filename to the correct upload path when the agent guesses wrong paths.
+    from cyrene.agent.state import _attachment_paths_by_name, _temporary_full_access
+    from cyrene.settings_store import get_write_permission_mode
+    att_map = _attachment_paths_by_name.get()
+    if att_map:
+        basename = Path(path_str).name
+        if basename in att_map:
+            return Path(att_map[basename]).resolve()
+    # Honour temporary full-access grants (write-once, read-always) and permanent mode.
+    if _temporary_full_access.get() or get_write_permission_mode() == "full_access":
+        candidate = Path(path_str)
+        path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
+        return path.resolve()
     return _resolve_workspace_path(path_str)
 
 
