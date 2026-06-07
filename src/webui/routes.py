@@ -104,6 +104,7 @@ _CHAT_ID = -1
 _STATIC_DIR = Path(__file__).parent / "static"
 _APP_DIR = _STATIC_DIR / "app"
 _UPLOADS_DIR = DATA_DIR / "webui_uploads"
+_WORKBENCH_STORE = DATA_DIR / "workbench_projects.json"
 _SERVER_STARTED_AT = time.time()
 
 
@@ -180,6 +181,233 @@ def _get_current_model_ctx_limit() -> int:
             ctx_limit = 1_000_000
 
     return ctx_limit
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _short_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex[:10]}"
+
+
+def _workbench_default_project() -> dict[str, Any]:
+    now = _utc_now_iso()
+    project_id = _short_id("project")
+    workspace_name = WORKSPACE_DIR.name or "Workspace"
+    initial_session = _workbench_new_session(project_id, "新任务", "通过对话明确当前任务目标。", now)
+    return {
+        "projects": [
+            {
+                "id": project_id,
+                "name": workspace_name,
+                "workspacePath": str(WORKSPACE_DIR),
+                "status": "active",
+                "model": _get_model(),
+                "accountTier": "Pro",
+                "context": {
+                    "summary": f"Workspace at {WORKSPACE_DIR}",
+                    "stack": [],
+                    "decisions": [],
+                    "knowledgeDocumentIds": [],
+                },
+                "createdAt": now,
+                "updatedAt": now,
+                "sessions": [initial_session],
+                "sharedArtifacts": [],
+            }
+        ],
+        "activeProjectId": project_id,
+        "activeSessionId": initial_session["id"],
+    }
+
+
+def _workbench_new_session(project_id: str, title: str, goal: str = "", now: str | None = None) -> dict[str, Any]:
+    now = now or _utc_now_iso()
+    session_id = _short_id("session")
+    return {
+        "id": session_id,
+        "projectId": project_id,
+        "title": str(title or "新任务").strip()[:80] or "新任务",
+        "goal": str(goal or "").strip(),
+        "constraints": [],
+        "status": "idle",
+        "priority": "medium",
+        "createdAt": now,
+        "updatedAt": now,
+        "agentReply": "",
+        "plan": [],
+        "events": [],
+        "runs": [],
+        "artifacts": [],
+        "acceptanceCriteria": [],
+        "summary": None,
+    }
+
+
+def _read_workbench_store() -> dict[str, Any]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not _WORKBENCH_STORE.exists():
+        payload = _workbench_default_project()
+        _write_workbench_store(payload)
+        return payload
+    try:
+        raw = json.loads(_WORKBENCH_STORE.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("projects"), list):
+            if not raw["projects"]:
+                payload = _workbench_default_project()
+                _write_workbench_store(payload)
+                return payload
+            _workbench_ensure_invariants(raw)
+            return raw
+    except Exception:
+        logger.exception("Failed to read workbench store")
+    payload = _workbench_default_project()
+    _write_workbench_store(payload)
+    return payload
+
+
+def _write_workbench_store(payload: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = _WORKBENCH_STORE.with_suffix(".json.tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(_WORKBENCH_STORE)
+
+
+def _workbench_ensure_invariants(payload: dict[str, Any]) -> None:
+    changed = False
+    projects = payload.setdefault("projects", [])
+    now = _utc_now_iso()
+    for project in projects:
+        project.setdefault("id", _short_id("project"))
+        project.setdefault("name", "Workspace")
+        project.setdefault("workspacePath", str(WORKSPACE_DIR))
+        project.setdefault("status", "active")
+        project.setdefault("model", _get_model())
+        project.setdefault("accountTier", "Pro")
+        project.setdefault("context", {"summary": "", "stack": [], "decisions": [], "knowledgeDocumentIds": []})
+        project.setdefault("createdAt", now)
+        project.setdefault("updatedAt", now)
+        sessions = project.setdefault("sessions", [])
+        if not sessions:
+            sessions.append(_workbench_new_session(project["id"], "新任务", "通过对话明确当前任务目标。", now))
+            changed = True
+        for session in sessions:
+            session.setdefault("projectId", project["id"])
+            session.setdefault("status", "idle")
+            session.setdefault("priority", "medium")
+            session.setdefault("createdAt", now)
+            session.setdefault("updatedAt", now)
+            session.setdefault("agentReply", "")
+            session.setdefault("plan", [])
+            session.setdefault("events", [])
+            session.setdefault("runs", [])
+            session.setdefault("artifacts", [])
+            session.setdefault("acceptanceCriteria", [])
+            session.setdefault("summary", None)
+    if projects and not payload.get("activeProjectId"):
+        payload["activeProjectId"] = projects[0].get("id")
+        changed = True
+    if projects and not payload.get("activeSessionId"):
+        first_sessions = projects[0].get("sessions") or []
+        payload["activeSessionId"] = first_sessions[0].get("id") if first_sessions else ""
+        changed = True
+    if changed:
+        _write_workbench_store(payload)
+
+
+def _workbench_find_project(payload: dict[str, Any], project_id: str) -> dict[str, Any] | None:
+    for project in payload.get("projects", []):
+        if str(project.get("id") or "") == project_id:
+            return project
+    return None
+
+
+def _workbench_find_session(payload: dict[str, Any], session_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    for project in payload.get("projects", []):
+        for session in project.get("sessions", []):
+            if str(session.get("id") or "") == session_id:
+                return project, session
+    return None, None
+
+
+def _workbench_extract_constraints(text: str) -> list[str]:
+    source = str(text or "")
+    constraints: list[str] = []
+    patterns = [
+        r"不[^\n，。；;,.]{1,32}",
+        r"只[^\n，。；;,.]{1,32}",
+        r"保留[^\n，。；;,.]{1,32}",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, source):
+            item = match.strip()
+            if item and item not in constraints:
+                constraints.append(item)
+    return constraints[:6]
+
+
+def _workbench_plan_from_input(user_input: str, session: dict[str, Any]) -> list[dict[str, Any]]:
+    now = _utc_now_iso()
+    existing = session.get("plan") if isinstance(session.get("plan"), list) else []
+    if existing:
+        return existing
+    base_steps = [
+        "理解目标与约束",
+        "读取项目上下文",
+        "分析相关文件结构",
+        "设计执行方案",
+        "实施或生成变更",
+        "验证结果并总结",
+    ]
+    return [
+        {
+            "id": _short_id("step"),
+            "taskId": session.get("id", ""),
+            "title": title,
+            "description": "由任务初始化自动生成。",
+            "status": "pending" if index else "completed",
+            "order": index + 1,
+            "currentAction": "已完成初始理解。" if index == 0 else "",
+            "relatedFiles": [],
+            "progressEvents": [
+                {"time": now, "text": "创建初始任务步骤。"}
+            ] if index == 0 else [],
+            "toolCalls": [],
+            "artifacts": [],
+            "error": None,
+        }
+        for index, title in enumerate(base_steps)
+    ]
+
+
+def _workbench_acceptance_from_session(session: dict[str, Any]) -> list[dict[str, Any]]:
+    existing = session.get("acceptanceCriteria")
+    if isinstance(existing, list) and existing:
+        return existing
+    constraints = session.get("constraints") if isinstance(session.get("constraints"), list) else []
+    items = [str(item) for item in constraints if str(item).strip()]
+    if not items:
+        items = ["任务目标已明确", "计划已生成", "相关变更可追踪", "最终总结已生成"]
+    return [
+        {"id": _short_id("accept"), "text": item, "status": "pending"}
+        for item in items[:8]
+    ]
+
+
+def _workbench_agent_reply(user_input: str, session: dict[str, Any], constraints: list[str]) -> str:
+    goal = session.get("goal") or user_input
+    lines = [
+        "我理解你的需求：",
+        str(goal or "先明确当前任务目标。").strip(),
+    ]
+    if constraints:
+        lines.append("我会遵守这些约束：" + "；".join(constraints))
+    lines.extend([
+        "我会先生成任务结构，再把执行过程拆成可展开的步骤。",
+        "下一步会围绕当前 Project 上下文推进，并把文件变更、日志、产物和验收标准放到右侧面板。",
+    ])
+    return "\n".join(lines)
 
 
 def _remove_path(path: Path) -> None:
@@ -2572,6 +2800,219 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         _save_servers(servers)
         await _restart_mcp()
         return {"ok": True}
+
+    # ---- Workbench projects / task sessions ----
+
+    @router.get("/api/projects")
+    async def api_workbench_projects():
+        return _read_workbench_store()
+
+    @router.post("/api/projects")
+    async def api_workbench_create_project(request: Request):
+        body = await request.json()
+        payload = _read_workbench_store()
+        now = _utc_now_iso()
+        workspace_path = str(body.get("workspacePath") or body.get("workspace_path") or WORKSPACE_DIR)
+        name = str(body.get("name") or Path(workspace_path).name or "New Project").strip()
+        project_id = _short_id("project")
+        initial_session = _workbench_new_session(
+            project_id,
+            str(body.get("taskTitle") or body.get("task_title") or "新任务").strip() or "新任务",
+            str(body.get("goal") or "通过对话明确当前任务目标。").strip(),
+            now,
+        )
+        project = {
+            "id": project_id,
+            "name": name,
+            "workspacePath": workspace_path,
+            "status": "active",
+            "model": _get_model(),
+            "accountTier": str(body.get("accountTier") or "Pro"),
+            "context": {
+                "summary": str(body.get("summary") or f"Workspace at {workspace_path}"),
+                "stack": body.get("stack") if isinstance(body.get("stack"), list) else [],
+                "decisions": [],
+                "knowledgeDocumentIds": [],
+            },
+            "createdAt": now,
+            "updatedAt": now,
+            "sessions": [initial_session],
+            "sharedArtifacts": [],
+        }
+        payload.setdefault("projects", []).insert(0, project)
+        payload["activeProjectId"] = project_id
+        payload["activeSessionId"] = initial_session["id"]
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": initial_session, **payload}
+
+    @router.patch("/api/projects/{project_id}")
+    async def api_workbench_update_project(project_id: str, request: Request):
+        body = await request.json()
+        payload = _read_workbench_store()
+        project = _workbench_find_project(payload, project_id)
+        if not project:
+            return JSONResponse({"error": "project not found"}, status_code=404)
+        for field in ("name", "workspacePath", "status", "model", "accountTier"):
+            if field in body:
+                project[field] = body[field]
+        if isinstance(body.get("context"), dict):
+            project["context"] = {**(project.get("context") or {}), **body["context"]}
+        project["updatedAt"] = _utc_now_iso()
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, **payload}
+
+    @router.delete("/api/projects/{project_id}")
+    async def api_workbench_delete_project(project_id: str):
+        payload = _read_workbench_store()
+        projects = payload.get("projects", [])
+        next_projects = [project for project in projects if str(project.get("id") or "") != project_id]
+        if len(next_projects) == len(projects):
+            return JSONResponse({"error": "project not found"}, status_code=404)
+        payload["projects"] = next_projects
+        if not next_projects:
+            payload = _workbench_default_project()
+        else:
+            payload["activeProjectId"] = next_projects[0].get("id")
+            sessions = next_projects[0].get("sessions") or []
+            payload["activeSessionId"] = sessions[0].get("id") if sessions else ""
+        _write_workbench_store(payload)
+        return {"ok": True, **payload}
+
+    @router.get("/api/projects/{project_id}/sessions")
+    async def api_workbench_project_sessions(project_id: str):
+        payload = _read_workbench_store()
+        project = _workbench_find_project(payload, project_id)
+        if not project:
+            return JSONResponse({"error": "project not found"}, status_code=404)
+        return {"sessions": project.get("sessions", [])}
+
+    @router.post("/api/projects/{project_id}/sessions")
+    async def api_workbench_create_session(project_id: str, request: Request):
+        body = await request.json()
+        payload = _read_workbench_store()
+        project = _workbench_find_project(payload, project_id)
+        if not project:
+            return JSONResponse({"error": "project not found"}, status_code=404)
+        title = str(body.get("title") or body.get("goal") or "新任务").strip() or "新任务"
+        session = _workbench_new_session(project_id, title, str(body.get("goal") or "").strip())
+        project.setdefault("sessions", []).insert(0, session)
+        project["updatedAt"] = session["createdAt"]
+        payload["activeProjectId"] = project_id
+        payload["activeSessionId"] = session["id"]
+        _write_workbench_store(payload)
+        return {"ok": True, "session": session, **payload}
+
+    @router.get("/api/task-sessions/{session_id}")
+    async def api_workbench_get_session(session_id: str):
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        return {"project": project, "session": session}
+
+    @router.patch("/api/task-sessions/{session_id}")
+    async def api_workbench_update_session(session_id: str, request: Request):
+        body = await request.json()
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        for field in ("title", "goal", "status", "priority", "agentReply", "summary"):
+            if field in body:
+                session[field] = body[field]
+        for field in ("constraints", "plan", "events", "runs", "artifacts", "acceptanceCriteria"):
+            if isinstance(body.get(field), list):
+                session[field] = body[field]
+        now = _utc_now_iso()
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/runs")
+    async def api_workbench_create_run(session_id: str, request: Request):
+        body = await request.json()
+        user_input = str(body.get("input") or body.get("message") or "").strip()
+        if not user_input:
+            return JSONResponse({"error": "input is required"}, status_code=400)
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+
+        now = _utc_now_iso()
+        constraints = _workbench_extract_constraints(user_input)
+        merged_constraints = list(session.get("constraints") or [])
+        for item in constraints:
+            if item not in merged_constraints:
+                merged_constraints.append(item)
+        if not session.get("goal") or session.get("status") == "idle":
+            session["goal"] = user_input
+        session["constraints"] = merged_constraints
+        session["plan"] = _workbench_plan_from_input(user_input, session)
+        session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
+        agent_reply = _workbench_agent_reply(user_input, session, constraints)
+        session["agentReply"] = agent_reply
+        session["status"] = "planning" if session.get("status") in ("idle", "pending") else session.get("status", "planning")
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+
+        run_id = _short_id("run")
+        events = [
+            {"id": _short_id("event"), "type": "UserMessageEvent", "runId": run_id, "createdAt": now, "body": user_input},
+            {"id": _short_id("event"), "type": "AgentResponseEvent", "runId": run_id, "createdAt": now, "body": agent_reply},
+            {"id": _short_id("event"), "type": "PlanUpdatedEvent", "runId": run_id, "createdAt": now, "stepCount": len(session.get("plan") or [])},
+        ]
+        run = {
+            "id": run_id,
+            "taskId": session_id,
+            "userInput": user_input,
+            "agentResponse": agent_reply,
+            "status": "completed",
+            "startedAt": now,
+            "endedAt": now,
+            "contextPackId": _short_id("ctx"),
+            "events": events,
+            "fileChanges": [],
+            "toolCalls": [],
+            "artifacts": [],
+            "error": None,
+        }
+        session.setdefault("runs", []).append(run)
+        session.setdefault("events", []).extend(events)
+        if not session.get("artifacts"):
+            session["artifacts"] = [
+                {
+                    "id": _short_id("artifact"),
+                    "type": "task_brief",
+                    "name": "task-brief.md",
+                    "status": "draft",
+                    "createdAt": now,
+                    "summary": "任务目标、约束、计划和验收标准的结构化记录。",
+                }
+            ]
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, "run": run, **payload}
+
+    @router.get("/api/task-sessions/{session_id}/events")
+    async def api_workbench_session_events(session_id: str):
+        payload = _read_workbench_store()
+        _project, session = _workbench_find_session(payload, session_id)
+        if not session:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        return {"events": session.get("events", [])}
+
+    @router.get("/api/task-sessions/{session_id}/artifacts")
+    async def api_workbench_session_artifacts(session_id: str):
+        payload = _read_workbench_store()
+        _project, session = _workbench_find_session(payload, session_id)
+        if not session:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        return {"artifacts": session.get("artifacts", [])}
 
     # ---- Scheduled tasks ----
 

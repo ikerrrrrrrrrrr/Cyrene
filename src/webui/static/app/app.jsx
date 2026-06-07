@@ -287,7 +287,7 @@ function SetupWizard({ theme, onToggleTheme }) {
   );
 }
 
-function App() {
+function LegacyAppShell() {
   useDataVersion();
   const { lang } = useI18n();
   const [page, setPage] = useStateApp(readStoredUiPage);
@@ -728,6 +728,27 @@ function SkillsRail({ onOpenPage }) {
       </div>
     </div>
   );
+}
+
+function readUiShellMode() {
+  try { return localStorage.getItem("cyrene-ui-shell") || "workbench"; } catch(e) { return "workbench"; }
+}
+
+function App() {
+  useDataVersion();
+  const [shellMode, setShellMode] = useStateApp(readUiShellMode);
+  const needsOnboarding = !!(DATA.onboarding && DATA.onboarding.needsOnboarding);
+
+  function openLegacy() {
+    try { localStorage.setItem("cyrene-ui-shell", "legacy"); } catch(e) {}
+    setShellMode("legacy");
+  }
+
+  if (needsOnboarding || shellMode === "legacy" || typeof window.WorkbenchApp === "undefined") {
+    return <LegacyAppShell />;
+  }
+
+  return <window.WorkbenchApp onOpenLegacy={openLegacy} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
