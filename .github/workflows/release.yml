@@ -39,6 +39,9 @@ jobs:
       - name: Install Electron deps
         run: cd electron && npm install
 
+      - name: Build WebUI JS
+        run: cd src/webui && npm install && node build-jsx.mjs
+
       - name: Verify critical imports
         run: python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; print('imports-ok')"
 
@@ -88,6 +91,9 @@ jobs:
 
       - name: Install Electron deps
         run: cd electron && npm install
+
+      - name: Build WebUI JS
+        run: cd src/webui && npm install && node build-jsx.mjs
 
       - name: Apply Windows compatibility patches
         shell: python
@@ -211,6 +217,9 @@ jobs:
 
       - name: Install Electron deps
         run: cd electron && npm install
+
+      - name: Build WebUI JS
+        run: cd src/webui && npm install && node build-jsx.mjs
 
       - name: Verify build environment imports
         run: |
