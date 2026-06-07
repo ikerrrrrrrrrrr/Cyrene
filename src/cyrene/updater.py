@@ -58,7 +58,7 @@ async def check_for_update() -> UpdateInfo:
     url = f"{_GITHUB_API}/latest"
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=15.0, trust_env=False, follow_redirects=True) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
                 logger.debug("GitHub API returned %d", resp.status_code)
