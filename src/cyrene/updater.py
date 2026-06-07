@@ -20,7 +20,7 @@ from cyrene.version import get_version
 logger = logging.getLogger(__name__)
 
 # GitHub 仓库配置
-_DEFAULT_REPO = "ikerrrrrrrrrrr/Cyrene"
+_DEFAULT_REPO = "Yongchu-Yitao/Cyrene"
 _UPDATE_REPO = os.environ.get("UPDATE_REPO", _DEFAULT_REPO)
 _GITHUB_API = f"https://api.github.com/repos/{_UPDATE_REPO}/releases"
 
