@@ -1015,6 +1015,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const initialScrollDoneRef = useRef(false);
   const latestPinnedUserKeyRef = useRef("");
   const pinnedRequestIdRef = useRef("");
+  const pinnedScrollRestoreTimerRef = useRef(null);
   // When true, scrollChatToBottom is suppressed — used while the latest user
   // message is animating to the top of the viewport.  Cleared by user wheel.
   const pinnedMessageRef = useRef(false);
@@ -1063,6 +1064,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     refreshMutationDiffForPaths(paths, signature, runtimeState.watchRequestId);
   }, [isLiveSession, visibleSending, visibleLiveProgress, runtimeState.watchRequestId, session.id, mutationDiff.signature, mutationDiffsByRequest]);
 
+  useEffect(function () {
+    return function () {
+      if (pinnedScrollRestoreTimerRef.current) {
+        window.clearTimeout(pinnedScrollRestoreTimerRef.current);
+        pinnedScrollRestoreTimerRef.current = null;
+      }
+    };
+  }, []);
+
   function isNearBottom(el, threshold) {
     if (!el) return true;
     // When content is too short to overflow, the user cannot be "at the
@@ -1103,6 +1113,23 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     };
   }
 
+  function runWithInstantScroll(el, fn) {
+    if (!el) return;
+    if (pinnedScrollRestoreTimerRef.current) {
+      window.clearTimeout(pinnedScrollRestoreTimerRef.current);
+      pinnedScrollRestoreTimerRef.current = null;
+    }
+    var previousBehavior = el.style.scrollBehavior;
+    el.style.scrollBehavior = "auto";
+    fn();
+    pinnedScrollRestoreTimerRef.current = window.setTimeout(function () {
+      if (scrollRef.current === el) {
+        el.style.scrollBehavior = previousBehavior;
+      }
+      pinnedScrollRestoreTimerRef.current = null;
+    }, 0);
+  }
+
   function scrollToLatestUserMessage(options) {
     var el = scrollRef.current;
     if (!el) return;
@@ -1123,7 +1150,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     var smooth = options && options.smooth !== undefined ? Boolean(options.smooth) : !mountingRef.current;
     if (!smooth) {
-      el.scrollTop = desired;
+      runWithInstantScroll(el, function () {
+        el.scrollTop = desired;
+      });
     } else {
       el.scrollTo({ top: desired, behavior: 'smooth' });
     }
@@ -1160,7 +1189,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     if (lastRendered && lastRendered.role === 'user') {
       var latestUserKey = messageKey(lastRendered);
       if (latestPinnedUserKeyRef.current === latestUserKey) return;
-      pinRenderedUserMessage(lastRendered);
+      var latestRequestId = String(lastRendered.clientRequestId || "");
+      var samePinnedRequest = latestRequestId && latestRequestId === pinnedRequestIdRef.current;
+      pinRenderedUserMessage(lastRendered, samePinnedRequest ? { smooth: false } : undefined);
     }
   }, [session.id, session.chat.messages.length, retainedMessages.length, visiblePendingMessages.length]);
 
@@ -2019,6 +2050,12 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     }
     return scrollChatToBottom(!visibleSending);
   }, [renderedMessageSignature, visibleSending]);
+
+  _useLayoutEffect(function () {
+    if (!isLiveSession || !visibleSending || !pinnedMessageRef.current) return;
+    if (visibleLiveProgress.length === 0) return;
+    scrollToLatestUserMessage({ smooth: false });
+  }, [isLiveSession, visibleSending, visibleLiveProgress.length, runtimeState.watchRequestId]);
 
   // Keep any extra bottom padding while the user message remains pinned. For
   // short replies that padding is what allows the sent message to stay at the
