@@ -1,7 +1,29 @@
 const { app, BrowserWindow, dialog, ipcMain, Notification, session, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { spawn } = require('child_process');
+
+// Log file for Python backend output — written to os.tmpdir() so it survives
+// app crashes and is easy to find even without a terminal window.
+// On Windows with console=False the process has no console; writing from the
+// Node side ensures the log is populated on every platform.
+const ERROR_LOG_PATH = path.join(os.tmpdir(), 'cyrene_error.log');
+let _errorLogStream = null;
+
+function getErrorLogStream() {
+  if (!_errorLogStream) {
+    try {
+      _errorLogStream = fs.createWriteStream(ERROR_LOG_PATH, { flags: 'a' });
+    } catch (_) {}
+  }
+  return _errorLogStream;
+}
+
+function appendErrorLog(text) {
+  const s = getErrorLogStream();
+  if (s) s.write(text);
+}
 
 // Desktop-local auth token. Generated once at module load and shared with the
 // Python backend via env (CYRENE_AUTH_TOKEN). Injected as the X-Cyrene-Token
@@ -152,10 +174,13 @@ function spawnPython() {
     }
     // Log any other stdout for debugging
     process.stdout.write(`[cyrene] ${text}`);
+    appendErrorLog(text);
   });
 
   pythonProcess.stderr.on('data', (data) => {
-    process.stderr.write(`[cyrene] ${data.toString()}`);
+    const text = data.toString();
+    process.stderr.write(`[cyrene] ${text}`);
+    appendErrorLog(text);
   });
 
   pythonProcess.on('error', (err) => {
@@ -189,14 +214,15 @@ function spawnPython() {
       // code 0.  Don't scare the user with a crash dialog.
       app.quit();
     } else {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        // Window still open — Python crashed.  Show error and quit.
-        dialog.showErrorBox(
-          'Cyrene - Backend Error',
-          `The Python backend stopped unexpectedly (exit code ${code}).\n`
-          + 'The application will now close.'
-        );
-      }
+      // Show error regardless of window state — if Python crashed before
+      // printing PORT= the window doesn't exist yet and the user would see
+      // a silent flash-quit without this unconditional dialog.
+      dialog.showErrorBox(
+        'Cyrene - Backend Error',
+        `The Python backend stopped unexpectedly (exit code ${code}).\n`
+        + 'The application will now close.\n\n'
+        + `If this keeps happening, check cyrene_error.log in ${os.tmpdir()}`
+      );
       app.quit();
     }
   });
