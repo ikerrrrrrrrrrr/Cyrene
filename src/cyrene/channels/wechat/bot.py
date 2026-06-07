@@ -56,12 +56,13 @@ class WeChatUpdater:
                     sender = msg.get("from_user_id", "")
                     ctx_token = msg.get("context_token", "")
                     text = _extract_text(msg)
+                    file_items = _extract_file_items(msg)
 
-                    if text:
+                    if text or file_items:
                         self._client._config.context_tokens[sender] = ctx_token
                         # Log task errors so they don't get silently swallowed
                         task = asyncio.create_task(
-                            _handle_message(text, sender, self._client, self._db_path)
+                            _handle_message(text, sender, self._client, self._db_path, file_items=file_items)
                         )
                         task.add_done_callback(lambda t: t.exception() and logger.error("WeChat message handler error", exc_info=t.exception()))
 
@@ -84,6 +85,14 @@ def _extract_text(msg: dict) -> str:
     return ""
 
 
+def _extract_file_items(msg: dict) -> list[dict]:
+    """Return any image (type 2) or file (type 4) items from item_list."""
+    return [
+        item for item in msg.get("item_list", [])
+        if item.get("type") in (2, 4)
+    ]
+
+
 def _format_pending_question_wechat(question: dict) -> str:
     """Format a pending question as a WeChat text message."""
     text = str(question.get("text", "")).strip()
@@ -103,12 +112,19 @@ def _format_pending_question_wechat(question: dict) -> str:
     return "\n".join(lines)
 
 
-async def _handle_message(text: str, sender: str, client: WeChatClient, db_path: str) -> None:
-    """Process a single incoming text message.
+async def _handle_message(
+    text: str,
+    sender: str,
+    client: WeChatClient,
+    db_path: str,
+    *,
+    file_items: list[dict] | None = None,
+) -> None:
+    """Process a single incoming message (text, image, or file).
 
     1. Auto-register the first sender as the owner.
     2. Ignore non-owner messages (single-user mode).
-    3. Show typing indicator, run the agent loop, send the reply.
+    3. Download any attached files, augment the message, run the agent.
     """
     from cyrene.agent import (
         _AWAITING_USER_SENTINEL,
@@ -143,12 +159,54 @@ async def _handle_message(text: str, sender: str, client: WeChatClient, db_path:
 
     _conversation_source.set("wechat")
 
+    # Download any attached files and build the attachment context block
+    normalized_attachments: list[dict] = []
+    if file_items:
+        import mimetypes
+        from cyrene.attachments import UPLOADS_DIR, attachment_kind_from_meta, build_public_attachment_payload
+        for item in file_items:
+            result = await client.download_incoming_item(item, UPLOADS_DIR)
+            if result:
+                local_path, filename = result
+                content_type = mimetypes.guess_type(str(local_path))[0] or "application/octet-stream"
+                kind = attachment_kind_from_meta(content_type, filename)
+                att = {
+                    "id": local_path.name,
+                    "name": filename,
+                    "path": str(local_path),
+                    "content_type": content_type,
+                    "kind": kind,
+                    "size": local_path.stat().st_size,
+                }
+                normalized_attachments.append(att)
+
+    original_text = text
+    if normalized_attachments:
+        if not text:
+            text = "[Attachment upload]"
+        att_lines = [
+            "",
+            "[Uploaded attachments]",
+            "The user uploaded the following files into the local workspace-accessible runtime data directory.",
+            "Before answering anything about these files, you MUST inspect the relevant attachment with AnalyzeAttachment.",
+            "Do not answer from the filename, extension, or metadata alone.",
+            "After AnalyzeAttachment returns extracted content, use that extracted content to answer the user.",
+        ]
+        for att in normalized_attachments:
+            att_lines.append(f'- {att["name"]} ({att["content_type"]}): {att["path"]}')
+        text = text + "\n".join(att_lines)
+
+    public_attachments = (
+        [build_public_attachment_payload(att) for att in normalized_attachments]
+        if normalized_attachments else None
+    )
+
     # If there is a pending question, route this message as the answer
     pending = get_pending_question()
     if pending and str(pending.get("id", "")).strip():
         question_id = str(pending["id"]).strip()
         options = pending.get("options") or []
-        answer_text = text.strip()
+        answer_text = original_text.strip()
         # Map numeric replies to option labels
         if options and answer_text.isdigit():
             idx = int(answer_text) - 1
@@ -163,7 +221,11 @@ async def _handle_message(text: str, sender: str, client: WeChatClient, db_path:
             logger.warning("answer_pending_question failed: %s", exc)
             response = f"处理回答时出错：{exc}"
     else:
-        response = await run_agent(text, client, sender, db_path)
+        response = await run_agent(
+            text, client, sender, db_path,
+            public_user_message=original_text if normalized_attachments else None,
+            public_attachments=public_attachments,
+        )
 
     # If the agent is now waiting for user input, send the question
     if response == _AWAITING_USER_SENTINEL:
@@ -175,7 +237,7 @@ async def _handle_message(text: str, sender: str, client: WeChatClient, db_path:
 
     labels = get_session_labels()
     await archive_exchange(
-        text,
+        original_text,
         response,
         sender,
         session_title=labels.get("session_title", ""),
