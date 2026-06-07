@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.12+-blue" alt="Python">
-  <img src="https://img.shields.io/badge/version-0.5.0-blue" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.5.1-blue" alt="Version">
   <img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License">
   <img src="https://img.shields.io/badge/status-alpha-yellow" alt="Status">
 </p>
@@ -49,7 +49,7 @@ It runs as a local daemon with a Web UI (and optional Telegram/WeChat bot), conn
 
 ---
 
-## Limitations (current as of v0.5.0)
+## Limitations (current as of v0.5.1)
 
 - **Single-user** — one workspace, one SOUL.md, no user isolation
 - **Local-only Web UI** — binds to `127.0.0.1`; desktop app uses OS keyring auth, raw web server has no auth layer

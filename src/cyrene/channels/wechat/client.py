@@ -42,6 +42,42 @@ def aes_128_ecb_encrypt(data: bytes, key: bytes) -> bytes:
     return encryptor.update(padded) + encryptor.finalize()
 
 
+def aes_128_ecb_decrypt(data: bytes, key: bytes) -> bytes:
+    """AES-128-ECB decrypt *data* and strip PKCS7 padding."""
+    cipher = Cipher(algorithms.AES(key), modes.ECB())
+    decryptor = cipher.decryptor()
+    plaintext = decryptor.update(data) + decryptor.finalize()
+    pad_len = plaintext[-1] if plaintext else 0
+    if 1 <= pad_len <= 16:
+        return plaintext[:-pad_len]
+    return plaintext
+
+
+def _resolve_aes_key(aeskey_hex: str, aeskey_b64: str) -> bytes | None:
+    """Try to resolve an AES-128 key (16 raw bytes) from hex or base64 forms."""
+    if aeskey_hex:
+        try:
+            k = bytes.fromhex(aeskey_hex)
+            if len(k) == 16:
+                return k
+        except ValueError:
+            pass
+    if aeskey_b64:
+        try:
+            decoded = base64.b64decode(aeskey_b64)
+            if len(decoded) == 16:
+                return decoded
+            # Some clients encode the hex string itself as base64
+            if len(decoded) == 32:
+                try:
+                    return bytes.fromhex(decoded.decode("ascii"))
+                except Exception:
+                    return decoded[:16]
+        except Exception:
+            pass
+    return None
+
+
 # ── Config ──────────────────────────────────────────────────────────────────
 
 
@@ -83,7 +119,7 @@ class WeChatClient:
     # ── Internal helpers ────────────────────────────────────────────────
 
     def _base_info(self) -> dict:
-        return {"channel_version": "0.5.0", "bot_agent": "Cyrene/0.5.0"}
+        return {"channel_version": "0.5.1", "bot_agent": "Cyrene/0.5.1"}
 
     def _build_headers(self) -> dict[str, str]:
         uint32 = secrets.randbits(32)
@@ -327,6 +363,80 @@ class WeChatClient:
             return result.get("msgs", [])
         except httpx.TimeoutException:
             return []
+
+    # ── Incoming file download ───────────────────────────────────────────
+
+    async def download_incoming_item(self, item: dict, dest_dir: Path) -> tuple[Path, str] | None:
+        """Download and decrypt an incoming image (type 2) or file (type 4) item.
+
+        Returns (local_path, original_filename) on success, None on failure.
+        The downloaded bytes are decrypted when a key is available; if no key
+        can be resolved the raw CDN bytes are stored instead.
+        """
+        import mimetypes
+
+        item_type = item.get("type")
+
+        if item_type == 2:  # IMAGE
+            sub = item.get("image_item", {})
+            media = sub.get("media", {})
+            url = (sub.get("url") or media.get("full_url") or "").strip()
+            aeskey_hex = str(sub.get("aeskey") or "").strip()
+            aeskey_b64 = str(media.get("aes_key") or "").strip()
+            filename = str(sub.get("file_name") or "").strip() or "image.jpg"
+        elif item_type == 4:  # FILE
+            sub = item.get("file_item", {})
+            media = sub.get("media", {})
+            url = (media.get("full_url") or sub.get("url") or "").strip()
+            aeskey_hex = ""
+            aeskey_b64 = str(media.get("aes_key") or "").strip()
+            filename = str(sub.get("file_name") or "").strip() or "file.bin"
+        else:
+            return None
+
+        if not url:
+            logger.warning(
+                "WeChat incoming item type=%s has no CDN URL; item keys=%s",
+                item_type, list(item.keys()),
+            )
+            return None
+
+        try:
+            timeout = httpx.Timeout(60.0, connect=30.0)
+            async with httpx.AsyncClient(timeout=timeout) as c:
+                r = await c.get(url)
+                r.raise_for_status()
+                enc_data = r.content
+        except Exception:
+            logger.exception("WeChat CDN download failed (type=%s url=%s)", item_type, url[:80])
+            return None
+
+        aes_key = _resolve_aes_key(aeskey_hex, aeskey_b64)
+        if aes_key:
+            try:
+                raw_data = aes_128_ecb_decrypt(enc_data, aes_key)
+            except Exception:
+                logger.warning("WeChat CDN decrypt failed — storing raw bytes", exc_info=True)
+                raw_data = enc_data
+        else:
+            logger.warning(
+                "WeChat incoming item type=%s: no AES key resolved, storing raw bytes", item_type
+            )
+            raw_data = enc_data
+
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        raw_name = Path(str(filename or "file.bin")).name
+        safe_name = (
+            "".join(ch if (ch.isascii() and (ch.isalnum() or ch in "._-")) else "_" for ch in raw_name)
+            .strip("._") or "file.bin"
+        )
+        local_path = dest_dir / f"{uuid.uuid4().hex[:8]}_{safe_name}"
+        local_path.write_bytes(raw_data)
+        logger.info(
+            "WeChat incoming file saved: type=%s filename=%s size=%d path=%s",
+            item_type, filename, len(raw_data), local_path,
+        )
+        return local_path, filename
 
     # ── Typing indicator ─────────────────────────────────────────────────
 

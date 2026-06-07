@@ -20,7 +20,7 @@ from cyrene.version import get_version
 logger = logging.getLogger(__name__)
 
 # GitHub 仓库配置
-_DEFAULT_REPO = "ikerrrrrrrrrrr/Cyrene"
+_DEFAULT_REPO = "Yongchu-Yitao/Cyrene"
 _UPDATE_REPO = os.environ.get("UPDATE_REPO", _DEFAULT_REPO)
 _GITHUB_API = f"https://api.github.com/repos/{_UPDATE_REPO}/releases"
 
@@ -58,7 +58,7 @@ async def check_for_update() -> UpdateInfo:
     url = f"{_GITHUB_API}/latest"
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, trust_env=False, follow_redirects=True) as client:
             resp = await client.get(url)
             if resp.status_code != 200:
                 logger.debug("GitHub API returned %d", resp.status_code)

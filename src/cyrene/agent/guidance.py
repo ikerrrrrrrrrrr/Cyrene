@@ -553,7 +553,10 @@ def _strip_visible_dsml_tool_blocks(text: str) -> str:
 
 async def _validated_final_no_tool_reply(messages: list[dict], max_tokens: int | None = None) -> str:
     """Generate final user-visible text without leaking textual DSML tool markup."""
-    response = await _call_llm(messages, tools=None, max_tokens=max_tokens)
+    if _streaming_reply_requested():
+        response = await _call_llm_stream(messages, max_tokens=max_tokens)
+    else:
+        response = await _call_llm(messages, tools=None, max_tokens=max_tokens)
     text = _assistant_text(response).strip()
     if not _VISIBLE_DSML_TOOL_BLOCK_RE.search(text):
         return text
