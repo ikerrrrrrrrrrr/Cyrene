@@ -38,18 +38,31 @@ _pyproject = _PROJECT_ROOT / "pyproject.toml"
 if _pyproject.exists():
     _datas.append((str(_pyproject), "."))
 
+# ---- 本地包模块自动枚举 ----
+# cyrene/webui 大量使用 importlib.import_module() 动态加载（tool_impl、agent
+# 子包等），PyInstaller 静态分析无法追踪。直接扫描 src/ 下所有 .py 文件生成
+# 完整列表，避免手动维护漏项。
+def _enumerate_local_package(src: Path, pkg: str) -> list:
+    root = src / pkg
+    if not root.is_dir():
+        return []
+    names = []
+    for f in sorted(root.rglob("*.py")):
+        if "__pycache__" in f.parts:
+            continue
+        rel = f.relative_to(src)
+        mod = str(rel.with_suffix("")).replace("/", ".").replace("\\", ".")
+        if mod.endswith(".__init__"):
+            mod = mod[: -len(".__init__")]
+        names.append(mod)
+    return names
+
 # ---- 隐藏导入 ----
-_hidden = [
-    "webui", "webui.server", "webui.routes",
-    "cyrene", "cyrene.agent", "cyrene.attachments", "cyrene.bot",
-    "cyrene.cc_bridge", "cyrene.cc_learner", "cyrene.cc_terminal",
-    "cyrene.cli", "cyrene.config", "cyrene.conversations", "cyrene.db",
-    "cyrene.debug", "cyrene.inbox", "cyrene.llm", "cyrene.local_cli",
-    "cyrene.mcp_manager", "cyrene.memory", "cyrene.onboarding",
-    "cyrene.pattern", "cyrene.report_export", "cyrene.scheduler",
-    "cyrene.search", "cyrene.searxng_manager", "cyrene.settings_store",
-    "cyrene.setup", "cyrene.shells", "cyrene.short_term", "cyrene.soul",
-    "cyrene.subagent", "cyrene.tools",
+_hidden = (
+    _enumerate_local_package(_SRC, "cyrene")
+    + _enumerate_local_package(_SRC, "webui")
+)
+_hidden += [
     "jinja2", "jinja2.ext",
     "uvicorn.loops.auto", "uvicorn.protocols.http.auto", "uvicorn.logging",
     "anyio", "websockets", "aiosqlite", "apscheduler", "croniter",

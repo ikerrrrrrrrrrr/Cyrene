@@ -61,6 +61,23 @@ def _run_smoke_test() -> None:
         print(f"{_name}={_ver}")
 
 
+def _write_crash_log(exc: BaseException) -> None:
+    """Write traceback to cyrene_error.log in the OS temp dir.
+
+    On Windows with console=False the process has no console, so Electron's
+    stderr pipe may not receive PyInstaller's C-level output. Writing directly
+    from Python guarantees a readable crash log on every platform.
+    """
+    import os, tempfile, traceback, datetime
+    log_path = os.path.join(tempfile.gettempdir(), "cyrene_error.log")
+    try:
+        with open(log_path, "a", encoding="utf-8") as _f:
+            _f.write(f"\n--- {datetime.datetime.now().isoformat()} ---\n")
+            traceback.print_exc(file=_f)
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
     if "--smoke-test" in sys.argv:
         _run_smoke_test()
@@ -83,12 +100,20 @@ if __name__ == "__main__":
             sys.argv.append("--electron-mode")
         else:
             sys.argv.append("--web")
-        from cyrene.local_cli import main
-        main()
+        try:
+            from cyrene.local_cli import main
+            main()
+        except Exception as _exc:
+            _write_crash_log(_exc)
+            raise
         raise SystemExit(0)
 
     if "--gui" not in sys.argv:
         sys.argv.append("--gui")
 
-    from cyrene.local_cli import main
-    main()
+    try:
+        from cyrene.local_cli import main
+        main()
+    except Exception as _exc:
+        _write_crash_log(_exc)
+        raise
