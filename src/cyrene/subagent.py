@@ -1058,6 +1058,7 @@ async def _run_subagent(
     from cyrene.agent.prompts import (
         _MAIN_AGENT_PROMPT, _DEEP_RESEARCH_SUBAGENT_PROMPT,
         _DECISION_SUBAGENT_PROMPT, _LEARNING_SUBAGENT_PROMPT, _COMPARE_SUBAGENT_PROMPT,
+        _WORKSPACE_SCOPE_BLOCK,
     )
     from cyrene.agent.state import (
         _deep_research_mode, _current_command,
@@ -1137,7 +1138,7 @@ You are a **participant** in this discussion. Rules:
 5. **Stay in character.** Focus on delivering value through the substance of your contributions.
 """
 
-    subagent_prompt += "\n\n" + temporal_context
+    subagent_prompt += "\n\n" + temporal_context + "\n\n" + _WORKSPACE_SCOPE_BLOCK
 
     if resume_messages:
         # 被唤醒：从已有历史续跑，注入一条提示让 LLM 知道发生了什么
