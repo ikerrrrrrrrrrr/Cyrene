@@ -327,7 +327,6 @@ async def _run_chat_agent(
             "- Interpret relative phrases such as today, recently, this week, last week, 最近, 最近一周, 今天, 本周 relative to this date.\n"
             "- For current weather or travel recommendations, search for current forecast/current conditions. Do not invent or substitute old years unless the user explicitly asks for historical weather."
         )
-        main_system += "\n\n" + temporal_context
         main_system_context = [
             context_block(
                 "main.system.base",
@@ -335,15 +334,6 @@ async def _run_chat_agent(
                 source="cyrene.agent.prompts._MAIN_AGENT_PROMPT",
                 reason="base main-agent instructions",
                 content=_MAIN_AGENT_PROMPT,
-            ),
-            context_block(
-                "runtime.temporal_context",
-                "system",
-                source="datetime.now().astimezone()",
-                reason="anchor relative dates and current/recent searches",
-                content=temporal_context,
-                metadata={"date": f"{now:%Y-%m-%d}", "timezone": now.tzname()},
-                transforms=["concat_into_system"],
             ),
         ]
         if lang and lang != "en":
@@ -378,6 +368,16 @@ async def _run_chat_agent(
                 transforms=["preview", "concat_into_system"],
                 content=skill_prompt_block,
             ))
+        main_system += "\n\n" + temporal_context
+        main_system_context.append(context_block(
+            "runtime.temporal_context",
+            "system",
+            source="datetime.now().astimezone()",
+            reason="anchor relative dates and current/recent searches",
+            content=temporal_context,
+            metadata={"date": f"{now:%Y-%m-%d}", "timezone": now.tzname()},
+            transforms=["concat_into_system"],
+        ))
 
         is_deep_research = command == "deep-research"
         dr_token = _deep_research_mode.set(is_deep_research)

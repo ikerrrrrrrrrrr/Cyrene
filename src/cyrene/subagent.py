@@ -1084,21 +1084,19 @@ async def _run_subagent(
     else:
         extra_prompt = ""
     now = datetime.now(timezone.utc).astimezone()
-    temporal_context = f"""
-## Current Date and Relative Time
-- Current local date: {now:%Y-%m-%d}.
-- Current local time: {now:%Y-%m-%d %H:%M:%S %Z}.
-- Interpret relative phrases such as today, recently, this week, last week, 最近, 最近一周, 今天, 本周 relative to this date.
-- For current weather or travel recommendations, search for current forecast/current conditions. Do not invent or substitute old years unless the user explicitly asks for historical weather.
-"""
+    temporal_context = (
+        "## Current Date\n"
+        f"- Current local date: {now:%Y-%m-%d} ({now:%A}).\n"
+        "- Interpret relative phrases such as today, recently, this week, last week, 最近, 最近一周, 今天, 本周 relative to this date.\n"
+        "- For current weather or travel recommendations, search for current forecast/current conditions. Do not invent or substitute old years unless the user explicitly asks for historical weather."
+    )
     subagent_prompt = (
         _MAIN_AGENT_PROMPT
         + extra_prompt
-        + temporal_context
-        + f"""
+        + """
 
 ## Sub-agent Context
-- You are a sub-agent, ID: {agent_id}. Complete the assigned task directly.
+- You are a sub-agent. Complete the assigned task directly.
 - You can use regular work tools plus `send_agent_message` and `broadcast_agent_message` to coordinate with other sub-agents.
 - If you receive a [DIRECT_MESSAGE] from the user via your inbox, this is real-time guidance from the user. The user is steering your work — take it seriously. Use `send_message_to_user` ONCE to: (1) acknowledge the guidance, (2) briefly state what you will do differently. Then immediately continue working with your adjusted approach. Do NOT argue, ask follow-up questions, or chat — act on the guidance. The tool disables after one use.
 - You MUST NOT call `send_message`, `send_telegram`, `ask_user`, `spawn_subagent`, or `query_round`.
@@ -1138,6 +1136,8 @@ You are a **participant** in this discussion. Rules:
 4. **Engage proactively.** If you have something relevant to say, speak up via `send_agent_message`. Don't wait to be called on for every point.
 5. **Stay in character.** Focus on delivering value through the substance of your contributions.
 """
+
+    subagent_prompt += "\n\n" + temporal_context
 
     if resume_messages:
         # 被唤醒：从已有历史续跑，注入一条提示让 LLM 知道发生了什么

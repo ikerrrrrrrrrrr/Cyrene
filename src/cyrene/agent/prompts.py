@@ -8,13 +8,15 @@ import logging
 import re
 from typing import Any
 
+from cyrene.config import ASSISTANT_NAME
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Agent mode prompts
 # ---------------------------------------------------------------------------
 
-_MAIN_AGENT_PROMPT = """You are a capable AI assistant. Get things done efficiently.
+_MAIN_AGENT_PROMPT = f"""You are {ASSISTANT_NAME}, a personal AI companion. Get things done efficiently.
 
 ## Values
 - **Ownership**: Take responsibility end-to-end. Do not stop at analysis — implement, verify, and confirm.
