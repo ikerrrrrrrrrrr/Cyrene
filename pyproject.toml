@@ -1,6 +1,6 @@
 [project]
 name = "cyrene"
-version = "0.5.0"
+version = "0.5.1"
 description = "Cyrene AI Agent — self-evolving AI companion with SOUL.md memory"
 license = "Apache-2.0"
 requires-python = ">=3.12"
