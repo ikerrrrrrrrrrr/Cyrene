@@ -731,16 +731,46 @@ function SkillsRail({ onOpenPage }) {
 }
 
 function readUiShellMode() {
-  try { return localStorage.getItem("cyrene-ui-shell") || "workbench"; } catch(e) { return "workbench"; }
+  try {
+    var params = new URLSearchParams(window.location.search || "");
+    if (params.get("shell") === "legacy" || window.location.hash === "#legacy") return "legacy";
+  } catch(e) {}
+  return "workbench";
 }
 
 function App() {
   useDataVersion();
   const [shellMode, setShellMode] = useStateApp(readUiShellMode);
+  const [themeMode, setThemeMode] = useStateApp(function () { return readStoredTweak("theme", "system"); });
+  const [systemTheme, setSystemTheme] = useStateApp(function () {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
   const needsOnboarding = !!(DATA.onboarding && DATA.onboarding.needsOnboarding);
+  const actualTheme = themeMode === "system" ? systemTheme : themeMode;
+
+  useEffectApp(function () {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    function onChange(event) { setSystemTheme(event.matches ? "dark" : "light"); }
+    mq.addEventListener("change", onChange);
+    return function () { mq.removeEventListener("change", onChange); };
+  }, []);
+
+  useEffectApp(function () {
+    try {
+      localStorage.setItem("cyrene-tweak-theme", JSON.stringify(themeMode));
+      localStorage.setItem("cyrene-theme-mode", themeMode);
+    } catch(e) {}
+    document.documentElement.dataset.theme = actualTheme;
+    delete document.documentElement.dataset.booting;
+  }, [themeMode, actualTheme]);
+
+  function toggleWorkbenchTheme() {
+    const order = ["system", "light", "dark"];
+    const idx = order.indexOf(themeMode);
+    setThemeMode(order[(idx + 1) % order.length]);
+  }
 
   function openLegacy() {
-    try { localStorage.setItem("cyrene-ui-shell", "legacy"); } catch(e) {}
     setShellMode("legacy");
   }
 
@@ -748,7 +778,7 @@ function App() {
     return <LegacyAppShell />;
   }
 
-  return <window.WorkbenchApp onOpenLegacy={openLegacy} />;
+  return <window.WorkbenchApp onOpenLegacy={openLegacy} theme={themeMode} actualTheme={actualTheme} onToggleTheme={toggleWorkbenchTheme} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);

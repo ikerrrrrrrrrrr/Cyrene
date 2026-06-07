@@ -6,7 +6,7 @@ var {
   useRef: useWorkbenchRef,
 } = React;
 
-function WorkbenchApp({ onOpenLegacy }) {
+function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
   useDataVersion();
   var model = window.WorkbenchModel;
   var [store, setStore] = useWorkbenchState(function () {
@@ -111,6 +111,9 @@ function WorkbenchApp({ onOpenLegacy }) {
         session={store.activeSession}
         onSearch={function () { setSearchOpen(true); }}
         onSettings={function () { setFullPage("settings"); }}
+        theme={theme}
+        actualTheme={actualTheme}
+        onToggleTheme={onToggleTheme}
       />
       {fullPageConfig ? (
         <WorkbenchFullPage config={fullPageConfig} onClose={function () { setFullPage(null); }} />
@@ -164,9 +167,11 @@ function WorkbenchApp({ onOpenLegacy }) {
   );
 }
 
-function WorkbenchTopbar({ project, session, onSearch, onSettings }) {
+function WorkbenchTopbar({ project, session, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
   var title = project ? project.name : "Project";
   var sessionTitle = session ? session.title : "Task";
+  var themeIcon = theme === "system" ? "◐" : actualTheme === "dark" ? "☾" : "☀";
+  var themeTitle = theme === "system" ? "跟随系统" : actualTheme === "dark" ? "深色模式" : "浅色模式";
   return (
     <div className="workbench-topbar">
       <div className="workbench-brand">
@@ -185,6 +190,7 @@ function WorkbenchTopbar({ project, session, onSearch, onSettings }) {
           <span>⌕</span><span>搜索</span>
         </button>
         <button type="button" className="workbench-icon-btn" title="通知">♢</button>
+        <button type="button" className="workbench-icon-btn" onClick={onToggleTheme} title={themeTitle}>{themeIcon}</button>
         <button type="button" className="workbench-icon-btn" onClick={onSettings} title="设置">⚙</button>
         <div className="workbench-avatar">{WorkbenchModel.initials(DATA.user && DATA.user.name)}</div>
       </div>
@@ -193,11 +199,20 @@ function WorkbenchTopbar({ project, session, onSearch, onSettings }) {
 }
 
 function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProject, onOpenPage, onOpenLegacy }) {
+  var navItems = [
+    { id: "chat", label: "对话", icon: "✦", action: function () { onOpenPage("chat"); } },
+    { id: "knowledge", label: "知识库", icon: "▤", action: function () { onOpenPage("knowledge"); } },
+    { id: "schedule", label: "日程", icon: "◷", action: function () { onOpenPage("schedule"); } },
+    { id: "memory", label: "记忆", icon: "◇", action: function () { onOpenPage("memory"); } },
+  ];
   return (
     <aside className="workbench-project-rail">
       <div className="workbench-rail-head">
         <span>项目</span>
-        <button type="button" onClick={onCreateProject}>+ 新建项目</button>
+        <button type="button" className="workbench-add-btn" onClick={onCreateProject}>
+          <span>+</span>
+          <span>新建项目</span>
+        </button>
       </div>
       <div className="workbench-project-list">
         {projects.map(function (project) {
@@ -220,11 +235,18 @@ function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProje
         })}
       </div>
       <div className="workbench-global-nav">
-        <button type="button" onClick={function () { onOpenPage("chat"); }}>对话</button>
-        <button type="button" onClick={function () { onOpenPage("knowledge"); }}>知识库</button>
-        <button type="button" onClick={function () { onOpenPage("schedule"); }}>日程</button>
-        <button type="button" onClick={function () { onOpenPage("memory"); }}>记忆</button>
-        <button type="button" onClick={onOpenLegacy}>旧界面</button>
+        {navItems.map(function (item) {
+          return (
+            <button key={item.id} type="button" className="workbench-nav-button" onClick={item.action}>
+              <span className="workbench-nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+        <button type="button" className="workbench-nav-button legacy" onClick={onOpenLegacy}>
+          <span className="workbench-nav-icon">↩</span>
+          <span>旧界面</span>
+        </button>
       </div>
       <div className="workbench-account">
         <div className="workbench-avatar photo">{WorkbenchModel.initials(DATA.user && DATA.user.name)}</div>
@@ -333,17 +355,20 @@ function InitialTaskConversation({ session, onCreateRun }) {
 }
 
 function AgentReplyPanel({ session }) {
+  var reply = String(session && session.agentReply || "").trim();
   return (
     <section className="workbench-agent-reply">
       <div className="workbench-panel-title">
         <span>✦</span>
         <b>Agent 回复</b>
       </div>
-      <div className="workbench-agent-body">
-        {(session.agentReply || "任务结构已创建。").split("\n").map(function (line, index) {
-          return <p key={index}>{line}</p>;
-        })}
-      </div>
+      {reply && (
+        <div className="workbench-agent-body">
+          {reply.split("\n").map(function (line, index) {
+            return <p key={index}>{line}</p>;
+          })}
+        </div>
+      )}
     </section>
   );
 }

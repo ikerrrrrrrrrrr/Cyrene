@@ -396,18 +396,7 @@ def _workbench_acceptance_from_session(session: dict[str, Any]) -> list[dict[str
 
 
 def _workbench_agent_reply(user_input: str, session: dict[str, Any], constraints: list[str]) -> str:
-    goal = session.get("goal") or user_input
-    lines = [
-        "我理解你的需求：",
-        str(goal or "先明确当前任务目标。").strip(),
-    ]
-    if constraints:
-        lines.append("我会遵守这些约束：" + "；".join(constraints))
-    lines.extend([
-        "我会先生成任务结构，再把执行过程拆成可展开的步骤。",
-        "下一步会围绕当前 Project 上下文推进，并把文件变更、日志、产物和验收标准放到右侧面板。",
-    ])
-    return "\n".join(lines)
+    return str(user_input or "").strip()
 
 
 def _remove_path(path: Path) -> None:

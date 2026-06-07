@@ -5,6 +5,27 @@
   --wb-bg-2: #0b1624;
   --wb-panel: #0f1a29;
   --wb-panel-2: #121f30;
+  --wb-shell-bg:
+    radial-gradient(circle at 18% 10%, rgba(63, 96, 170, 0.20), transparent 34%),
+    linear-gradient(135deg, #07111d 0%, #0a1320 52%, #07111d 100%);
+  --wb-topbar-bg: rgba(5, 12, 21, 0.82);
+  --wb-rail-bg: rgba(8, 17, 29, 0.62);
+  --wb-task-rail-bg: rgba(7, 15, 26, 0.76);
+  --wb-main-bg: rgba(8, 18, 31, 0.42);
+  --wb-right-bg: rgba(7, 15, 26, 0.78);
+  --wb-control-bg: rgba(16, 28, 44, 0.82);
+  --wb-control-hover-bg: rgba(26, 42, 63, 0.95);
+  --wb-row-hover-bg: rgba(30, 45, 65, 0.74);
+  --wb-active-bg: linear-gradient(135deg, rgba(31, 74, 145, 0.62), rgba(22, 42, 76, 0.72));
+  --wb-active-border: rgba(60, 126, 255, 0.52);
+  --wb-card-bg: rgba(14, 25, 43, 0.82);
+  --wb-card-bg-strong: rgba(14, 25, 43, 0.96);
+  --wb-agent-bg: linear-gradient(135deg, rgba(35, 28, 76, 0.92), rgba(13, 27, 51, 0.92));
+  --wb-agent-border: rgba(125, 87, 255, 0.46);
+  --wb-agent-text: #cfd9e8;
+  --wb-icon-bg: rgba(13, 25, 40, 0.78);
+  --wb-error-bg: rgba(88, 23, 28, 0.55);
+  --wb-error-text: #ffc9c7;
   --wb-line: rgba(141, 160, 184, 0.18);
   --wb-line-2: rgba(141, 160, 184, 0.28);
   --wb-text: #edf4ff;
@@ -18,11 +39,47 @@
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 18% 10%, rgba(63, 96, 170, 0.20), transparent 34%),
-    linear-gradient(135deg, #07111d 0%, #0a1320 52%, #07111d 100%);
+  background: var(--wb-shell-bg);
   color: var(--wb-text);
   font-family: Manrope, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html[data-theme="light"] .workbench-shell {
+  --wb-bg: #f4f7fb;
+  --wb-bg-2: #eef3f8;
+  --wb-panel: #ffffff;
+  --wb-panel-2: #f7faff;
+  --wb-shell-bg:
+    radial-gradient(circle at 12% 8%, rgba(55, 126, 255, 0.13), transparent 34%),
+    linear-gradient(135deg, #f7faff 0%, #eef3f8 55%, #f8fbff 100%);
+  --wb-topbar-bg: rgba(255, 255, 255, 0.84);
+  --wb-rail-bg: rgba(246, 250, 255, 0.82);
+  --wb-task-rail-bg: rgba(241, 246, 252, 0.88);
+  --wb-main-bg: rgba(255, 255, 255, 0.42);
+  --wb-right-bg: rgba(246, 250, 255, 0.9);
+  --wb-control-bg: rgba(255, 255, 255, 0.88);
+  --wb-control-hover-bg: rgba(238, 245, 255, 0.98);
+  --wb-row-hover-bg: rgba(226, 237, 252, 0.74);
+  --wb-active-bg: linear-gradient(135deg, rgba(214, 229, 255, 0.92), rgba(238, 245, 255, 0.94));
+  --wb-active-border: rgba(17, 103, 216, 0.32);
+  --wb-card-bg: rgba(255, 255, 255, 0.86);
+  --wb-card-bg-strong: rgba(255, 255, 255, 0.96);
+  --wb-agent-bg: linear-gradient(135deg, rgba(244, 239, 255, 0.94), rgba(235, 244, 255, 0.96));
+  --wb-agent-border: rgba(110, 69, 217, 0.24);
+  --wb-agent-text: #334259;
+  --wb-icon-bg: rgba(255, 255, 255, 0.82);
+  --wb-error-bg: rgba(255, 235, 235, 0.86);
+  --wb-error-text: #9d2626;
+  --wb-line: rgba(34, 55, 83, 0.13);
+  --wb-line-2: rgba(34, 55, 83, 0.22);
+  --wb-text: #142033;
+  --wb-muted: #5d6b7e;
+  --wb-faint: #8b98a8;
+  --wb-blue: #1167d8;
+  --wb-purple: #6e45d9;
+  --wb-green: #14924b;
+  --wb-amber: #b77800;
+  --wb-red: #c73737;
 }
 
 .workbench-shell button,
@@ -36,7 +93,7 @@
   grid-template-columns: 330px minmax(0, 1fr) auto;
   align-items: center;
   border-bottom: 1px solid var(--wb-line);
-  background: rgba(5, 12, 21, 0.82);
+  background: var(--wb-topbar-bg);
   backdrop-filter: blur(20px);
   -webkit-app-region: drag;
 }
@@ -101,7 +158,7 @@
   min-width: 34px;
   border: 1px solid var(--wb-line);
   border-radius: 8px;
-  background: rgba(16, 28, 44, 0.82);
+  background: var(--wb-control-bg);
   color: var(--wb-text);
   display: inline-flex;
   align-items: center;
@@ -119,7 +176,7 @@
 
 .workbench-icon-btn:hover {
   border-color: var(--wb-line-2);
-  background: rgba(26, 42, 63, 0.95);
+  background: var(--wb-control-hover-bg);
 }
 
 .workbench-avatar {
@@ -148,7 +205,7 @@
   min-height: 0;
   min-width: 0;
   border-right: 1px solid var(--wb-line);
-  background: rgba(8, 17, 29, 0.62);
+  background: var(--wb-rail-bg);
 }
 
 .workbench-project-rail,
@@ -169,21 +226,38 @@
   font-weight: 720;
 }
 
-.workbench-rail-head button,
-.workbench-global-nav button {
+.workbench-rail-head button {
   border: 1px solid var(--wb-line);
   border-radius: 8px;
-  background: rgba(20, 33, 51, 0.92);
+  background: var(--wb-control-bg);
   color: var(--wb-text);
   min-height: 32px;
   padding: 0 10px;
   cursor: pointer;
 }
 
-.workbench-rail-head button:hover,
-.workbench-global-nav button:hover {
+.workbench-rail-head button:hover {
   border-color: var(--wb-blue);
-  background: rgba(25, 45, 73, 0.98);
+  background: var(--wb-control-hover-bg);
+}
+
+.workbench-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workbench-add-btn span:first-child {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  background: rgba(37, 135, 255, 0.18);
+  color: #9dccff;
+  font-weight: 800;
 }
 
 .workbench-project-list,
@@ -194,10 +268,10 @@
 }
 
 .workbench-project-list {
-  padding: 0 10px 12px;
+  padding: 0 10px 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
 }
 
 .workbench-project-card,
@@ -211,19 +285,36 @@
 }
 
 .workbench-project-card {
-  min-height: 70px;
-  padding: 10px;
+  min-height: 68px;
+  padding: 9px 10px;
   border-radius: 8px;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
+  position: relative;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
 }
 
 .workbench-project-card:hover,
 .workbench-project-card.active {
-  background: rgba(25, 56, 112, 0.44);
-  border-color: rgba(60, 126, 255, 0.48);
+  background: var(--wb-active-bg);
+  border-color: var(--wb-active-border);
+}
+
+.workbench-project-card:hover {
+  transform: translateY(-1px);
+}
+
+.workbench-project-card.active::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 0 999px 999px 0;
+  background: var(--wb-blue);
 }
 
 .workbench-project-icon {
@@ -265,16 +356,59 @@
 
 .workbench-global-nav {
   margin: auto 10px 0;
-  padding: 14px 0;
+  padding: 16px 0 14px;
   border-top: 1px solid var(--wb-line);
   display: grid;
-  gap: 8px;
+  gap: 5px;
 }
 
-.workbench-global-nav button {
-  justify-content: flex-start;
-  text-align: left;
+.workbench-nav-button {
   width: 100%;
+  min-height: 39px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--wb-muted);
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0 9px 0 8px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 620;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.workbench-nav-button:hover {
+  color: var(--wb-text);
+  background: var(--wb-row-hover-bg);
+  border-color: var(--wb-line);
+}
+
+.workbench-nav-button.legacy {
+  margin-top: 5px;
+  color: var(--wb-faint);
+}
+
+.workbench-nav-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--wb-line);
+  background: var(--wb-icon-bg);
+  color: var(--wb-muted);
+  font-size: 13px;
+  font-family: var(--mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.workbench-nav-button:hover .workbench-nav-icon {
+  border-color: rgba(37, 135, 255, 0.38);
+  background: rgba(37, 135, 255, 0.15);
+  color: #9dccff;
 }
 
 .workbench-account {
@@ -300,7 +434,7 @@
 }
 
 .workbench-task-rail {
-  background: rgba(7, 15, 26, 0.76);
+  background: var(--wb-task-rail-bg);
 }
 
 .workbench-task-list {
@@ -322,8 +456,8 @@
 
 .workbench-task-card:hover,
 .workbench-task-card.active {
-  background: rgba(20, 47, 88, 0.58);
-  border-color: rgba(42, 132, 255, 0.58);
+  background: var(--wb-active-bg);
+  border-color: var(--wb-active-border);
 }
 
 .workbench-task-card time {
@@ -351,7 +485,7 @@
   gap: 12px;
   padding: 18px 18px 12px;
   overflow: hidden;
-  background: rgba(8, 18, 31, 0.42);
+  background: var(--wb-main-bg);
 }
 
 .workbench-task-header {
@@ -390,7 +524,7 @@
   border: 1px solid var(--wb-line);
   border-radius: 8px;
   padding: 5px 8px;
-  background: rgba(15, 27, 43, 0.82);
+  background: var(--wb-card-bg);
 }
 
 .workbench-status-pill.blue { color: #8fc4ff; border-color: rgba(37, 135, 255, 0.42); }
@@ -427,15 +561,15 @@
 .workbench-side-section {
   border: 1px solid var(--wb-line);
   border-radius: 8px;
-  background: rgba(14, 25, 43, 0.82);
+  background: var(--wb-card-bg);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
 }
 
 .workbench-agent-reply {
   flex: 0 0 auto;
   padding: 12px 14px;
-  border-color: rgba(125, 87, 255, 0.46);
-  background: linear-gradient(135deg, rgba(35, 28, 76, 0.92), rgba(13, 27, 51, 0.92));
+  border-color: var(--wb-agent-border);
+  background: var(--wb-agent-bg);
 }
 
 .workbench-panel-title,
@@ -457,7 +591,7 @@
 
 .workbench-agent-body {
   margin-top: 8px;
-  color: #cfd9e8;
+  color: var(--wb-agent-text);
   font-size: 14px;
   line-height: 1.55;
 }
@@ -478,7 +612,7 @@
   z-index: 1;
   padding: 11px 14px;
   border-bottom: 1px solid var(--wb-line);
-  background: rgba(14, 25, 43, 0.96);
+  background: var(--wb-card-bg-strong);
 }
 
 .workbench-flow-head span {
@@ -510,7 +644,7 @@
 }
 
 .workbench-step-row:hover {
-  background: rgba(35, 55, 81, 0.45);
+  background: var(--wb-row-hover-bg);
 }
 
 .workbench-step-row b {
@@ -562,7 +696,7 @@
 .workbench-file-list button {
   border: 1px solid var(--wb-line);
   border-radius: 7px;
-  background: rgba(8, 17, 29, 0.72);
+  background: var(--wb-control-bg);
   color: var(--wb-text);
   padding: 7px 8px;
   text-align: left;
@@ -628,7 +762,7 @@
 
 .workbench-right-panel {
   border-right: 0;
-  background: rgba(7, 15, 26, 0.78);
+  background: var(--wb-right-bg);
 }
 
 .workbench-right-tabs {
@@ -669,7 +803,7 @@
 
 .workbench-side-section {
   padding: 12px;
-  background: rgba(11, 22, 36, 0.72);
+  background: var(--wb-card-bg);
 }
 
 .workbench-side-section h3 {
@@ -733,9 +867,9 @@
 }
 
 .workbench-error {
-  border: 1px solid rgba(239, 83, 80, 0.42);
-  background: rgba(88, 23, 28, 0.55);
-  color: #ffc9c7;
+  border: 1px solid color-mix(in srgb, var(--wb-red) 38%, transparent);
+  background: var(--wb-error-bg);
+  color: var(--wb-error-text);
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 13px;
@@ -765,7 +899,7 @@
 .workbench-fullscreen-head button {
   border: 1px solid var(--wb-line);
   border-radius: 8px;
-  background: rgba(20, 33, 51, 0.92);
+  background: var(--wb-control-bg);
   color: var(--wb-text);
   height: 32px;
   padding: 0 10px;
