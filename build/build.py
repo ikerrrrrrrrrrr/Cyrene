@@ -127,6 +127,33 @@ def generate_icons() -> None:
     print(f"  generated: {WEB_LOGO_PATH}")
 
 
+def build_webui_js() -> None:
+    """编译 JSX → compiled/*.js，供 PyInstaller 打包进静态资源。
+
+    compiled/ 在 .gitignore 中不入库，必须在打包前先编译，否则
+    Python frozen binary 里 static/app/compiled/ 为空，前端全 404。
+    """
+    webui_dir = PROJECT_ROOT / "src" / "webui"
+    build_script = webui_dir / "build-jsx.mjs"
+    if not build_script.exists():
+        print("  [warn] build-jsx.mjs not found, skipping JSX build")
+        return
+
+    print("\n[WebUI] Compiling JSX...")
+    # Install npm deps if node_modules is absent
+    if not (webui_dir / "node_modules").exists():
+        result = subprocess.run(["npm", "install"], cwd=str(webui_dir))
+        if result.returncode != 0:
+            print("  [error] npm install failed in src/webui")
+            sys.exit(1)
+
+    result = subprocess.run(["node", "build-jsx.mjs"], cwd=str(webui_dir))
+    if result.returncode != 0:
+        print("  [error] JSX build failed")
+        sys.exit(1)
+    print("  [ok] JSX compiled")
+
+
 def run_pyinstaller() -> None:
     """运行 PyInstaller。"""
     print("\n[PyInstaller] Building...")
@@ -432,6 +459,7 @@ def main() -> None:
     if not args.skip_icons:
         generate_icons()
 
+    build_webui_js()
     run_pyinstaller()
 
     if args.pyinstaller_only:
