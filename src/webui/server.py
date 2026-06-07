@@ -15,6 +15,7 @@ from cyrene.config import WEB_PORT
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
+_WORKBENCH_UI_DIR = Path(__file__).parent.parent / "workbench-webui"
 
 
 class WebBot:
@@ -40,7 +41,7 @@ class WebBot:
         return matched
 
 
-def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
+def create_app(bot: Any, db_path: str, instance_id: str = "", ui_mode: str = "workbench") -> FastAPI:
     from cyrene.channels.wechat import setup_wechat as _setup_wechat
     from webui.routes import register_routes
 
@@ -49,6 +50,8 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
     app = FastAPI(title="Cyrene")
     app.add_middleware(LocalAuthMiddleware)
     app.state.instance_id = instance_id
+    app.state.ui_mode = ui_mode
+    app.mount("/static/workbench-ui", StaticFiles(directory=str(_WORKBENCH_UI_DIR)), name="workbench-ui")
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     @app.get("/api/instance-id")
@@ -84,8 +87,8 @@ def create_app(bot: Any, db_path: str, instance_id: str = "") -> FastAPI:
     return app
 
 
-async def run_web(bot: Any, db_path: str, port: int = WEB_PORT, instance_id: str = "") -> None:
-    app = create_app(bot, db_path, instance_id=instance_id)
+async def run_web(bot: Any, db_path: str, port: int = WEB_PORT, instance_id: str = "", ui_mode: str = "workbench") -> None:
+    app = create_app(bot, db_path, instance_id=instance_id, ui_mode=ui_mode)
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="info", loop="asyncio")
     server = uvicorn.Server(config)
     logger.info("Web UI at http://0.0.0.0:%d", port)

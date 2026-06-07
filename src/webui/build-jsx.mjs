@@ -1,11 +1,12 @@
 import * as esbuild from 'esbuild'
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, statSync, existsSync } from 'fs'
 import { join, relative, dirname, extname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_DIR = resolve(__dirname, 'static/app')
 const OUT_DIR = resolve(APP_DIR, 'compiled')
+const WORKBENCH_DIR = resolve(__dirname, '../workbench-webui')
 
 function collect(dir) {
   const files = []
@@ -21,12 +22,13 @@ function collect(dir) {
 }
 
 async function build() {
-  const files = collect(APP_DIR)
+  const workbenchFiles = existsSync(WORKBENCH_DIR) ? collect(WORKBENCH_DIR) : []
+  const files = [...collect(APP_DIR), ...workbenchFiles]
   mkdirSync(OUT_DIR, { recursive: true })
 
   for (const file of files) {
-    // Preserve subdirectory structure relative to APP_DIR
-    const rel = relative(APP_DIR, file).replace(/\.jsx$/, '.js')
+    const srcDir = file.startsWith(WORKBENCH_DIR) ? WORKBENCH_DIR : APP_DIR
+    const rel = relative(srcDir, file).replace(/\.jsx$/, '.js')
     const outFile = join(OUT_DIR, rel)
     mkdirSync(dirname(outFile), { recursive: true })
 
@@ -54,7 +56,7 @@ async function build() {
       writeFileSync(outFile, code)
     }
 
-    console.log(`✓ ${relative(APP_DIR, file)} → compiled/${rel}`)
+    console.log(`✓ ${relative(srcDir, file)} → compiled/${rel}`)
   }
 
   const total = files.length

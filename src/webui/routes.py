@@ -793,7 +793,11 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     # ---- SPA root ----
 
     @router.get("/", response_class=HTMLResponse)
-    async def spa_root():
+    async def spa_root(request: Request):
+        ui_mode = getattr(request.app.state, "ui_mode", "workbench")
+        if ui_mode == "legacy" and request.query_params.get("shell") != "legacy":
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse("/?shell=legacy")
         return FileResponse(
             _APP_DIR / "index.html",
             headers={

@@ -41,6 +41,7 @@ from cyrene.agent.prompts import (
     _MAIN_AGENT_PROMPT,
     _PHASE1_DECISION_PROMPT,
     _QUICK_ANSWER_PROMPT,
+    _WORKSPACE_SCOPE_BLOCK,
     _spawn_policy_prompt_block,
 )
 from cyrene.agent.session import (
@@ -135,7 +136,7 @@ async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, 
 async def _run_execution_agent_locked(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
     _caller_type.set("execution_agent")
     messages = [
-        {"role": "system", "content": _EXECUTION_SYSTEM_PROMPT},
+        {"role": "system", "content": _EXECUTION_SYSTEM_PROMPT + "\n\n" + _WORKSPACE_SCOPE_BLOCK},
         {"role": "user", "content": task},
     ]
 
@@ -377,6 +378,15 @@ async def _run_chat_agent(
             content=temporal_context,
             metadata={"date": f"{now:%Y-%m-%d}", "timezone": now.tzname()},
             transforms=["concat_into_system"],
+        ))
+        main_system += "\n\n" + _WORKSPACE_SCOPE_BLOCK
+        main_system_context.append(context_block(
+            "runtime.workspace_scope",
+            "system",
+            source="cyrene.agent.prompts._WORKSPACE_SCOPE_BLOCK",
+            reason="constrain agent to workspace; prevent unnecessary permission prompts",
+            transforms=["concat_into_system"],
+            content=_WORKSPACE_SCOPE_BLOCK,
         ))
 
         is_deep_research = command == "deep-research"

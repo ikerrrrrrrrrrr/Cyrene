@@ -78,6 +78,19 @@ def _run_bot() -> None:
 
 
 def main() -> None:
+    import sys
+    if "--workbench" in sys.argv:
+        from cyrene.local_cli import _run_web_mode
+        _run_web_mode(ui_mode="workbench")
+        return
+    if "--agent" in sys.argv:
+        from cyrene.local_cli import _run_web_mode
+        _run_web_mode(ui_mode="legacy")
+        return
+    if "--gui" in sys.argv or "--electron-mode" in sys.argv:
+        from cyrene.local_cli import main as _local_main
+        _local_main()
+        return
     asyncio.run(_prepare_runtime())
     _run_bot()
 

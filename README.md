@@ -74,7 +74,12 @@ Download the latest release for your platform from the [Releases page](https://g
 conda create -n cyrene python=3.12 -y
 conda activate cyrene
 pip install -e .
-PYTHONPATH=src python -m cyrene.local_cli --web
+
+# Classic agent UI (stable)
+PYTHONPATH=src python -m cyrene --agent
+
+# New workbench UI (beta)
+PYTHONPATH=src python -m cyrene --workbench
 ```
 
 Open `http://localhost:4242`. First launch runs an onboarding wizard that guides you through API key configuration and personality setup.

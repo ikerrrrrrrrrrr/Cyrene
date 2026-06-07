@@ -439,16 +439,45 @@ def run_electron_builder() -> None:
             print(f"  created: {dmg_path.name}")
 
 
+def write_buildinfo(ui_mode: str) -> None:
+    """Write _buildinfo.py with the target UI mode before PyInstaller bundles it."""
+    buildinfo = PROJECT_ROOT / "src" / "cyrene" / "_buildinfo.py"
+    buildinfo.write_text(
+        f"# Generated at build time by build/build.py — do not edit manually.\n"
+        f'DEFAULT_UI_MODE: str = "{ui_mode}"\n',
+        encoding="utf-8",
+    )
+    print(f"  [buildinfo] DEFAULT_UI_MODE = {ui_mode!r}")
+
+
+def restore_buildinfo() -> None:
+    """Restore _buildinfo.py to the default 'workbench' after building."""
+    buildinfo = PROJECT_ROOT / "src" / "cyrene" / "_buildinfo.py"
+    buildinfo.write_text(
+        "# Generated at build time by build/build.py — do not edit manually.\n"
+        "# Committed default is \"workbench\"; overwritten per-build via --ui-mode flag.\n"
+        'DEFAULT_UI_MODE: str = "workbench"\n',
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="Build Cyrene")
     parser.add_argument("--clean", action="store_true", help="仅清理构建产物")
     parser.add_argument("--skip-icons", action="store_true", help="跳过图标生成")
     parser.add_argument("--pyinstaller-only", action="store_true", help="只跑 PyInstaller，跳过 Electron 打包")
+    parser.add_argument(
+        "--ui-mode",
+        choices=["workbench", "agent"],
+        default="workbench",
+        help="默认启动的 UI（workbench 或 agent），打包进二进制",
+    )
     args = parser.parse_args()
 
     print(f"Cyrene Builder — {sys.platform}")
     print(f"  project: {PROJECT_ROOT}")
+    print(f"  ui-mode: {args.ui_mode}")
 
     if args.clean:
         clean()
@@ -460,7 +489,12 @@ def main() -> None:
         generate_icons()
 
     build_webui_js()
-    run_pyinstaller()
+
+    try:
+        write_buildinfo(args.ui_mode)
+        run_pyinstaller()
+    finally:
+        restore_buildinfo()
 
     if args.pyinstaller_only:
         print(f"\nDone: {DIST_DIR / 'Cyrene'}")

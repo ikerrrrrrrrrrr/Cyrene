@@ -4,12 +4,22 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      ui_mode:
+        description: "Default UI to bundle (workbench = new UI, agent = classic UI)"
+        required: false
+        default: "agent"
+        type: choice
+        options:
+          - agent
+          - workbench
 
 permissions:
   contents: write
 
 env:
   PYTHON_VERSION: "3.12"
+  UI_MODE: ${{ inputs.ui_mode || 'agent' }}
 
 jobs:
   # ==========================================================================
@@ -46,7 +56,7 @@ jobs:
         run: python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; print('imports-ok')"
 
       - name: Full build (PyInstaller + Electron)
-        run: python build/build.py
+        run: python build/build.py --ui-mode ${{ env.UI_MODE }}
 
       - name: Smoke test packaged app
         run: dist/Cyrene.app/Contents/MacOS/Cyrene --smoke-test
@@ -169,7 +179,7 @@ jobs:
           python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, croniter, jinja2, websockets, simplexng, mcp; print('imports-ok')"
 
       - name: Full build (PyInstaller + Electron)
-        run: python build/build.py
+        run: python build/build.py --ui-mode ${{ env.UI_MODE }}
 
       - name: Smoke test packaged app
         run: .\dist\Cyrene\Cyrene.exe --smoke-test
@@ -226,7 +236,7 @@ jobs:
           python -c "from typing_extensions import Sentinel; from pydantic_core import core_schema; import anyio, httpx, httpcore, sniffio, aiosqlite, apscheduler, websockets, simplexng, jinja2, mcp; print('imports-ok')"
 
       - name: Full build (PyInstaller + Electron)
-        run: python build/build.py
+        run: python build/build.py --ui-mode ${{ env.UI_MODE }}
 
       - name: Smoke test packaged app
         run: ./dist/Cyrene/Cyrene --smoke-test

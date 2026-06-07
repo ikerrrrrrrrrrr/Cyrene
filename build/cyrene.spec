@@ -28,6 +28,15 @@ if _static_dir.is_dir():
             dest = str(f.relative_to(_SRC).parent)
             _datas.append((str(f), dest))
 
+# workbench-webui static files (CSS served via /static/workbench-ui/ route)
+# .jsx source files are excluded — they compile to webui/static/app/compiled/*.js
+_workbench_ui_dir = _SRC / "workbench-webui"
+if _workbench_ui_dir.is_dir():
+    for f in _workbench_ui_dir.rglob("*"):
+        if f.is_file() and "__pycache__" not in f.parts and f.suffix != ".jsx":
+            dest = str(f.relative_to(_SRC).parent)
+            _datas.append((str(f), dest))
+
 # .env 模板（打包模式首次启动时复制到用户数据目录）
 _env_tpl = _PROJECT_ROOT / ".env.example"
 if _env_tpl.exists():
