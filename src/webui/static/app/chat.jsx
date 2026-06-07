@@ -1159,6 +1159,17 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     userAtBottomRef.current = false;
   }
 
+  function clearReleasedPinPaddingIfSafe() {
+    var el = scrollRef.current;
+    if (!el) return;
+    var extra = parseFloat(el.style.getPropertyValue('--scroll-pb-extra')) || 0;
+    if (extra <= 0) return;
+    var maxWithoutExtra = Math.max(0, el.scrollHeight - extra - el.clientHeight);
+    if (el.scrollTop <= maxWithoutExtra + 1) {
+      el.style.setProperty('--scroll-pb-extra', '0px');
+    }
+  }
+
   function pinRenderedUserMessage(msg, options) {
     latestPinnedUserKeyRef.current = messageKey(msg);
     pinnedRequestIdRef.current = String(msg && msg.clientRequestId || "");
@@ -2062,8 +2073,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   // top instead of being clamped back down by the scroll container.
   useEffect(function () {
     if (!visibleSending && !pinnedMessageRef.current) {
-      var el = scrollRef.current;
-      if (el) el.style.setProperty('--scroll-pb-extra', '0px');
+      clearReleasedPinPaddingIfSafe();
     }
   }, [visibleSending]);
 
@@ -2077,7 +2087,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
       if (pinnedMessageRef.current) {
         pinnedMessageRef.current = false;
         pinnedRequestIdRef.current = "";
-        el.style.setProperty('--scroll-pb-extra', '0px');
+        window.requestAnimationFrame(clearReleasedPinPaddingIfSafe);
       }
     }
     el.addEventListener('wheel', onWheel, {passive: true});
@@ -2088,6 +2098,9 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     var el = scrollRef.current;
     if (!el) return;
     userAtBottomRef.current = isNearBottom(el, 60);
+    if (!pinnedMessageRef.current && !visibleSending) {
+      clearReleasedPinPaddingIfSafe();
+    }
   }
 
   function expandRightSidebar() {
