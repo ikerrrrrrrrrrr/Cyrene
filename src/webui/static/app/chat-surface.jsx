@@ -794,6 +794,7 @@ function ModernQuestionComposer({ pendingQuestion, draft, onDraftChange, onOptio
   var [expanded, setExpanded] = useModernState(false);
   if (!pendingQuestion) return null;
   var options = Array.isArray(pendingQuestion.options) ? pendingQuestion.options : [];
+  var isPlanConfirm = String(pendingQuestion.kind || "") === "plan_confirmation";
   var questionText = String(pendingQuestion.text || "");
   var canCollapse = questionText.length > 260;
   return (
@@ -817,7 +818,7 @@ function ModernQuestionComposer({ pendingQuestion, draft, onDraftChange, onOptio
           disabled={answering}
           placeholder={optionCount ? t("chat.typeYourAnswer") : t("chat.customAnswer")}
         />
-        <button type="button" disabled={answering || !String(draft || "").trim()} onClick={onSubmit}>{t("chat.answer")}</button>
+        <button type="button" disabled={answering || !String(draft || "").trim()} onClick={onSubmit}>{isPlanConfirm ? t("chat.plan.revise") : t("chat.answer")}</button>
       </div>
     </div>
   );

@@ -3368,6 +3368,7 @@ def _ui_pending_question(raw_pending: Any) -> dict[str, Any] | None:
         "clientRequestId": str(raw_pending.get("client_request_id", "")).strip(),
         "allowCustom": bool(raw_pending.get("allow_custom", True)),
         "hideAnswerInChat": bool(raw_pending.get("hide_answer_in_chat")),
+        "kind": str((raw_pending.get("meta") or {}).get("kind", "")).strip(),
         "options": options_out,
     }
 

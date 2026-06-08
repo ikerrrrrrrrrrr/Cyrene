@@ -194,7 +194,7 @@ async def run_plan_flow(
         "round_id": round_id,
         "round_title": labels.get("round_title", ""),
         "client_request_id": client_request_id,
-        "options": ["同意并开始", "拒绝", "修改"],
+        "options": ["同意并开始", "拒绝"],
         "allow_custom": True,
         "meta": {"kind": "plan_confirmation", "plan": plan, "user_message": user_message},
     })
