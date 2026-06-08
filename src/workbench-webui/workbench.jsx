@@ -18,6 +18,7 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
   var [rightTab, setRightTab] = useWorkbenchState("context");
   var [expandedStepId, setExpandedStepId] = useWorkbenchState("");
   var [searchOpen, setSearchOpen] = useWorkbenchState(false);
+  var [settingsOpen, setSettingsOpen] = useWorkbenchState(false);
 
   function reloadWorkbench(nextProjectId, nextSessionId) {
     setLoading(true);
@@ -110,7 +111,7 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
         project={store.activeProject}
         session={store.activeSession}
         onSearch={function () { setSearchOpen(true); }}
-        onSettings={function () { setFullPage("settings"); }}
+        onSettings={function () { setSettingsOpen(true); }}
         theme={theme}
         actualTheme={actualTheme}
         onToggleTheme={onToggleTheme}
@@ -161,6 +162,15 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
             setSearchOpen(false);
             setFullPage("chat");
           },
+        }
+      )}
+      {settingsOpen && React.createElement(
+        window.SettingsOverlay || function () { return null; },
+        {
+          onClose: function () { setSettingsOpen(false); },
+          theme: theme,
+          actualTheme: actualTheme,
+          onToggleTheme: onToggleTheme,
         }
       )}
     </div>
@@ -629,19 +639,6 @@ function workbenchFullPageConfig(page, setFullPage, onOpenLegacy, store) {
   }
   if (page === "memory") {
     return { title: "记忆", render: function () { return React.createElement(window.MemoryPage || function () { return <div className="workbench-empty">记忆加载中...</div>; }); } };
-  }
-  if (page === "settings") {
-    return {
-      title: "设置",
-      render: function () {
-        return React.createElement(window.SettingsPage || function () { return <div className="workbench-empty">设置加载中...</div>; }, {
-          tweaks: {},
-          setTweak: function () {},
-          actualTheme: "dark",
-          accentPresets: [],
-        });
-      },
-    };
   }
   return { title: page, render: function () { return <div className="workbench-empty">未找到页面。</div>; } };
 }
