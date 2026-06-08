@@ -9,24 +9,26 @@
   --wb-bg-2: var(--bg-1);
   --wb-panel: var(--bg-2);
   --wb-panel-2: var(--bg-3);
-  --wb-shell-bg:
-    radial-gradient(circle at 18% 6%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 42%),
-    linear-gradient(135deg, var(--bg) 0%, var(--bg-1) 52%, var(--bg) 100%);
-  --wb-topbar-bg: color-mix(in srgb, var(--bg) 80%, transparent);
-  --wb-rail-bg: color-mix(in srgb, var(--bg-1) 66%, transparent);
-  --wb-task-rail-bg: color-mix(in srgb, var(--bg-1) 80%, transparent);
-  --wb-main-bg: color-mix(in srgb, var(--bg-1) 42%, transparent);
-  --wb-right-bg: color-mix(in srgb, var(--bg-1) 80%, transparent);
+  /* Subtle, uniform tint: every column shares the exact same background so
+     the panes read as one surface (separated only by 1px lines); cards sit on
+     a slightly lighter base to float. Accent share kept low to stay calm. */
+  --wb-surface: color-mix(in srgb, var(--accent) 5%, var(--bg));
+  --wb-shell-bg: var(--wb-surface);
+  --wb-topbar-bg: var(--wb-surface);
+  --wb-rail-bg: var(--wb-surface);
+  --wb-task-rail-bg: var(--wb-surface);
+  --wb-main-bg: var(--wb-surface);
+  --wb-right-bg: var(--wb-surface);
   --wb-control-bg: var(--control-bg);
   --wb-control-hover-bg: var(--control-bg-hover);
   --wb-row-hover-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
-  --wb-active-bg: color-mix(in srgb, var(--accent) 16%, var(--bg-2));
-  --wb-active-border: color-mix(in srgb, var(--accent) 42%, transparent);
-  --wb-card-bg: color-mix(in srgb, var(--bg-2) 78%, transparent);
-  --wb-card-bg-strong: var(--bg-2);
+  --wb-active-bg: color-mix(in srgb, var(--accent) 15%, var(--bg-2));
+  --wb-active-border: color-mix(in srgb, var(--accent) 40%, transparent);
+  --wb-card-bg: color-mix(in srgb, var(--accent) 6%, var(--bg-2));
+  --wb-card-bg-strong: color-mix(in srgb, var(--accent) 7%, var(--bg-2));
   --wb-agent-bg:
-    linear-gradient(135deg, color-mix(in srgb, var(--magenta) 18%, var(--bg-2)), color-mix(in srgb, var(--accent) 12%, var(--bg-2)));
-  --wb-agent-border: color-mix(in srgb, var(--magenta) 30%, transparent);
+    linear-gradient(135deg, color-mix(in srgb, var(--magenta) 13%, var(--bg-2)), color-mix(in srgb, var(--accent) 7%, var(--bg-2)));
+  --wb-agent-border: color-mix(in srgb, var(--magenta) 22%, transparent);
   --wb-agent-text: var(--text-2);
   --wb-icon-bg: color-mix(in srgb, var(--bg-3) 55%, transparent);
   --wb-error-bg: color-mix(in srgb, var(--err) 16%, transparent);
@@ -354,23 +356,20 @@
 }
 
 .workbench-nav-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--wb-line);
-  background: var(--wb-icon-bg);
   color: var(--wb-muted);
 }
 
 .workbench-nav-icon svg {
   display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .workbench-nav-button:hover .workbench-nav-icon {
-  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--wb-accent);
 }
 

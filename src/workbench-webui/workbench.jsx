@@ -227,7 +227,9 @@ function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProje
       <div className="workbench-rail-head">
         <span>项目</span>
         <button type="button" className="workbench-add-btn" onClick={onCreateProject}>
-          <span>+</span>
+          <span>
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          </span>
           <span>新建项目</span>
         </button>
       </div>
