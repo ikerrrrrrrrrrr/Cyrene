@@ -333,6 +333,7 @@ async function createMainWindow() {
     title: 'Cyrene',
     show: false,
     titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 19 },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

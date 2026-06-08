@@ -188,7 +188,6 @@ function WorkbenchTopbar({ project, session, onSearch, onSettings, theme, actual
         <div className="workbench-traffic-space"></div>
         <div className="brand-mark"></div>
         <strong>Cyrene</strong>
-        <span>Agent</span>
       </div>
       <div className="workbench-crumbs">
         <span>{title}</span>
