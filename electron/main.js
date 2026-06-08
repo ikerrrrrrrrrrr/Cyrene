@@ -119,10 +119,10 @@ function getPythonBinaryPath() {
 
 function getPythonArgs() {
   if (isDev) {
-    // Dev mode: use system python with the --web entry point
+    // Dev mode: use system python with the --workbench entry point
     return [
       path.join(__dirname, '..', 'src', 'cyrene', 'local_cli.py'),
-      '--web',
+      '--workbench',
       '--electron-mode',
     ];
   }
@@ -332,17 +332,21 @@ async function createMainWindow() {
     minHeight: 600,
     title: 'Cyrene',
     show: false,
+    titleBarStyle: 'hiddenInset',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: false,
     },
   });
 
   mainWindow.once('ready-to-show', () => {
     if (!launchHidden) {
       mainWindow.show();
+    }
+    if (isDev) {
+      mainWindow.webContents.openDevTools();
     }
   });
 
@@ -362,6 +366,8 @@ async function createMainWindow() {
 
   // Navigate to the local Python server
   const url = `http://127.0.0.1:${port}`;
+  // Force clear cache so the app always loads fresh assets
+  mainWindow.webContents.session.clearCache();
   mainWindow.loadURL(url);
 
   // Restrict navigation to the local backend — block any attempt to leave 127.0.0.1:<port>

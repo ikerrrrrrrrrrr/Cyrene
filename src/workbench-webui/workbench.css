@@ -98,6 +98,10 @@ html[data-theme="light"] .workbench-shell {
   -webkit-app-region: drag;
 }
 
+.workbench-topbar .workbench-icon-btn {
+  -webkit-app-region: no-drag;
+}
+
 .workbench-brand,
 .workbench-crumbs,
 .workbench-top-actions {
@@ -112,9 +116,10 @@ html[data-theme="light"] .workbench-shell {
 }
 
 .workbench-traffic-space {
-  width: 72px;
-  height: 18px;
+  width: 80px;
+  height: 38px;
   flex: 0 0 auto;
+  -webkit-app-region: no-drag;
 }
 
 .workbench-brand .brand-mark {

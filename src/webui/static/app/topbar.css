@@ -4,11 +4,12 @@
 html[data-theme="dark"] .topbar,
 html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar {
   min-height: 54px;
-  padding: 8px 18px;
+  padding: 38px 18px 8px;
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
   backdrop-filter: none !important;
+  -webkit-app-region: drag;
 }
 
 .topbar::before {
@@ -45,6 +46,7 @@ html[data-theme="dark"] .app[data-screen-label="Cyrene · chat"] .topbar .theme-
   background: transparent !important;
   box-shadow: none !important;
   color: var(--text-2);
+  -webkit-app-region: no-drag;
 }
 
 .topbar .statlight {
