@@ -14,6 +14,7 @@ _NATIVE_TOOL_MODULES = [
     "cyrene.tool_impl.send_message_to_user",  # send_message_to_user
     "cyrene.tool_impl.send_file",  # send_file
     "cyrene.tool_impl.ask_user",  # ask_user
+    "cyrene.tool_impl.enter_plan_mode",  # enter_plan_mode
     "cyrene.tool_impl.deep_reflect",  # DeepReflect
     "cyrene.tool_impl.prompt_claude_code",  # PromptClaudeCode
     "cyrene.tool_impl.schedule_task",  # schedule_task
@@ -68,6 +69,7 @@ _MAIN_ONLY_TOOLS = {
     "send_file",
     "send_wechat_file",
     "ask_user",
+    "enter_plan_mode",
     "DeepReflect",
     "spawn_subagent",
     "query_round",

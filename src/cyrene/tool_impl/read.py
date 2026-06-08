@@ -22,11 +22,15 @@ async def _tool_read(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     try:
         path = _resolve_tool_path(str(args["path"]))
     except ValueError:
-        return await _request_read_elevation(
+        elev = await _request_read_elevation(
             tool_name="Read",
             path_hint=str(args.get("path", "")),
             reason=f"Agent 想要读取此文件。",
         )
+        if elev is not None:
+            return elev
+        # 已放行（完全访问 / 审核 agent 批准）：full-access 已置位，重新解析即成功
+        path = _resolve_tool_path(str(args["path"]))
     return _truncate(path.read_text(encoding="utf-8"))
 
 

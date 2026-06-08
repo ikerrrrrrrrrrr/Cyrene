@@ -906,6 +906,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         wants_stream = bool(body.get("stream"))
         lang = str(body.get("lang") or "").strip()
         command = str(body.get("command") or "").strip()
+        from cyrene.agent.state import PERMISSION_MODES
+        permission_mode = str(body.get("mode") or "default").strip().lower()
+        if permission_mode not in PERMISSION_MODES:
+            permission_mode = "default"
         from cyrene.agent.commands import DEEP_REFLECT_COMMAND_ID, parse_deep_reflect_command
         deep_reflect_parse = parse_deep_reflect_command(message)
         if deep_reflect_parse.get("matched"):
@@ -1074,6 +1078,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                         command=command,
                         public_user_message=message,
                         public_attachments=public_attachments,
+                        permission_mode=permission_mode,
                     ),
                     message or "",
                 )
@@ -1087,6 +1092,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 command=command,
                 public_user_message=message,
                 public_attachments=public_attachments,
+                permission_mode=permission_mode,
             )
             if response == _AWAITING_USER_SENTINEL:
                 return {"awaiting_user": True, "pending_question": get_pending_question()}

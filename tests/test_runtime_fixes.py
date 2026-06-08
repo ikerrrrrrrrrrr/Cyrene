@@ -179,7 +179,7 @@ async def test_tool_loop_limit_persists_final_assistant_message(tmp_path, monkey
     state_file.write_text(json.dumps({"_session_epoch": _agent_state._session_epoch, "messages": []}), encoding="utf-8")
     _patch_state_file(monkeypatch, state_file)
     _patch_data_dir(monkeypatch, tmp_path)
-    monkeypatch.setattr(_agent_core, "_MAX_TOOL_ROUNDS", 1)
+    monkeypatch.setattr(_agent_core, "_get_max_tool_rounds", lambda: 1)
 
     async def fake_call_llm(messages, tools=None, max_tokens=32000, **kwargs):
         names = {item.get("function", {}).get("name") for item in (tools or [])}

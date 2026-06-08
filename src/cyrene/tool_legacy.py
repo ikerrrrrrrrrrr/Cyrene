@@ -121,11 +121,19 @@ async def _request_scope_elevation(
     reason: str = "",
     permission_kind: str = "scope_elevation",
     options: list[str] | None = None,
-) -> str:
-    """Request the user's permission for an operation outside the workspace.
+    scope_hint: str = "workspace 之外的 ",
+) -> str | None:
+    """Resolve a permission boundary according to the active permission mode.
 
-    Creates a pending question in the WebUI.  The agent loop detects the
-    "awaiting_user" status and pauses until the user answers.
+    Returns ``None`` when the operation is **allowed** (caller should proceed),
+    or a ``str`` otherwise:
+
+    - ``default`` mode → creates a pending question and returns the
+      ``awaiting_user`` JSON; the agent loop pauses until the user answers.
+    - ``auto`` mode → a review agent decides autonomously. Approve → sets
+      temporary full access and returns ``None``; deny → returns a denial
+      message string for the agent to see.
+    - ``full_access`` mode → returns ``None`` (normally short-circuited earlier).
 
     Args:
         tool_name: The tool being used (e.g. "Read", "Write").
@@ -135,11 +143,13 @@ async def _request_scope_elevation(
         permission_kind: Meta field to identify the permission type.
         options: Custom options for the question UI.
     """
+    import cyrene.agent.state as _state
     from cyrene.agent.state import (
         _current_agent_id,
         _current_client_request_id,
         _current_command,
         _current_round_id,
+        _publish_runtime_event,
     )
     from cyrene.agent.session import (
         _upsert_pending_question,
@@ -156,13 +166,46 @@ async def _request_scope_elevation(
             f"⛔ 已禁止：{operation} 超出 workspace 范围。\n"
             f"当前不在活动对话轮次中，无法申请权限。"
         )
+
+    mode = _state._permission_mode.get()
+    # 完全访问模式：工具层通常已用 _temporary_full_access 短路，这里保险直接放行。
+    if mode == "full_access":
+        return None
+    # 自动模式：审核 agent 自主裁决，从不打扰用户。
+    if mode == "auto":
+        from cyrene.agent.auto_review import review_elevation
+        approved, rationale = await review_elevation(
+            tool_name=tool_name,
+            operation=operation,
+            path_hint=path_hint,
+            reason=reason,
+        )
+        await _publish_runtime_event({
+            "type": "auto_review",
+            "approved": approved,
+            "operation": operation,
+            "tool_name": tool_name,
+            "path_hint": path_hint,
+            "rationale": rationale,
+            "round_id": round_id,
+        })
+        if approved:
+            _state._temporary_full_access.set(True)
+            return None
+        return (
+            f"⛔ 审核 agent 拒绝了此操作（{operation}）。\n"
+            f"原因：{rationale}\n"
+            f"请改用更安全的方式（如限制在 workspace 内、避免破坏性命令），或向用户说明此操作的必要性。"
+        )
+
+    # 默认模式（计划模式同意后也已回退为 default）：弹出提问让用户授权。
     labels = get_session_labels(round_id)
     detail = f"\n📂 目标路径：{path_hint}" if path_hint else ""
     why = f"\n💡 原因：{reason}" if reason else ""
     effective_options = options or ["允许这次", "拒绝"]
     question = await _upsert_pending_question({
         "text": (
-            f"⚠️ **Agent 尝试执行 workspace 之外的 {operation}**\n\n"
+            f"⚠️ **Agent 尝试执行 {scope_hint}{operation}**\n\n"
             f"工具：{tool_name}{detail}{why}\n\n"
             f"请确认是否允许此操作。如果不允许，Agent 将仅能在当前 workspace 内工作。"
         ),
@@ -195,7 +238,7 @@ async def _request_write_elevation(
     tool_name: str,
     path_hint: str,
     reason: str = "",
-) -> str:
+) -> str | None:
     return await _request_scope_elevation(
         tool_name=tool_name,
         path_hint=path_hint,
@@ -211,7 +254,7 @@ async def _request_read_elevation(
     tool_name: str,
     path_hint: str,
     reason: str = "",
-) -> str:
+) -> str | None:
     return await _request_scope_elevation(
         tool_name=tool_name,
         path_hint=path_hint,
@@ -243,7 +286,7 @@ async def _request_delete_confirmation(
     *,
     tool_name: str,
     command: str,
-) -> str:
+) -> str | None:
     """Request user confirmation before a destructive file operation in the workspace."""
     cmd_preview = command[:240]
     return await _request_scope_elevation(
@@ -994,6 +1037,7 @@ async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
             reason=f"命令包含 $() 或反引号，其展开路径无法静态验证。\n命令：{command[:240]}",
             permission_kind="subshell_elevation",
             options=["允许执行", "拒绝"],
+            scope_hint="",
         )
     try:
         _guard_shell_command_workspace_write(command)
@@ -1297,6 +1341,7 @@ async def _tool_start_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_
                 reason=f"命令包含 $() 或反引号，其展开路径无法静态验证。\n命令：{command[:240]}",
                 permission_kind="subshell_elevation",
                 options=["允许执行", "拒绝"],
+                scope_hint="",
             )
         try:
             _guard_shell_command_workspace_write(command)
@@ -1331,6 +1376,7 @@ async def _tool_send_shell(args: dict[str, Any], _bot: Any, _chat_id: int, _db_p
             reason=f"命令包含 $() 或反引号，其展开路径无法静态验证。\n命令：{command[:240]}",
             permission_kind="subshell_elevation",
             options=["允许执行", "拒绝"],
+            scope_hint="",
         )
     try:
         _guard_shell_command_workspace_write(command)
@@ -1731,6 +1777,19 @@ TOOL_DEFS = [
                     },
                 },
                 "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "enter_plan_mode",
+            "description": "Main agent only. Enter PLAN MODE: decompose the user's request into ordered steps, each broken into concrete tasks, show the plan in the right sidebar's 计划 tab, and ask the user to approve / reject / revise before doing any real work. Use this proactively for complex, multi-step, or risky tasks where the user would benefit from reviewing the approach first. Do NOT combine with other tools in the same turn; calling this pauses the round for the user's decision.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "focus": {"type": "string", "description": "Optional note on what the plan should emphasize or any constraints to respect."},
+                },
             },
         },
     },

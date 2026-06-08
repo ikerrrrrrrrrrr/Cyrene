@@ -21,7 +21,11 @@ async def _tool_write(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: 
     try:
         path = _resolve_workspace_write_target(str(args["path"]))
     except ValueError:
-        return await _request_write_elevation(tool_name="Write", path_hint=str(args.get("path", "")))
+        elev = await _request_write_elevation(tool_name="Write", path_hint=str(args.get("path", "")))
+        if elev is not None:
+            return elev
+        # 已放行（完全访问 / 审核 agent 批准）：full-access 已置位，重新解析即成功
+        path = _resolve_workspace_write_target(str(args["path"]))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(str(args.get("content", "")), encoding="utf-8")
     return f"Wrote {path}"

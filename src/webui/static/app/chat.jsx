@@ -454,6 +454,8 @@ function getChatRuntime() {
       listeners: new Set(),
       sseHandler: null,
       retiredRequestIds: [],
+      plan: null,
+      planStatus: "",
     };
   }
   return window.__chatRuntime;
@@ -469,6 +471,8 @@ function getChatRuntimeSnapshot() {
     liveProgress: runtime.liveProgress.slice(),
     activeRequest: runtime.activeRequest ? { ...runtime.activeRequest } : null,
     watchRequestId: runtime.watchRequestId || "",
+    plan: runtime.plan || null,
+    planStatus: runtime.planStatus || "",
   };
 }
 
@@ -546,6 +550,10 @@ function ensureChatRuntimeSseSubscription() {
           : runtime.retainedMessages.slice(),
       });
       clearChatRuntimeSseSubscription();
+      return;
+    }
+    if (event && event.type === "plan") {
+      updateChatRuntime({ plan: event.plan || null, planStatus: String(event.status || "proposed") });
       return;
     }
     const entry = formatProgressEvent(event);
@@ -949,6 +957,15 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
   const [slashIndex, setSlashIndex] = useState(-1);
   const [mentionMenuOpen, setMentionMenuOpen] = useState(false);
   const [mentionedAgents, setMentionedAgents] = useState([]);
+  // 权限模式切换（取代旧的 @ 按钮）。粘性记忆：localStorage 持久化，跨消息保留。
+  const [mode, setModeRaw] = useState(function () {
+    try { return localStorage.getItem("cyrene.chat.permissionMode") || "default"; } catch (e) { return "default"; }
+  });
+  function setMode(m) {
+    setModeRaw(m);
+    try { localStorage.setItem("cyrene.chat.permissionMode", m); } catch (e) {}
+  }
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   // True during the first ~second after mount.  Ensures scroll-to-latest-user-
   // message uses instant scroll instead of smooth, which is fragile during the
   // mounting phase when layout is still settling.
@@ -1354,6 +1371,23 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
     return function () { document.removeEventListener("mousedown", onDown); };
   }, [mentionMenuOpen]);
 
+  useEffect(function () {
+    if (!modeMenuOpen) return;
+    function onDown(e) {
+      if (e.target.closest(".mode-menu") || e.target.closest(".iconbtn")) return;
+      setModeMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return function () { document.removeEventListener("mousedown", onDown); };
+  }, [modeMenuOpen]);
+
+  // 计划模式：收到 plan 事件 → 注册「计划」侧边栏 tab；新计划提议时自动切到该 tab。
+  useEffect(function () {
+    if (!runtimeState.plan) return;
+    addSidebarTab("plan");
+    if (runtimeState.planStatus === "proposed" && setRightSidebarView) setRightSidebarView("plan");
+  }, [runtimeState.plan, runtimeState.planStatus]);
+
   function autosize(e) {
     var val = e.target.value;
     var prev = draft;
@@ -1514,6 +1548,7 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           retry_request_id: options && options.retryRequestId || undefined,
           command: activeCommand || undefined,
           mentions: mentionedAgents.length > 0 ? mentionedAgents : undefined,
+          mode: mode || "default",
         }),
       });
       if (!r.ok) throw new Error("HTTP " + r.status);
@@ -2394,6 +2429,10 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
           setSlashIndex={setSlashIndex}
           mentionMenuOpen={mentionMenuOpen}
           setMentionMenuOpen={setMentionMenuOpen}
+          mode={mode}
+          setMode={setMode}
+          modeMenuOpen={modeMenuOpen}
+          setModeMenuOpen={setModeMenuOpen}
           visibleSending={visibleSending}
           openNextDialogue={openNextDialogue}
           stopActiveRun={stopActiveRun}
@@ -2431,6 +2470,8 @@ function ChatPage({ selectedSessionId, onSelectSession, rightSidebarCollapsed = 
         activeMarkdownContent={activeMarkdownContent}
         activeMarkdownName={activeMarkdownName}
         sidebarTabs={sidebarTabs}
+        plan={runtimeState.plan}
+        planStatus={runtimeState.planStatus}
       />
     </div>
   );
@@ -2491,7 +2532,7 @@ function isCodeMutationTool(tool) {
   return isLikelyCodePath(extractToolFilePath(tool && tool.rawArgs));
 }
 
-function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData, activeMarkdownContent, activeMarkdownName, sidebarTabs }) {
+function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal, onOpenShellModal, view = "overview", onViewChange, roundId, onResize, activeHtmlContent, activePdfUrl, activePdfName, activePptUrl, activePptName, htmlViewTab, onHtmlViewTabChange, editorData, diffData, activeMarkdownContent, activeMarkdownName, sidebarTabs, plan, planStatus }) {
   const { t } = useI18n();
   const sideRef = useRef(null);
   const tabs = sidebarTabs || new Set();
@@ -2511,6 +2552,7 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
   if (tabs.has("code-editor")) viewOptions.push({ id: "code-editor", label: t("chat.side.codeEditor") });
   if (tabs.has("diff-viewer")) viewOptions.push({ id: "diff-viewer", label: t("chat.side.diffViewer") });
   if (tabs.has("browser"))     viewOptions.push({ id: "browser",     label: t("chat.side.browser") });
+  if (tabs.has("plan"))        viewOptions.push({ id: "plan",        label: t("chat.side.plan") });
 
   const viewIds = viewOptions.map(function (o) { return o.id; });
 
@@ -2617,6 +2659,9 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
         })}
       </div>;
     }
+    if (view === "plan") {
+      return <PlanPanel plan={plan} status={planStatus} />;
+    }
     // default: overview
     return <div className="side-section" style={{ borderBottom: 0 }}>
       <SideTokenRing tokens={session.summary.tokens} />
@@ -2674,6 +2719,47 @@ function ChatSide({ session, subagents, ccStatus, refreshCcStatus, onOpenCCModal
 
         {renderSideContent()}
       </div>
+    </div>
+  );
+}
+
+// ── Plan Panel（计划模式：步骤 → 任务） ──
+
+function PlanPanel({ plan, status }) {
+  const { t } = useI18n();
+  if (!plan) {
+    return <div className="side-section" style={{ borderBottom: 0 }}>
+      <div className="plan-empty">{t("chat.plan.empty")}</div>
+    </div>;
+  }
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  const statusKey = status === "accepted" ? "chat.plan.statusAccepted"
+    : status === "rejected" ? "chat.plan.statusRejected"
+    : "chat.plan.statusProposed";
+  return (
+    <div className="side-section plan-panel" style={{ borderBottom: 0 }}>
+      <div className="plan-panel-head">
+        <span className={"plan-status plan-status--" + (status || "proposed")}>{t(statusKey)}</span>
+        <span className="plan-panel-title">{plan.title || t("chat.side.plan")}</span>
+      </div>
+      {plan.summary ? <div className="plan-summary">{plan.summary}</div> : null}
+      <ol className="plan-steps">
+        {steps.map(function (step, i) {
+          const tasks = Array.isArray(step.tasks) ? step.tasks : [];
+          return (
+            <li className="plan-step" key={i}>
+              <div className="plan-step-title"><span className="plan-step-num">{i + 1}</span>{step.title || ""}</div>
+              {tasks.length > 0 ? (
+                <ul className="plan-tasks">
+                  {tasks.map(function (task, j) {
+                    return <li className="plan-task" key={j}>{task}</li>;
+                  })}
+                </ul>
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
     </div>
   );
 }

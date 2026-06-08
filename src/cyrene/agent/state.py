@@ -79,6 +79,14 @@ _active_main_round_started_at = 0.0
 # 使用 ContextVar 确保 asyncio 任务间隔离
 _temporary_full_access: ContextVar[bool] = ContextVar("_temporary_full_access", default=False)
 
+# 本轮权限模式 —— 由 /api/chat 的 mode 字段决定，round 起始设置、结束重置。
+#   "default"     —— 碰到权限边界时提问让用户授权（现状）
+#   "full_access" —— 默认放行所有操作（round 起始时同时置 _temporary_full_access）
+#   "auto"        —— 由审核 agent 自主裁决提权请求，从不打扰用户
+#   "plan"        —— 先规划再执行（同意后回退默认模式）
+PERMISSION_MODES = ("default", "full_access", "auto", "plan")
+_permission_mode: ContextVar[str] = ContextVar("_permission_mode", default="default")
+
 _MAIN_INBOX_AGENT_ID = "main"
 _AWAITING_USER_SENTINEL = "[[cyrene.awaiting_user]]"
 

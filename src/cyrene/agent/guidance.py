@@ -864,6 +864,19 @@ async def answer_pending_question(
             await _restore_pending_question(pending)
             raise
 
+    if isinstance(pending_meta, dict) and str(pending_meta.get("kind", "")).strip() == "plan_confirmation":
+        try:
+            return await _handle_plan_confirmation_answer(
+                round_id=round_id,
+                pending=cleared,
+                answer_text=content,
+                client_request_id=client_request_id,
+                context=context,
+            )
+        except Exception:
+            await _restore_pending_question(pending)
+            raise
+
     if isinstance(pending_meta, dict) and str(pending_meta.get("kind", "")).strip() == "browser_takeover":
         # The user finished logging in via the native window. Return the browser
         # session to headless (same profile → now authenticated), then fall through
@@ -1101,4 +1114,82 @@ async def _handle_permission_elevation_answer(
         client_request_id=client_request_id,
         persist_user_message=False,
         command=str(context.get("command", "") or "").strip(),
+    )
+
+
+async def _handle_plan_confirmation_answer(
+    *,
+    round_id: str,
+    pending: dict[str, Any],
+    answer_text: str,
+    client_request_id: str,
+    context: dict[str, Any],
+) -> str:
+    """处理「计划模式」确认回答：同意并开始 / 拒绝 / 修改。"""
+    from cyrene.agent.coordinator import _run_chat_agent
+    from cyrene.agent.state import _publish_runtime_event
+    from cyrene.agent.planning import _plan_to_text
+
+    meta = pending.get("meta") if isinstance(pending.get("meta"), dict) else {}
+    plan = meta.get("plan") if isinstance(meta.get("plan"), dict) else {}
+    user_message = str(meta.get("user_message") or "").strip()
+    raw = str(answer_text or "").strip()
+    normalized = raw.lower()
+
+    approve = raw in {"同意并开始", "同意并开始执行", "同意并执行", "同意", "开始"} or normalized in {"approve", "start", "yes", "ok", "okay", "go"}
+    reject = raw in {"拒绝", "取消", "算了", "不用了"} or normalized in {"reject", "cancel", "no", "stop"}
+
+    if approve:
+        await _publish_runtime_event({"type": "plan", "status": "accepted", "plan": plan, "round_id": round_id})
+        exec_system = (
+            "用户已同意以下计划，请严格按计划执行。当前为默认权限模式：碰到 workspace 之外或写/删操作时，"
+            "再按需向用户申请提权。完成后用一段话总结结果。\n\n" + _plan_to_text(plan)
+        )
+        return await _run_chat_agent(
+            user_message or "[按已同意的计划执行]",
+            None, 0, "",
+            ephemeral_system=exec_system,
+            forced_round_id=round_id,
+            history_override=context.get("round_history") or [],
+            persist_base_messages=context.get("persist_base_messages") or [],
+            persist_insert_at=context.get("persist_insert_at"),
+            client_request_id=client_request_id,
+            persist_user_message=False,
+            command=str(context.get("command", "") or "").strip(),
+            permission_mode="default",
+        )
+
+    if reject:
+        await _publish_runtime_event({"type": "plan", "status": "rejected", "plan": plan, "round_id": round_id})
+        reject_system = (
+            "用户拒绝了刚才的计划，不要执行任何操作。用一句话礼貌确认已取消，"
+            "并邀请用户提出新的方向或调整后的需求。"
+        )
+        return await _run_chat_agent(
+            "[用户拒绝了计划]",
+            None, 0, "",
+            ephemeral_system=reject_system,
+            forced_round_id=round_id,
+            history_override=context.get("round_history") or [],
+            persist_base_messages=context.get("persist_base_messages") or [],
+            persist_insert_at=context.get("persist_insert_at"),
+            client_request_id=client_request_id,
+            persist_user_message=False,
+            command=str(context.get("command", "") or "").strip(),
+            permission_mode="default",
+        )
+
+    # 其他（含「修改」或任意自定义意见）→ 带着修改意见重新规划
+    return await _run_chat_agent(
+        user_message or raw,
+        None, 0, "",
+        forced_round_id=round_id,
+        history_override=context.get("round_history") or [],
+        persist_base_messages=context.get("persist_base_messages") or [],
+        persist_insert_at=context.get("persist_insert_at"),
+        client_request_id=client_request_id,
+        persist_user_message=True,
+        command=str(context.get("command", "") or "").strip(),
+        permission_mode="plan",
+        plan_modification=raw,
     )

@@ -968,13 +968,12 @@ function ModernChatComposer(props) {
             )}
           </span>
           <span className="modern-popover-anchor">
-            <button type="button" className={"iconbtn" + (props.mentionedAgents.length > 0 ? " active" : "")} title={t("chat.mention")} disabled={props.session.subagents.length === 0} onClick={function () { props.setMentionMenuOpen(!props.mentionMenuOpen); }}>@</button>
-            {props.mentionMenuOpen && (
-              <ModernMentionMenu
-                session={props.session}
-                mentionedAgents={props.mentionedAgents}
-                setMentionedAgents={props.setMentionedAgents}
-              />
+            <button type="button" className={"iconbtn mode-switch-btn" + ((props.mode && props.mode !== "default") ? " active" : "")} title={t("chat.mode.switcherTitle")} onClick={function () { props.setModeMenuOpen(!props.modeMenuOpen); }}>
+              <span className="mode-switch-icon">{chatModeMeta(props.mode).icon}</span>
+              <span className="mode-switch-label">{t(chatModeMeta(props.mode).labelKey)}</span>
+            </button>
+            {props.modeMenuOpen && (
+              <ModernModeMenu mode={props.mode} setMode={props.setMode} setModeMenuOpen={props.setModeMenuOpen} />
             )}
           </span>
           <span className="modern-composer-spacer"></span>
@@ -1107,6 +1106,48 @@ function ModernMentionMenu(props) {
             <span className="mention-option-body">
               <span className="mention-option-name">@{agent.name}</span>
               <span className="mention-option-task">{agent.task || agent.status}</span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// 四种权限模式（取代旧的 @ 按钮）。
+var CHAT_MODES = [
+  { id: "default",     icon: "🛡️", labelKey: "chat.mode.default",     descKey: "chat.mode.defaultDesc" },
+  { id: "full_access", icon: "🔓", labelKey: "chat.mode.fullAccess",  descKey: "chat.mode.fullAccessDesc" },
+  { id: "auto",        icon: "🤖", labelKey: "chat.mode.auto",        descKey: "chat.mode.autoDesc" },
+  { id: "plan",        icon: "📋", labelKey: "chat.mode.plan",        descKey: "chat.mode.planDesc" },
+];
+
+function chatModeMeta(id) {
+  for (var i = 0; i < CHAT_MODES.length; i++) {
+    if (CHAT_MODES[i].id === id) return CHAT_MODES[i];
+  }
+  return CHAT_MODES[0];
+}
+
+function ModernModeMenu(props) {
+  var t = useI18n().t;
+  var current = props.mode || "default";
+  return (
+    <div className="mode-menu modern-menu">
+      <div className="mode-menu-head">{t("chat.mode.menuHead")}</div>
+      {CHAT_MODES.map(function (m) {
+        var active = current === m.id;
+        return (
+          <button
+            type="button"
+            key={m.id}
+            className={"mode-option" + (active ? " active" : "")}
+            onClick={function () { props.setMode(m.id); props.setModeMenuOpen(false); }}
+          >
+            <span className="mode-option-icon">{m.icon}</span>
+            <span className="mode-option-body">
+              <span className="mode-option-label">{t(m.labelKey)}{active ? " ✓" : ""}</span>
+              <span className="mode-option-desc">{t(m.descKey)}</span>
             </span>
           </button>
         );

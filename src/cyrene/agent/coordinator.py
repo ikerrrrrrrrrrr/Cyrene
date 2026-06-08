@@ -192,6 +192,7 @@ async def run_agent(
     command: str = "",
     public_user_message: str | None = None,
     public_attachments: list[dict[str, Any]] | None = None,
+    permission_mode: str = "default",
 ) -> str:
     """Main entry point. Runs the main agent loop with full tools."""
     if _agent_lock.locked():
@@ -202,6 +203,7 @@ async def run_agent(
             user_message, bot, chat_id, db_path,
             client_request_id=client_request_id, lang=lang, command=command,
             public_user_message=public_user_message, public_attachments=public_attachments,
+            permission_mode=permission_mode,
         )
 
 
@@ -248,6 +250,8 @@ async def _run_chat_agent(
     assistant_message_meta: dict[str, Any] | None = None,
     lang: str = "",
     command: str = "",
+    permission_mode: str = "default",
+    plan_modification: str = "",
 ) -> str:
     import time as _time
 
@@ -289,6 +293,11 @@ async def _run_chat_agent(
     intermediate_reply_token = _pending_intermediate_user_replies.set([])
     hide_initial_detail_token = _ui_round_hide_initial_detail.set(bool(hide_initial_detail))
     assistant_meta_token = _ui_round_assistant_meta.set(dict(assistant_message_meta) if assistant_message_meta else None)
+    _mode = permission_mode if permission_mode in _state.PERMISSION_MODES else "default"
+    mode_token = _state._permission_mode.set(_mode)
+    # 完全访问模式：复用现有 _temporary_full_access 短路，所有工具零额外改动即放行。
+    if _mode == "full_access":
+        _state._temporary_full_access.set(True)
     behavior_turn_context: dict[str, Any] | None = None
     final_output = ""
     try:
@@ -644,14 +653,32 @@ async def _run_chat_agent(
                 metadata={"policy": spawn_policy},
             ))
 
-        from cyrene.agent.agent import _run_main_agent
+        # 计划模式：先拆解成步骤/任务，展示并请用户确认，不直接执行。
+        if _state._permission_mode.get() == "plan":
+            from cyrene.agent.planning import run_plan_flow
+            from cyrene.agent.message import _tool_result_requests_user_input
+            main_text = await run_plan_flow(
+                user_message=user_message,
+                history=history,
+                round_id=round_id,
+                public_user_message=public_user_message,
+                public_attachments=public_attachments,
+                client_request_id=client_request_id,
+                persist_user_message=persist_user_message,
+                modification=plan_modification,
+            )
+            # run_plan_flow 返回 awaiting_user JSON；归一化为 sentinel 让本轮像 ask_user 一样暂停。
+            if _tool_result_requests_user_input(main_text):
+                main_text = _AWAITING_USER_SENTINEL
+        else:
+            from cyrene.agent.agent import _run_main_agent
 
-        main_text = await _run_main_agent(
-            user_message, history, bot, chat_id, db_path, main_system,
-            client_request_id=client_request_id, persist_user_message=persist_user_message,
-            public_user_message=public_user_message, public_attachments=public_attachments, lang=lang,
-            system_context=main_system_context,
-        )
+            main_text = await _run_main_agent(
+                user_message, history, bot, chat_id, db_path, main_system,
+                client_request_id=client_request_id, persist_user_message=persist_user_message,
+                public_user_message=public_user_message, public_attachments=public_attachments, lang=lang,
+                system_context=main_system_context,
+            )
 
         if refresh_labels:
             _schedule_session_label_refresh(user_message, round_id)
@@ -707,6 +734,7 @@ async def _run_chat_agent(
         _state._active_main_round_public_prompt = ""
         _state._active_main_round_started_at = 0.0
         _state._temporary_full_access.set(False)
+        _state._permission_mode.reset(mode_token)
         _current_round_id.reset(round_token)
 
 

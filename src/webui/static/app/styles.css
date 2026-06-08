@@ -2253,6 +2253,98 @@ html[data-theme="light"] .msg.user .msg-body {
 html[data-text-size="large"] .slash-option { font-size: 15px; }
 html[data-text-size="large"] .slash-option-desc { font-size: 13px; }
 
+/* 权限模式切换器（取代旧的 @ 按钮） */
+.modern-composer-actions .iconbtn.mode-switch-btn {
+  width: auto;
+  min-width: 30px;
+  padding: 0 9px;
+  gap: 5px;
+  display: inline-flex;
+  align-items: center;
+}
+.mode-switch-icon { font-size: 13px; line-height: 1; }
+.mode-switch-label { font-size: 11.5px; font-weight: 650; }
+
+.mode-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 300px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-m);
+  background: var(--bg-2);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  z-index: 100;
+}
+.mode-menu-head {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-4);
+  padding: 10px 14px 6px;
+}
+.mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+.mode-option:hover { background: var(--bg-3); color: var(--text-1); }
+.mode-option.active { background: var(--accent-faint); }
+.mode-option-icon { font-size: 16px; line-height: 1.3; flex-shrink: 0; }
+.mode-option-body { min-width: 0; }
+.mode-option-label { display: block; font-weight: 600; font-size: 13px; color: var(--text-1); }
+.mode-option.active .mode-option-label { color: var(--accent); }
+.mode-option-desc { display: block; font-size: 11.5px; color: var(--text-4); margin-top: 2px; line-height: 1.35; }
+
+/* 计划模式：右侧「计划」面板 */
+.plan-panel { display: flex; flex-direction: column; gap: 10px; }
+.plan-panel-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.plan-panel-title { font-weight: 700; font-size: 14px; color: var(--text-1); }
+.plan-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text-3);
+}
+.plan-status--proposed { color: #b9770e; border-color: rgba(243, 156, 18, 0.4); background: rgba(243, 156, 18, 0.1); }
+.plan-status--accepted { color: #2f9e44; border-color: rgba(76, 175, 80, 0.4); background: rgba(76, 175, 80, 0.1); }
+.plan-status--rejected { color: var(--err); border-color: rgba(201, 120, 120, 0.4); background: rgba(201, 120, 120, 0.1); }
+.plan-summary { font-size: 12.5px; color: var(--text-3); line-height: 1.5; }
+.plan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.plan-step-title { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 13px; color: var(--text-1); }
+.plan-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-faint);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.plan-tasks { list-style: none; margin: 6px 0 0; padding: 0 0 0 26px; display: flex; flex-direction: column; gap: 5px; }
+.plan-task { position: relative; font-size: 12px; color: var(--text-2); line-height: 1.45; padding-left: 14px; }
+.plan-task::before { content: ""; position: absolute; left: 0; top: 7px; width: 5px; height: 5px; border-radius: 50%; background: var(--text-4); }
+.plan-empty { color: var(--text-4); font-size: 12.5px; padding: 8px 0; }
+
 .mention-menu {
   position: absolute;
   bottom: calc(100% + 8px);
