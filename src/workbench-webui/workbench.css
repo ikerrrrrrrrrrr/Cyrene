@@ -1,85 +1,52 @@
 /* Project / Task Session workbench */
 
 .workbench-shell {
-  --wb-bg: #07111d;
-  --wb-bg-2: #0b1624;
-  --wb-panel: #0f1a29;
-  --wb-panel-2: #121f30;
+  /* Derive the whole palette from the global theme tokens (styles.css) so the
+     workbench follows light/dark AND the accent ("主题色") picked in the new-UI
+     settings. Base stays neutral grey; only subtle tints pull from --accent. */
+  --wb-accent: var(--accent);
+  --wb-bg: var(--bg);
+  --wb-bg-2: var(--bg-1);
+  --wb-panel: var(--bg-2);
+  --wb-panel-2: var(--bg-3);
   --wb-shell-bg:
-    radial-gradient(circle at 18% 10%, rgba(63, 96, 170, 0.20), transparent 34%),
-    linear-gradient(135deg, #07111d 0%, #0a1320 52%, #07111d 100%);
-  --wb-topbar-bg: rgba(5, 12, 21, 0.82);
-  --wb-rail-bg: rgba(8, 17, 29, 0.62);
-  --wb-task-rail-bg: rgba(7, 15, 26, 0.76);
-  --wb-main-bg: rgba(8, 18, 31, 0.42);
-  --wb-right-bg: rgba(7, 15, 26, 0.78);
-  --wb-control-bg: rgba(16, 28, 44, 0.82);
-  --wb-control-hover-bg: rgba(26, 42, 63, 0.95);
-  --wb-row-hover-bg: rgba(30, 45, 65, 0.74);
-  --wb-active-bg: linear-gradient(135deg, rgba(31, 74, 145, 0.62), rgba(22, 42, 76, 0.72));
-  --wb-active-border: rgba(60, 126, 255, 0.52);
-  --wb-card-bg: rgba(14, 25, 43, 0.82);
-  --wb-card-bg-strong: rgba(14, 25, 43, 0.96);
-  --wb-agent-bg: linear-gradient(135deg, rgba(35, 28, 76, 0.92), rgba(13, 27, 51, 0.92));
-  --wb-agent-border: rgba(125, 87, 255, 0.46);
-  --wb-agent-text: #cfd9e8;
-  --wb-icon-bg: rgba(13, 25, 40, 0.78);
-  --wb-error-bg: rgba(88, 23, 28, 0.55);
-  --wb-error-text: #ffc9c7;
-  --wb-line: rgba(141, 160, 184, 0.18);
-  --wb-line-2: rgba(141, 160, 184, 0.28);
-  --wb-text: #edf4ff;
-  --wb-muted: #9cabbd;
-  --wb-faint: #647386;
-  --wb-blue: #2587ff;
-  --wb-purple: #8f5cff;
-  --wb-green: #35c66f;
-  --wb-amber: #f2a51a;
-  --wb-red: #ef5350;
+    radial-gradient(circle at 18% 6%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 42%),
+    linear-gradient(135deg, var(--bg) 0%, var(--bg-1) 52%, var(--bg) 100%);
+  --wb-topbar-bg: color-mix(in srgb, var(--bg) 80%, transparent);
+  --wb-rail-bg: color-mix(in srgb, var(--bg-1) 66%, transparent);
+  --wb-task-rail-bg: color-mix(in srgb, var(--bg-1) 80%, transparent);
+  --wb-main-bg: color-mix(in srgb, var(--bg-1) 42%, transparent);
+  --wb-right-bg: color-mix(in srgb, var(--bg-1) 80%, transparent);
+  --wb-control-bg: var(--control-bg);
+  --wb-control-hover-bg: var(--control-bg-hover);
+  --wb-row-hover-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
+  --wb-active-bg: color-mix(in srgb, var(--accent) 16%, var(--bg-2));
+  --wb-active-border: color-mix(in srgb, var(--accent) 42%, transparent);
+  --wb-card-bg: color-mix(in srgb, var(--bg-2) 78%, transparent);
+  --wb-card-bg-strong: var(--bg-2);
+  --wb-agent-bg:
+    linear-gradient(135deg, color-mix(in srgb, var(--magenta) 18%, var(--bg-2)), color-mix(in srgb, var(--accent) 12%, var(--bg-2)));
+  --wb-agent-border: color-mix(in srgb, var(--magenta) 30%, transparent);
+  --wb-agent-text: var(--text-2);
+  --wb-icon-bg: color-mix(in srgb, var(--bg-3) 55%, transparent);
+  --wb-error-bg: color-mix(in srgb, var(--err) 16%, transparent);
+  --wb-error-text: var(--err);
+  --wb-line: var(--line);
+  --wb-line-2: var(--line-2);
+  --wb-text: var(--text);
+  --wb-muted: var(--text-2);
+  --wb-faint: var(--text-3);
+  --wb-blue: #3b82f6;
+  --wb-purple: var(--magenta);
+  --wb-green: #1f9d57;
+  --wb-amber: var(--warn);
+  --wb-red: var(--err);
   min-height: 100vh;
   height: 100vh;
   overflow: hidden;
   background: var(--wb-shell-bg);
   color: var(--wb-text);
   font-family: Manrope, Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-html[data-theme="light"] .workbench-shell {
-  --wb-bg: #f4f7fb;
-  --wb-bg-2: #eef3f8;
-  --wb-panel: #ffffff;
-  --wb-panel-2: #f7faff;
-  --wb-shell-bg:
-    radial-gradient(circle at 12% 8%, rgba(55, 126, 255, 0.13), transparent 34%),
-    linear-gradient(135deg, #f7faff 0%, #eef3f8 55%, #f8fbff 100%);
-  --wb-topbar-bg: rgba(255, 255, 255, 0.84);
-  --wb-rail-bg: rgba(246, 250, 255, 0.82);
-  --wb-task-rail-bg: rgba(241, 246, 252, 0.88);
-  --wb-main-bg: rgba(255, 255, 255, 0.42);
-  --wb-right-bg: rgba(246, 250, 255, 0.9);
-  --wb-control-bg: rgba(255, 255, 255, 0.88);
-  --wb-control-hover-bg: rgba(238, 245, 255, 0.98);
-  --wb-row-hover-bg: rgba(226, 237, 252, 0.74);
-  --wb-active-bg: linear-gradient(135deg, rgba(214, 229, 255, 0.92), rgba(238, 245, 255, 0.94));
-  --wb-active-border: rgba(17, 103, 216, 0.32);
-  --wb-card-bg: rgba(255, 255, 255, 0.86);
-  --wb-card-bg-strong: rgba(255, 255, 255, 0.96);
-  --wb-agent-bg: linear-gradient(135deg, rgba(244, 239, 255, 0.94), rgba(235, 244, 255, 0.96));
-  --wb-agent-border: rgba(110, 69, 217, 0.24);
-  --wb-agent-text: #334259;
-  --wb-icon-bg: rgba(255, 255, 255, 0.82);
-  --wb-error-bg: rgba(255, 235, 235, 0.86);
-  --wb-error-text: #9d2626;
-  --wb-line: rgba(34, 55, 83, 0.13);
-  --wb-line-2: rgba(34, 55, 83, 0.22);
-  --wb-text: #142033;
-  --wb-muted: #5d6b7e;
-  --wb-faint: #8b98a8;
-  --wb-blue: #1167d8;
-  --wb-purple: #6e45d9;
-  --wb-green: #14924b;
-  --wb-amber: #b77800;
-  --wb-red: #c73737;
 }
 
 .workbench-shell button,
@@ -112,11 +79,11 @@ html[data-theme="light"] .workbench-shell {
 
 .workbench-brand {
   gap: 10px;
-  padding-left: 16px;
+  padding-left: 6px;
 }
 
 .workbench-traffic-space {
-  width: 80px;
+  width: 70px;
   height: 38px;
   flex: 0 0 auto;
   -webkit-app-region: no-drag;
@@ -242,7 +209,7 @@ html[data-theme="light"] .workbench-shell {
 }
 
 .workbench-rail-head button:hover {
-  border-color: var(--wb-blue);
+  border-color: var(--wb-accent);
   background: var(--wb-control-hover-bg);
 }
 
@@ -260,8 +227,8 @@ html[data-theme="light"] .workbench-shell {
   border-radius: 5px;
   display: grid;
   place-items: center;
-  background: rgba(37, 135, 255, 0.18);
-  color: #9dccff;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--wb-accent);
   font-weight: 800;
 }
 
@@ -309,17 +276,6 @@ html[data-theme="light"] .workbench-shell {
 
 .workbench-project-card:hover {
   transform: translateY(-1px);
-}
-
-.workbench-project-card.active::before {
-  content: "";
-  position: absolute;
-  left: -1px;
-  top: 12px;
-  bottom: 12px;
-  width: 3px;
-  border-radius: 0 999px 999px 0;
-  background: var(--wb-blue);
 }
 
 .workbench-project-icon {
@@ -398,22 +354,24 @@ html[data-theme="light"] .workbench-shell {
 }
 
 .workbench-nav-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
   display: grid;
   place-items: center;
   border: 1px solid var(--wb-line);
   background: var(--wb-icon-bg);
   color: var(--wb-muted);
-  font-size: 13px;
-  font-family: var(--mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+.workbench-nav-icon svg {
+  display: block;
 }
 
 .workbench-nav-button:hover .workbench-nav-icon {
-  border-color: rgba(37, 135, 255, 0.38);
-  background: rgba(37, 135, 255, 0.15);
-  color: #9dccff;
+  border-color: color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--wb-accent);
 }
 
 .workbench-account {
@@ -425,12 +383,35 @@ html[data-theme="light"] .workbench-shell {
   align-items: center;
 }
 
+.workbench-account-meta {
+  min-width: 0;
+}
+
+.workbench-account-name {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
 .workbench-account b {
   display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workbench-pro-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--wb-purple);
+  color: #fff;
 }
 
 .workbench-avatar.photo {
@@ -450,13 +431,11 @@ html[data-theme="light"] .workbench-shell {
 }
 
 .workbench-task-card {
-  min-height: 62px;
-  border-radius: 8px;
-  padding: 10px;
-  display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
+  border-radius: 10px;
+  padding: 11px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
 }
 
 .workbench-task-card:hover,
@@ -465,10 +444,60 @@ html[data-theme="light"] .workbench-shell {
   border-color: var(--wb-active-border);
 }
 
-.workbench-task-card time {
+.workbench-task-top {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.workbench-task-top .workbench-status-dot {
+  flex: 0 0 auto;
+}
+
+.workbench-task-top b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.workbench-task-bottom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 18px;
+}
+
+.workbench-task-bottom time {
   color: var(--wb-muted);
   font-size: 12px;
 }
+
+.workbench-task-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--wb-faint) 20%, transparent);
+  color: var(--wb-muted);
+}
+
+.workbench-task-status .wb-status-ico {
+  font-style: normal;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.workbench-task-status.blue { background: color-mix(in srgb, var(--wb-blue) 16%, transparent); color: var(--wb-blue); }
+.workbench-task-status.green { background: color-mix(in srgb, var(--wb-green) 16%, transparent); color: var(--wb-green); }
+.workbench-task-status.amber { background: color-mix(in srgb, var(--wb-amber) 18%, transparent); color: var(--wb-amber); }
+.workbench-task-status.red { background: color-mix(in srgb, var(--wb-red) 16%, transparent); color: var(--wb-red); }
 
 .workbench-status-dot {
   width: 9px;
@@ -718,7 +747,7 @@ html[data-theme="light"] .workbench-shell {
 
 .workbench-composer-box {
   overflow: hidden;
-  border-color: rgba(37, 135, 255, 0.52);
+  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
 }
 
 .workbench-composer textarea {
@@ -753,8 +782,8 @@ html[data-theme="light"] .workbench-shell {
   min-width: 64px;
   border: 0;
   border-radius: 999px;
-  background: var(--wb-blue);
-  color: white;
+  background: var(--wb-accent);
+  color: var(--accent-text, #fff);
   font-weight: 750;
   cursor: pointer;
 }
@@ -793,7 +822,7 @@ html[data-theme="light"] .workbench-shell {
 .workbench-right-tabs button.active,
 .workbench-right-tabs button:hover {
   color: var(--wb-text);
-  border-bottom-color: var(--wb-blue);
+  border-bottom-color: var(--wb-accent);
 }
 
 .workbench-right-body {
@@ -1190,7 +1219,7 @@ html[data-theme="light"] .workbench-shell {
 }
 
 .wb-input:focus {
-  border-color: var(--wb-blue);
+  border-color: var(--wb-accent);
 }
 
 .wb-input.mono {
@@ -1247,9 +1276,9 @@ html[data-theme="light"] .workbench-shell {
 }
 
 .wb-btn.primary {
-  background: var(--wb-blue);
+  background: var(--wb-accent);
   border-color: transparent;
-  color: white;
+  color: var(--accent-text, #fff);
   font-weight: 700;
 }
 
@@ -1345,7 +1374,7 @@ html[data-theme="light"] .workbench-shell {
 }
 
 .wb-toggle.on {
-  background: var(--wb-blue);
+  background: var(--wb-accent);
 }
 
 .wb-toggle.on::after {

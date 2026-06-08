@@ -121,6 +121,26 @@ var WorkbenchModel = (function () {
     return source.slice(0, 1).toUpperCase();
   }
 
+  // Stable per-project icon gradient derived from a seed (project id or name),
+  // so each project card gets its own color like the reference design.
+  function projectGradient(seed) {
+    var palette = [
+      ["#8f5cff", "#5b7dff"],
+      ["#3b82f6", "#2567e8"],
+      ["#22b07a", "#149e63"],
+      ["#fb7185", "#ef4d57"],
+      ["#f2a51a", "#ef7e1a"],
+      ["#06b6d4", "#0e8fb0"],
+    ];
+    var str = String(seed || "");
+    var hash = 0;
+    for (var i = 0; i < str.length; i++) {
+      hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+    }
+    var pair = palette[hash % palette.length];
+    return "linear-gradient(135deg, " + pair[0] + ", " + pair[1] + ")";
+  }
+
   window.WorkbenchModel = {
     normalizeStore: normalizeStore,
     fetchProjects: fetchProjects,
@@ -131,6 +151,7 @@ var WorkbenchModel = (function () {
     statusTone: statusTone,
     formatTime: formatTime,
     initials: initials,
+    projectGradient: projectGradient,
   };
 
   return window.WorkbenchModel;

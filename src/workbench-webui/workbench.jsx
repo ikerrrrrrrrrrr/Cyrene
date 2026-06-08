@@ -209,10 +209,18 @@ function WorkbenchTopbar({ project, session, onSearch, onSettings, theme, actual
 
 function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProject, onOpenPage, onOpenLegacy }) {
   var navItems = [
-    { id: "chat", label: "对话", icon: "✦", action: function () { onOpenPage("chat"); } },
-    { id: "knowledge", label: "知识库", icon: "▤", action: function () { onOpenPage("knowledge"); } },
-    { id: "schedule", label: "日程", icon: "◷", action: function () { onOpenPage("schedule"); } },
-    { id: "memory", label: "记忆", icon: "◇", action: function () { onOpenPage("memory"); } },
+    { id: "chat", label: "对话", icon: (
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.2 7.6L3 21l1.9-5.8A8.5 8.5 0 1 1 21 11.5Z"/></svg>
+    ), action: function () { onOpenPage("chat"); } },
+    { id: "knowledge", label: "知识库", icon: (
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v15H7.5A2.5 2.5 0 0 0 5 19.5Z"/><path d="M5 19.5A2.5 2.5 0 0 0 7.5 22H20"/></svg>
+    ), action: function () { onOpenPage("knowledge"); } },
+    { id: "schedule", label: "日程", icon: (
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>
+    ), action: function () { onOpenPage("schedule"); } },
+    { id: "memory", label: "记忆", icon: (
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 4 13.6 10.4 20 12 13.6 13.6 12 20 10.4 13.6 4 12 10.4 10.4Z"/></svg>
+    ), action: function () { onOpenPage("memory"); } },
   ];
   return (
     <aside className="workbench-project-rail">
@@ -234,7 +242,10 @@ function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProje
               onClick={function () { onSelectProject(project.id); }}
               title={project.workspacePath}
             >
-              <span className="workbench-project-icon">{WorkbenchModel.initials(project.name)}</span>
+              <span
+                className="workbench-project-icon"
+                style={{ background: WorkbenchModel.projectGradient(project.id || project.name) }}
+              >{WorkbenchModel.initials(project.name)}</span>
               <span className="workbench-project-meta">
                 <b>{project.name}</b>
                 <small>{project.workspacePath || "—"}</small>
@@ -253,15 +264,20 @@ function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProje
           );
         })}
         <button type="button" className="workbench-nav-button legacy" onClick={onOpenLegacy}>
-          <span className="workbench-nav-icon">↩</span>
+          <span className="workbench-nav-icon">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5 5.5 5.5 0 0 1 14.5 20H8"/></svg>
+          </span>
           <span>旧界面</span>
         </button>
       </div>
       <div className="workbench-account">
         <div className="workbench-avatar photo">{WorkbenchModel.initials(DATA.user && DATA.user.name)}</div>
-        <div>
-          <b>{DATA.user && DATA.user.name || "User"}</b>
-          <small>{(DATA.sessions && DATA.sessions[0] && DATA.sessions[0].model) || DATA.appVersion || "model"} · Pro</small>
+        <div className="workbench-account-meta">
+          <div className="workbench-account-name">
+            <b>{DATA.user && DATA.user.name || "User"}</b>
+            <span className="workbench-pro-badge">Pro</span>
+          </div>
+          <small>{(DATA.sessions && DATA.sessions[0] && DATA.sessions[0].model) || DATA.appVersion || "model"}</small>
         </div>
       </div>
     </aside>
@@ -288,12 +304,17 @@ function TaskRail({ project, activeSessionId, onSelectSession, onCreateSession, 
               className={"workbench-task-card" + (session.id === activeSessionId ? " active" : "")}
               onClick={function () { onSelectSession(session.id); }}
             >
-              <span className={"workbench-status-dot " + tone}></span>
-              <span className="workbench-task-main">
+              <span className="workbench-task-top">
+                <span className={"workbench-status-dot " + tone}></span>
                 <b>{session.title}</b>
-                <small>{WorkbenchModel.statusText(session.status)}</small>
               </span>
-              <time>{WorkbenchModel.formatTime(session.updatedAt || session.createdAt)}</time>
+              <span className="workbench-task-bottom">
+                <span className={"workbench-task-status " + tone}>
+                  {tone === "muted" && <i className="wb-status-ico">◷</i>}
+                  {WorkbenchModel.statusText(session.status)}
+                </span>
+                <time>{WorkbenchModel.formatTime(session.updatedAt || session.createdAt)}</time>
+              </span>
             </button>
           );
         })}

@@ -742,6 +742,7 @@ function App() {
   useDataVersion();
   const [shellMode, setShellMode] = useStateApp(readUiShellMode);
   const [themeMode, setThemeMode] = useStateApp(function () { return readStoredTweak("theme", "system"); });
+  const [accent, setAccent] = useStateApp(function () { return readStoredTweak("accent", null); });
   const [systemTheme, setSystemTheme] = useStateApp(function () {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
@@ -763,6 +764,43 @@ function App() {
     document.documentElement.dataset.theme = actualTheme;
     delete document.documentElement.dataset.booting;
   }, [themeMode, actualTheme]);
+
+  // Apply the accent ("主题色") chosen in the new-UI settings overlay. The
+  // workbench palette derives its tints from --accent, so this drives the whole
+  // shell. Independent from the legacy shell's own tweak pipeline.
+  useEffectApp(function () {
+    // Only the workbench shell drives --accent here; the legacy shell runs its
+    // own accent pipeline, so skip when it's showing to avoid fighting the var.
+    if (needsOnboarding || shellMode === "legacy" || typeof window.WorkbenchApp === "undefined") return;
+    const root = document.documentElement.style;
+    const a = typeof accent === "string" ? accent.trim() : "";
+    const m = a.match(/^#([0-9a-f]{6})$/i);
+    if (m) {
+      const r = parseInt(m[1].slice(0, 2), 16), g = parseInt(m[1].slice(2, 4), 16), b = parseInt(m[1].slice(4, 6), 16);
+      root.setProperty("--accent", a);
+      root.setProperty("--accent-faint", `rgba(${r},${g},${b},0.08)`);
+      root.setProperty("--accent-dim", `rgba(${r},${g},${b},0.35)`);
+      root.setProperty("--accent-text", (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? "#0d1612" : "#ffffff");
+    } else {
+      root.removeProperty("--accent");
+      root.removeProperty("--accent-faint");
+      root.removeProperty("--accent-dim");
+      root.removeProperty("--accent-text");
+    }
+  }, [accent, actualTheme, shellMode, needsOnboarding]);
+
+  // Live-sync theme + accent when changed from the settings overlay (it writes
+  // localStorage and dispatches cyrene-tweak-*-change events).
+  useEffectApp(function () {
+    function onTheme() { setThemeMode(readStoredTweak("theme", "system")); }
+    function onAccent() { setAccent(readStoredTweak("accent", null)); }
+    window.addEventListener("cyrene-tweak-theme-change", onTheme);
+    window.addEventListener("cyrene-tweak-accent-change", onAccent);
+    return function () {
+      window.removeEventListener("cyrene-tweak-theme-change", onTheme);
+      window.removeEventListener("cyrene-tweak-accent-change", onAccent);
+    };
+  }, []);
 
   function toggleWorkbenchTheme() {
     const order = ["system", "light", "dark"];
