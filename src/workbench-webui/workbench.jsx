@@ -180,8 +180,14 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
 function WorkbenchTopbar({ project, session, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
   var title = project ? project.name : "Project";
   var sessionTitle = session ? session.title : "Task";
-  var themeIcon = theme === "system" ? "◐" : actualTheme === "dark" ? "☾" : "☀";
   var themeTitle = theme === "system" ? "跟随系统" : actualTheme === "dark" ? "深色模式" : "浅色模式";
+  var themeIcon = theme === "system" ? (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/></svg>
+  ) : actualTheme === "dark" ? (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/></svg>
+  ) : (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  );
   return (
     <div className="workbench-topbar">
       <div className="workbench-brand">
@@ -195,12 +201,21 @@ function WorkbenchTopbar({ project, session, onSearch, onSettings, theme, actual
         <b>{sessionTitle}</b>
       </div>
       <div className="workbench-top-actions">
-        <button type="button" className="workbench-icon-btn wide" onClick={onSearch} title="搜索">
-          <span>⌕</span><span>搜索</span>
+        <button type="button" className="workbench-search-box" onClick={onSearch} title="搜索">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+          <span>搜索</span>
         </button>
-        <button type="button" className="workbench-icon-btn" title="通知">♢</button>
+        <button type="button" className="workbench-icon-btn workbench-notif-btn" title="通知">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+          <span className="workbench-notif-badge"></span>
+        </button>
         <button type="button" className="workbench-icon-btn" onClick={onToggleTheme} title={themeTitle}>{themeIcon}</button>
-        <button type="button" className="workbench-icon-btn" onClick={onSettings} title="设置">⚙</button>
+        <button type="button" className="workbench-icon-btn" title="帮助">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+        </button>
+        <button type="button" className="workbench-icon-btn" onClick={onSettings} title="设置">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
         <div className="workbench-avatar">{WorkbenchModel.initials(DATA.user && DATA.user.name)}</div>
       </div>
     </div>

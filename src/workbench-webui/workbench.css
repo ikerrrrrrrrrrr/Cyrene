@@ -24,8 +24,8 @@
   --wb-row-hover-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
   --wb-active-bg: color-mix(in srgb, var(--accent) 15%, var(--bg-2));
   --wb-active-border: color-mix(in srgb, var(--accent) 40%, transparent);
-  --wb-card-bg: color-mix(in srgb, var(--accent) 6%, var(--bg-2));
-  --wb-card-bg-strong: color-mix(in srgb, var(--accent) 7%, var(--bg-2));
+  --wb-card-bg: color-mix(in srgb, var(--accent) 4%, var(--bg-1));
+  --wb-card-bg-strong: color-mix(in srgb, var(--accent) 5%, var(--bg-1));
   --wb-agent-bg:
     linear-gradient(135deg, color-mix(in srgb, var(--magenta) 13%, var(--bg-2)), color-mix(in srgb, var(--accent) 7%, var(--bg-2)));
   --wb-agent-border: color-mix(in srgb, var(--magenta) 22%, transparent);
@@ -130,25 +130,61 @@
 .workbench-icon-btn {
   height: 34px;
   min-width: 34px;
-  border: 1px solid var(--wb-line);
-  border-radius: 8px;
-  background: var(--wb-control-bg);
-  color: var(--wb-text);
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--wb-muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   cursor: pointer;
 }
 
-.workbench-icon-btn.wide {
-  width: 150px;
-  justify-content: flex-start;
-  padding: 0 12px;
-  color: var(--wb-muted);
+.workbench-icon-btn svg {
+  display: block;
 }
 
 .workbench-icon-btn:hover {
+  background: var(--wb-control-hover-bg);
+  color: var(--wb-text);
+}
+
+.workbench-notif-btn {
+  position: relative;
+}
+
+/* Empty placeholder badge — wire a count in later. */
+.workbench-notif-badge {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--wb-red);
+  box-shadow: 0 0 0 2px var(--wb-topbar-bg);
+}
+
+.workbench-search-box {
+  height: 34px;
+  width: 200px;
+  border: 1px solid var(--wb-line);
+  border-radius: 9px;
+  background: var(--wb-control-bg);
+  color: var(--wb-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.workbench-search-box svg {
+  flex: 0 0 auto;
+}
+
+.workbench-search-box:hover {
   border-color: var(--wb-line-2);
   background: var(--wb-control-hover-bg);
 }
@@ -168,7 +204,7 @@
 .workbench-grid {
   height: calc(100vh - 58px);
   display: grid;
-  grid-template-columns: 290px 230px minmax(460px, 1fr) 400px;
+  grid-template-columns: 290px 300px minmax(460px, 1fr) 320px;
   min-width: 0;
 }
 
@@ -595,7 +631,7 @@
   border: 1px solid var(--wb-line);
   border-radius: 8px;
   background: var(--wb-card-bg);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
 .workbench-agent-reply {
@@ -955,7 +991,7 @@
 
 @media (max-width: 1320px) {
   .workbench-grid {
-    grid-template-columns: 250px 210px minmax(390px, 1fr) 330px;
+    grid-template-columns: 250px 270px minmax(390px, 1fr) 280px;
   }
 
   .workbench-topbar {
