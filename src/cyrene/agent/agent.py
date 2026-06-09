@@ -38,11 +38,12 @@ from cyrene.agent.state import (
     _caller_type,
     _current_command,
     _current_round_id,
+    _current_session_id,
     _DEEP_RESEARCH_LIGHT_TOOL_DEFS,
     _deep_research_first_round,
     _deep_research_mode,
     _emit_reply_stream_event,
-    _interrupt_event,
+    _ensure_session,
     _LIGHT_TOOL_DEFS,
     _get_max_tool_rounds,
     _publish_runtime_event,
@@ -537,7 +538,9 @@ async def _run_main_agent(
                     get_raw_messages as _sub_raw_msgs, reactivate as _sub_reactivate,
                     run_summary_subagent as _run_summary_subagent,
                 )
-                from cyrene.inbox import get_unread_count as _inbox_unread
+                from cyrene.inbox import get_unread_count as _inbox_unread_base
+                _agent_session_id = _current_session_id.get()
+                _inbox_unread = lambda aid: _inbox_unread_base(aid, session_id=_agent_session_id)
                 from cyrene.modules.deep_research import (
                     deduplicate_references as _deduplicate_references,
                     deep_research_pdf_attachment as _deep_research_pdf_attachment,
@@ -550,13 +553,14 @@ async def _run_main_agent(
                     write_section as _write_section,
                 )
 
-                _interrupt_event.clear()
+                _interrupt_event_sess = _ensure_session(_current_session_id.get()).interrupt_event
+                _interrupt_event_sess.clear()
                 interrupted = False
                 quiet_ticks = 0
                 for _ in range(120):
                     try:
-                        await asyncio.wait_for(_interrupt_event.wait(), timeout=0.5)
-                        _interrupt_event.clear()
+                        await asyncio.wait_for(_interrupt_event_sess.wait(), timeout=0.5)
+                        _interrupt_event_sess.clear()
                         interrupted = True
                         break
                     except asyncio.TimeoutError:

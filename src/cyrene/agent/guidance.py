@@ -692,8 +692,9 @@ async def _process_main_inbox_message(message: dict[str, Any], bot: Any, chat_id
 
 def _ensure_main_inbox_worker(bot: Any, chat_id: int, db_path: str) -> None:
     import cyrene.agent.state as _state
-    if _state._main_inbox_worker is None or _state._main_inbox_worker.done():
-        _state._main_inbox_worker = asyncio.create_task(_drain_main_inbox(bot, chat_id, db_path))
+    _def_ctx = _state._ensure_session("")
+    if _def_ctx.main_inbox_worker is None or _def_ctx.main_inbox_worker.done():
+        _def_ctx.main_inbox_worker = asyncio.create_task(_drain_main_inbox(bot, chat_id, db_path))
 
 
 async def queue_round_guidance(
@@ -803,7 +804,7 @@ async def _drain_main_inbox(bot: Any, chat_id: int, db_path: str) -> None:
     except Exception:
         logger.exception("Failed to drain main inbox")
     finally:
-        _state._main_inbox_worker = None
+        _state._ensure_session("").main_inbox_worker = None
         if get_live_rounds() and _main_inbox_pending_by_round():
             _ensure_main_inbox_worker(bot, chat_id, db_path)
 

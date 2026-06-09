@@ -64,8 +64,10 @@ from cyrene.agent.state import (
     _current_client_request_id,
     _current_command,
     _current_round_id,
+    _current_session_id,
     _deep_research_first_round,
     _deep_research_mode,
+    _ensure_session,
     _interrupt_event,
     _LIGHT_TOOL_DEFS,
     _get_max_tool_rounds,
@@ -125,11 +127,12 @@ async def _kick_behavior_learning_processing() -> None:
 # ---------------------------------------------------------------------------
 
 async def _run_execution_agent(task: str, bot: Any, chat_id: int, db_path: str, notify_state: dict[str, bool] | None = None) -> str:
-    # 使用 agent_lock 防止与用户聊天并发执行
-    if _agent_lock.locked():
+    # 使用默认 session 的锁防止与用户聊天并发执行
+    default_ctx = _ensure_session("")
+    if default_ctx.lock.locked():
         return ""
-    async with _agent_lock:
-        _interrupt_event.clear()
+    async with default_ctx.lock:
+        default_ctx.interrupt_event.clear()
         return await _run_execution_agent_locked(task, bot, chat_id, db_path, notify_state)
 
 
@@ -193,36 +196,44 @@ async def run_agent(
     public_user_message: str | None = None,
     public_attachments: list[dict[str, Any]] | None = None,
     permission_mode: str = "default",
+    session_id: str = "",
 ) -> str:
     """Main entry point. Runs the main agent loop with full tools."""
-    if _agent_lock.locked():
-        interrupt_active_run()
-    async with _agent_lock:
-        _interrupt_event.clear()
-        return await _run_chat_agent(
-            user_message, bot, chat_id, db_path,
-            client_request_id=client_request_id, lang=lang, command=command,
-            public_user_message=public_user_message, public_attachments=public_attachments,
-            permission_mode=permission_mode,
-        )
-
-
-async def _clear_interrupt_when_idle() -> None:
+    session_token = _current_session_id.set(session_id)
     try:
-        while _agent_lock.locked():
+        ctx = _ensure_session(session_id)
+        if ctx.lock.locked():
+            interrupt_active_run(session_id=session_id)
+        async with ctx.lock:
+            ctx.interrupt_event.clear()
+            return await _run_chat_agent(
+                user_message, bot, chat_id, db_path,
+                client_request_id=client_request_id, lang=lang, command=command,
+                public_user_message=public_user_message, public_attachments=public_attachments,
+                permission_mode=permission_mode,
+            )
+    finally:
+        _current_session_id.reset(session_token)
+
+
+async def _clear_interrupt_when_idle(session_id: str = "") -> None:
+    ctx = _ensure_session(session_id)
+    try:
+        while ctx.lock.locked():
             await asyncio.sleep(0.05)
     finally:
-        _interrupt_event.clear()
+        ctx.interrupt_event.clear()
 
 
-def interrupt_active_run() -> bool:
-    if not _agent_lock.locked():
-        _interrupt_event.clear()
+def interrupt_active_run(session_id: str = "") -> bool:
+    ctx = _ensure_session(session_id)
+    if not ctx.lock.locked():
+        ctx.interrupt_event.clear()
         return False
-    _interrupt_event.set()
-    task = asyncio.create_task(_clear_interrupt_when_idle())
-    _pending_interrupt_clearers.add(task)
-    task.add_done_callback(_pending_interrupt_clearers.discard)
+    ctx.interrupt_event.set()
+    task = asyncio.create_task(_clear_interrupt_when_idle(session_id=session_id))
+    ctx.pending_interrupt_clearers.add(task)
+    task.add_done_callback(ctx.pending_interrupt_clearers.discard)
     return True
 
 
@@ -268,7 +279,13 @@ async def _run_chat_agent(
     round_id = str(forced_round_id or "").strip() or f"round_{int(_time.time() * 1000)}"
     round_token = _current_round_id.set(round_id)
     full_session_messages = _load_session_messages()
-    # Update state module globals so reads via cyrene.agent.state are visible
+    # Update per-session context so reads via cyrene.agent.state are visible
+    _ctx = _ensure_session(_current_session_id.get())
+    _ctx.active_main_round_id = round_id
+    _ctx.active_main_round_prompt = user_message
+    _ctx.active_main_round_public_prompt = user_message if public_prompt is None else str(public_prompt)
+    _ctx.active_main_round_started_at = _time.time()
+    # Keep module-level globals in sync for the default session (backward compat)
     _state._active_main_round_id = round_id
     _state._active_main_round_prompt = user_message
     _state._active_main_round_public_prompt = user_message if public_prompt is None else str(public_prompt)
@@ -729,6 +746,12 @@ async def _run_chat_agent(
         _persist_history_prefix_len.reset(prefix_token)
         _persist_merge_live_state.reset(merge_live_token)
         _persist_base_messages.reset(base_token)
+        _ctx = _ensure_session(_current_session_id.get())
+        _ctx.active_main_round_id = ""
+        _ctx.active_main_round_prompt = ""
+        _ctx.active_main_round_public_prompt = ""
+        _ctx.active_main_round_started_at = 0.0
+        # Keep module-level globals in sync (backward compat)
         _state._active_main_round_id = ""
         _state._active_main_round_prompt = ""
         _state._active_main_round_public_prompt = ""
@@ -763,10 +786,11 @@ async def run_heartbeat_agent(prompt: str, bot: Any, chat_id: int, db_path: str)
         "- Keep it to 1–2 sentences. Be direct, warm, and specific.\n"
         "- If tools are useful, use them before composing the reply."
     )
-    if _agent_lock.locked():
+    default_ctx = _ensure_session("")
+    if default_ctx.lock.locked():
         return ""
-    async with _agent_lock:
-        _interrupt_event.clear()
+    async with default_ctx.lock:
+        default_ctx.interrupt_event.clear()
         return await _run_chat_agent(
             prompt, bot, chat_id, db_path,
             ephemeral_system=proactive_system, persist_user_message=False,

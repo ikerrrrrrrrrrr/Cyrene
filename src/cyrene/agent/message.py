@@ -175,9 +175,9 @@ async def _insert_intermediate_user_reply(
         pending.append(dict(assistant_entry))
 
     from cyrene.agent.session import _load_session_state, _write_session_messages_locked
-    from cyrene.agent.state import _session_state_lock, _publish_runtime_event
+    from cyrene.agent.state import _ensure_session, _current_session_id, _publish_runtime_event
 
-    async with _session_state_lock:
+    async with _ensure_session(_current_session_id.get()).session_state_lock:
         state = _load_session_state()
         existing = state.get("messages", [])
         full_messages = list(existing) if isinstance(existing, list) else []

@@ -142,7 +142,7 @@ async def test_subagent_stable_system_prompt():
     _orig_ctx = _patch(subagent, "get_context", AsyncMock(
         return_value="[活跃子 agent]\n  alice: test [工作中]"
     ))
-    _orig_inbox_ctx = _patch(inbox, "get_inbox_context", lambda aid: "")
+    _orig_inbox_ctx = _patch(inbox, "get_inbox_context", lambda aid, session_id="": "")
     _orig_mark = _patch(inbox, "mark_all_read", AsyncMock())
     try:
         result = await subagent._run_subagent("test_agent", "test task", None, 0, "db.sqlite3")
@@ -201,7 +201,7 @@ async def test_subagent_empty_quit_exits_without_feedback_retry():
     _orig_pub = _patch(subagent, "_publish_registry_event", AsyncMock())
     _orig_ctx = _patch(subagent, "get_context", AsyncMock(return_value=""))
     _orig_resume = _patch(subagent, "set_resumed", AsyncMock())
-    _orig_inbox_ctx = _patch(inbox, "get_inbox_context", lambda aid: "")
+    _orig_inbox_ctx = _patch(inbox, "get_inbox_context", lambda aid, session_id="": "")
     _orig_mark = _patch(inbox, "mark_all_read", AsyncMock())
     _orig_send = _patch(inbox, "send_message", AsyncMock())
     try:
@@ -260,7 +260,7 @@ async def test_subagent_resume_strips_old_context():
     _orig_ctx = _patch(subagent, "get_context", AsyncMock(
         return_value="[活跃子 agent]\n  bob: new task [工作中]"
     ))
-    _orig_inbox_ctx = _patch(inbox, "get_inbox_context", lambda aid: "")
+    _orig_inbox_ctx = _patch(inbox, "get_inbox_context", lambda aid, session_id="": "")
     _orig_mark = _patch(inbox, "mark_all_read", AsyncMock())
     try:
         result = await subagent._run_subagent(

@@ -7,9 +7,7 @@ from typing import Any
 from cyrene.agent.message import _round_started_iso, _round_title_from_entry
 from cyrene.agent.session import _load_pending_question, _load_session_messages
 from cyrene.agent.state import (
-    _active_main_round_id,
-    _active_main_round_public_prompt,
-    _active_main_round_started_at,
+    _ensure_session,
     _MAIN_INBOX_AGENT_ID,
 )
 
@@ -132,20 +130,21 @@ def get_live_rounds() -> list[dict[str, Any]]:
             entry["status"] = "queued"
         entry["updated_at"] = pending_question_entry["updated_at"]
 
-    if _active_main_round_id:
-        entry = entries.setdefault(_active_main_round_id, {
-            "id": _active_main_round_id, "title": "", "prompt": _active_main_round_public_prompt,
-            "last_user": _active_main_round_public_prompt, "last_assistant": "", "status": "running",
+    _def_ctx = _ensure_session("")
+    if _def_ctx.active_main_round_id:
+        entry = entries.setdefault(_def_ctx.active_main_round_id, {
+            "id": _def_ctx.active_main_round_id, "title": "", "prompt": _def_ctx.active_main_round_public_prompt,
+            "last_user": _def_ctx.active_main_round_public_prompt, "last_assistant": "", "status": "running",
             "pending_guidance": 0, "subagent_count": 0, "running_subagents": 0,
-            "started_at": (datetime.fromtimestamp(_active_main_round_started_at, tz=timezone.utc).isoformat()
-                          if _active_main_round_started_at else _round_started_iso(_active_main_round_id)),
+            "started_at": (datetime.fromtimestamp(_def_ctx.active_main_round_started_at, tz=timezone.utc).isoformat()
+                          if _def_ctx.active_main_round_started_at else _round_started_iso(_def_ctx.active_main_round_id)),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })
         entry["status"] = "running"
-        if _active_main_round_public_prompt and not entry.get("prompt"):
-            entry["prompt"] = _active_main_round_public_prompt
-        if _active_main_round_started_at and not entry.get("started_at"):
-            entry["started_at"] = datetime.fromtimestamp(_active_main_round_started_at, tz=timezone.utc).isoformat()
+        if _def_ctx.active_main_round_public_prompt and not entry.get("prompt"):
+            entry["prompt"] = _def_ctx.active_main_round_public_prompt
+        if _def_ctx.active_main_round_started_at and not entry.get("started_at"):
+            entry["started_at"] = datetime.fromtimestamp(_def_ctx.active_main_round_started_at, tz=timezone.utc).isoformat()
         entry["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     live_entries: list[dict[str, Any]] = []

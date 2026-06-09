@@ -136,13 +136,20 @@ def enable_event_bus() -> None:
         _event_queue = asyncio.Queue(maxsize=5000)
 
 
-async def publish_event(event: dict) -> None:
+async def publish_event(event: dict, session_id: str = "") -> None:
     """发布一条事件（由 agent.py 调用）。自动初始化事件总线。
 
     为 llm_call 和 tool_call 事件生成唯一 event_id，并存储完整数据到 _full_events。
+
+    When *session_id* is non-empty, it is tagged on the event for per-session
+    filtering downstream (see :func:`subscribe`).
     """
     if "timestamp" not in event:
         event = {**event, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+    # Tag session_id for downstream filtering
+    if session_id:
+        event = {**event, "session_id": session_id}
 
     # 为 llm_call 和 tool_call 生成 event_id 并保留完整数据
     if event.get("type") in ("llm_call", "tool_call"):
@@ -220,10 +227,14 @@ def get_full_event(event_id: str) -> dict | None:
     return _search_debug_logs(event_id)
 
 
-async def subscribe():
+async def subscribe(session_id: str = ""):
     """Async generator — 供 SSE 端点消费事件流。
 
     自动初始化事件总线。每 15 秒发一次心跳保活。
+
+    When *session_id* is non-empty, only events tagged with that session_id
+    are yielded (others are silently skipped).  Filtering is a no-op until
+    :func:`publish_event` starts tagging events with session_id (Phase 4).
     """
     if _event_queue is None:
         enable_event_bus()
@@ -233,6 +244,8 @@ async def subscribe():
     while True:
         try:
             event = await asyncio.wait_for(q.get(), timeout=15.0)
+            if session_id and event.get("session_id") not in (session_id, ""):
+                continue
             yield event
         except asyncio.TimeoutError:
             yield {"type": "heartbeat", "timestamp": datetime.now(timezone.utc).isoformat()}

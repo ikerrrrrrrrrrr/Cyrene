@@ -30,6 +30,8 @@ from cyrene.agent.state import (
     _current_agent_id,
     _current_round_id,
     _current_client_request_id,
+    _current_session_id,
+    _ensure_session,
     _MAX_HISTORY_MESSAGES,
     _pending_compressors,
     _pending_label_refreshes,
@@ -40,6 +42,7 @@ from cyrene.agent.state import (
     _publish_runtime_event,
     _REPORT_REF_MAX_PREVIEW,
     _REPORT_REF_PREFIX,
+    _session_state_file,
     _session_state_lock,
 )
 from cyrene.llm import _assistant_text
@@ -160,19 +163,25 @@ def _merge_live_block(existing_block: list[dict[str, Any]], incoming_block: list
             merged.append(dict(incoming))
     return _dedupe_live_tool_messages(merged)
 
-def _load_session_state() -> dict[str, Any]:
+def _load_session_state(session_id: str | None = None) -> dict[str, Any]:
+    if session_id is None:
+        session_id = _current_session_id.get()
+    state_file = _session_state_file(session_id)
     try:
-        data = read_json_safe(_state.STATE_FILE)
+        data = read_json_safe(state_file)
     except Exception:
-        logger.exception("Failed to read state file")
+        logger.exception("Failed to read state file: %s", state_file)
         return {}
     if data is None:
         return {}
     return data if isinstance(data, dict) else {}
 
 
-def _write_session_state(state: dict[str, Any]) -> None:
-    atomic_write_json(_state.STATE_FILE, state)
+def _write_session_state(state: dict[str, Any], session_id: str | None = None) -> None:
+    if session_id is None:
+        session_id = _current_session_id.get()
+    state_file = _session_state_file(session_id)
+    atomic_write_json(state_file, state)
 
 
 def _ensure_archive_session_id(state: dict[str, Any]) -> str:
@@ -337,8 +346,6 @@ def _compact_messages_for_storage(messages: list[dict[str, Any]]) -> list[dict[s
 # Pass 2 — background LLM distillation of mechanical compacted blocks
 # ---------------------------------------------------------------------------
 
-_pending_distill_task: asyncio.Task | None = None
-
 _COMPACT_DISTILL_PROMPT = (
     "You are compressing archived conversation context into a dense, durable summary.\n"
     "Preserve: concrete facts about the user and their goals/preferences; decisions and "
@@ -358,15 +365,18 @@ def _has_pending_compacted_block(messages: list[dict[str, Any]]) -> bool:
 
 
 def _schedule_compaction_distill() -> None:
-    global _pending_distill_task
-    if _pending_distill_task is not None and not _pending_distill_task.done():
+    session_id = _current_session_id.get()
+    ctx = _ensure_session(session_id)
+    if ctx.pending_distill_task is not None and not ctx.pending_distill_task.done():
         return
-    _pending_distill_task = asyncio.create_task(_distill_pending_compacted_blocks())
-    _pending_compressors.add(_pending_distill_task)
-    _pending_distill_task.add_done_callback(_pending_compressors.discard)
+    ctx.pending_distill_task = asyncio.create_task(
+        _distill_pending_compacted_blocks(session_id=session_id)
+    )
+    ctx.pending_compressors.add(ctx.pending_distill_task)
+    ctx.pending_distill_task.add_done_callback(ctx.pending_compressors.discard)
 
 
-async def _distill_pending_compacted_blocks() -> None:
+async def _distill_pending_compacted_blocks(session_id: str = "") -> None:
     """Background: LLM-distill mechanical compacted blocks into denser ones.
 
     The LLM call runs WITHOUT holding the session lock; the result is swapped in
@@ -374,71 +384,77 @@ async def _distill_pending_compacted_blocks() -> None:
     even if new messages were appended meanwhile). A session-epoch guard prevents
     writing stale content into a session that was reset mid-distillation.
     """
-    while True:
-        async with _session_state_lock:
-            snapshot_epoch = _state._session_epoch
-            state = _load_session_state()
-            messages = state.get("messages", [])
-            if not isinstance(messages, list):
-                return
-            target = next(
-                (
-                    m for m in messages
-                    if isinstance(m, dict) and m.get("compacted_block")
-                    and not m.get("llm_compacted") and str(m.get("message_id", "")).strip()
-                ),
-                None,
-            )
-            if target is None:
-                return
-            target_id = str(target["message_id"]).strip()
-            raw_content = str(target.get("content") or "")
+    ctx = _ensure_session(session_id)
+    # Set ContextVar so downstream _load_session_state() reads the right state file
+    _session_token = _state._current_session_id.set(session_id)
+    try:
+        while True:
+            async with ctx.session_state_lock:
+                snapshot_epoch = ctx.session_epoch
+                state = _load_session_state()
+                messages = state.get("messages", [])
+                if not isinstance(messages, list):
+                    return
+                target = next(
+                    (
+                        m for m in messages
+                        if isinstance(m, dict) and m.get("compacted_block")
+                        and not m.get("llm_compacted") and str(m.get("message_id", "")).strip()
+                    ),
+                    None,
+                )
+                if target is None:
+                    return
+                target_id = str(target["message_id"]).strip()
+                raw_content = str(target.get("content") or "")
 
-        body = raw_content
-        if body.startswith(_COMPACT_BLOCK_PREFIX):
-            body = body[len(_COMPACT_BLOCK_PREFIX):].lstrip("\n")
+            body = raw_content
+            if body.startswith(_COMPACT_BLOCK_PREFIX):
+                body = body[len(_COMPACT_BLOCK_PREFIX):].lstrip("\n")
 
-        distilled = ""
-        token = _caller_type.set("compactor")
-        try:
-            response = await _call_llm(
-                [
-                    {"role": "system", "content": "You compress conversation context. Be terse and faithful."},
-                    {"role": "user", "content": _COMPACT_DISTILL_PROMPT + body},
-                ],
-                tools=None,
-                max_tokens=1500,
-                secondary=True,
-            )
-            distilled = (_assistant_text(response) or "").strip()
-        except Exception:
-            logger.warning("Compaction distillation failed", exc_info=True)
-        finally:
-            _caller_type.reset(token)
+            distilled = ""
+            token = _caller_type.set("compactor")
+            try:
+                response = await _call_llm(
+                    [
+                        {"role": "system", "content": "You compress conversation context. Be terse and faithful."},
+                        {"role": "user", "content": _COMPACT_DISTILL_PROMPT + body},
+                    ],
+                    tools=None,
+                    max_tokens=1500,
+                    secondary=True,
+                )
+                distilled = (_assistant_text(response) or "").strip()
+            except Exception:
+                logger.warning("Compaction distillation failed", exc_info=True)
+            finally:
+                _caller_type.reset(token)
 
-        async with _session_state_lock:
-            if _state._session_epoch != snapshot_epoch:
-                return  # session was reset mid-distillation
-            state = _load_session_state()
-            messages = state.get("messages", [])
-            if not isinstance(messages, list):
-                return
-            updated = False
-            for m in messages:
-                if (
-                    isinstance(m, dict)
-                    and str(m.get("message_id", "")).strip() == target_id
-                    and m.get("compacted_block")
-                ):
-                    if distilled:
-                        m["content"] = _COMPACT_BLOCK_PREFIX + "\n" + distilled
-                    m["llm_compacted"] = True  # mark done even on failure → no retry storm
-                    updated = True
-                    break
-            if not updated:
-                return
-            state["messages"] = messages
-            _write_session_state(state)
+            async with ctx.session_state_lock:
+                if ctx.session_epoch != snapshot_epoch:
+                    return  # session was reset mid-distillation
+                state = _load_session_state()
+                messages = state.get("messages", [])
+                if not isinstance(messages, list):
+                    return
+                updated = False
+                for m in messages:
+                    if (
+                        isinstance(m, dict)
+                        and str(m.get("message_id", "")).strip() == target_id
+                        and m.get("compacted_block")
+                    ):
+                        if distilled:
+                            m["content"] = _COMPACT_BLOCK_PREFIX + "\n" + distilled
+                        m["llm_compacted"] = True  # mark done even on failure → no retry storm
+                        updated = True
+                        break
+                if not updated:
+                    return
+                state["messages"] = messages
+                _write_session_state(state)
+    finally:
+        _state._current_session_id.reset(_session_token)
 
 
 # ---------------------------------------------------------------------------
@@ -611,10 +627,11 @@ def _expand_report_reference_history(history: list[dict[str, Any]], user_message
 # Session message write helpers
 # ---------------------------------------------------------------------------
 
-def _schedule_memory_compression(messages: list[dict[str, Any]]) -> None:
+def _schedule_memory_compression(messages: list[dict[str, Any]], session_id: str = "") -> None:
     task = asyncio.create_task(_compress_old_messages(list(messages)))
-    _pending_compressors.add(task)
-    task.add_done_callback(_pending_compressors.discard)
+    ctx = _ensure_session(session_id)
+    ctx.pending_compressors.add(task)
+    task.add_done_callback(ctx.pending_compressors.discard)
 
 
 async def _write_session_messages_locked(state: dict[str, Any], messages: list[dict[str, Any]]) -> None:
@@ -646,10 +663,12 @@ async def _save_session_messages(messages: list[dict[str, Any]]) -> None:
     messages = strip_context_metadata(messages)
     messages = _compress_report_messages_for_storage(messages)
     messages = _ensure_message_identity(list(messages))
-    async with _session_state_lock:
+    session_id = _current_session_id.get()
+    ctx = _ensure_session(session_id)
+    async with ctx.session_state_lock:
         state = _load_session_state()
         saved_epoch = state.get("_session_epoch")
-        if saved_epoch is not None and saved_epoch != _state._session_epoch:
+        if saved_epoch is not None and saved_epoch != ctx.session_epoch:
             logger.warning("Stale _save_session_messages skipped (session was reset)")
             return
         effective_messages = messages
@@ -708,10 +727,11 @@ async def _remove_messages_by_request_id(request_id: str) -> None:
     if not request_id or not request_id.strip():
         return
     request_id = request_id.strip()
-    async with _session_state_lock:
+    ctx = _ensure_session(_current_session_id.get())
+    async with ctx.session_state_lock:
         state = _load_session_state()
         saved_epoch = state.get("_session_epoch")
-        if saved_epoch is not None and saved_epoch != _state._session_epoch:
+        if saved_epoch is not None and saved_epoch != ctx.session_epoch:
             return
         messages = state.get("messages", [])
         if not isinstance(messages, list) or not messages:
@@ -722,10 +742,11 @@ async def _remove_messages_by_request_id(request_id: str) -> None:
 
 
 async def _append_session_message(entry: dict[str, Any]) -> None:
-    async with _session_state_lock:
+    ctx = _ensure_session(_current_session_id.get())
+    async with ctx.session_state_lock:
         state = _load_session_state()
         saved_epoch = state.get("_session_epoch")
-        if saved_epoch is not None and saved_epoch != _state._session_epoch:
+        if saved_epoch is not None and saved_epoch != ctx.session_epoch:
             logger.warning("Stale _append_session_message skipped (session was reset)")
             return
         messages = state.get("messages", [])
@@ -824,13 +845,14 @@ def _pending_question_is_permission_elevation(payload: dict[str, Any]) -> bool:
 async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
     question = _normalize_pending_question(payload)
     is_permission_elevation = _pending_question_is_permission_elevation(payload)
+    ctx = _ensure_session(_current_session_id.get())
     if is_permission_elevation:
         question["hidden_from_chat"] = True
         question["hide_answer_in_chat"] = True
-        async with _session_state_lock:
+        async with ctx.session_state_lock:
             state = _load_session_state()
             saved_epoch = state.get("_session_epoch")
-            if saved_epoch is not None and saved_epoch != _state._session_epoch:
+            if saved_epoch is not None and saved_epoch != ctx.session_epoch:
                 logger.warning("Stale _upsert_pending_question skipped (session was reset)")
                 return question
             state["pending_question"] = question
@@ -860,10 +882,10 @@ async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
     _ensure_message_identity([assistant_entry])
     question["message_id"] = assistant_entry["message_id"]
 
-    async with _session_state_lock:
+    async with ctx.session_state_lock:
         state = _load_session_state()
         saved_epoch = state.get("_session_epoch")
-        if saved_epoch is not None and saved_epoch != _state._session_epoch:
+        if saved_epoch is not None and saved_epoch != ctx.session_epoch:
             logger.warning("Stale _upsert_pending_question skipped (session was reset)")
             return question
         existing = state.get("messages", [])
@@ -896,7 +918,8 @@ async def _upsert_pending_question(payload: dict[str, Any]) -> dict[str, Any]:
 
 async def _restore_pending_question(question: dict[str, Any]) -> None:
     normalized = _normalize_pending_question(question)
-    async with _session_state_lock:
+    ctx = _ensure_session(_current_session_id.get())
+    async with ctx.session_state_lock:
         state = _load_session_state()
         state["pending_question"] = normalized
         _write_session_state(state)
@@ -910,7 +933,8 @@ async def _restore_pending_question(question: dict[str, Any]) -> None:
 
 async def _clear_pending_question(question_id: str) -> dict[str, Any]:
     target_question_id = str(question_id or "").strip()
-    async with _session_state_lock:
+    ctx = _ensure_session(_current_session_id.get())
+    async with ctx.session_state_lock:
         state = _load_session_state()
         pending = state.get("pending_question", {})
         pending_dict = dict(pending) if isinstance(pending, dict) else {}
@@ -1064,19 +1088,21 @@ def get_session_labels(round_id: str = "") -> dict[str, str]:
 
 
 def _schedule_session_label_refresh(current_user_message: str, round_id: str) -> None:
+    session_id = _current_session_id.get()
     async def _runner() -> None:
         try:
-            await _refresh_session_labels(current_user_message, round_id)
+            await _refresh_session_labels(current_user_message, round_id, session_id=session_id)
         except Exception:
             logger.warning("Async session naming failed for %s", round_id or "<unknown>", exc_info=True)
 
     task = asyncio.create_task(_runner())
-    _pending_label_refreshes.add(task)
-    task.add_done_callback(_pending_label_refreshes.discard)
+    ctx = _ensure_session(session_id)
+    ctx.pending_label_refreshes.add(task)
+    task.add_done_callback(ctx.pending_label_refreshes.discard)
 
 
-async def _refresh_session_labels(current_user_message: str, round_id: str) -> None:
-    state = _load_session_state()
+async def _refresh_session_labels(current_user_message: str, round_id: str, session_id: str = "") -> None:
+    state = _load_session_state(session_id=session_id)
     messages = state.get("messages", []) if isinstance(state.get("messages"), list) else []
     if not messages:
         return
@@ -1136,8 +1162,8 @@ async def _refresh_session_labels(current_user_message: str, round_id: str) -> N
     round_title = _fallback_label(payload.get("round_title") or round_fallback, limit=40)
     session_title = _fallback_label(payload.get("session_title") or session_fallback, limit=56)
 
-    async with _session_state_lock:
-        latest_state = _load_session_state()
+    async with _ensure_session(session_id).session_state_lock:
+        latest_state = _load_session_state(session_id=session_id)
         latest_messages = latest_state.get("messages", [])
         full_messages = list(latest_messages) if isinstance(latest_messages, list) else []
         for msg in full_messages:
@@ -1145,7 +1171,7 @@ async def _refresh_session_labels(current_user_message: str, round_id: str) -> N
                 msg["round_title"] = round_title
         latest_state["messages"] = full_messages
         latest_state["session_title"] = session_title
-        _write_session_state(latest_state)
+        _write_session_state(latest_state, session_id=session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1228,10 +1254,12 @@ Output format (one per line, no explanations):
             continue
 
 
-async def clear_session_id() -> None:
+async def clear_session_id(session_id: str = "") -> None:
     import cyrene.agent.state as _state
     from cyrene.subagent import clear as _clear_subagents
     from cyrene.inbox import clear_all_inboxes
+
+    ctx = _ensure_session(session_id)
 
     def _cancel_pending_tasks(tasks: set[asyncio.Task[Any]]) -> None:
         for task in list(tasks):
@@ -1242,29 +1270,36 @@ async def clear_session_id() -> None:
                 pass
         tasks.clear()
 
-    _cancel_pending_tasks(_state._pending_interrupt_clearers)
-    _cancel_pending_tasks(_state._pending_label_refreshes)
-    _state._interrupt_event.clear()
-    if _state._main_inbox_worker is not None:
-        _cancel_pending_tasks({_state._main_inbox_worker})
-        _state._main_inbox_worker = None
-    _state._active_main_round_id = ""
-    _state._active_main_round_prompt = ""
-    _state._active_main_round_public_prompt = ""
-    _state._active_main_round_started_at = 0.0
-    await _clear_subagents()
-    await clear_all_inboxes()
+    _cancel_pending_tasks(ctx.pending_interrupt_clearers)
+    _cancel_pending_tasks(ctx.pending_label_refreshes)
+    ctx.interrupt_event.clear()
+    if ctx.main_inbox_worker is not None:
+        _cancel_pending_tasks({ctx.main_inbox_worker})
+        ctx.main_inbox_worker = None
+    ctx.active_main_round_id = ""
+    ctx.active_main_round_prompt = ""
+    ctx.active_main_round_public_prompt = ""
+    ctx.active_main_round_started_at = 0.0
+    await _clear_subagents(session_id=session_id)
+    await clear_all_inboxes(session_id=session_id)
+    state_file = _session_state_file(session_id)
     try:
-        data = read_json_safe(_state.STATE_FILE)
+        data = read_json_safe(state_file)
         if data:
             msgs = data.get("messages", [])
             if msgs:
-                _schedule_memory_compression(msgs)
+                _schedule_memory_compression(msgs, session_id=session_id)
     except Exception:
         pass
-    async with _session_state_lock:
-        _state._session_epoch += 1
-        atomic_write_json(_state.STATE_FILE, {"_session_epoch": _state._session_epoch})
+    async with ctx.session_state_lock:
+        ctx.session_epoch += 1
+        atomic_write_json(state_file, {"_session_epoch": ctx.session_epoch})
+    # Keep module-level epoch in sync for the default session
+    if not session_id:
+        _state._session_epoch = ctx.session_epoch
+    # Remove the session context from cache (unless it's the default session)
+    if session_id:
+        _state._sessions.pop(session_id, None)
     try:
         from cyrene import pattern as _pattern_module
         _ = asyncio.create_task(_pattern_module.scan_for_session_start())

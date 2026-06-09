@@ -8,6 +8,8 @@ import from it without circular-dependency risk.
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from contextvars import ContextVar
@@ -21,6 +23,88 @@ STATE_FILE = _STATE_FILE
 DATA_DIR = _DATA_DIR
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# SessionContext — per-session state container
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SessionContext:
+    """Holds all mutable state for a single agent session.
+
+    Each active session (including the default "" session) gets its own
+    ``SessionContext`` instance.  Fields previously stored as module-level
+    globals are migrated here incrementally across the multi‑session phases.
+    """
+    session_id: str = ""
+    state_file: Path | None = None  # None → DATA_DIR / "state.json" (default session)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    session_state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    session_epoch: int = 0
+    interrupt_event: asyncio.Event = field(default_factory=asyncio.Event)
+    active_main_round_id: str = ""
+    active_main_round_prompt: str = ""
+    active_main_round_public_prompt: str = ""
+    active_main_round_started_at: float = 0.0
+    pending_compressors: set[asyncio.Task] = field(default_factory=set)
+    pending_label_refreshes: set[asyncio.Task] = field(default_factory=set)
+    pending_interrupt_clearers: set[asyncio.Task] = field(default_factory=set)
+    pending_distill_task: asyncio.Task | None = None
+    main_inbox_worker: asyncio.Task | None = None
+
+# Per‑session identifier carried by ContextVar — set at entry to run_agent()
+_current_session_id: ContextVar[str] = ContextVar("_current_session_id", default="")
+
+# Lazily populated cache of SessionContext instances, keyed by session_id.
+# The default session (id="") is created on first access and lives forever.
+_sessions: dict[str, SessionContext] = {}
+
+
+def _ensure_session(session_id: str = "") -> SessionContext:
+    """Return the ``SessionContext`` for *session_id*, creating it if needed."""
+    global _session_epoch
+    if session_id not in _sessions:
+        if not session_id:
+            state_file: Path | None = None  # signal "use DATA_DIR / state.json"
+        else:
+            state_file = _DATA_DIR / "sessions" / session_id / "state.json"
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+        ctx = SessionContext(session_id=session_id, state_file=state_file)
+        # The default session MUST share the existing module-level globals
+        # so that code holding a reference to ``_agent_lock`` or importing
+        # ``_interrupt_event`` from this module still works correctly.
+        if not session_id:
+            ctx.lock = _agent_lock
+            ctx.session_state_lock = _session_state_lock
+            ctx.session_epoch = _session_epoch
+            ctx.interrupt_event = _interrupt_event
+            ctx.pending_compressors = _pending_compressors
+            ctx.pending_label_refreshes = _pending_label_refreshes
+            ctx.pending_interrupt_clearers = _pending_interrupt_clearers
+            ctx.main_inbox_worker = _main_inbox_worker
+            ctx.active_main_round_id = _active_main_round_id
+            ctx.active_main_round_prompt = _active_main_round_prompt
+            ctx.active_main_round_public_prompt = _active_main_round_public_prompt
+            ctx.active_main_round_started_at = _active_main_round_started_at
+        _sessions[session_id] = ctx
+    return _sessions[session_id]
+
+
+def _get_session() -> SessionContext:
+    """Return the ``SessionContext`` for the currently active session."""
+    return _ensure_session(_current_session_id.get())
+
+
+def _session_state_file(session_id: str = "") -> Path:
+    """Return the state‑file path for *session_id*.
+
+    The default session still reads from ``DATA_DIR / "state.json"`` for full
+    backward compatibility.
+    """
+    ctx = _ensure_session(session_id)
+    if ctx.state_file is not None:
+        return ctx.state_file
+    return STATE_FILE
 
 # ---------------------------------------------------------------------------
 # ContextVars — per-request state
@@ -119,7 +203,9 @@ def _init_session_epoch() -> None:
         if STATE_FILE.exists():
             data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                _session_epoch = data.get("_session_epoch", 0)
+                epoch = data.get("_session_epoch", 0)
+                _session_epoch = epoch
+                _ensure_session("").session_epoch = epoch
     except Exception:
         pass
 
@@ -132,6 +218,9 @@ async def _publish_runtime_event(event: dict[str, Any]) -> None:
     round_id = _current_round_id.get()
     if round_id and not str(event.get("round_id", "")).strip():
         event = {**event, "round_id": round_id}
+    session_id = _current_session_id.get()
+    if session_id:
+        event = {**event, "session_id": session_id}
     await debug.publish_event(event)
 
 

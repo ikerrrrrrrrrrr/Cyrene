@@ -1236,10 +1236,11 @@ async def _tool_spawn_subagent(args: dict[str, Any], bot: Any, chat_id: int, db_
         role = ""
     if not agent_id or not task:
         return "Error: agent_id and task are required."
-    from cyrene.agent.state import _current_agent_id, _current_round_id
+    from cyrene.agent.state import _current_agent_id, _current_round_id, _current_session_id
     if _current_agent_id.get() != "main":
         return "Only the main agent can spawn subagents."
-    await _reg_subagent(agent_id, task, round_id=_current_round_id.get(), role=role)
+    session_id = _current_session_id.get()
+    await _reg_subagent(agent_id, task, round_id=_current_round_id.get(), role=role, session_id=session_id)
     _spawn_subagent_task(_run_subagent(agent_id, task, bot, chat_id, db_path, use_secondary=use_secondary, role=role), agent_id)
     suffix = " (secondary model)" if use_secondary else ""
     role_suffix = f" [role={role}]" if role else ""

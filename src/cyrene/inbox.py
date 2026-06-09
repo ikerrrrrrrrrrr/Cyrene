@@ -40,17 +40,19 @@ _MAX_CONTEXT_TOTAL_CHARS = 12000
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _inbox_path(agent_name: str) -> Path:
+def _inbox_path(agent_name: str, session_id: str = "") -> Path:
+    if session_id:
+        return INBOX_DIR / session_id / agent_name
     return INBOX_DIR / agent_name
 
 
-def _unread_path(agent_name: str) -> Path:
-    return _inbox_path(agent_name) / ".unread"
+def _unread_path(agent_name: str, session_id: str = "") -> Path:
+    return _inbox_path(agent_name, session_id) / ".unread"
 
 
-def _next_msg_id(agent_name: str) -> str:
+def _next_msg_id(agent_name: str, session_id: str = "") -> str:
     """Generate the next monotonically increasing message ID (msg_001, ...)."""
-    inbox = _inbox_path(agent_name)
+    inbox = _inbox_path(agent_name, session_id)
     existing = sorted(inbox.glob("msg_*.json"))
     if not existing:
         return "msg_001"
@@ -64,9 +66,9 @@ def _next_msg_id(agent_name: str) -> str:
     return f"msg_{next_num:03d}"
 
 
-def _read_unread(agent_name: str) -> int:
+def _read_unread(agent_name: str, session_id: str = "") -> int:
     """Read the current unread counter."""
-    path = _unread_path(agent_name)
+    path = _unread_path(agent_name, session_id)
     try:
         if path.exists():
             return int(path.read_text(encoding="utf-8").strip())
@@ -75,16 +77,16 @@ def _read_unread(agent_name: str) -> int:
     return 0
 
 
-def _write_unread(agent_name: str, count: int) -> None:
+def _write_unread(agent_name: str, count: int, session_id: str = "") -> None:
     """Write the unread counter."""
     try:
-        _unread_path(agent_name).write_text(str(count), encoding="utf-8")
+        _unread_path(agent_name, session_id).write_text(str(count), encoding="utf-8")
     except Exception:
         logger.exception("Failed to write unread count for %s", agent_name)
 
 
-def _iter_message_files(agent_name: str) -> Iterable[Path]:
-    return sorted(_inbox_path(agent_name).glob("msg_*.json"))
+def _iter_message_files(agent_name: str, session_id: str = "") -> Iterable[Path]:
+    return sorted(_inbox_path(agent_name, session_id).glob("msg_*.json"))
 
 
 def _load_messages_from_files(msg_files: Iterable[Path]) -> list[dict]:
@@ -99,11 +101,11 @@ def _load_messages_from_files(msg_files: Iterable[Path]) -> list[dict]:
     return messages
 
 
-def _read_unread_messages(agent_name: str) -> list[dict]:
-    unread_count = max(0, _read_unread(agent_name))
+def _read_unread_messages(agent_name: str, session_id: str = "") -> list[dict]:
+    unread_count = max(0, _read_unread(agent_name, session_id))
     if unread_count == 0:
         return []
-    msg_files = list(_iter_message_files(agent_name))
+    msg_files = list(_iter_message_files(agent_name, session_id))
     if not msg_files:
         return []
     return _load_messages_from_files(msg_files[-unread_count:])
@@ -119,9 +121,9 @@ def _truncate_for_context(text: str, limit: int = _MAX_CONTEXT_MESSAGE_CHARS) ->
 # Public API
 # ---------------------------------------------------------------------------
 
-def ensure_inbox(agent_name: str) -> Path:
+def ensure_inbox(agent_name: str, session_id: str = "") -> Path:
     """Make sure the inbox directory for *agent_name* exists."""
-    path = _inbox_path(agent_name)
+    path = _inbox_path(agent_name, session_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -134,6 +136,7 @@ async def send_message(
     round_id: str = "",
     priority: str = "normal",
     in_reply_to: str = "",
+    session_id: str = "",
 ) -> str:
     """Send a message to *to_agent*'s inbox.
 
@@ -148,8 +151,8 @@ async def send_message(
     """
     try:
         async with _INBOX_LOCK:
-            ensure_inbox(to_agent)
-            msg_id = _next_msg_id(to_agent)
+            ensure_inbox(to_agent, session_id)
+            msg_id = _next_msg_id(to_agent, session_id)
             # Auto-generate a one-line summary for display in flow diagrams
             summary = content[:120].replace("\n", " ").strip()
             if len(content) > 120:
@@ -168,13 +171,13 @@ async def send_message(
                 message["round_id"] = round_id
             if in_reply_to:
                 message["in_reply_to"] = in_reply_to
-            msg_path = _inbox_path(to_agent) / f"{msg_id}.json"
+            msg_path = _inbox_path(to_agent, session_id) / f"{msg_id}.json"
             msg_path.write_text(
                 json.dumps(message, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            current = _read_unread(to_agent)
-            _write_unread(to_agent, current + 1)
+            current = _read_unread(to_agent, session_id)
+            _write_unread(to_agent, current + 1, session_id)
         logger.info(
             "Message %s sent from %s to %s (type=%s priority=%s)",
             msg_id, from_agent, to_agent, msg_type, priority,
@@ -187,22 +190,22 @@ async def send_message(
     return msg_id
 
 
-def get_unread_count(agent_name: str) -> int:
+def get_unread_count(agent_name: str, session_id: str = "") -> int:
     """Return the number of unread messages for *agent_name*."""
-    return _read_unread(agent_name)
+    return _read_unread(agent_name, session_id)
 
 
-async def mark_all_read(agent_name: str) -> None:
+async def mark_all_read(agent_name: str, session_id: str = "") -> None:
     """Reset the unread counter to zero without touching message files.
 
     Messages on disk are kept as a permanent log; only the unread counter
     is reset so subsequent inbox injections show 0 new messages.
     """
     async with _INBOX_LOCK:
-        _write_unread(agent_name, 0)
+        _write_unread(agent_name, 0, session_id)
 
 
-async def mark_read_count(agent_name: str, count: int = 1) -> None:
+async def mark_read_count(agent_name: str, count: int = 1, session_id: str = "") -> None:
     """Acknowledge the oldest unread inbox messages for *agent_name*.
 
     Unread messages are always interpreted as the oldest entries inside the
@@ -212,20 +215,20 @@ async def mark_read_count(agent_name: str, count: int = 1) -> None:
     if count <= 0:
         return
     async with _INBOX_LOCK:
-        current = _read_unread(agent_name)
-        _write_unread(agent_name, max(0, current - count))
+        current = _read_unread(agent_name, session_id)
+        _write_unread(agent_name, max(0, current - count), session_id)
 
 
-async def clear_inbox(agent_name: str) -> None:
+async def clear_inbox(agent_name: str, session_id: str = "") -> None:
     """Delete all message files and reset unread state for one inbox."""
     async with _INBOX_LOCK:
-        ensure_inbox(agent_name)
-        for msg_file in _iter_message_files(agent_name):
+        ensure_inbox(agent_name, session_id)
+        for msg_file in _iter_message_files(agent_name, session_id):
             try:
                 msg_file.unlink()
             except FileNotFoundError:
                 continue
-        unread_path = _unread_path(agent_name)
+        unread_path = _unread_path(agent_name, session_id)
         if unread_path.exists():
             try:
                 unread_path.unlink()
@@ -233,9 +236,27 @@ async def clear_inbox(agent_name: str) -> None:
                 pass
 
 
-async def clear_all_inboxes() -> None:
-    """Delete every inbox directory and unread counter under the inbox root."""
+async def clear_all_inboxes(session_id: str = "") -> None:
+    """Delete every inbox directory and unread counter under the inbox root.
+
+    When *session_id* is provided, only that session's inbox tree is cleared.
+    Otherwise the entire ``inbox/`` directory tree is wiped.
+    """
     async with _INBOX_LOCK:
+        if session_id:
+            session_dir = INBOX_DIR / session_id
+            if session_dir.exists():
+                for path in session_dir.glob("*"):
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        continue
+                try:
+                    session_dir.rmdir()
+                except FileNotFoundError:
+                    pass
+            return
+        # Clear all inboxes (legacy behavior)
         if INBOX_DIR.exists():
             for inbox_dir in sorted(path for path in INBOX_DIR.iterdir() if path.is_dir()):
                 for path in inbox_dir.glob("*"):
@@ -250,44 +271,44 @@ async def clear_all_inboxes() -> None:
         INBOX_DIR.mkdir(parents=True, exist_ok=True)
 
 
-async def read_messages(agent_name: str, mark_read: bool = True) -> list[dict]:
+async def read_messages(agent_name: str, mark_read: bool = True, session_id: str = "") -> list[dict]:
     """Read all messages currently in *agent_name*'s inbox.
 
     When *mark_read* is ``True`` (the default) the unread counter is reset
     to zero after reading.
     """
     async with _INBOX_LOCK:
-        ensure_inbox(agent_name)
+        ensure_inbox(agent_name, session_id)
         try:
-            messages = _load_messages_from_files(_iter_message_files(agent_name))
+            messages = _load_messages_from_files(_iter_message_files(agent_name, session_id))
         except Exception:
             logger.exception("Failed to list inbox for %s", agent_name)
             messages = []
 
         if mark_read:
-            _write_unread(agent_name, 0)
+            _write_unread(agent_name, 0, session_id)
 
     return messages
 
 
-async def read_unread_messages(agent_name: str) -> list[dict]:
+async def read_unread_messages(agent_name: str, session_id: str = "") -> list[dict]:
     """Read unread messages in FIFO order without acknowledging them."""
     async with _INBOX_LOCK:
-        ensure_inbox(agent_name)
-        return _read_unread_messages(agent_name)
+        ensure_inbox(agent_name, session_id)
+        return _read_unread_messages(agent_name, session_id)
 
 
-def get_unread_messages(agent_name: str) -> list[dict]:
+def get_unread_messages(agent_name: str, session_id: str = "") -> list[dict]:
     """Return unread messages in FIFO order without mutating inbox state."""
     try:
-        ensure_inbox(agent_name)
-        return _read_unread_messages(agent_name)
+        ensure_inbox(agent_name, session_id)
+        return _read_unread_messages(agent_name, session_id)
     except Exception:
         logger.exception("Failed to read unread inbox messages for %s", agent_name)
         return []
 
 
-def get_inbox_context(agent_name: str) -> str:
+def get_inbox_context(agent_name: str, session_id: str = "") -> str:
     """Return a formatted summary of unread messages suitable for injecting
     into an agent's system prompt.
 
@@ -330,7 +351,7 @@ def get_inbox_context(agent_name: str) -> str:
 # Multi-agent communication helpers
 # ---------------------------------------------------------------------------
 
-async def spawn_agent(parent_name: str, task: str) -> str:
+async def spawn_agent(parent_name: str, task: str, session_id: str = "") -> str:
     """Spawn a child agent to execute a task, and send it the task message.
 
     1. Generates a unique child agent name (``agent_<timestamp>``).
@@ -347,8 +368,8 @@ async def spawn_agent(parent_name: str, task: str) -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     agent_name = f"agent_{timestamp}"
     try:
-        ensure_inbox(agent_name)
-        await send_task(agent_name, task, parent_name)
+        ensure_inbox(agent_name, session_id)
+        await send_task(agent_name, task, parent_name, session_id=session_id)
         logger.info(
             "Spawned agent '%s' from '%s' with task: %s",
             agent_name, parent_name, task[:120],
@@ -360,27 +381,27 @@ async def spawn_agent(parent_name: str, task: str) -> str:
     return agent_name
 
 
-async def send_task(agent_name: str, task: str, parent_name: str = "system") -> str:
+async def send_task(agent_name: str, task: str, parent_name: str = "system", session_id: str = "") -> str:
     """Send a task message to *agent_name*.
 
     Convenience wrapper around :func:`send_message` with ``msg_type="task"``.
 
     Returns the generated ``message_id``.
     """
-    return await send_message(parent_name, agent_name, "task", task)
+    return await send_message(parent_name, agent_name, "task", task, session_id=session_id)
 
 
-async def send_result(agent_name: str, result: str, parent_name: str = "system") -> str:
+async def send_result(agent_name: str, result: str, parent_name: str = "system", session_id: str = "") -> str:
     """Send a result message to *agent_name*.
 
     Convenience wrapper around :func:`send_message` with ``msg_type="result"``.
 
     Returns the generated ``message_id``.
     """
-    return await send_message(parent_name, agent_name, "result", result)
+    return await send_message(parent_name, agent_name, "result", result, session_id=session_id)
 
 
-async def check_completed_tasks(agent_name: str) -> list[dict]:
+async def check_completed_tasks(agent_name: str, session_id: str = "") -> list[dict]:
     """Check for completed tasks from child agents.
 
     Reads and marks as read all messages in *agent_name*'s inbox, then
@@ -390,11 +411,11 @@ async def check_completed_tasks(agent_name: str) -> list[dict]:
         A list of result message dicts, each containing at minimum
         ``from``, ``content``, and ``timestamp`` keys.
     """
-    messages = await read_messages(agent_name, mark_read=True)
+    messages = await read_messages(agent_name, mark_read=True, session_id=session_id)
     return [m for m in messages if m.get("type") == "result"]
 
 
-async def get_pending_tasks(agent_name: str) -> list[dict]:
+async def get_pending_tasks(agent_name: str, session_id: str = "") -> list[dict]:
     """Get pending task messages for *agent_name* (does NOT mark as read).
 
     Use this when an agent starts up to discover what it has been asked to do.
@@ -402,5 +423,5 @@ async def get_pending_tasks(agent_name: str) -> list[dict]:
     Returns:
         A list of task message dicts of type ``"task"``.
     """
-    messages = await read_messages(agent_name, mark_read=False)
+    messages = await read_messages(agent_name, mark_read=False, session_id=session_id)
     return [m for m in messages if m.get("type") == "task"]

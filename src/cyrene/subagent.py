@@ -62,8 +62,10 @@ _direct_message_mode: ContextVar[bool] = ContextVar("_direct_message_mode", defa
 _subagent_tasks: dict[str, asyncio.Task] = {}
 
 
-def _matches_round(entry: dict[str, Any], round_id: str = "") -> bool:
-    """Return True when *entry* belongs to the requested round filter."""
+def _matches_round(entry: dict[str, Any], round_id: str = "", session_id: str = "") -> bool:
+    """Return True when *entry* belongs to the requested round / session filter."""
+    if session_id and str(entry.get("session_id", "")) != session_id:
+        return False
     if not round_id:
         return True
     return str(entry.get("round_id", "")) == round_id
@@ -88,7 +90,7 @@ async def _publish_registry_event(agent_id: str) -> None:
     })
 
 
-async def register(agent_id: str, task: str, round_id: str = "", role: str = "") -> None:
+async def register(agent_id: str, task: str, round_id: str = "", role: str = "", session_id: str = "") -> None:
     """注册一个子 agent。
 
     *role* 可选，目前支持 "moderator"（主持人）/ "participant"（参与者），
@@ -96,10 +98,10 @@ async def register(agent_id: str, task: str, round_id: str = "", role: str = "")
     """
     from cyrene.inbox import clear_inbox
 
-    await clear_inbox(agent_id)
+    await clear_inbox(agent_id, session_id=session_id)
     async with _lock:
         now = datetime.now(timezone.utc).isoformat()
-        _registry[agent_id] = {
+        entry = {
             "task": task,
             "status": RUNNING,
             "result": "",
@@ -108,9 +110,12 @@ async def register(agent_id: str, task: str, round_id: str = "", role: str = "")
             "updated_at": now,
         }
         if round_id:
-            _registry[agent_id]["round_id"] = round_id
+            entry["round_id"] = round_id
         if role:
-            _registry[agent_id]["role"] = role
+            entry["role"] = role
+        if session_id:
+            entry["session_id"] = session_id
+        _registry[agent_id] = entry
     await _publish_registry_event(agent_id)
 
 
@@ -340,16 +345,16 @@ async def get_context(exclude: str = "", round_id: str = "") -> str:
         return "\n".join(lines)
 
 
-async def clear(round_id: str | None = None) -> None:
+async def clear(round_id: str | None = None, session_id: str = "") -> None:
     """清除注册表（新 session 时调用）。
 
-    当提供 *round_id* 时，只删除该轮次的 subagent。
+    当提供 *round_id* 或 *session_id* 时，只删除匹配的 subagent。
     """
     async with _lock:
-        if not round_id:
+        if not round_id and not session_id:
             _registry.clear()
             return
-        doomed = [aid for aid, info in _registry.items() if _matches_round(info, round_id)]
+        doomed = [aid for aid, info in _registry.items() if _matches_round(info, round_id, session_id)]
         for aid in doomed:
             _registry.pop(aid, None)
 
@@ -416,12 +421,12 @@ async def build_deep_research_source(round_id: str = "") -> str:
     return "\n\n---\n\n".join(sections)
 
 
-async def get_snapshot(round_id: str = "") -> dict:
+async def get_snapshot(round_id: str = "", session_id: str = "") -> dict:
     """Return a JSON-safe snapshot of all subagents for the WebUI."""
     async with _lock:
         snapshot = {}
         for aid, info in _registry.items():
-            if not _matches_round(info, round_id):
+            if not _matches_round(info, round_id, session_id):
                 continue
             msgs = []
             for m in info.get("messages", []):
@@ -575,13 +580,13 @@ def _render_summary_message(message: dict[str, Any]) -> str:
     return f"{role}:\n" + "\n".join(chunks)
 
 
-async def _registry_entries_for_round(round_id: str = "", exclude_ids: set[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
+async def _registry_entries_for_round(round_id: str = "", exclude_ids: set[str] | None = None, session_id: str = "") -> list[tuple[str, dict[str, Any]]]:
     blocked = exclude_ids or set()
     async with _lock:
         entries = [
             (aid, dict(info))
             for aid, info in _registry.items()
-            if aid not in blocked and _matches_round(info, round_id)
+            if aid not in blocked and _matches_round(info, round_id, session_id)
         ]
     entries.sort(key=lambda item: str(item[1].get("created_at") or ""))
     return entries
@@ -594,7 +599,7 @@ def _round_comm_messages(agent_ids: set[str], round_id: str = "") -> list[dict[s
 
     messages: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    for msg_file in inbox_root.glob("*/*.json"):
+    for msg_file in inbox_root.rglob("*.json"):
         try:
             payload = json.loads(msg_file.read_text(encoding="utf-8"))
         except Exception:
@@ -885,17 +890,18 @@ async def run_summary_subagent(
     subagent transcripts directly — the main agent will synthesise from the
     full raw material without any intermediate compression.
     """
-    from cyrene.agent.state import _call_llm
+    from cyrene.agent.state import _call_llm, _current_session_id
     from cyrene.llm import _assistant_text
 
     summary_agent_id = _summary_agent_id(round_id)
     transcript = await build_round_summary_transcript(round_id=round_id, exclude_ids={summary_agent_id})
+    summary_session_id = _current_session_id.get()
 
     # Deep research: return raw concatenated transcript, no LLM compression
     if _is_deep_research():
         header = f"## Deep Research Raw Transcript\nParent task: {parent_task or '—'}\n\n"
         final_text = header + transcript
-        await register(summary_agent_id, "Concatenate all subagent transcripts (deep research)", round_id=round_id)
+        await register(summary_agent_id, "Concatenate all subagent transcripts (deep research)", round_id=round_id, session_id=summary_session_id)
         await mark_done(summary_agent_id, final_text)
         return final_text
 
@@ -912,7 +918,7 @@ async def run_summary_subagent(
         history_lines.append(f"[{role}] {_truncate_summary_text(content, 800)}")
     history_block = "\n".join(history_lines) if history_lines else "—"
 
-    await register(summary_agent_id, summary_task, round_id=round_id)
+    await register(summary_agent_id, summary_task, round_id=round_id, session_id=summary_session_id)
     messages = [
         {
             "role": "system",
@@ -994,7 +1000,7 @@ def _spawn_subagent_task(coro, agent_id: str) -> asyncio.Task:
     return task
 
 
-async def cancel_subagent_tasks(round_id: str) -> None:
+async def cancel_subagent_tasks(round_id: str, session_id: str = "") -> None:
     """Cancel all running subagent tasks for *round_id* and mark them done immediately.
 
     This is called when the user hits "stop" — subagents stop whatever they are
@@ -1005,7 +1011,7 @@ async def cancel_subagent_tasks(round_id: str) -> None:
     cancelled_ids: list[str] = []
     async with _lock:
         for agent_id, info in list(_registry.items()):
-            if not _matches_round(info, round_id):
+            if not _matches_round(info, round_id, session_id):
                 continue
             if agent_id.startswith(_SUMMARY_AGENT_PREFIX):
                 continue
@@ -1063,6 +1069,7 @@ async def _run_subagent(
     from cyrene.agent.state import (
         _deep_research_mode, _current_command,
         _call_llm, _caller_type, _current_agent_id, _current_round_id, _get_max_tool_rounds,
+        _current_session_id,
     )
     from cyrene.llm import _assistant_text, _truncate
     from cyrene.tools import get_active_tool_defs_for_actor, is_tool_allowed_for_actor, _execute_tool
@@ -1071,7 +1078,10 @@ async def _run_subagent(
     round_id = await get_round_id(agent_id)
     round_token = _current_round_id.set(round_id) if round_id else None
     dm_token = _direct_message_mode.set(False)
-    from cyrene.inbox import get_inbox_context as _get_inbox, mark_all_read as _mark_inbox_read
+    _subagent_session_id = _current_session_id.get()
+    from cyrene.inbox import get_inbox_context as _get_inbox_base, mark_all_read as _mark_inbox_read_base
+    _get_inbox = lambda aid: _get_inbox_base(aid, session_id=_subagent_session_id)
+    _mark_inbox_read = lambda aid: _mark_inbox_read_base(aid, session_id=_subagent_session_id)
 
     cmd = _current_command.get()
     if cmd == "help-me-decide":
@@ -1269,8 +1279,7 @@ You are a **participant** in this discussion. Rules:
                     final_text = agent_text
 
                 # 标记 willing_to_quit（带 result），等别人（每 5 秒检查 inbox）
-                from cyrene.inbox import get_inbox_context as _inbox_ctx
-                inbox_msg = await wait_for_others(agent_id, _inbox_ctx, mark_read_func=_mark_inbox_read, result=final_text)
+                inbox_msg = await wait_for_others(agent_id, _get_inbox, mark_read_func=_mark_inbox_read, result=final_text)
                 if inbox_msg == "":
                     break  # 全部 finished，正常退出
                 elif inbox_msg == "timeout":

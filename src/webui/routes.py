@@ -395,8 +395,23 @@ def _workbench_acceptance_from_session(session: dict[str, Any]) -> list[dict[str
     ]
 
 
-def _workbench_agent_reply(user_input: str, session: dict[str, Any], constraints: list[str]) -> str:
-    return str(user_input or "").strip()
+async def _workbench_agent_reply(user_input: str, session: dict[str, Any], constraints: list[str]) -> str:
+    """Execute a real agent run for a workbench session."""
+    session_id = str(session.get("id") or "").strip()
+    if not session_id:
+        return str(user_input or "").strip()
+    try:
+        return await run_agent(
+            user_message=user_input,
+            bot=_bot,
+            chat_id=_CHAT_ID,
+            db_path=_db_path,
+            session_id=session_id,
+            permission_mode="auto",
+        )
+    except Exception:
+        logger.exception("Workbench agent run failed for session %s", session_id)
+        return str(user_input or "").strip()
 
 
 def _remove_path(path: Path) -> None:
@@ -1229,8 +1244,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         return {"messages": []}
 
     @router.post("/api/chat/interrupt")
-    async def api_interrupt_chat():
-        return {"ok": True, "interrupted": interrupt_active_run()}
+    async def api_interrupt_chat(session_id: str = ""):
+        return {"ok": True, "interrupted": interrupt_active_run(session_id=session_id)}
 
     @router.post("/api/chat/clear")
     async def api_clear_session():
@@ -1238,10 +1253,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         return {"ok": True}
 
     @router.get("/api/subagents")
-    async def api_subagents():
+    async def api_subagents(session_id: str = ""):
         from cyrene.subagent import _registry  # noqa: WPS437
         items = []
         for agent_id, info in _registry.items():
+            if session_id and str(info.get("session_id", "")) != session_id:
+                continue
             items.append({
                 "id": agent_id,
                 "name": agent_id,
@@ -1372,11 +1389,11 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     # ---- SSE ----
 
     @router.get("/api/events")
-    async def api_events(request: Request):
+    async def api_events(request: Request, session_id: str = ""):
         from cyrene.debug import subscribe
 
         async def event_stream():
-            async for event in subscribe():
+            async for event in subscribe(session_id=session_id):
                 if await request.is_disconnected():
                     break
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -1392,12 +1409,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         )
 
     @router.get("/api/events/list")
-    async def api_events_list():
+    async def api_events_list(session_id: str = ""):
         """List recent event IDs."""
         from cyrene.debug import get_recent_events
         events = get_recent_events(50)
         result = []
         for e in events:
+            if session_id and e.get("session_id") not in (session_id, ""):
+                continue
             eid = e.get("event_id", "")
             if eid:
                 result.append({"id": eid, "type": e.get("type", "?"), "caller": e.get("caller", "?")})
@@ -2867,6 +2886,13 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_workbench_delete_project(project_id: str):
         payload = _read_workbench_store()
         projects = payload.get("projects", [])
+        # Collect session IDs before filtering so we can clean up agent state
+        doomed_project = next((p for p in projects if str(p.get("id") or "") == project_id), None)
+        if doomed_project:
+            for s in (doomed_project.get("sessions") or []):
+                sid = str(s.get("id") or "").strip()
+                if sid:
+                    await clear_session_id(session_id=sid)
         next_projects = [project for project in projects if str(project.get("id") or "") != project_id]
         if len(next_projects) == len(projects):
             return JSONResponse({"error": "project not found"}, status_code=404)
@@ -2955,7 +2981,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         session["constraints"] = merged_constraints
         session["plan"] = _workbench_plan_from_input(user_input, session)
         session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
-        agent_reply = _workbench_agent_reply(user_input, session, constraints)
+        agent_reply = await _workbench_agent_reply(user_input, session, constraints)
         session["agentReply"] = agent_reply
         session["status"] = "planning" if session.get("status") in ("idle", "pending") else session.get("status", "planning")
         session["updatedAt"] = now

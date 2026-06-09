@@ -98,6 +98,37 @@ def create_app(bot: Any, db_path: str, instance_id: str = "", ui_mode: str = "wo
         except Exception:
             logger.warning("Browser session shutdown failed")
 
+        # Cancel all active session tasks
+        try:
+            from cyrene.agent.state import _sessions
+            from cyrene.subagent import _subagent_tasks
+
+            for session_id, ctx in list(_sessions.items()):
+                ctx.interrupt_event.set()
+                for tasks in (ctx.pending_compressors, ctx.pending_label_refreshes, ctx.pending_interrupt_clearers):
+                    for t in list(tasks):
+                        try:
+                            if not t.done() and not t.get_loop().is_closed():
+                                t.cancel()
+                        except RuntimeError:
+                            pass
+                    tasks.clear()
+                if ctx.main_inbox_worker is not None:
+                    try:
+                        if not ctx.main_inbox_worker.done() and not ctx.main_inbox_worker.get_loop().is_closed():
+                            ctx.main_inbox_worker.cancel()
+                    except RuntimeError:
+                        pass
+                    ctx.main_inbox_worker = None
+            for t in _subagent_tasks.values():
+                try:
+                    if not t.done() and not t.get_loop().is_closed():
+                        t.cancel()
+                except RuntimeError:
+                    pass
+        except Exception:
+            logger.warning("Session cleanup during shutdown failed")
+
     return app
 
 
