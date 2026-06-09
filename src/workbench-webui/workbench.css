@@ -204,7 +204,7 @@
 .workbench-grid {
   height: calc(100vh - 58px);
   display: grid;
-  grid-template-columns: 290px 300px minmax(460px, 1fr) 320px;
+  grid-template-columns: 290px 270px minmax(460px, 1fr) 350px;
   min-width: 0;
 }
 
@@ -271,10 +271,15 @@
 }
 
 .workbench-project-list,
-.workbench-task-list,
-.workbench-right-body {
+.workbench-task-list {
   min-height: 0;
   overflow: auto;
+}
+
+.workbench-right-body {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .workbench-project-list {
@@ -885,6 +890,7 @@
   color: var(--wb-muted);
   line-height: 1.55;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .workbench-check,
