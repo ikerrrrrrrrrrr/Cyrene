@@ -809,7 +809,13 @@ function App() {
   }
 
   function openLegacy() {
-    setShellMode("legacy");
+    // In Electron, recreate the window with a native title bar (the inset
+    // chrome overlaps the legacy top bar). In a plain browser, swap in place.
+    if (window.cyrene && typeof window.cyrene.switchUiShell === "function") {
+      window.cyrene.switchUiShell("legacy");
+    } else {
+      setShellMode("legacy");
+    }
   }
 
   if (needsOnboarding || shellMode === "legacy" || typeof window.WorkbenchApp === "undefined") {

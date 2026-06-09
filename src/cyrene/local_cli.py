@@ -466,6 +466,10 @@ def _run_electron_mode() -> None:
         async def _startup_and_notify(sockets=None):
             await _orig_startup(sockets=sockets)
             if not server.should_exit:
+                # Tell Electron which UI is being served (before PORT) so it can
+                # pick the matching window chrome: the workbench draws its own
+                # inset title bar, the legacy/agent UI needs the native one.
+                print(f"UIMODE={ui_mode}", flush=True)
                 print(f"PORT={selected_port}", flush=True)
 
         server.startup = _startup_and_notify

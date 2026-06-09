@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld('cyrene', {
   getDesktopSettings: () => ipcRenderer.invoke('desktop-settings:get'),
   updateDesktopSettings: (updates) => ipcRenderer.invoke('desktop-settings:update', updates),
   showNotification: ({ title, body }) => ipcRenderer.invoke('notification:show', { title, body }),
+  switchUiShell: (mode) => ipcRenderer.invoke('window:switch-shell', mode),
 });

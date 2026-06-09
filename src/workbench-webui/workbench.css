@@ -1017,6 +1017,57 @@
   }
 }
 
+/* ── Light-mode workbench overrides ── */
+
+html[data-theme="light"] .workbench-shell {
+  --wb-green: #1a8a4c;
+  --wb-blue:  #1d6ec9;
+}
+
+html[data-theme="light"] .settings-overlay-panel {
+  box-shadow: 0 12px 36px rgba(24, 37, 46, 0.10), 0 2px 8px rgba(24, 37, 46, 0.05);
+}
+
+html[data-theme="light"] .settings-overlay-nav {
+  background: var(--bg-3);
+}
+
+/* Toggle: white knob on a neutral gray track in light mode */
+html[data-theme="light"] .wb-toggle {
+  background: #cbd2db;
+}
+
+html[data-theme="light"] .wb-toggle::after {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+html[data-theme="light"] .wb-toggle.on {
+  background: var(--wb-accent);
+}
+
+/* Status pills: readable on light backgrounds */
+html[data-theme="light"] .workbench-status-pill.blue  { color: var(--wb-blue);  border-color: rgba(29, 110, 201, 0.32); background: rgba(29, 110, 201, 0.06); }
+html[data-theme="light"] .workbench-status-pill.green { color: var(--wb-green); border-color: rgba(26, 138, 76, 0.32);  background: rgba(26, 138, 76, 0.06); }
+html[data-theme="light"] .workbench-status-pill.amber { color: #9c6c1a;         border-color: rgba(156, 108, 26, 0.30); background: rgba(156, 108, 26, 0.06); }
+html[data-theme="light"] .workbench-status-pill.red   { color: #b53232;         border-color: rgba(181, 50, 50, 0.30);  background: rgba(181, 50, 50, 0.06); }
+
+/* Task-status chips */
+html[data-theme="light"] .workbench-task-status.blue  { background: rgba(29, 110, 201, 0.10); color: var(--wb-blue); }
+html[data-theme="light"] .workbench-task-status.green { background: rgba(26, 138, 76, 0.10);  color: var(--wb-green); }
+html[data-theme="light"] .workbench-task-status.amber { background: rgba(156, 108, 26, 0.10); color: #9c6c1a; }
+html[data-theme="light"] .workbench-task-status.red   { background: rgba(181, 50, 50, 0.10);  color: #b53232; }
+
+/* Panel title accent (purple spark) */
+html[data-theme="light"] .workbench-panel-title span {
+  color: var(--magenta);
+}
+
+/* Tool list monospace identifiers */
+html[data-theme="light"] .wb-tool-list .mono {
+  color: var(--wb-blue);
+}
+
 /* ── Settings Overlay ── */
 
 .settings-overlay {
