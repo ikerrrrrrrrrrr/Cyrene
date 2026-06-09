@@ -26,9 +26,14 @@ def _safe_upload_name(filename: str) -> str:
     return sanitized or "upload.bin"
 
 
-def register_knowledge_routes(router: APIRouter, db_path: str) -> None:
+def register_knowledge_routes(router: APIRouter, workspace_id: str = "default") -> None:
     """Register knowledge base API routes."""
+    from cyrene.config import get_knowledge_db_path
+    from cyrene.db import init_knowledge_db
     from cyrene.knowledge import store, ingest, retrieve
+
+    db_path = str(get_knowledge_db_path(workspace_id))
+    asyncio.run(init_knowledge_db(db_path))
 
     @router.post("/api/knowledge/documents")
     async def api_upload_documents(files: list[UploadFile]):

@@ -787,7 +787,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     register_map_routes(router)
     register_amap_routes(router)
     register_entity_routes(router, db_path)
-    register_knowledge_routes(router, db_path)
+    register_knowledge_routes(router)
     router.include_router(code_router)
 
     # ---- SPA root ----
@@ -852,10 +852,13 @@ def register_routes(app, bot: Any, db_path: str) -> None:
 
             # Register document in knowledge base
             try:
+                from cyrene.config import get_knowledge_db_path
                 from cyrene.knowledge import store, ingest
+
+                _kb_db_path = str(get_knowledge_db_path())
                 content_hash = store.content_hash_file(target)
                 doc = await store.upsert_document_by_path(
-                    _db_path,
+                    _kb_db_path,
                     path=str(target.resolve()),
                     source="chat_upload",
                     name=file.filename or safe_name,
@@ -867,7 +870,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 if doc.get("path") and str(Path(doc["path"]).resolve()) != str(target.resolve()):
                     target.unlink(missing_ok=True)
                 if doc.get("status") in {"pending", "error"}:
-                    asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
+                    asyncio.create_task(ingest.index_document(_kb_db_path, doc["id"]))
             except Exception as e:
                 logger.debug(f"Failed to register document in knowledge base: {e}")
 

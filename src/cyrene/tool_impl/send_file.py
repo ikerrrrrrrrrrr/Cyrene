@@ -40,6 +40,7 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
 
     # Register in knowledge base
     try:
+        from cyrene.config import get_knowledge_db_path
         from cyrene.knowledge import store, ingest
         import mimetypes
         doc_path = registered.get("path", "")
@@ -51,8 +52,9 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
             from cyrene.attachments import attachment_kind_from_meta
             kind = attachment_kind_from_meta(content_type, doc_file.name)
             content_hash = store.content_hash_file(doc_file)
+            _kb_db_path = str(get_knowledge_db_path())
             doc = await store.upsert_document_by_path(
-                _db_path,
+                _kb_db_path,
                 path=str(doc_file.resolve()),
                 source="generated",
                 name=registered.get("name", doc_file.name),
@@ -63,7 +65,7 @@ async def _tool_send_file(args: dict[str, Any], _bot: Any, _chat_id: int, _db_pa
                 content_hash=content_hash,
             )
             if doc.get("status") in {"pending", "error"}:
-                asyncio.create_task(ingest.index_document(_db_path, doc["id"]))
+                asyncio.create_task(ingest.index_document(_kb_db_path, doc["id"]))
     except Exception as e:
         logger.debug(f"Failed to register generated file in knowledge base: {e}")
 

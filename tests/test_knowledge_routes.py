@@ -22,6 +22,7 @@ pil_mock.__version__ = "9.0.0"
 sys.modules["PIL"] = pil_mock
 pil_mock.Image = MagicMock()
 
+from cyrene import config as cyrene_config
 from cyrene import db
 from webui.routes import register_routes
 
@@ -33,7 +34,9 @@ def temp_db():
         db_path = str(Path(tmpdir) / "test.db")
         import asyncio
         asyncio.run(db.init_db(db_path))
+        cyrene_config.set_knowledge_db_path_override(db_path)
         yield db_path
+        cyrene_config.set_knowledge_db_path_override(None)
 
 
 @pytest.fixture

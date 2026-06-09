@@ -68,11 +68,25 @@ def create_app(bot: Any, db_path: str, instance_id: str = "", ui_mode: str = "wo
             logger.warning("WeChat bot setup failed — check your config / proxy setup")
 
     @app.on_event("startup")
+    async def _migrate_knowledge_db() -> None:
+        try:
+            from cyrene.config import migrate_knowledge_to_workspace_db
+            result = await migrate_knowledge_to_workspace_db()
+            if result["migrated"]:
+                logger.info("Knowledge base migrated: %s", result["reason"])
+        except Exception:
+            logger.warning("Knowledge base migration failed (non-fatal)")
+
+    @app.on_event("startup")
     async def _sync_knowledge_catalog() -> None:
         try:
+            from cyrene.config import get_knowledge_db_path
+            from cyrene.db import init_knowledge_db
             from cyrene.knowledge import store, ingest
-            await store.sync_filesystem(db_path)
-            asyncio.create_task(ingest.process_pending(db_path))
+            _kb_db_path = str(get_knowledge_db_path())
+            await init_knowledge_db(_kb_db_path)
+            await store.sync_filesystem(_kb_db_path)
+            asyncio.create_task(ingest.process_pending(_kb_db_path))
         except Exception:
             logger.warning("Knowledge catalog sync failed — check your knowledge base")
 

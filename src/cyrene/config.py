@@ -240,3 +240,89 @@ def get_chat_workspace(chat_id: int) -> Path:
     # chat_dir = WORKSPACE_DIR / "chats" / str(chat_id)
     # chat_dir.mkdir(parents=True, exist_ok=True)
     # return chat_dir
+
+
+_kb_db_path_override: str | None = None
+
+
+def set_knowledge_db_path_override(path: str | Path | None) -> None:
+    """Override the knowledge db path (for testing). Pass None to clear."""
+    global _kb_db_path_override
+    _kb_db_path_override = str(path) if path else None
+
+
+def get_knowledge_db_path(workspace_id: str = "default") -> Path:
+    """Get the knowledge base database path for a workspace.
+
+    Each workspace has its own knowledge base database file for isolation.
+    Future: When multi-workspace is implemented, pass the actual workspace_id.
+    """
+    if _kb_db_path_override:
+        return Path(_kb_db_path_override)
+    return STORE_DIR / f"kb_{workspace_id}.db"
+
+
+async def migrate_knowledge_to_workspace_db(workspace_id: str = "default") -> dict:
+    """One-time migration: copy knowledge tables from global cyrene.db to workspace-specific db.
+
+    Returns {"migrated": True/False, "documents": N, "reason": "..."}.
+    No-op if the target db already exists or the source has no data.
+    """
+    import aiosqlite
+
+    old_path = DB_PATH
+    new_path = get_knowledge_db_path(workspace_id)
+
+    if new_path.exists():
+        return {"migrated": False, "documents": 0, "reason": "target_db_exists"}
+
+    # Check if old db has any knowledge data
+    if not old_path.exists():
+        return {"migrated": False, "documents": 0, "reason": "no_source_db"}
+
+    async with aiosqlite.connect(str(old_path)) as old_db:
+        cursor = await old_db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='kb_documents'"
+        )
+        if not await cursor.fetchone():
+            return {"migrated": False, "documents": 0, "reason": "no_kb_tables_in_source"}
+
+        cursor = await old_db.execute("SELECT COUNT(*) FROM kb_documents")
+        doc_count = (await cursor.fetchone())[0]
+        if doc_count == 0:
+            return {"migrated": False, "documents": 0, "reason": "source_empty"}
+
+    # Initialize the new db with tables
+    from cyrene.db import init_knowledge_db
+    await init_knowledge_db(str(new_path))
+
+    # Copy data via ATTACH
+    async with aiosqlite.connect(str(new_path)) as new_db:
+        await new_db.execute(f"ATTACH DATABASE '{old_path}' AS old")
+        try:
+            # Copy documents
+            await new_db.execute("INSERT INTO kb_documents SELECT * FROM old.kb_documents")
+            documents_migrated = (await new_db.execute("SELECT changes()")).fetchone()[0]
+
+            # Copy chunks
+            await new_db.execute("INSERT INTO kb_chunks SELECT * FROM old.kb_chunks")
+            chunks_migrated = (await new_db.execute("SELECT changes()")).fetchone()[0]
+
+            # Copy relations
+            await new_db.execute("INSERT INTO kb_relations SELECT * FROM old.kb_relations")
+
+            # Populate FTS from chunks
+            await new_db.execute(
+                "INSERT INTO kb_chunks_fts(content, chunk_id, document_id) "
+                "SELECT content, id, document_id FROM kb_chunks"
+            )
+        finally:
+            await new_db.execute("DETACH DATABASE old")
+
+        await new_db.commit()
+
+    return {
+        "migrated": True,
+        "documents": documents_migrated,
+        "reason": f"migrated {documents_migrated} documents and {chunks_migrated} chunks",
+    }

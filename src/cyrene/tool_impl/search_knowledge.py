@@ -22,9 +22,10 @@ async def _tool_search_knowledge(args: dict[str, Any], _bot: Any, _chat_id: int,
     k = max(1, int(args.get("k", 6) or 6))
 
     try:
+        from cyrene.config import get_knowledge_db_path
         from cyrene.knowledge import retrieve
 
-        results = await retrieve.search_knowledge(_db_path, query, k=k)
+        results = await retrieve.search_knowledge(str(get_knowledge_db_path()), query, k=k)
         if not results:
             return "No matching documents found in the knowledge base."
 
