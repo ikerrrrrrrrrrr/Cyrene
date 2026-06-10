@@ -31,6 +31,7 @@ from webui.routes_amap import register_amap_routes
 from webui.routes_entities import register_entity_routes
 from webui.routes_knowledge import register_knowledge_routes
 from webui.routes_workbench_knowledge import register_workbench_knowledge_routes
+from webui.routes_workbench_schedule import register_workbench_schedule_routes
 from webui.routes_code import router as code_router
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
@@ -805,6 +806,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     register_entity_routes(router, db_path)
     register_knowledge_routes(router)
     register_workbench_knowledge_routes(router)
+    register_workbench_schedule_routes(router, db_path)
     router.include_router(code_router)
 
     # ---- SPA root ----

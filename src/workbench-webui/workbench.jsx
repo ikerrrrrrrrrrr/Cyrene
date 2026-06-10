@@ -107,10 +107,12 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
     setFullPage(function (prev) { return prev === page ? null : page; });
   }
 
-  // The 知识库 view keeps the ProjectRail (so you can switch which workspace's
-  // knowledge base you're viewing); other pages take over the full screen.
+  // The 知识库 and 日程 views keep the ProjectRail (so you can navigate while
+  // viewing them); other pages take over the full screen.
   var isKnowledge = fullPage === "knowledge";
-  var fullPageConfig = fullPage && !isKnowledge ? workbenchFullPageConfig(fullPage, setFullPage, onOpenLegacy, store) : null;
+  var isSchedule = fullPage === "schedule";
+  var isModulePage = isKnowledge || isSchedule;
+  var fullPageConfig = fullPage && !isModulePage ? workbenchFullPageConfig(fullPage, setFullPage, onOpenLegacy, store) : null;
 
   return (
     <div className="workbench-shell" data-screen-label="Cyrene · workbench">
@@ -127,7 +129,7 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
       {fullPageConfig ? (
         <WorkbenchFullPage config={fullPageConfig} onClose={function () { setFullPage(null); }} />
       ) : (
-        <div className={"workbench-grid" + (isKnowledge ? " is-knowledge" : "")}>
+        <div className={"workbench-grid" + (isKnowledge ? " is-knowledge" : "") + (isSchedule ? " is-schedule" : "")}>
           <ProjectRail
             projects={store.projects}
             activeProjectId={store.activeProjectId}
@@ -139,6 +141,8 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
           />
           {isKnowledge ? (
             React.createElement(window.WorkbenchKnowledgePage || function () { return <div className="workbench-empty">知识库加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
+          ) : isSchedule ? (
+            React.createElement(window.WorkbenchSchedulePage || function () { return <div className="workbench-empty">日程加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
           ) : (
           <>
           <TaskRail
@@ -824,9 +828,6 @@ function workbenchFullPageConfig(page, setFullPage, onOpenLegacy, store) {
         });
       },
     };
-  }
-  if (page === "schedule") {
-    return { title: "日程", render: function () { return React.createElement(window.ScheduledTasksPage || function () { return <div className="workbench-empty">日程加载中...</div>; }); } };
   }
   if (page === "memory") {
     return { title: "记忆", render: function () { return React.createElement(window.MemoryPage || function () { return <div className="workbench-empty">记忆加载中...</div>; }); } };

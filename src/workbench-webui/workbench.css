@@ -2612,3 +2612,403 @@ html[data-theme="light"] .wb-tool-list .mono {
 @media (max-width: 860px) {
   .wb-kb-detail { display: none; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Schedule / Calendar page (Workbench) — independent from legacy tasks.jsx
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* Like 知识库, the schedule view keeps only the ProjectRail; the page manages
+   its own 3-column layout (calendar rail / main / detail) inside the rest. */
+.workbench-grid.is-schedule {
+  grid-template-columns: var(--wb-rail-w) minmax(0, 1fr);
+}
+
+.wb-sched-page {
+  /* Category accent colors, mapped onto real backend data sources. */
+  --cat-task_recurring: var(--wb-accent);
+  --cat-task_once: var(--wb-green);
+  --cat-entity_due: var(--wb-amber);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  background: var(--wb-surface);
+  overflow: hidden;
+}
+
+/* category → local --c var so atoms can stay generic */
+.wb-sched-page .cat-task_recurring { --c: var(--cat-task_recurring); }
+.wb-sched-page .cat-task_once { --c: var(--cat-task_once); }
+.wb-sched-page .cat-entity_due { --c: var(--cat-entity_due); }
+
+.wb-sched-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--c, var(--wb-accent));
+  flex: 0 0 auto;
+}
+.wb-sched-muted { color: var(--wb-muted); font-size: 13px; }
+.wb-sched-muted.pad { padding: 18px 16px; }
+.wb-sched-loading { padding: 40px; color: var(--wb-muted); }
+.wb-sched-error {
+  margin: 8px 18px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--wb-error-bg);
+  color: var(--wb-error-text);
+  font-size: 13px;
+}
+
+/* ── calendar rail (column 2) ──────────────────────────────────────── */
+.wb-sched-rail {
+  flex: 0 0 246px;
+  width: 246px;
+  border-right: 1px solid var(--wb-line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--wb-surface);
+}
+.wb-sched-rail-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 14px 14px 10px;
+}
+.wb-sched-rail-head > span { font-size: 13.5px; font-weight: 720; }
+.wb-sched-rail-back {
+  width: 26px; height: 26px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--wb-line); border-radius: 7px;
+  background: var(--wb-control-bg); color: var(--wb-muted); cursor: pointer;
+}
+.wb-sched-rail-back:hover { background: var(--wb-control-hover-bg); color: var(--wb-text); border-color: var(--wb-line-2); }
+
+/* mini month */
+.wb-sched-mini { padding: 0 12px 8px; }
+.wb-sched-mini-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 4px 8px;
+}
+.wb-sched-mini-head b { font-size: 12px; font-weight: 680; }
+.wb-sched-mini-nav { display: flex; gap: 2px; }
+.wb-sched-mini-nav button {
+  width: 24px; height: 24px; border: none; background: none; cursor: pointer;
+  color: var(--wb-muted); border-radius: 6px; font-size: 15px; line-height: 1;
+}
+.wb-sched-mini-nav button:hover { background: var(--wb-control-hover-bg); color: var(--wb-text); }
+.wb-sched-mini-grid {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px;
+}
+.wb-sched-mini-dow {
+  text-align: center; font-size: 10px; color: var(--wb-faint);
+  padding: 2px 0 4px;
+}
+.wb-sched-mini-cell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border: none; background: none; cursor: pointer;
+  color: var(--wb-text); font-size: 11px; border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wb-sched-mini-cell:hover { background: var(--wb-control-hover-bg); }
+.wb-sched-mini-cell.other { color: var(--wb-faint); }
+.wb-sched-mini-cell.today { color: var(--wb-accent-text); background: var(--wb-accent); font-weight: 700; }
+.wb-sched-mini-cell.sel:not(.today) {
+  box-shadow: inset 0 0 0 1.5px var(--wb-active-border);
+  font-weight: 680;
+}
+.wb-sched-mini-mark {
+  position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
+  width: 4px; height: 4px; border-radius: 50%; background: var(--wb-accent);
+}
+.wb-sched-mini-cell.today .wb-sched-mini-mark { background: var(--wb-accent-text); }
+
+/* category list */
+.wb-sched-cal-section { padding: 6px 8px 16px; border-top: 1px solid var(--wb-line); margin-top: 4px; }
+.wb-sched-cal-section-title {
+  font-size: 11.5px; color: var(--wb-muted); font-weight: 640;
+  padding: 10px 8px 6px;
+}
+.wb-sched-cal-item {
+  width: 100%;
+  display: flex; align-items: center; gap: 9px;
+  border: none; background: none; cursor: pointer;
+  padding: 6px 8px; border-radius: 8px; color: var(--wb-text);
+  font-size: 12.5px; text-align: left;
+}
+.wb-sched-cal-item:hover { background: var(--wb-row-hover-bg); }
+.wb-sched-cal-item.off .wb-sched-cal-name { color: var(--wb-faint); }
+.wb-sched-cal-check {
+  width: 17px; height: 17px; border-radius: 5px; flex: 0 0 auto;
+  border: 1.5px solid var(--c, var(--wb-accent));
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff;
+}
+.wb-sched-cal-check.on { background: var(--c, var(--wb-accent)); }
+.wb-sched-cal-name { flex: 1 1 auto; font-weight: 560; }
+.wb-sched-cal-count { color: var(--wb-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* ── main column (column 3) ────────────────────────────────────────── */
+.wb-sched-main {
+  flex: 1 1 auto; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  border-right: 1px solid var(--wb-line);
+}
+.wb-sched-toolbar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: nowrap; padding: 10px 14px; border-bottom: 1px solid var(--wb-line);
+}
+.wb-sched-toolbar-left { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.wb-sched-toolbar-right { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.wb-sched-iconbtn {
+  width: 28px; height: 28px; flex: 0 0 auto;
+  border: 1px solid var(--wb-line); border-radius: 8px;
+  background: var(--wb-control-bg); color: var(--wb-muted);
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.wb-sched-iconbtn:hover { background: var(--wb-control-hover-bg); color: var(--wb-text); border-color: var(--wb-line-2); }
+.wb-sched-today {
+  flex: 0 0 auto; height: 28px; padding: 0 12px;
+  border: 1px solid var(--wb-line); border-radius: 8px;
+  background: var(--wb-control-bg); color: var(--wb-text);
+  font-size: 12.5px; font-weight: 620; cursor: pointer; white-space: nowrap;
+}
+.wb-sched-today:hover { background: var(--wb-control-hover-bg); border-color: var(--wb-line-2); }
+.wb-sched-heading {
+  flex: 1 1 auto; min-width: 0;
+  margin: 0 0 0 4px; font-size: 14.5px; font-weight: 700; letter-spacing: -0.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wb-sched-viewseg {
+  display: inline-flex; flex: 0 0 auto; border: 1px solid var(--wb-line); border-radius: 8px;
+  overflow: hidden; background: var(--wb-control-bg);
+}
+.wb-sched-viewseg button {
+  border: none; background: none; cursor: pointer; white-space: nowrap;
+  padding: 5px 13px; font-size: 12.5px; font-weight: 620; color: var(--wb-muted);
+}
+.wb-sched-viewseg button.on { background: var(--wb-active-bg); color: var(--wb-text); }
+.wb-sched-new { flex: 0 0 auto; height: 30px; white-space: nowrap; }
+.wb-sched-new span { white-space: nowrap; }
+
+.wb-sched-viewport { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── shared timeline pieces ────────────────────────────────────────── */
+.wb-sched-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.wb-sched-timeline { display: flex; position: relative; }
+.wb-sched-gutter { flex: 0 0 56px; width: 56px; position: relative; }
+.wb-sched-hour-label {
+  position: relative; text-align: right; padding-right: 8px;
+  box-sizing: border-box;
+}
+.wb-sched-hour-label span {
+  position: absolute; top: -7px; right: 8px;
+  font-size: 11px; color: var(--wb-faint); font-variant-numeric: tabular-nums;
+}
+.wb-sched-canvas { position: relative; flex: 1 1 auto; min-width: 0; }
+.wb-sched-hlines { position: absolute; inset: 0; pointer-events: none; }
+.wb-sched-hline { position: absolute; left: 0; right: 0; height: 1px; background: var(--wb-line); opacity: 0.6; }
+.wb-sched-nowline { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--wb-red); z-index: 5; pointer-events: none; }
+.wb-sched-nowline span {
+  position: absolute; left: -4px; top: -4px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--wb-red);
+}
+
+.wb-sched-block {
+  position: absolute; box-sizing: border-box;
+  border: none; border-left: 3px solid var(--c, var(--wb-accent));
+  background: color-mix(in srgb, var(--c, var(--wb-accent)) 15%, var(--wb-card-bg));
+  border-radius: 6px; padding: 3px 7px; cursor: pointer; overflow: hidden;
+  display: flex; flex-direction: column; gap: 1px; text-align: left; z-index: 2;
+  transition: box-shadow 0.12s, transform 0.06s;
+}
+.wb-sched-block:hover { box-shadow: 0 3px 10px rgba(0,0,0,0.14); z-index: 3; }
+.wb-sched-block.active { box-shadow: 0 0 0 2px var(--c, var(--wb-accent)); z-index: 4; }
+.wb-sched-block.paused { opacity: 0.55; }
+.wb-sched-block-time { font-size: 10.5px; color: var(--wb-muted); font-variant-numeric: tabular-nums; line-height: 1.2; }
+.wb-sched-block-title { font-size: 12.5px; font-weight: 620; color: var(--wb-text); line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* all-day row */
+.wb-sched-allday {
+  flex: 0 0 auto; display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 12px 8px 0; border-bottom: 1px solid var(--wb-line);
+}
+.wb-sched-allday-label {
+  flex: 0 0 56px; width: 56px; text-align: right; padding-right: 8px;
+  font-size: 11px; color: var(--wb-faint); padding-top: 4px;
+}
+.wb-sched-allday-items { flex: 1 1 auto; display: flex; flex-wrap: wrap; gap: 6px; }
+.wb-sched-allday-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: none; border-radius: 6px; cursor: pointer;
+  background: color-mix(in srgb, var(--c, var(--wb-accent)) 15%, var(--wb-card-bg));
+  color: var(--wb-text); font-size: 12px; font-weight: 560; padding: 4px 9px;
+  max-width: 100%;
+}
+.wb-sched-allday-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-sched-allday-chip:hover { filter: brightness(0.97); }
+.wb-sched-allday-chip.active { box-shadow: 0 0 0 2px var(--c, var(--wb-accent)); }
+
+/* ── day view ──────────────────────────────────────────────────────── */
+.wb-sched-dayview { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+
+/* ── week view ─────────────────────────────────────────────────────── */
+.wb-sched-weekview { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.wb-sched-week-head { display: flex; border-bottom: 1px solid var(--wb-line); }
+.wb-sched-week-corner { flex: 0 0 56px; width: 56px; }
+.wb-sched-week-daycol {
+  flex: 1 1 0; min-width: 0; border: none; background: none; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 7px 0; color: var(--wb-text);
+}
+.wb-sched-week-daycol small { font-size: 11px; color: var(--wb-muted); }
+.wb-sched-week-daycol b { font-size: 16px; font-weight: 680; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; }
+.wb-sched-week-daycol.today b { background: var(--wb-accent); color: var(--wb-accent-text); }
+.wb-sched-week-daycol:hover small { color: var(--wb-text); }
+.wb-sched-week-allday { display: flex; align-items: stretch; border-bottom: 1px solid var(--wb-line); min-height: 30px; }
+.wb-sched-week-allday-cols { flex: 1 1 auto; display: flex; }
+.wb-sched-week-allday-col { flex: 1 1 0; min-width: 0; padding: 4px 4px; display: flex; flex-direction: column; gap: 3px; border-left: 1px solid var(--wb-line); }
+.wb-sched-week-allday-col .wb-sched-allday-chip { font-size: 11px; padding: 2px 6px; }
+.wb-sched-week-cols { flex: 1 1 auto; display: flex; position: relative; }
+.wb-sched-week-col { flex: 1 1 0; min-width: 0; position: relative; border-left: 1px solid var(--wb-line); }
+.wb-sched-week-col.today { background: color-mix(in srgb, var(--wb-accent) 4%, transparent); }
+
+/* ── month view ────────────────────────────────────────────────────── */
+.wb-sched-monthview { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; overflow: hidden; }
+.wb-sched-month-dow { display: grid; grid-template-columns: repeat(7, 1fr); border-bottom: 1px solid var(--wb-line); }
+.wb-sched-month-dow span { text-align: center; padding: 7px 0; font-size: 12px; color: var(--wb-muted); font-weight: 600; }
+.wb-sched-month-grid {
+  flex: 1 1 auto; min-height: 0; display: grid;
+  grid-template-columns: repeat(7, 1fr); grid-auto-rows: 1fr;
+}
+.wb-sched-month-cell {
+  border-right: 1px solid var(--wb-line); border-bottom: 1px solid var(--wb-line);
+  min-width: 0; min-height: 0; padding: 4px; display: flex; flex-direction: column; gap: 3px; overflow: hidden;
+}
+.wb-sched-month-cell.other { background: color-mix(in srgb, var(--wb-muted) 4%, transparent); }
+.wb-sched-month-num {
+  align-self: flex-start; border: none; background: none; cursor: pointer;
+  font-size: 12.5px; color: var(--wb-text); font-weight: 560;
+  width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+}
+.wb-sched-month-cell.other .wb-sched-month-num { color: var(--wb-faint); }
+.wb-sched-month-cell.today .wb-sched-month-num { background: var(--wb-accent); color: var(--wb-accent-text); font-weight: 700; }
+.wb-sched-month-num:hover:not(.today) { background: var(--wb-control-hover-bg); }
+.wb-sched-month-events { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
+.wb-sched-month-chip {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  border: none; cursor: pointer; border-radius: 5px;
+  background: color-mix(in srgb, var(--c, var(--wb-accent)) 14%, var(--wb-card-bg));
+  padding: 2px 6px; font-size: 11.5px; color: var(--wb-text); text-align: left;
+  border-left: 2.5px solid var(--c, var(--wb-accent));
+}
+.wb-sched-month-chip small { color: var(--wb-muted); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.wb-sched-month-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wb-sched-month-chip.active { box-shadow: 0 0 0 1.5px var(--c, var(--wb-accent)); }
+.wb-sched-month-more { border: none; background: none; cursor: pointer; color: var(--wb-muted); font-size: 11px; text-align: left; padding: 1px 6px; }
+.wb-sched-month-more:hover { color: var(--wb-text); }
+
+/* ── detail panel (column 4) ───────────────────────────────────────── */
+.wb-sched-detail {
+  flex: 0 0 340px; width: 340px;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--wb-surface);
+}
+.wb-sched-detail.empty { align-items: center; justify-content: center; }
+.wb-sched-detail-placeholder { text-align: center; color: var(--wb-faint); display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px; }
+.wb-sched-detail-placeholder p { font-size: 13px; margin: 0; }
+.wb-sched-detail-tabs {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 16px;
+  padding: 12px 16px 0; border-bottom: 1px solid var(--wb-line);
+}
+.wb-sched-detail-tabs button {
+  border: none; background: none; cursor: pointer; color: var(--wb-muted);
+  font-size: 13.5px; font-weight: 620; padding: 4px 2px 11px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.wb-sched-detail-tabs button.active { color: var(--wb-text); border-bottom-color: var(--wb-accent); }
+.wb-sched-detail-close {
+  margin-left: auto; border: none; background: none; cursor: pointer;
+  color: var(--wb-muted); font-size: 20px; line-height: 1; padding: 0 0 8px; width: 24px;
+}
+.wb-sched-detail-close:hover { color: var(--wb-text); }
+.wb-sched-detail-head { flex: 0 0 auto; display: flex; align-items: center; gap: 9px; padding: 16px 16px 10px; }
+.wb-sched-detail-dot { width: 11px; height: 11px; border-radius: 50%; background: var(--c, var(--wb-accent)); flex: 0 0 auto; }
+.wb-sched-detail-title { font-size: 16px; font-weight: 720; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wb-sched-detail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 16px 18px; }
+
+.wb-sched-detail-meta { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 14px; }
+.wb-sched-meta-row { display: flex; align-items: center; gap: 10px; }
+.wb-sched-meta-ico { flex: 0 0 auto; color: var(--wb-muted); display: inline-flex; }
+.wb-sched-meta-val { font-size: 13.5px; color: var(--wb-text); }
+.wb-sched-badge { display: inline-flex; align-items: center; padding: 1px 9px; border-radius: 999px; font-size: 12px; font-weight: 640; }
+.wb-sched-badge.green { background: color-mix(in srgb, var(--wb-green) 16%, transparent); color: var(--wb-green); }
+.wb-sched-badge.amber { background: color-mix(in srgb, var(--wb-amber) 18%, transparent); color: var(--wb-amber); }
+.wb-sched-badge.red { background: color-mix(in srgb, var(--wb-red) 16%, transparent); color: var(--wb-red); }
+.wb-sched-badge.slate { background: color-mix(in srgb, var(--wb-muted) 16%, transparent); color: var(--wb-muted); }
+
+.wb-sched-detail-sec { border-top: 1px solid var(--wb-line); padding: 12px 0; }
+.wb-sched-detail-sec-title { font-size: 12px; color: var(--wb-muted); font-weight: 640; margin-bottom: 6px; }
+.wb-sched-detail-prompt { font-size: 13.5px; line-height: 1.55; color: var(--wb-text); margin: 0; white-space: pre-wrap; word-break: break-word; }
+.wb-sched-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; border-top: 1px solid var(--wb-line); padding: 12px 0; }
+.wb-sched-kv { display: flex; flex-direction: column; gap: 3px; }
+.wb-sched-kv small { font-size: 11.5px; color: var(--wb-faint); }
+.wb-sched-kv span { font-size: 13px; color: var(--wb-text); font-variant-numeric: tabular-nums; }
+.wb-sched-detail-actions { display: flex; gap: 8px; border-top: 1px solid var(--wb-line); padding: 14px 0 0; }
+.wb-sched-detail-actions .wb-btn { flex: 1 1 auto; justify-content: center; }
+
+.wb-sched-runs { display: flex; flex-direction: column; gap: 10px; padding: 12px 0; }
+.wb-sched-run { border: 1px solid var(--wb-line); border-radius: 9px; padding: 9px 11px; background: var(--wb-card-bg); }
+.wb-sched-run-head { display: flex; align-items: center; gap: 8px; }
+.wb-sched-run-head time { font-size: 12px; color: var(--wb-muted); font-variant-numeric: tabular-nums; }
+.wb-sched-run-head small { margin-left: auto; font-size: 11.5px; color: var(--wb-faint); }
+.wb-sched-run-body { margin: 7px 0 0; font-size: 12.5px; color: var(--wb-muted); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+
+/* ── new / edit modal ──────────────────────────────────────────────── */
+.wb-sched-modal-scrim {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(15, 20, 30, 0.42); backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.wb-sched-modal {
+  width: min(520px, 100%); max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--wb-bg-2); border: 1px solid var(--wb-line); border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0,0,0,0.32); overflow: hidden;
+}
+.wb-sched-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--wb-line); }
+.wb-sched-modal-head b { font-size: 16px; font-weight: 720; }
+.wb-sched-modal-head .wb-sched-detail-close { padding: 0; margin: 0; }
+.wb-sched-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.wb-sched-field { display: flex; flex-direction: column; gap: 6px; }
+.wb-sched-field > span { font-size: 13px; font-weight: 620; color: var(--wb-text); }
+.wb-sched-field textarea, .wb-sched-field input[type="text"], .wb-sched-field input[type="datetime-local"], .wb-sched-field input[type="number"], .wb-sched-field select {
+  border: 1px solid var(--wb-line); border-radius: 8px; background: var(--wb-control-bg);
+  color: var(--wb-text); font-size: 13.5px; padding: 9px 11px; outline: none; width: 100%;
+}
+.wb-sched-field textarea { resize: vertical; min-height: 64px; line-height: 1.5; }
+.wb-sched-field textarea:focus, .wb-sched-field input:focus, .wb-sched-field select:focus { border-color: var(--wb-accent); }
+.wb-sched-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.wb-sched-seg button {
+  border: 1px solid var(--wb-line); border-radius: 8px; background: var(--wb-control-bg);
+  color: var(--wb-muted); font-size: 12.5px; font-weight: 600; padding: 6px 12px; cursor: pointer;
+}
+.wb-sched-seg button.on { background: var(--wb-active-bg); border-color: var(--wb-active-border); color: var(--wb-text); }
+.wb-sched-inline { display: flex; align-items: center; gap: 8px; }
+.wb-sched-inline select { width: auto; }
+.wb-sched-form-note { font-size: 11.5px; color: var(--wb-faint); line-height: 1.5; margin: 0; }
+.wb-sched-form-err {
+  background: var(--wb-error-bg); color: var(--wb-error-text);
+  border-radius: 8px; padding: 8px 11px; font-size: 12.5px;
+}
+.wb-sched-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--wb-line); }
+
+/* responsive: collapse the detail panel on narrow widths */
+@media (max-width: 1240px) {
+  .wb-sched-rail { flex-basis: 220px; width: 220px; }
+  .wb-sched-detail { flex-basis: 300px; width: 300px; }
+}
+@media (max-width: 980px) {
+  .wb-sched-detail { display: none; }
+}

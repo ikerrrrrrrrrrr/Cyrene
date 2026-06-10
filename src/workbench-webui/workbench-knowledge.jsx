@@ -639,7 +639,7 @@
             "div", { className: "wb-kb-title-row" },
             props.onBack && React.createElement(
               "button", { type: "button", className: "wb-kb-iconbtn wb-kb-back", onClick: props.onBack, title: "返回" },
-              React.createElement("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round", strokeLinejoin: "round" },
+              React.createElement("svg", { width: 18, height: 18, viewBox: "2 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.9, strokeLinecap: "round", strokeLinejoin: "round" },
                 React.createElement("path", { d: "m15 18-6-6 6-6" }))
             ),
             React.createElement("h1", null, "知识库")
