@@ -103,13 +103,21 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
     setRightTab("context");
   }
 
-  var fullPageConfig = fullPage ? workbenchFullPageConfig(fullPage, setFullPage, onOpenLegacy, store) : null;
+  function handleOpenPage(page) {
+    setFullPage(function (prev) { return prev === page ? null : page; });
+  }
+
+  // The 知识库 view keeps the ProjectRail (so you can switch which workspace's
+  // knowledge base you're viewing); other pages take over the full screen.
+  var isKnowledge = fullPage === "knowledge";
+  var fullPageConfig = fullPage && !isKnowledge ? workbenchFullPageConfig(fullPage, setFullPage, onOpenLegacy, store) : null;
 
   return (
     <div className="workbench-shell" data-screen-label="Cyrene · workbench">
       <WorkbenchTopbar
         project={store.activeProject}
         session={store.activeSession}
+        activePage={fullPage}
         onSearch={function () { setSearchOpen(true); }}
         onSettings={function () { setSettingsOpen(true); }}
         theme={theme}
@@ -119,15 +127,20 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
       {fullPageConfig ? (
         <WorkbenchFullPage config={fullPageConfig} onClose={function () { setFullPage(null); }} />
       ) : (
-        <div className="workbench-grid">
+        <div className={"workbench-grid" + (isKnowledge ? " is-knowledge" : "")}>
           <ProjectRail
             projects={store.projects}
             activeProjectId={store.activeProjectId}
+            activePage={fullPage}
             onSelectProject={selectProject}
             onCreateProject={createProject}
-            onOpenPage={setFullPage}
+            onOpenPage={handleOpenPage}
             onOpenLegacy={onOpenLegacy}
           />
+          {isKnowledge ? (
+            React.createElement(window.WorkbenchKnowledgePage || function () { return <div className="workbench-empty">知识库加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
+          ) : (
+          <>
           <TaskRail
             project={store.activeProject}
             activeSessionId={store.activeSessionId}
@@ -142,6 +155,26 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
             onToggleStep={function (stepId) { setExpandedStepId(expandedStepId === stepId ? "" : stepId); }}
             onCreateRun={handleRunCreated}
             onRightTab={setRightTab}
+            onRefresh={function (nextStore) {
+              setStore(function (prev) {
+                // Preserve expandedStepId, rightTab, etc. from current UI state
+                // but replace project/session data from the server response
+                var merged = { ...prev };
+                if (nextStore && nextStore.activeProject) {
+                  merged.activeProject = nextStore.activeProject;
+                  merged.activeProjectId = nextStore.activeProjectId || merged.activeProjectId;
+                }
+                if (nextStore && nextStore.activeSession) {
+                  merged.activeSession = nextStore.activeSession;
+                  merged.activeSessionId = nextStore.activeSessionId || merged.activeSessionId;
+                }
+                // Also refresh the projects + sessions lists
+                if (nextStore && Array.isArray(nextStore.projects)) {
+                  merged.projects = nextStore.projects;
+                }
+                return merged;
+              });
+            }}
             error={error}
             loading={loading}
           />
@@ -152,6 +185,8 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
             tab={rightTab}
             onTabChange={setRightTab}
           />
+          </>
+          )}
         </div>
       )}
       {searchOpen && React.createElement(
@@ -177,9 +212,10 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
   );
 }
 
-function WorkbenchTopbar({ project, session, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
+function WorkbenchTopbar({ project, session, activePage, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
   var title = project ? project.name : "Project";
-  var sessionTitle = session ? session.title : "Task";
+  var pageLabels = { chat: "对话", knowledge: "知识库", schedule: "日程", memory: "记忆" };
+  var sessionTitle = activePage && pageLabels[activePage] ? pageLabels[activePage] : (session ? session.title : "Task");
   var themeTitle = theme === "system" ? "跟随系统" : actualTheme === "dark" ? "深色模式" : "浅色模式";
   var themeIcon = theme === "system" ? (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/></svg>
@@ -222,7 +258,7 @@ function WorkbenchTopbar({ project, session, onSearch, onSettings, theme, actual
   );
 }
 
-function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProject, onOpenPage, onOpenLegacy }) {
+function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, onCreateProject, onOpenPage, onOpenLegacy }) {
   var navItems = [
     { id: "chat", label: "对话", icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.2 7.6L3 21l1.9-5.8A8.5 8.5 0 1 1 21 11.5Z"/></svg>
@@ -274,7 +310,7 @@ function ProjectRail({ projects, activeProjectId, onSelectProject, onCreateProje
       <div className="workbench-global-nav">
         {navItems.map(function (item) {
           return (
-            <button key={item.id} type="button" className="workbench-nav-button" onClick={item.action}>
+            <button key={item.id} type="button" className={"workbench-nav-button" + (activePage === item.id ? " active" : "")} onClick={item.action}>
               <span className="workbench-nav-icon">{item.icon}</span>
               <span>{item.label}</span>
             </button>
@@ -349,14 +385,15 @@ function TaskWorkArea(props) {
   if (!project || !session) {
     return <main className="workbench-main"><div className="workbench-empty">请选择项目和任务。</div></main>;
   }
+  var isNewSession = !session.plan || session.plan.length === 0;
   var hasTaskStructure = Boolean(session.agentReply || (session.plan && session.plan.length));
   return (
     <main className="workbench-main">
       <TaskHeader project={project} session={session} />
       {props.error && <div className="workbench-error">{props.error}</div>}
-      {!hasTaskStructure ? (
-        <InitialTaskConversation session={session} onCreateRun={props.onCreateRun} />
-      ) : (
+      {isNewSession ? (
+        <SimpleChatView session={session} onRefresh={props.onRefresh} />
+      ) : hasTaskStructure ? (
         <>
           <AgentReplyPanel session={session} />
           <TaskStepList
@@ -367,6 +404,8 @@ function TaskWorkArea(props) {
           />
           <TaskComposer session={session} onCreateRun={props.onCreateRun} compact={true} />
         </>
+      ) : (
+        <InitialTaskConversation session={session} onCreateRun={props.onCreateRun} />
       )}
     </main>
   );
@@ -398,6 +437,124 @@ function InitialTaskConversation({ session, onCreateRun }) {
       </div>
       <TaskComposer session={session} onCreateRun={onCreateRun} compact={false} />
     </section>
+  );
+}
+
+function SimpleChatView({ session, onRefresh }) {
+  var model = window.WorkbenchModel;
+  var [draft, setDraft] = useWorkbenchState("");
+  var [busy, setBusy] = useWorkbenchState(false);
+  var taRef = useWorkbenchRef(null);
+
+  function syncHeight() {
+    var ta = taRef.current;
+    if (ta) { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; }
+  }
+
+  function handleSend() {
+    var msg = draft.trim();
+    if (!msg || busy) return;
+    setBusy(true);
+    model.sendChat(session.id, msg)
+      .then(function (next) {
+        setDraft("");
+        if (taRef.current) taRef.current.style.height = "";
+        onRefresh && onRefresh(next);
+      })
+      .catch(function (err) {
+        window.alert(err.message || String(err));
+      })
+      .finally(function () {
+        setBusy(false);
+      });
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  var reply = String(session && session.agentReply || "").trim();
+  var hints = [
+    "解释一下这个项目的代码结构",
+    "帮我检查代码中的潜在问题",
+    "分析这个项目的依赖关系",
+  ];
+
+  return (
+    <div className="wb-chat-view">
+      {reply ? (
+        <section className="workbench-agent-reply">
+          <div className="workbench-panel-title">
+            <span>✦</span>
+            <b>Agent 回复</b>
+          </div>
+          <div className="workbench-agent-body">
+            {reply.split("\n").map(function (line, index) {
+              return <p key={index}>{line}</p>;
+            })}
+          </div>
+        </section>
+      ) : (
+        <div className="wb-chat-empty">
+          <div className="wb-chat-empty-icon">
+            <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <p>开始一段新的对话，Agent 会直接回答你的问题。</p>
+        </div>
+      )}
+      {!reply && (
+        <div className="wb-chat-greeting">
+          <h3>有什么我可以帮你的？</h3>
+          <p>输入一个问题或任务，Agent 会直接回复，不涉及执行流程。</p>
+        </div>
+      )}
+      <div className="wb-chat-composer">
+        <div className="wb-chat-input-row">
+          <textarea
+            ref={taRef}
+            value={draft}
+            onChange={function (e) { setDraft(e.target.value); syncHeight(); }}
+            onKeyDown={handleKeyDown}
+            placeholder="发送消息…"
+            rows={1}
+            disabled={busy}
+          />
+          <button
+            type="button"
+            className="wb-chat-send"
+            onClick={handleSend}
+            disabled={busy || !draft.trim()}
+          >
+            {busy ? (
+              <span className="wb-spinner" />
+            ) : (
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z"/></svg>
+            )}
+          </button>
+        </div>
+        <div className="wb-chat-hints">
+          {hints.map(function (hint, index) {
+            return (
+              <button
+                key={index}
+                type="button"
+                className="wb-chat-hint-chip"
+                onClick={function () {
+                  setDraft(hint);
+                  syncHeight();
+                  if (taRef.current) taRef.current.focus();
+                }}
+              >
+                {hint}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -667,9 +824,6 @@ function workbenchFullPageConfig(page, setFullPage, onOpenLegacy, store) {
         });
       },
     };
-  }
-  if (page === "knowledge") {
-    return { title: "知识库", render: function () { return React.createElement(window.KnowledgePage || function () { return <div className="workbench-empty">知识库加载中...</div>; }); } };
   }
   if (page === "schedule") {
     return { title: "日程", render: function () { return React.createElement(window.ScheduledTasksPage || function () { return <div className="workbench-empty">日程加载中...</div>; }); } };

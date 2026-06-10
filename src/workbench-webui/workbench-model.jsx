@@ -70,6 +70,14 @@ var WorkbenchModel = (function () {
     }).then(normalizeStore);
   }
 
+  function sendChat(sessionId, message) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: message || "" }),
+    }).then(normalizeStore);
+  }
+
   function statusText(status) {
     var raw = String(status || "idle");
     var map = {
@@ -147,6 +155,7 @@ var WorkbenchModel = (function () {
     createProject: createProject,
     createSession: createSession,
     createRun: createRun,
+    sendChat: sendChat,
     statusText: statusText,
     statusTone: statusTone,
     formatTime: formatTime,

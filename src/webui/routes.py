@@ -30,6 +30,7 @@ from webui.routes_map import register_map_routes
 from webui.routes_amap import register_amap_routes
 from webui.routes_entities import register_entity_routes
 from webui.routes_knowledge import register_knowledge_routes
+from webui.routes_workbench_knowledge import register_workbench_knowledge_routes
 from webui.routes_code import router as code_router
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
@@ -803,6 +804,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     register_amap_routes(router)
     register_entity_routes(router, db_path)
     register_knowledge_routes(router)
+    register_workbench_knowledge_routes(router)
     router.include_router(code_router)
 
     # ---- SPA root ----
@@ -3025,6 +3027,28 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
         return {"ok": True, "project": project, "session": session, "run": run, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/chat")
+    async def api_workbench_session_chat(session_id: str, request: Request):
+        """Simple chat mode — returns agent reply without generating plans/steps."""
+        body = await request.json()
+        message = str(body.get("message") or "").strip()
+        if not message:
+            return JSONResponse({"error": "message is required"}, status_code=400)
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        agent_reply = await _workbench_agent_reply(message, session, [])
+        session["agentReply"] = agent_reply
+        session["status"] = "completed"
+        now = _utc_now_iso()
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, **payload}
 
     @router.get("/api/task-sessions/{session_id}/events")
     async def api_workbench_session_events(session_id: str):
