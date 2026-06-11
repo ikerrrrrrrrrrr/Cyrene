@@ -82,6 +82,22 @@ var WorkbenchModel = (function () {
     }).then(normalizeStore);
   }
 
+  function reviseInitPlan(sessionId, feedback) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/init/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ feedback: feedback || "" }),
+    }).then(normalizeStore);
+  }
+
+  function confirmInitPlan(sessionId, taskPlan) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/init/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ taskPlan: Array.isArray(taskPlan) ? taskPlan : [] }),
+    }).then(normalizeStore);
+  }
+
   // options: { attachments, mode, command, signal }
   function createRun(sessionId, input, options) {
     options = options || {};
@@ -173,9 +189,10 @@ var WorkbenchModel = (function () {
     var raw = String(status || "idle");
     if (raw === "running" || raw === "planning" || raw === "review" || raw === "initializing") return "blue";
     if (raw === "waiting_for_user" || raw === "waiting_for_approval" || raw === "blocked") return "amber";
+    if (raw === "paused") return "amber";
     if (raw === "failed") return "red";
     if (raw === "done" || raw === "completed") return "green";
-    return "muted"; // idle / pending / paused / cancelled / skipped
+    return "muted"; // idle / pending / cancelled / skipped
   }
 
   // Short human-readable label for a run-log event type.
@@ -363,6 +380,8 @@ var WorkbenchModel = (function () {
     createSession: createSession,
     generateInitForm: generateInitForm,
     submitInit: submitInit,
+    reviseInitPlan: reviseInitPlan,
+    confirmInitPlan: confirmInitPlan,
     createRun: createRun,
     sendChat: sendChat,
     patchSession: patchSession,

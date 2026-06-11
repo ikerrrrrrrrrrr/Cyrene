@@ -513,6 +513,207 @@ def _workbench_init_brief(project: dict[str, Any], form: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _workbench_answer_text(form: dict[str, Any], key: str) -> str:
+    answers = form.get("answers") if isinstance(form.get("answers"), dict) else {}
+    value = answers.get(key)
+    if isinstance(value, list):
+        return "、".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "").strip()
+
+
+def _workbench_fallback_init_task_plan(project: dict[str, Any], form: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build a useful deterministic major-task plan from onboarding answers."""
+    goal = _workbench_answer_text(form, "goal") or str(project.get("description") or "").strip()
+    deliverables = _workbench_answer_text(form, "deliverables")
+    milestones = _workbench_answer_text(form, "milestones")
+    tech = _workbench_answer_text(form, "tech")
+    out_of_scope = _workbench_answer_text(form, "out_of_scope")
+    deadline = _workbench_answer_text(form, "deadline")
+
+    constraints: list[str] = []
+    if out_of_scope:
+        constraints.append(f"范围限制：{out_of_scope}")
+    if deadline:
+        constraints.append(f"时间约束：{deadline}")
+    if tech:
+        constraints.append(f"技术约束：{tech}")
+
+    base_goal = goal or f"推进 {project.get('name') or '项目'} 的核心交付。"
+    tasks = [
+        {
+            "title": "明确需求与范围",
+            "goal": f"整理项目目标、用户、问题与边界，形成可执行的需求范围。{(' 重点覆盖：' + deliverables) if deliverables else ''}".strip(),
+            "priority": "high",
+            "constraints": constraints[:],
+            "acceptanceCriteria": ["需求范围清晰", "关键边界已记录", "优先级已确认"],
+        },
+        {
+            "title": "制定方案与里程碑",
+            "goal": f"基于初始化信息设计执行方案、阶段计划和主要里程碑。{(' 参考里程碑：' + milestones) if milestones else ''}".strip(),
+            "priority": "high",
+            "constraints": constraints[:],
+            "acceptanceCriteria": ["执行方案已形成", "阶段目标可追踪", "风险与依赖已记录"],
+        },
+        {
+            "title": "推进核心交付",
+            "goal": f"完成项目的核心交付内容。项目总目标：{base_goal}",
+            "priority": "medium",
+            "constraints": constraints[:],
+            "acceptanceCriteria": ["核心交付可验收", "变更记录完整", "结果符合初始化目标"],
+        },
+    ]
+    return tasks
+
+
+def _workbench_coerce_init_task_plan(raw: Any, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source = raw.get("tasks") if isinstance(raw, dict) else raw
+    if not isinstance(source, list):
+        return fallback
+    tasks: list[dict[str, Any]] = []
+    for index, item in enumerate(source):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        goal = str(item.get("goal") or item.get("description") or "").strip()
+        if not title and goal:
+            title = goal[:40]
+        if not title:
+            continue
+        priority = str(item.get("priority") or "medium").strip().lower()
+        if priority not in ("high", "medium", "low"):
+            priority = "medium"
+        constraints = [
+            str(value).strip()
+            for value in item.get("constraints", [])
+            if str(value).strip()
+        ] if isinstance(item.get("constraints"), list) else []
+        acceptance = item.get("acceptanceCriteria")
+        if not isinstance(acceptance, list):
+            acceptance = item.get("acceptance")
+        acceptance_items = [
+            str(value).strip()
+            for value in acceptance
+            if str(value).strip()
+        ] if isinstance(acceptance, list) else []
+        tasks.append({
+            "id": str(item.get("id") or "").strip() or _short_id("init_task"),
+            "title": title[:80],
+            "goal": goal[:1200] or title,
+            "priority": priority,
+            "constraints": constraints[:8],
+            "acceptanceCriteria": acceptance_items[:8],
+            "order": index + 1,
+        })
+    return tasks[:8] or fallback
+
+
+async def _workbench_generate_init_task_plan(
+    project: dict[str, Any],
+    form: dict[str, Any],
+    feedback: str = "",
+) -> list[dict[str, Any]]:
+    """Ask the initialization agent to split the project into major task sessions."""
+    fallback = _workbench_fallback_init_task_plan(project, form)
+    brief = _workbench_init_brief(project, form)
+    feedback = str(feedback or "").strip()
+    prompt = (
+        "你是项目初始化 Agent。用户已经完成初始化问答。请把项目拆解成若干个"
+        "可独立推进的大任务，每个大任务后续会创建为一个 workbench session。\n\n"
+        f"项目名称：{project.get('name') or '项目'}\n"
+        f"项目类型：{_WORKBENCH_TEMPLATE_LABELS.get(str(project.get('template') or ''), str(project.get('template') or ''))}\n"
+        f"初始化总结：\n{brief or '暂无'}\n"
+        f"{('用户对计划的修改反馈：' + feedback) if feedback else ''}\n\n"
+        "只返回 JSON，不要 Markdown。结构：\n"
+        "{\n"
+        '  "tasks": [\n'
+        "    {\n"
+        '      "title": "大任务标题，中文，动宾短语",\n'
+        '      "goal": "这个 session 要完成的目标、边界和上下文",\n'
+        '      "priority": "high|medium|low",\n'
+        '      "constraints": ["约束"],\n'
+        '      "acceptanceCriteria": ["验收标准"]\n'
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "要求：生成 3-6 个大任务；每个任务要能对应一个独立 session；避免过细的步骤；"
+        "保留初始化回答中的时间、范围、技术约束。"
+    )
+    try:
+        response = await asyncio.wait_for(
+            _call_llm(
+                [{"role": "user", "content": prompt}],
+                tools=None,
+                max_tokens=2400,
+                secondary=True,
+            ),
+            timeout=35,
+        )
+    except Exception:
+        logger.exception("Workbench init task-plan generation failed for project %s", project.get("id"))
+        return fallback
+    text = ""
+    if isinstance(response, dict):
+        content = response.get("content")
+        text = content if isinstance(content, str) else ""
+    try:
+        parsed = json.loads(text.strip())
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            return fallback
+        try:
+            parsed = json.loads(match.group(0))
+        except Exception:
+            return fallback
+    return _workbench_coerce_init_task_plan(parsed, fallback)
+
+
+def _workbench_create_sessions_from_init_plan(
+    project: dict[str, Any],
+    plan: list[dict[str, Any]],
+    now: str | None = None,
+) -> list[dict[str, Any]]:
+    """Initialization-agent tool: create task sessions from confirmed major tasks."""
+    now = now or _utc_now_iso()
+    created: list[dict[str, Any]] = []
+    sessions = project.setdefault("sessions", [])
+    for item in plan:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        session = _workbench_new_session(
+            str(project.get("id") or ""),
+            title,
+            str(item.get("goal") or title).strip(),
+            now,
+            kind="task",
+            status="idle",
+        )
+        priority = str(item.get("priority") or "medium").strip().lower()
+        if priority in ("high", "medium", "low"):
+            session["priority"] = priority
+        if isinstance(item.get("constraints"), list):
+            session["constraints"] = [str(value).strip() for value in item["constraints"] if str(value).strip()][:8]
+        if isinstance(item.get("acceptanceCriteria"), list):
+            session["acceptanceCriteria"] = [
+                {"id": _short_id("accept"), "text": str(value).strip(), "status": "pending"}
+                for value in item["acceptanceCriteria"]
+                if str(value).strip()
+            ][:8]
+        session["events"] = [{
+            "id": _short_id("event"),
+            "type": "CreatedFromInitPlan",
+            "createdAt": now,
+            "body": "由初始化计划确认后创建。",
+        }]
+        created.append(session)
+    for session in reversed(created):
+        sessions.insert(0, session)
+    return created
+
+
 def _read_workbench_store() -> dict[str, Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not _WORKBENCH_STORE.exists():
@@ -3448,8 +3649,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         """Finalize project initialization.
 
         Persists the onboarding answers, writes a project brief into the project
-        context, marks the init session complete, and seeds the project's first
-        real task from the collected goal.
+        context, and asks the initialization agent to draft the major task plan.
+        Confirming that plan is a separate step that creates task sessions.
         """
         body = await request.json()
         payload = _read_workbench_store()
@@ -3458,13 +3659,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "session not found"}, status_code=404)
         if str(session.get("kind") or "") != "init":
             return JSONResponse({"error": "not an init session"}, status_code=400)
+        init_state = session.get("init") if isinstance(session.get("init"), dict) else {}
+        if bool(init_state.get("completed")):
+            return JSONResponse({"error": "init already completed"}, status_code=409)
         form = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
         if isinstance(body.get("answers"), dict):
             merged = form.get("answers") if isinstance(form.get("answers"), dict) else {}
             merged.update(body["answers"])
             form["answers"] = merged
-        form["completed"] = True
-        session["init"] = form
 
         brief = _workbench_init_brief(project, form)
         answers = form.get("answers") if isinstance(form.get("answers"), dict) else {}
@@ -3477,29 +3679,89 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         project["context"] = context
         if not str(project.get("description") or "").strip() and goal:
             project["description"] = goal[:200]
-        session["status"] = "completed"
-        session["agentReply"] = "项目初始化已完成，我已根据你的回答整理了项目背景，并为你创建了第一个任务。"
+        task_plan = await _workbench_generate_init_task_plan(project, form)
+        form["taskPlan"] = task_plan
+        form["planReady"] = True
+        form["completed"] = False
+        session["init"] = form
+        session["status"] = "waiting_for_user"
+        session["agentReply"] = "我已根据你的初始化回答拆解出大任务计划。你可以直接编辑，或继续告诉我如何调整；确认后我会把每个大任务创建为独立 session。"
         session["summary"] = brief or session.get("summary")
         session["updatedAt"] = now
-
-        # Seed the first real task from the onboarding answers.
-        first_title = (goal[:40] + ("…" if len(goal) > 40 else "")) if goal else "开始项目"
-        first_session = _workbench_new_session(project["id"], first_title, goal, now, kind="task", status="idle")
-        constraints: list[str] = []
-        out_of_scope = str(answers.get("out_of_scope") or "").strip()
-        if out_of_scope:
-            constraints.append(f"范围限制：{out_of_scope}")
-        deadline = str(answers.get("deadline") or "").strip()
-        if deadline:
-            constraints.append(f"时间约束：{deadline}")
-        first_session["constraints"] = constraints
-        sessions = project.setdefault("sessions", [])
-        sessions.insert(0, first_session)
         project["updatedAt"] = now
         payload["activeProjectId"] = project.get("id")
-        payload["activeSessionId"] = first_session["id"]
+        payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
-        return {"ok": True, "project": project, "session": first_session, "initSession": session, **payload}
+        return {"ok": True, "project": project, "session": session, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/init/plan")
+    async def api_workbench_revise_init_plan(session_id: str, request: Request):
+        """Revise the initialization task plan from user feedback."""
+        body = await request.json()
+        feedback = str(body.get("feedback") or body.get("message") or "").strip()
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        if str(session.get("kind") or "") != "init":
+            return JSONResponse({"error": "not an init session"}, status_code=400)
+        form = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
+        if bool(form.get("completed")):
+            return JSONResponse({"error": "init already completed"}, status_code=409)
+        task_plan = await _workbench_generate_init_task_plan(project, form, feedback=feedback)
+        form["taskPlan"] = task_plan
+        form["planReady"] = True
+        session["init"] = form
+        session["status"] = "waiting_for_user"
+        session["agentReply"] = "我已按你的反馈更新任务计划。你可以继续修改，或确认创建 sessions。"
+        now = _utc_now_iso()
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/init/confirm")
+    async def api_workbench_confirm_init_plan(session_id: str, request: Request):
+        """Create task sessions from the confirmed initialization plan."""
+        body = await request.json()
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        if str(session.get("kind") or "") != "init":
+            return JSONResponse({"error": "not an init session"}, status_code=400)
+        form = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
+        if bool(form.get("completed")):
+            existing_ids = form.get("createdSessionIds") if isinstance(form.get("createdSessionIds"), list) else []
+            existing = [
+                s for s in project.get("sessions", [])
+                if str(s.get("id") or "") in {str(item) for item in existing_ids}
+            ]
+            return {"ok": True, "project": project, "session": existing[0] if existing else session, "initSession": session, "createdSessions": existing, **payload}
+        incoming_plan = body.get("taskPlan") if isinstance(body.get("taskPlan"), list) else form.get("taskPlan")
+        fallback = _workbench_fallback_init_task_plan(project, form)
+        task_plan = _workbench_coerce_init_task_plan(incoming_plan, fallback)
+        if not task_plan:
+            return JSONResponse({"error": "task plan is empty"}, status_code=400)
+        now = _utc_now_iso()
+        created = _workbench_create_sessions_from_init_plan(project, task_plan, now)
+        if not created:
+            return JSONResponse({"error": "no sessions created"}, status_code=400)
+        form["taskPlan"] = task_plan
+        form["planReady"] = True
+        form["completed"] = True
+        form["createdSessionIds"] = [item["id"] for item in created]
+        session["init"] = form
+        session["status"] = "completed"
+        session["agentReply"] = f"初始化已完成。我已根据确认后的计划创建 {len(created)} 个任务 session。"
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = created[0]["id"]
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": created[0], "initSession": session, "createdSessions": created, **payload}
 
     @router.get("/api/task-sessions/{session_id}/events")
     async def api_workbench_session_events(session_id: str):

@@ -120,6 +120,22 @@
         setStep(0);
       });
     }
+    async function pickWorkspacePath() {
+      if (busy) return;
+      setError("");
+      try {
+        var r = await fetch("/api/context/pick-directory", { method: "POST" });
+        var data = await r.json().catch(function () { return {}; });
+        if (!r.ok) throw new Error(data.error || data.detail || ("HTTP " + r.status));
+        if (data.path) {
+          setWorkspacePath(data.path);
+        } else if (data.error) {
+          setError(data.error);
+        }
+      } catch (e) {
+        setError((e && e.message) || String(e));
+      }
+    }
 
     var previewStyle = { background: color || "#7c6cf0" };
 
@@ -214,12 +230,10 @@
                   {advancedOpen && (
                     <div className="wb-cp-advanced">
                       <label className="wb-cp-label">工作区路径</label>
-                      <input
-                        className="wb-cp-input"
-                        value={workspacePath}
-                        placeholder="留空则使用默认工作区"
-                        onChange={function (e) { setWorkspacePath(e.target.value); }}
-                      />
+                      <button type="button" className="wb-cp-path-button" disabled={busy} onClick={pickWorkspacePath}>
+                        <span className={"wb-cp-path-text" + (!workspacePath.trim() ? " empty" : "")}>{workspacePath.trim() || "选择工作区路径"}</span>
+                        <span className="wb-cp-path-action">选择路径</span>
+                      </button>
                     </div>
                   )}
                 </div>
@@ -398,6 +412,110 @@
     );
   }
 
+  function linesToList(text) {
+    return String(text || "").split(/\n+/).map(function (line) { return line.trim(); }).filter(Boolean);
+  }
+  function listToLines(value) {
+    return Array.isArray(value) ? value.join("\n") : "";
+  }
+
+  function InitTaskPlan(props) {
+    var tasks = Array.isArray(props.tasks) ? props.tasks : [];
+    function updateTask(index, patch) {
+      props.onChange(tasks.map(function (task, i) {
+        return i === index ? Object.assign({}, task, patch) : task;
+      }));
+    }
+    function removeTask(index) {
+      props.onChange(tasks.filter(function (_, i) { return i !== index; }));
+    }
+    function addTask() {
+      props.onChange(tasks.concat([{
+        id: "draft_" + Date.now(),
+        title: "新的大任务",
+        goal: "",
+        priority: "medium",
+        constraints: [],
+        acceptanceCriteria: [],
+      }]));
+    }
+    if (!tasks.length) {
+      return (
+        <div className="wb-init-plan">
+          <div className="wb-init-plan-empty">还没有任务计划。完成问题后，初始化 Agent 会先生成大任务计划。</div>
+          <button type="button" className="wb-btn ghost" onClick={addTask}>手动添加任务</button>
+        </div>
+      );
+    }
+    return (
+      <div className="wb-init-plan">
+        <div className="wb-init-plan-head">
+          <div>
+            <b>大任务计划</b>
+            <p>每个大任务会在确认后创建为一个独立 session。</p>
+          </div>
+          <button type="button" className="wb-btn ghost" onClick={addTask}>添加任务</button>
+        </div>
+        <div className="wb-init-plan-list">
+          {tasks.map(function (task, index) {
+            return (
+              <div className="wb-init-plan-card" key={task.id || index}>
+                <div className="wb-init-plan-card-head">
+                  <span>{index + 1}</span>
+                  <input
+                    className="wb-init-input"
+                    value={task.title || ""}
+                    placeholder="任务标题"
+                    onChange={function (e) { updateTask(index, { title: e.target.value }); }}
+                  />
+                  <select
+                    className="wb-init-select"
+                    value={task.priority || "medium"}
+                    onChange={function (e) { updateTask(index, { priority: e.target.value }); }}
+                  >
+                    <option value="high">高</option>
+                    <option value="medium">中</option>
+                    <option value="low">低</option>
+                  </select>
+                  <button type="button" className="wb-btn ghost" onClick={function () { removeTask(index); }}>删除</button>
+                </div>
+                <textarea
+                  className="wb-init-textarea"
+                  rows={3}
+                  value={task.goal || ""}
+                  placeholder="这个 session 要完成的目标、边界和上下文"
+                  onChange={function (e) { updateTask(index, { goal: e.target.value }); }}
+                />
+                <div className="wb-init-plan-cols">
+                  <label>
+                    <span>约束</span>
+                    <textarea
+                      className="wb-init-textarea"
+                      rows={2}
+                      value={listToLines(task.constraints)}
+                      placeholder="一行一条"
+                      onChange={function (e) { updateTask(index, { constraints: linesToList(e.target.value) }); }}
+                    />
+                  </label>
+                  <label>
+                    <span>验收标准</span>
+                    <textarea
+                      className="wb-init-textarea"
+                      rows={2}
+                      value={listToLines(task.acceptanceCriteria)}
+                      placeholder="一行一条"
+                      onChange={function (e) { updateTask(index, { acceptanceCriteria: linesToList(e.target.value) }); }}
+                    />
+                  </label>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   function WorkbenchInitView(props) {
     var model = window.WorkbenchModel;
     var project = props.project;
@@ -408,9 +526,12 @@
     var completed = !!init.completed;
 
     var [answers, setAnswers] = useState(init.answers || {});
+    var [taskPlan, setTaskPlan] = useState(Array.isArray(init.taskPlan) ? init.taskPlan : []);
+    var [feedback, setFeedback] = useState("");
     var [expanded, setExpanded] = useState(sections[0] ? sections[0].id : "");
     var [busy, setBusy] = useState(false);
     var [generating, setGenerating] = useState(false);
+    var [planning, setPlanning] = useState(false);
     var genRef = useRef({});
     var saveTimer = useRef(null);
 
@@ -418,9 +539,10 @@
     useEffect(function () {
       var nextInit = (session && session.init) || {};
       setAnswers(nextInit.answers || {});
+      setTaskPlan(Array.isArray(nextInit.taskPlan) ? nextInit.taskPlan : []);
       var secs = Array.isArray(nextInit.sections) ? nextInit.sections : [];
       setExpanded(secs[0] ? secs[0].id : "");
-    }, [sid]);
+    }, [sid, init.answers, init.sections, init.taskPlan]);
 
     // Ask the agent to generate questions once per init session.
     useEffect(function () {
@@ -477,8 +599,25 @@
         .catch(function (e) { window.alert((e && e.message) || String(e)); })
         .finally(function () { setBusy(false); });
     }
+    function revisePlan() {
+      if (planning || completed) return;
+      setPlanning(true);
+      model.reviseInitPlan(sid, feedback)
+        .then(function (next) { setFeedback(""); props.onRefresh && props.onRefresh(next); })
+        .catch(function (e) { window.alert((e && e.message) || String(e)); })
+        .finally(function () { setPlanning(false); });
+    }
+    function confirmPlan() {
+      if (busy || completed || !taskPlan.length) return;
+      setBusy(true);
+      model.confirmInitPlan(sid, taskPlan)
+        .then(function (next) { props.onRefresh && props.onRefresh(next); })
+        .catch(function (e) { window.alert((e && e.message) || String(e)); })
+        .finally(function () { setBusy(false); });
+    }
 
     var greetingLines = String(init.greeting || "").split("\n");
+    var planReady = !!init.planReady || taskPlan.length > 0;
 
     return (
       <div className="wb-init">
@@ -488,7 +627,7 @@
             <span className={"workbench-status-pill " + (completed ? "green" : "blue")}>{completed ? "已完成" : "初始化中"}</span>
             <span className="wb-init-head-project">{project ? project.name : ""}</span>
           </div>
-          {!completed && (
+          {!completed && !planReady && (
             <button type="button" className="wb-btn ghost" disabled={generating} onClick={regenerate}>{generating ? "生成中…" : "重新生成问题"}</button>
           )}
         </div>
@@ -505,34 +644,59 @@
             <div className="wb-init-generating"><span className="wb-spinner" /> 正在根据项目信息生成初始化问题…</div>
           )}
 
-          <div className="wb-init-sections">
-            {sections.map(function (section, sIdx) {
-              var open = expanded === section.id;
-              var done = sectionComplete(section, answers);
-              return (
-                <div className={"wb-init-section" + (open ? " open" : "")} key={section.id}>
-                  <button type="button" className="wb-init-section-head" onClick={function () { setExpanded(open ? "" : section.id); }}>
-                    <span className="wb-init-section-n">{sIdx + 1}.</span>
-                    <b>{section.title}</b>
-                    {done && <span className="wb-init-section-done">已完成</span>}
-                    <i className="wb-init-chevron">{open ? "⌃" : "⌄"}</i>
-                  </button>
-                  {open && (
-                    <div className="wb-init-section-body">
-                      {(section.questions || []).map(function (q, qi) {
-                        return <InitQuestion key={q.id} q={q} n={qi + 1} value={answers[q.id]} onText={setAnswer} onToggle={toggleMulti} />;
-                      })}
-                    </div>
-                  )}
+          {!planReady && (
+            <div className="wb-init-sections">
+              {sections.map(function (section, sIdx) {
+                var open = expanded === section.id;
+                var done = sectionComplete(section, answers);
+                return (
+                  <div className={"wb-init-section" + (open ? " open" : "")} key={section.id}>
+                    <button type="button" className="wb-init-section-head" onClick={function () { setExpanded(open ? "" : section.id); }}>
+                      <span className="wb-init-section-n">{sIdx + 1}.</span>
+                      <b>{section.title}</b>
+                      {done && <span className="wb-init-section-done">已完成</span>}
+                      <i className="wb-init-chevron">{open ? "⌃" : "⌄"}</i>
+                    </button>
+                    {open && (
+                      <div className="wb-init-section-body">
+                        {(section.questions || []).map(function (q, qi) {
+                          return <InitQuestion key={q.id} q={q} n={qi + 1} value={answers[q.id]} onText={setAnswer} onToggle={toggleMulti} />;
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {planReady && (
+            <React.Fragment>
+              <InitTaskPlan tasks={taskPlan} onChange={setTaskPlan} />
+              {!completed && (
+                <div className="wb-init-feedback">
+                  <textarea
+                    className="wb-init-textarea"
+                    rows={2}
+                    value={feedback}
+                    placeholder="告诉初始化 Agent 如何调整计划，例如：先做 MVP，把上线推广放到后面。"
+                    onChange={function (e) { setFeedback(e.target.value); }}
+                  />
+                  <button type="button" className="wb-btn ghost" disabled={planning} onClick={revisePlan}>{planning ? "调整中…" : "让 Agent 调整计划"}</button>
                 </div>
-              );
-            })}
-          </div>
+              )}
+            </React.Fragment>
+          )}
         </div>
 
         <div className="wb-init-foot">
-          <div className="wb-init-foot-hint">{completed ? "项目初始化已完成。" : "完成后会保存项目背景，并为你创建第一个任务。"}</div>
-          <button type="button" className="wb-btn primary" disabled={busy || completed} onClick={complete}>{completed ? "初始化已完成" : (busy ? "处理中…" : "完成初始化")}</button>
+          <div className="wb-init-foot-hint">
+            {completed ? "项目初始化已完成，任务 sessions 已创建。"
+              : planReady ? "确认后会按上方大任务计划创建多个 session。"
+                : "完成问题后会先生成可编辑的大任务计划。"}
+          </div>
+          {!planReady && <button type="button" className="wb-btn primary" disabled={busy || completed} onClick={complete}>{busy ? "生成计划中…" : "完成问题并生成计划"}</button>}
+          {planReady && <button type="button" className="wb-btn primary" disabled={busy || completed || !taskPlan.length} onClick={confirmPlan}>{completed ? "初始化已完成" : (busy ? "创建中…" : "确认计划并创建 sessions")}</button>}
         </div>
       </div>
     );
@@ -552,7 +716,7 @@
     });
     rows.forEach(function (row, i) { row.active = i === firstIncomplete; });
     rows.push({
-      label: "确认与总结",
+      label: init.planReady ? "确认计划并创建 sessions" : "生成大任务计划",
       done: !!init.completed,
       active: firstIncomplete === -1 && !init.completed,
     });

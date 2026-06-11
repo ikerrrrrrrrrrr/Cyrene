@@ -426,6 +426,8 @@ var ICONS = {
   spark: <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12 2.5 13.7 9 20 10.7 13.7 12.4 12 19l-1.7-6.6L4 10.7 10.3 9Z"/></svg>,
   shield: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3 5 6v5c0 4.2 2.8 7.7 7 9 4.2-1.3 7-4.8 7-9V6Z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg>,
   pause: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5v14M15 5v14"/></svg>,
+  dots: <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="5.5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="18.5" cy="12" r="1.7"/></svg>,
+  edit: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>,
   alert: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 4 2.5 18a1.5 1.5 0 0 0 1.3 2.3h16.4A1.5 1.5 0 0 0 21.5 18L13.7 4a1.5 1.5 0 0 0-3.4 0Z"/><path d="M12 9v4.5M12 17h.01"/></svg>,
   check: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.4 2.4 4.6-4.8"/></svg>,
   x: <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/></svg>,
@@ -501,6 +503,7 @@ function useTaskController(session, onRefresh, runtime) {
 
   var ctrl = {
     busy: busy,
+    applyStore: apply,
 
     // idle → planning. Generate the plan + acceptance from the goal first
     // ("执行前必须有计划"); no agent work runs yet.
@@ -747,21 +750,130 @@ function openNextSession(session, project, onSelectSession) {
   if (next && next.id !== session.id) onSelectSession(next.id);
 }
 
+function compactText(value, limit) {
+  var text = String(value || "").replace(/\s+/g, " ").trim();
+  var max = limit || 120;
+  if (!text) return "";
+  return text.length > max ? text.slice(0, max - 1) + "..." : text;
+}
+
+function sessionSummaryText(session) {
+  if (!session) return "";
+  var summary = session.summary;
+  if (summary && typeof summary === "object") {
+    summary = summary.text || summary.body || summary.content || summary.summary || "";
+  }
+  return compactText(summary || session.goal || session.agentReply || "Agent 会在执行过程中生成这个 session 的内容总结。", 128);
+}
+
 function TaskHeader({ project, session, controller, onRightTab }) {
   var tone = WorkbenchModel.statusTone(session.status);
   var status = String(session.status || "idle");
+  var [editing, setEditing] = useWorkbenchState(false);
+  var [draftTitle, setDraftTitle] = useWorkbenchState(session.title || "");
+  var [savingTitle, setSavingTitle] = useWorkbenchState(false);
+  var [menuOpen, setMenuOpen] = useWorkbenchState(false);
+  var titleInputRef = useWorkbenchRef(null);
+
+  useWorkbenchEffect(function () {
+    setDraftTitle(session.title || "");
+    setEditing(false);
+    setMenuOpen(false);
+  }, [session.id]);
+
+  useWorkbenchEffect(function () {
+    if (editing && titleInputRef.current) {
+      titleInputRef.current.focus();
+      titleInputRef.current.select();
+    }
+  }, [editing]);
+
+  function saveTitle() {
+    var nextTitle = String(draftTitle || "").trim();
+    if (!nextTitle || nextTitle === session.title) {
+      setDraftTitle(session.title || "");
+      setEditing(false);
+      return;
+    }
+    setSavingTitle(true);
+    window.WorkbenchModel.patchSession(session.id, { title: nextTitle })
+      .then(function (next) {
+        if (controller && controller.applyStore) controller.applyStore(next);
+      })
+      .catch(function (err) {
+        window.alert((err && err.message) || String(err));
+        setDraftTitle(session.title || "");
+      })
+      .finally(function () {
+        setSavingTitle(false);
+        setEditing(false);
+      });
+  }
+
   return (
     <div className="workbench-task-header">
       <div className="wb-th-main">
-        <h1>{session.title}</h1>
-        <p>{session.goal || "先通过对话明确任务目标、约束和验收标准。"}</p>
-        <div className="wb-th-tags">
-          <span className={"workbench-status-pill " + tone}>{WorkbenchModel.statusText(session.status)}</span>
-          <span className="wb-th-tag">优先级 {priorityText(session.priority)}</span>
-          <span className="wb-th-tag">{project.name}</span>
+        <div className="wb-th-title-row">
+          {editing ? (
+            <input
+              ref={titleInputRef}
+              className="wb-th-title-input"
+              value={draftTitle}
+              disabled={savingTitle}
+              onChange={function (e) { setDraftTitle(e.target.value); }}
+              onBlur={saveTitle}
+              onKeyDown={function (e) {
+                if (e.key === "Enter") saveTitle();
+                if (e.key === "Escape") { setDraftTitle(session.title || ""); setEditing(false); }
+              }}
+              aria-label="任务标题"
+            />
+          ) : (
+            <h1 title={session.title}>{session.title}</h1>
+          )}
+          {!editing && (
+            <button type="button" className="wb-th-iconbtn" onClick={function () { setEditing(true); }} title="修改标题">
+              {ICONS.edit}
+            </button>
+          )}
+        </div>
+        <p className="wb-th-summary">
+          <span className={"wb-th-inline-status " + tone}>{WorkbenchModel.statusText(session.status)}</span>
+          <span className="wb-th-summary-text">{sessionSummaryText(session)}</span>
+        </p>
+        <div className="wb-th-meta">
+          <span>优先级 {priorityText(session.priority)}</span>
+          <span>{project.name}</span>
         </div>
       </div>
-      <HeaderActions status={status} controller={controller} onRightTab={onRightTab} />
+      <div className="wb-th-action-wrap">
+        <HeaderActions status={status} controller={controller} onRightTab={onRightTab} />
+        <button
+          type="button"
+          className="wb-btn wb-th-pause"
+          disabled={controller.busy || status === "paused" || status === "completed" || status === "cancelled"}
+          onClick={function () { status === "running" ? controller.interrupt() : controller.pause(); }}
+          title="暂停任务"
+        >
+          {ICONS.pause}<span>暂停任务</span>
+        </button>
+        <div className="wb-th-menu-wrap">
+          <button type="button" className="wb-th-menu-btn" onClick={function () { setMenuOpen(!menuOpen); }} title="详情菜单">
+            {ICONS.dots}
+          </button>
+          {menuOpen && (
+            <>
+              <div className="wb-th-menu-scrim" onClick={function () { setMenuOpen(false); }}></div>
+              <div className="wb-th-menu">
+                <button type="button" onClick={function () { setMenuOpen(false); onRightTab && onRightTab("context"); }}>查看上下文</button>
+                <button type="button" onClick={function () { setMenuOpen(false); onRightTab && onRightTab("logs"); }}>运行日志</button>
+                <button type="button" onClick={function () { setMenuOpen(false); onRightTab && onRightTab("acceptance"); }}>验收标准</button>
+                <button type="button" onClick={function () { setMenuOpen(false); focusComposer(); }}>编辑任务内容</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -770,13 +882,13 @@ function TaskHeader({ project, session, controller, onRightTab }) {
 function HeaderActions({ status, controller, onRightTab }) {
   var btns = [];
   if (status === "idle" || status === "pending") {
-    btns = [["开始执行", "primary", function () { controller.start(); }], ["编辑任务", "ghost", focusComposer]];
+    btns = [];
   } else if (status === "planning") {
     btns = [["批准执行", "primary", function () { controller.approvePlan(); }], ["取消", "ghost", function () { controller.cancel(); }]];
   } else if (status === "waiting_for_approval" || status === "waiting_for_user" || status === "blocked") {
     btns = [["批准", "primary", function () { controller.execute(); }], ["拒绝", "ghost", function () { controller.reject(); }]];
   } else if (status === "running") {
-    btns = [["停止", "danger", function () { controller.interrupt(); }, true], ["查看日志", "ghost", function () { onRightTab && onRightTab("logs"); }, true]];
+    btns = [["查看日志", "ghost", function () { onRightTab && onRightTab("logs"); }, true]];
   } else if (status === "paused") {
     btns = [["继续任务", "primary", function () { controller.resume(); }], ["取消", "ghost", function () { controller.cancel(); }]];
   } else if (status === "failed") {
@@ -1076,10 +1188,7 @@ function composerPlaceholder(status) {
 // `guard:false` chips stay enabled while the controller is busy (read-only).
 function composerChips(status, controller, onRightTab) {
   if (status === "idle" || status === "pending") {
-    return [
-      { label: "开始执行", onClick: function () { controller.start(); } },
-      { label: "编辑任务", onClick: focusComposer },
-    ];
+    return [];
   }
   if (status === "planning") {
     return [
@@ -1340,6 +1449,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
             title={running ? "停止" : "发送"}
           >
             {running ? ICONS.stop : (controller.busy ? <span className="wb-spinner" /> : ICONS.send)}
+            <span className="wb-composer-send-label">{running ? "停止" : "发送"}</span>
           </button>
         </div>
       </div>
