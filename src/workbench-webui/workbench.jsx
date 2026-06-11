@@ -1467,7 +1467,10 @@ function ComposerDisclaimer() {
 function RightContextPanel({ project, session, expandedStepId, tab, onTabChange, onRefresh }) {
   var steps = session && Array.isArray(session.plan) ? session.plan : [];
   var activeStep = steps.find(function (step) { return step.id === expandedStepId; }) || null;
-  var tabs = [
+  var isInit = !!(session && session.kind === "init");
+  var tabs = isInit ? [
+    { id: "context", label: "上下文" },
+  ] : [
     { id: "context", label: "上下文" },
     { id: "files", label: "文件变更" },
     { id: "logs", label: "运行日志" },
@@ -1498,6 +1501,15 @@ function RightContextPanel({ project, session, expandedStepId, tab, onTabChange,
 function ContextTab({ project, session, activeStep }) {
   var constraints = (session && session.constraints) || [];
   var isInit = !!(session && session.kind === "init");
+  if (isInit && window.WorkbenchInitProgress) {
+    return (
+      <div className="workbench-side-stack">
+        <SideSection title="初始化进度">
+          {React.createElement(window.WorkbenchInitProgress, { session: session })}
+        </SideSection>
+      </div>
+    );
+  }
   return (
     <div className="workbench-side-stack">
       <SideSection title="任务概况">

@@ -599,6 +599,15 @@
         .catch(function (e) { window.alert((e && e.message) || String(e)); })
         .finally(function () { setBusy(false); });
     }
+    function saveCompletedAnswers() {
+      if (busy) return;
+      setBusy(true);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      model.patchSession(sid, { init: { answers: answers } })
+        .then(function (next) { props.onRefresh && props.onRefresh(next); })
+        .catch(function (e) { window.alert((e && e.message) || String(e)); })
+        .finally(function () { setBusy(false); });
+    }
     function revisePlan() {
       if (planning || completed) return;
       setPlanning(true);
@@ -618,6 +627,7 @@
 
     var greetingLines = String(init.greeting || "").split("\n");
     var planReady = !!init.planReady || taskPlan.length > 0;
+    var showPlan = planReady && !completed;
 
     return (
       <div className="wb-init">
@@ -644,7 +654,7 @@
             <div className="wb-init-generating"><span className="wb-spinner" /> 正在根据项目信息生成初始化问题…</div>
           )}
 
-          {!planReady && (
+          {!showPlan && (
             <div className="wb-init-sections">
               {sections.map(function (section, sIdx) {
                 var open = expanded === section.id;
@@ -670,7 +680,7 @@
             </div>
           )}
 
-          {planReady && (
+          {showPlan && (
             <React.Fragment>
               <InitTaskPlan tasks={taskPlan} onChange={setTaskPlan} />
               {!completed && (
@@ -691,12 +701,13 @@
 
         <div className="wb-init-foot">
           <div className="wb-init-foot-hint">
-            {completed ? "项目初始化已完成，任务 sessions 已创建。"
+            {completed ? "项目初始化已完成。你仍可以修改问题答案并保存。"
               : planReady ? "确认后会按上方大任务计划创建多个 session。"
                 : "完成问题后会先生成可编辑的大任务计划。"}
           </div>
-          {!planReady && <button type="button" className="wb-btn primary" disabled={busy || completed} onClick={complete}>{busy ? "生成计划中…" : "完成问题并生成计划"}</button>}
-          {planReady && <button type="button" className="wb-btn primary" disabled={busy || completed || !taskPlan.length} onClick={confirmPlan}>{completed ? "初始化已完成" : (busy ? "创建中…" : "确认计划并创建 sessions")}</button>}
+          {completed && <button type="button" className="wb-btn primary" disabled={busy} onClick={saveCompletedAnswers}>{busy ? "保存中…" : "保存修改"}</button>}
+          {!completed && !planReady && <button type="button" className="wb-btn primary" disabled={busy} onClick={complete}>{busy ? "生成计划中…" : "完成问题并生成计划"}</button>}
+          {!completed && planReady && <button type="button" className="wb-btn primary" disabled={busy || !taskPlan.length} onClick={confirmPlan}>{busy ? "创建中…" : "确认计划并创建 sessions"}</button>}
         </div>
       </div>
     );
