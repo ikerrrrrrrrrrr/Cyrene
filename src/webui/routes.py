@@ -31,6 +31,7 @@ from webui.routes_amap import register_amap_routes
 from webui.routes_entities import register_entity_routes
 from webui.routes_knowledge import register_knowledge_routes
 from webui.routes_workbench_knowledge import register_workbench_knowledge_routes
+from webui.routes_workbench_memory import register_workbench_memory_routes, schedule_capture
 from webui.routes_workbench_schedule import register_workbench_schedule_routes
 from webui.routes_code import router as code_router
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
@@ -224,16 +225,25 @@ def _workbench_default_project() -> dict[str, Any]:
     }
 
 
-def _workbench_new_session(project_id: str, title: str, goal: str = "", now: str | None = None) -> dict[str, Any]:
+def _workbench_new_session(
+    project_id: str,
+    title: str,
+    goal: str = "",
+    now: str | None = None,
+    *,
+    kind: str = "task",
+    status: str = "idle",
+) -> dict[str, Any]:
     now = now or _utc_now_iso()
     session_id = _short_id("session")
     return {
         "id": session_id,
         "projectId": project_id,
+        "kind": kind,
         "title": str(title or "新任务").strip()[:80] or "新任务",
         "goal": str(goal or "").strip(),
         "constraints": [],
-        "status": "idle",
+        "status": status,
         "priority": "medium",
         "createdAt": now,
         "updatedAt": now,
@@ -245,6 +255,262 @@ def _workbench_new_session(project_id: str, title: str, goal: str = "", now: str
         "acceptanceCriteria": [],
         "summary": None,
     }
+
+
+# ---- Project initialization (the "初始化项目" onboarding session) ------------
+
+# The default onboarding form. Also doubles as the schema the LLM is asked to
+# mirror, and as the fallback whenever agent generation is unavailable.
+def _workbench_default_init_form(project: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "generated": False,
+        "completed": False,
+        "greeting": (
+            "你好！我是你的项目初始化助理，我将帮助你完成项目的基础设置和初始规划。"
+            "我们先从几个关键问题开始，以便我更好地理解你的需求。"
+        ),
+        "sections": [
+            {
+                "id": "basics",
+                "title": "项目基础信息",
+                "questions": [
+                    {"id": "goal", "type": "textarea", "label": "这个项目的主要目标是什么？",
+                     "placeholder": "例如：开发一款任务管理应用，提高团队协作效率"},
+                    {"id": "problem", "type": "textarea", "label": "你希望这个项目解决什么问题？",
+                     "placeholder": "例如：团队任务分散、进度不透明、沟通成本高"},
+                    {"id": "users", "type": "text", "label": "你的目标用户是谁？",
+                     "placeholder": "例如：中小型团队、产品经理、项目经理"},
+                    {"id": "stage", "type": "single", "label": "目前项目处于什么阶段？",
+                     "options": ["想法阶段", "需求分析", "设计阶段", "开发中", "已上线"]},
+                ],
+            },
+            {
+                "id": "scope",
+                "title": "项目范围",
+                "questions": [
+                    {"id": "deliverables", "type": "textarea", "label": "这个项目主要包含哪些核心功能或交付物？",
+                     "placeholder": "例如：任务看板、进度报表、团队协作"},
+                    {"id": "out_of_scope", "type": "textarea", "label": "有哪些明确不在范围内的内容？",
+                     "placeholder": "例如：暂不考虑移动端、不做权限系统"},
+                ],
+            },
+            {
+                "id": "team",
+                "title": "团队与资源",
+                "questions": [
+                    {"id": "team", "type": "text", "label": "团队规模和主要角色构成是怎样的？",
+                     "placeholder": "例如：3 名工程师 + 1 名产品 + 1 名设计"},
+                    {"id": "tech", "type": "text", "label": "有哪些已确定的技术栈或工具？",
+                     "placeholder": "例如：React、FastAPI、PostgreSQL"},
+                ],
+            },
+            {
+                "id": "timeline",
+                "title": "时间计划",
+                "questions": [
+                    {"id": "deadline", "type": "text", "label": "项目的关键时间节点或截止日期？",
+                     "placeholder": "例如：6 周内交付 MVP"},
+                    {"id": "milestones", "type": "textarea", "label": "有哪些重要的里程碑？",
+                     "placeholder": "例如：第 2 周完成设计、第 4 周完成开发"},
+                ],
+            },
+        ],
+        "answers": {},
+    }
+
+
+def _workbench_new_init_session(
+    project_id: str,
+    project: dict[str, Any],
+    now: str | None = None,
+) -> dict[str, Any]:
+    now = now or _utc_now_iso()
+    session = _workbench_new_session(
+        project_id,
+        "初始化项目",
+        "完成项目的基础设置与初始规划。",
+        now,
+        kind="init",
+        status="initializing",
+    )
+    form = _workbench_default_init_form(project)
+    session["init"] = form
+    session["agentReply"] = form["greeting"]
+    return session
+
+
+_WORKBENCH_TEMPLATE_LABELS = {
+    "blank": "空白项目",
+    "product": "产品开发",
+    "pm": "项目管理",
+    "knowledge": "知识库搭建",
+    "ai": "AI 应用开发",
+    "import": "导入项目",
+}
+
+_INIT_QUESTION_TYPES = {"text", "textarea", "single", "multi"}
+
+
+def _workbench_coerce_init_form(raw: Any, base: dict[str, Any]) -> dict[str, Any] | None:
+    """Validate/normalize an LLM-produced init form into our schema.
+
+    Returns ``None`` when the payload is unusable so the caller can keep the
+    deterministic fallback.
+    """
+    if not isinstance(raw, dict):
+        return None
+    raw_sections = raw.get("sections")
+    if not isinstance(raw_sections, list) or not raw_sections:
+        return None
+    sections: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for s_index, section in enumerate(raw_sections):
+        if not isinstance(section, dict):
+            continue
+        title = str(section.get("title") or "").strip()
+        raw_questions = section.get("questions")
+        if not title or not isinstance(raw_questions, list):
+            continue
+        sid = str(section.get("id") or "").strip() or f"section_{s_index + 1}"
+        while sid in used_ids:
+            sid = f"{sid}_{s_index + 1}"
+        used_ids.add(sid)
+        questions: list[dict[str, Any]] = []
+        used_q_ids: set[str] = set()
+        for q_index, question in enumerate(raw_questions):
+            if not isinstance(question, dict):
+                continue
+            label = str(question.get("label") or question.get("question") or "").strip()
+            if not label:
+                continue
+            qtype = str(question.get("type") or "text").strip().lower()
+            if qtype not in _INIT_QUESTION_TYPES:
+                qtype = "text"
+            qid = str(question.get("id") or "").strip() or f"{sid}_q{q_index + 1}"
+            while qid in used_q_ids:
+                qid = f"{qid}_{q_index + 1}"
+            used_q_ids.add(qid)
+            item: dict[str, Any] = {"id": qid, "type": qtype, "label": label[:160]}
+            placeholder = str(question.get("placeholder") or "").strip()
+            if placeholder:
+                item["placeholder"] = placeholder[:160]
+            if qtype in ("single", "multi"):
+                options = [str(o).strip() for o in question.get("options", []) if str(o).strip()]
+                if not options:
+                    qtype = "text"
+                    item["type"] = "text"
+                else:
+                    item["options"] = options[:8]
+            questions.append(item)
+        if questions:
+            sections.append({"id": sid, "title": title[:60], "questions": questions[:6]})
+    if not sections:
+        return None
+    greeting = str(raw.get("greeting") or "").strip() or base.get("greeting", "")
+    return {
+        "generated": True,
+        "completed": bool(base.get("completed")),
+        "greeting": greeting,
+        "sections": sections[:6],
+        "answers": base.get("answers") if isinstance(base.get("answers"), dict) else {},
+    }
+
+
+async def _workbench_generate_init_form(project: dict[str, Any]) -> dict[str, Any] | None:
+    """Ask the agent to produce onboarding questions tailored to this project.
+
+    Returns a normalized init form, or ``None`` when generation is unavailable
+    (the caller then keeps the deterministic fallback form).
+    """
+    name = str(project.get("name") or "新项目").strip()
+    description = str(project.get("description") or "").strip()
+    template = str(project.get("template") or "").strip()
+    template_label = _WORKBENCH_TEMPLATE_LABELS.get(template, template)
+    base_form = _workbench_default_init_form(project)
+
+    details = [f"项目名称：{name}"]
+    if description:
+        details.append(f"项目描述：{description}")
+    if template_label:
+        details.append(f"项目类型：{template_label}")
+    details_block = "\n".join(details)
+
+    prompt = (
+        "你是一个项目初始化助理。用户刚刚创建了一个新项目，你需要设计一组用于"
+        "了解项目背景的引导式问题，帮助用户完成项目初始化。\n\n"
+        f"项目信息：\n{details_block}\n\n"
+        "请根据上述项目信息，生成贴合该项目的初始化问题，并只返回一个 JSON 对象，"
+        "不要包含任何额外说明或 Markdown 代码块标记。JSON 结构如下：\n"
+        "{\n"
+        '  "greeting": "一句友好的开场白，说明你将协助完成项目初始化",\n'
+        '  "sections": [\n'
+        "    {\n"
+        '      "id": "英文小写下划线短标识",\n'
+        '      "title": "分组标题（中文，简洁）",\n'
+        '      "questions": [\n'
+        '        {"id": "英文标识", "type": "text|textarea|single|multi", '
+        '"label": "问题（中文）", "placeholder": "示例答案（text/textarea 适用）", '
+        '"options": ["选项1", "选项2"]}\n'
+        "      ]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "要求：\n"
+        "- 生成 4 个分组，依次覆盖：基础信息、范围/交付物、团队与资源、时间计划；\n"
+        "- 每个分组 2-4 个问题，问题要针对该项目类型量身定制，避免空泛；\n"
+        "- 多数问题用 text 或 textarea；涉及阶段/选择类的用 single 或 multi 并给出 options；\n"
+        "- 全部使用简体中文，语气友好专业。只返回 JSON。"
+    )
+
+    try:
+        response = await asyncio.wait_for(
+            _call_llm(
+                [{"role": "user", "content": prompt}],
+                tools=None,
+                max_tokens=2000,
+                secondary=True,
+            ),
+            timeout=30,
+        )
+    except Exception:
+        logger.exception("Workbench init-question generation failed for project %s", project.get("id"))
+        return None
+    text = ""
+    if isinstance(response, dict):
+        content = response.get("content")
+        text = content if isinstance(content, str) else ""
+    try:
+        parsed = json.loads(text.strip())
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except Exception:
+            return None
+    return _workbench_coerce_init_form(parsed, base_form)
+
+
+def _workbench_init_brief(project: dict[str, Any], form: dict[str, Any]) -> str:
+    """Render the collected onboarding answers into a Markdown project brief."""
+    answers = form.get("answers") if isinstance(form.get("answers"), dict) else {}
+    lines = [f"# {project.get('name') or '项目'} · 初始化总结", ""]
+    for section in form.get("sections", []):
+        section_lines: list[str] = []
+        for question in section.get("questions", []):
+            qid = question.get("id")
+            value = answers.get(qid)
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value if str(v).strip())
+            text = str(value or "").strip()
+            if text:
+                section_lines.append(f"- **{question.get('label')}** {text}")
+        if section_lines:
+            lines.append(f"## {section.get('title')}")
+            lines.extend(section_lines)
+            lines.append("")
+    return "\n".join(lines).strip()
 
 
 def _read_workbench_store() -> dict[str, Any]:
@@ -283,6 +549,10 @@ def _workbench_ensure_invariants(payload: dict[str, Any]) -> None:
     for project in projects:
         project.setdefault("id", _short_id("project"))
         project.setdefault("name", "Workspace")
+        project.setdefault("description", "")
+        project.setdefault("icon", "spark")
+        project.setdefault("color", "")
+        project.setdefault("template", "blank")
         project.setdefault("workspacePath", str(WORKSPACE_DIR))
         project.setdefault("status", "active")
         project.setdefault("model", _get_model())
@@ -296,6 +566,7 @@ def _workbench_ensure_invariants(payload: dict[str, Any]) -> None:
             changed = True
         for session in sessions:
             session.setdefault("projectId", project["id"])
+            session.setdefault("kind", "task")
             session.setdefault("status", "idle")
             session.setdefault("priority", "medium")
             session.setdefault("createdAt", now)
@@ -397,19 +668,79 @@ def _workbench_acceptance_from_session(session: dict[str, Any]) -> list[dict[str
     ]
 
 
-async def _workbench_agent_reply(user_input: str, session: dict[str, Any], constraints: list[str]) -> str:
-    """Execute a real agent run for a workbench session."""
+def _workbench_normalize_attachments(attachments: Any) -> list[dict[str, Any]]:
+    """Mirror the /api/chat attachment normalization for workbench runs."""
+    items = attachments if isinstance(attachments, list) else []
+    out: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if not str(item.get("path") or "").strip():
+            continue
+        norm: dict[str, Any] = {
+            "id": str(item.get("id") or "").strip(),
+            "name": str(item.get("name") or "file"),
+            "path": str(item.get("path") or ""),
+            "content_type": str(item.get("content_type") or "application/octet-stream"),
+            "size": int(item.get("size") or 0),
+            "kind": str(item.get("kind") or "file"),
+        }
+        if str(item.get("width", "")).strip().isdigit():
+            norm["width"] = int(item.get("width"))
+        if str(item.get("height", "")).strip().isdigit():
+            norm["height"] = int(item.get("height"))
+        out.append(norm)
+    return out
+
+
+async def _workbench_agent_reply(
+    user_input: str,
+    session: dict[str, Any],
+    constraints: list[str],
+    attachments: Any = None,
+    permission_mode: str = "auto",
+    command: str = "",
+) -> str:
+    """Execute a real agent run for a workbench session.
+
+    Mirrors the /api/chat pipeline for attachments + permission mode + slash
+    command so the new workbench composer matches the legacy chat composer.
+    """
     session_id = str(session.get("id") or "").strip()
     if not session_id:
         return str(user_input or "").strip()
+    from cyrene.agent.state import PERMISSION_MODES
+    mode = str(permission_mode or "auto").strip().lower()
+    if mode not in PERMISSION_MODES:
+        mode = "auto"
+    normalized = _workbench_normalize_attachments(attachments)
+    public_attachments = [build_public_attachment_payload(item) for item in normalized] or None
+    message = str(user_input or "")
+    if normalized:
+        message = (message or "[Attachment upload]") + _attachment_prompt_block(normalized)
+        # Auto-allow uploaded files for tool read guards (same as /api/chat).
+        att_map: dict[str, str] = {}
+        for item in normalized:
+            full_path = str(item.get("path") or "").strip()
+            if not full_path:
+                continue
+            uuid_name = Path(full_path).name
+            att_map[uuid_name] = full_path
+            parts = uuid_name.split("_", 1)
+            if len(parts) == 2:
+                att_map[parts[1]] = full_path
+        _attachment_paths_by_name.set(att_map)
     try:
         return await run_agent(
-            user_message=user_input,
+            user_message=message,
             bot=_bot,
             chat_id=_CHAT_ID,
             db_path=_db_path,
             session_id=session_id,
-            permission_mode="auto",
+            permission_mode=mode,
+            command=str(command or "").strip(),
+            public_user_message=(str(user_input or "") or None),
+            public_attachments=public_attachments,
         )
     except Exception:
         logger.exception("Workbench agent run failed for session %s", session_id)
@@ -806,6 +1137,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     register_entity_routes(router, db_path)
     register_knowledge_routes(router)
     register_workbench_knowledge_routes(router)
+    register_workbench_memory_routes(router)
     register_workbench_schedule_routes(router, db_path)
     router.include_router(code_router)
 
@@ -2839,31 +3171,33 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         now = _utc_now_iso()
         workspace_path = str(body.get("workspacePath") or body.get("workspace_path") or WORKSPACE_DIR)
         name = str(body.get("name") or Path(workspace_path).name or "New Project").strip()
+        description = str(body.get("description") or "").strip()
         project_id = _short_id("project")
-        initial_session = _workbench_new_session(
-            project_id,
-            str(body.get("taskTitle") or body.get("task_title") or "新任务").strip() or "新任务",
-            str(body.get("goal") or "通过对话明确当前任务目标。").strip(),
-            now,
-        )
         project = {
             "id": project_id,
             "name": name,
+            "description": description,
+            "icon": str(body.get("icon") or "spark").strip() or "spark",
+            "color": str(body.get("color") or "").strip(),
+            "template": str(body.get("template") or "blank").strip() or "blank",
             "workspacePath": workspace_path,
             "status": "active",
             "model": _get_model(),
             "accountTier": str(body.get("accountTier") or "Pro"),
             "context": {
-                "summary": str(body.get("summary") or f"Workspace at {workspace_path}"),
+                "summary": str(body.get("summary") or description or f"Workspace at {workspace_path}"),
                 "stack": body.get("stack") if isinstance(body.get("stack"), list) else [],
                 "decisions": [],
                 "knowledgeDocumentIds": [],
             },
             "createdAt": now,
             "updatedAt": now,
-            "sessions": [initial_session],
+            "sessions": [],
             "sharedArtifacts": [],
         }
+        # New projects open onto an agent-led "初始化项目" onboarding session.
+        initial_session = _workbench_new_init_session(project_id, project, now)
+        project["sessions"] = [initial_session]
         payload.setdefault("projects", []).insert(0, project)
         payload["activeProjectId"] = project_id
         payload["activeSessionId"] = initial_session["id"]
@@ -2877,7 +3211,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         project = _workbench_find_project(payload, project_id)
         if not project:
             return JSONResponse({"error": "project not found"}, status_code=404)
-        for field in ("name", "workspacePath", "status", "model", "accountTier"):
+        for field in ("name", "description", "icon", "color", "template", "workspacePath", "status", "model", "accountTier"):
             if field in body:
                 project[field] = body[field]
         if isinstance(body.get("context"), dict):
@@ -2927,12 +3261,51 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": "project not found"}, status_code=404)
         title = str(body.get("title") or body.get("goal") or "新任务").strip() or "新任务"
         session = _workbench_new_session(project_id, title, str(body.get("goal") or "").strip())
+        if str(body.get("priority") or "").strip() in ("high", "medium", "low"):
+            session["priority"] = str(body.get("priority")).strip()
         project.setdefault("sessions", []).insert(0, session)
         project["updatedAt"] = session["createdAt"]
         payload["activeProjectId"] = project_id
         payload["activeSessionId"] = session["id"]
         _write_workbench_store(payload)
         return {"ok": True, "session": session, **payload}
+
+    @router.post("/api/projects/{project_id}/init/generate")
+    async def api_workbench_generate_init(project_id: str):
+        """(Re)generate the onboarding questions for a project's init session.
+
+        Runs the agent against the project's metadata; on any failure it keeps
+        the deterministic fallback form. Either way the form is marked as
+        ``generated`` so the client only requests this once.
+        """
+        payload = _read_workbench_store()
+        project = _workbench_find_project(payload, project_id)
+        if not project:
+            return JSONResponse({"error": "project not found"}, status_code=404)
+        session = next(
+            (s for s in project.get("sessions", []) if str(s.get("kind") or "") == "init"),
+            None,
+        )
+        if not session:
+            return JSONResponse({"error": "init session not found"}, status_code=404)
+        current = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
+        generated = await _workbench_generate_init_form(project)
+        if generated:
+            # Preserve any answers the user already entered.
+            generated["answers"] = current.get("answers") if isinstance(current.get("answers"), dict) else {}
+            generated["completed"] = bool(current.get("completed"))
+            session["init"] = generated
+            session["agentReply"] = generated.get("greeting") or session.get("agentReply") or ""
+        else:
+            current["generated"] = True  # mark attempted to avoid client retry loops
+            session["init"] = current
+        now = _utc_now_iso()
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session.get("id")
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, **payload}
 
     @router.get("/api/task-sessions/{session_id}")
     async def api_workbench_get_session(session_id: str):
@@ -2949,12 +3322,14 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         project, session = _workbench_find_session(payload, session_id)
         if not session or not project:
             return JSONResponse({"error": "session not found"}, status_code=404)
-        for field in ("title", "goal", "status", "priority", "agentReply", "summary"):
+        for field in ("title", "goal", "status", "priority", "agentReply", "summary", "kind"):
             if field in body:
                 session[field] = body[field]
         for field in ("constraints", "plan", "events", "runs", "artifacts", "acceptanceCriteria"):
             if isinstance(body.get(field), list):
                 session[field] = body[field]
+        if isinstance(body.get("init"), dict):
+            session["init"] = {**(session.get("init") or {}), **body["init"]}
         now = _utc_now_iso()
         session["updatedAt"] = now
         project["updatedAt"] = now
@@ -2967,7 +3342,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_workbench_create_run(session_id: str, request: Request):
         body = await request.json()
         user_input = str(body.get("input") or body.get("message") or "").strip()
-        if not user_input:
+        attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
+        mode = str(body.get("mode") or "auto")
+        command = str(body.get("command") or "")
+        if not user_input and not attachments:
             return JSONResponse({"error": "input is required"}, status_code=400)
         payload = _read_workbench_store()
         project, session = _workbench_find_session(payload, session_id)
@@ -2985,15 +3363,20 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         session["constraints"] = merged_constraints
         session["plan"] = _workbench_plan_from_input(user_input, session)
         session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
-        agent_reply = await _workbench_agent_reply(user_input, session, constraints)
+        agent_reply = await _workbench_agent_reply(user_input, session, constraints, attachments=attachments, permission_mode=mode, command=command)
         session["agentReply"] = agent_reply
+        # Sink durable memories from this exchange into the project's workspace store.
+        if not command:
+            schedule_capture(project.get("id"), user_input, agent_reply)
         session["status"] = "planning" if session.get("status") in ("idle", "pending") else session.get("status", "planning")
         session["updatedAt"] = now
         project["updatedAt"] = now
 
+        normalized_attachments = _workbench_normalize_attachments(attachments)
+        public_attachments = [build_public_attachment_payload(item) for item in normalized_attachments]
         run_id = _short_id("run")
         events = [
-            {"id": _short_id("event"), "type": "UserMessageEvent", "runId": run_id, "createdAt": now, "body": user_input},
+            {"id": _short_id("event"), "type": "UserMessageEvent", "runId": run_id, "createdAt": now, "body": user_input or "[附件]", "attachments": public_attachments},
             {"id": _short_id("event"), "type": "AgentResponseEvent", "runId": run_id, "createdAt": now, "body": agent_reply},
             {"id": _short_id("event"), "type": "PlanUpdatedEvent", "runId": run_id, "createdAt": now, "stepCount": len(session.get("plan") or [])},
         ]
@@ -3010,6 +3393,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "fileChanges": [],
             "toolCalls": [],
             "artifacts": [],
+            "attachments": public_attachments,
+            "mode": mode,
             "error": None,
         }
         session.setdefault("runs", []).append(run)
@@ -3035,14 +3420,20 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         """Simple chat mode — returns agent reply without generating plans/steps."""
         body = await request.json()
         message = str(body.get("message") or "").strip()
-        if not message:
+        attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
+        mode = str(body.get("mode") or "auto")
+        command = str(body.get("command") or "")
+        if not message and not attachments:
             return JSONResponse({"error": "message is required"}, status_code=400)
         payload = _read_workbench_store()
         project, session = _workbench_find_session(payload, session_id)
         if not session or not project:
             return JSONResponse({"error": "session not found"}, status_code=404)
-        agent_reply = await _workbench_agent_reply(message, session, [])
+        agent_reply = await _workbench_agent_reply(message, session, [], attachments=attachments, permission_mode=mode, command=command)
         session["agentReply"] = agent_reply
+        # Sink durable memories from this exchange into the project's workspace store.
+        if not command:
+            schedule_capture(project.get("id"), message, agent_reply)
         session["status"] = "completed"
         now = _utc_now_iso()
         session["updatedAt"] = now
@@ -3051,6 +3442,64 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
         return {"ok": True, "project": project, "session": session, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/init/submit")
+    async def api_workbench_submit_init(session_id: str, request: Request):
+        """Finalize project initialization.
+
+        Persists the onboarding answers, writes a project brief into the project
+        context, marks the init session complete, and seeds the project's first
+        real task from the collected goal.
+        """
+        body = await request.json()
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        if str(session.get("kind") or "") != "init":
+            return JSONResponse({"error": "not an init session"}, status_code=400)
+        form = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
+        if isinstance(body.get("answers"), dict):
+            merged = form.get("answers") if isinstance(form.get("answers"), dict) else {}
+            merged.update(body["answers"])
+            form["answers"] = merged
+        form["completed"] = True
+        session["init"] = form
+
+        brief = _workbench_init_brief(project, form)
+        answers = form.get("answers") if isinstance(form.get("answers"), dict) else {}
+        goal = str(answers.get("goal") or "").strip()
+        now = _utc_now_iso()
+        # Fold the onboarding into the project's durable context.
+        context = project.get("context") if isinstance(project.get("context"), dict) else {}
+        if brief:
+            context["summary"] = brief
+        project["context"] = context
+        if not str(project.get("description") or "").strip() and goal:
+            project["description"] = goal[:200]
+        session["status"] = "completed"
+        session["agentReply"] = "项目初始化已完成，我已根据你的回答整理了项目背景，并为你创建了第一个任务。"
+        session["summary"] = brief or session.get("summary")
+        session["updatedAt"] = now
+
+        # Seed the first real task from the onboarding answers.
+        first_title = (goal[:40] + ("…" if len(goal) > 40 else "")) if goal else "开始项目"
+        first_session = _workbench_new_session(project["id"], first_title, goal, now, kind="task", status="idle")
+        constraints: list[str] = []
+        out_of_scope = str(answers.get("out_of_scope") or "").strip()
+        if out_of_scope:
+            constraints.append(f"范围限制：{out_of_scope}")
+        deadline = str(answers.get("deadline") or "").strip()
+        if deadline:
+            constraints.append(f"时间约束：{deadline}")
+        first_session["constraints"] = constraints
+        sessions = project.setdefault("sessions", [])
+        sessions.insert(0, first_session)
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = first_session["id"]
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": first_session, "initSession": session, **payload}
 
     @router.get("/api/task-sessions/{session_id}/events")
     async def api_workbench_session_events(session_id: str):
