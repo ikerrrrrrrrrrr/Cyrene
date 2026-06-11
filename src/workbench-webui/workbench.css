@@ -396,11 +396,6 @@
   border-color: var(--wb-line);
 }
 
-.workbench-nav-button.legacy {
-  margin-top: 5px;
-  color: var(--wb-faint);
-}
-
 .workbench-nav-icon {
   width: 28px;
   height: 28px;

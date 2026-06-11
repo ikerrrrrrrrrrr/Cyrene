@@ -6,7 +6,7 @@ var {
   useRef: useWorkbenchRef,
 } = React;
 
-function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
+function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   useDataVersion();
   var model = window.WorkbenchModel;
   var [store, setStore] = useWorkbenchState(function () {
@@ -108,6 +108,7 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
   }
 
   function handleOpenPage(page) {
+    if (page === "task") { setFullPage(null); return; }
     setFullPage(function (prev) { return prev === page ? null : page; });
   }
 
@@ -117,7 +118,7 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
   var isSchedule = fullPage === "schedule";
   var isMemory = fullPage === "memory";
   var isModulePage = isKnowledge || isSchedule || isMemory;
-  var fullPageConfig = fullPage && !isModulePage ? workbenchFullPageConfig(fullPage, setFullPage, onOpenLegacy, store) : null;
+  var fullPageConfig = fullPage && !isModulePage ? workbenchFullPageConfig(fullPage, setFullPage, store) : null;
 
   return (
     <div className="workbench-shell" data-screen-label="Cyrene · workbench">
@@ -142,7 +143,6 @@ function WorkbenchApp({ onOpenLegacy, theme, actualTheme, onToggleTheme }) {
             onSelectProject={selectProject}
             onCreateProject={createProject}
             onOpenPage={handleOpenPage}
-            onOpenLegacy={onOpenLegacy}
           />
           {isKnowledge ? (
             React.createElement(window.WorkbenchKnowledgePage || function () { return <div className="workbench-empty">知识库加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
@@ -299,8 +299,11 @@ function WorkbenchTopbar({ project, session, activePage, onSearch, onSettings, t
   );
 }
 
-function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, onCreateProject, onOpenPage, onOpenLegacy }) {
+function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, onCreateProject, onOpenPage }) {
   var navItems = [
+    { id: "task", label: "任务", icon: (
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1.5"/><path d="M9 14 10.5 15.5 15 11"/></svg>
+    ), action: function () { onOpenPage("task"); } },
     { id: "chat", label: "对话", icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.2 7.6L3 21l1.9-5.8A8.5 8.5 0 1 1 21 11.5Z"/></svg>
     ), action: function () { onOpenPage("chat"); } },
@@ -351,18 +354,12 @@ function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, o
       <div className="workbench-global-nav">
         {navItems.map(function (item) {
           return (
-            <button key={item.id} type="button" className={"workbench-nav-button" + (activePage === item.id ? " active" : "")} onClick={item.action}>
+            <button key={item.id} type="button" className={"workbench-nav-button" + ((activePage === item.id || (item.id === "task" && !activePage)) ? " active" : "")} onClick={item.action}>
               <span className="workbench-nav-icon">{item.icon}</span>
               <span>{item.label}</span>
             </button>
           );
         })}
-        <button type="button" className="workbench-nav-button legacy" onClick={onOpenLegacy}>
-          <span className="workbench-nav-icon">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5A5.5 5.5 0 0 1 20 14.5 5.5 5.5 0 0 1 14.5 20H8"/></svg>
-          </span>
-          <span>旧界面</span>
-        </button>
       </div>
       <div className="workbench-account">
         <div className="workbench-avatar photo">{WorkbenchModel.initials(DATA.user && DATA.user.name)}</div>
@@ -1517,7 +1514,7 @@ function WorkbenchFullPage({ config, onClose }) {
   );
 }
 
-function workbenchFullPageConfig(page, setFullPage, onOpenLegacy, store) {
+function workbenchFullPageConfig(page, setFullPage, store) {
   if (page === "chat") {
     return {
       title: "对话",

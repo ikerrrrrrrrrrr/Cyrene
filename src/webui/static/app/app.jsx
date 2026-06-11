@@ -808,21 +808,11 @@ function App() {
     setThemeMode(order[(idx + 1) % order.length]);
   }
 
-  function openLegacy() {
-    // In Electron, recreate the window with a native title bar (the inset
-    // chrome overlaps the legacy top bar). In a plain browser, swap in place.
-    if (window.cyrene && typeof window.cyrene.switchUiShell === "function") {
-      window.cyrene.switchUiShell("legacy");
-    } else {
-      setShellMode("legacy");
-    }
-  }
-
   if (needsOnboarding || shellMode === "legacy" || typeof window.WorkbenchApp === "undefined") {
     return <LegacyAppShell />;
   }
 
-  return <window.WorkbenchApp onOpenLegacy={openLegacy} theme={themeMode} actualTheme={actualTheme} onToggleTheme={toggleWorkbenchTheme} />;
+  return <window.WorkbenchApp theme={themeMode} actualTheme={actualTheme} onToggleTheme={toggleWorkbenchTheme} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
