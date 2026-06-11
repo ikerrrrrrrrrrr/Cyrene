@@ -16,7 +16,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
         from cyrene import debug as _debug
-        from cyrene.agent.state import _caller_type, _current_round_id
+        from cyrene.agent.state import _caller_type, _current_round_id, _current_session_id
         from cyrene.mcp_manager import get_manager as _get_mcp_mgr
 
         _t0 = time.monotonic()
@@ -29,7 +29,7 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
                 "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
                 "result": str(result),
                 "round_id": _current_round_id.get(),
-            })
+            }, session_id=_current_session_id.get())
             from cyrene.pattern import record_action
             await record_action(name, arguments, _caller_type.get(), _current_round_id.get(),
                           (time.monotonic() - _t0) * 1000,
@@ -56,12 +56,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
         result = await handler(arguments, bot, chat_id, db_path, notify_state)
     except Exception as e:
         from cyrene import debug
-        from cyrene.agent.state import _caller_type, _current_round_id
+        from cyrene.agent.state import _caller_type, _current_round_id, _current_session_id
         await debug.publish_event({
             "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
             "result": f"Tool failed: {e}",
             "round_id": _current_round_id.get(),
-        })
+        }, session_id=_current_session_id.get())
         from cyrene.pattern import record_action
         await record_action(
             name,
@@ -78,12 +78,12 @@ async def _execute_tool(name: str, arguments: dict[str, Any], bot: Any, chat_id:
     if debug.VERBOSE:
         from cyrene.agent.state import _caller_type
         debug.log_tool_call(_caller_type.get(), name, arguments, result, (time.monotonic() - _t0) * 1000)
-    from cyrene.agent.state import _caller_type, _current_round_id
+    from cyrene.agent.state import _caller_type, _current_round_id, _current_session_id
     await debug.publish_event({
         "type": "tool_call", "caller": _caller_type.get(), "tool": name, "args": arguments,
         "result": str(result),
         "round_id": _current_round_id.get(),
-    })
+    }, session_id=_current_session_id.get())
     from cyrene.pattern import record_action
     tool_success = not str(result).lower().startswith("tool failed:")
     await record_action(

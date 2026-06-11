@@ -21,6 +21,7 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   var [settingsOpen, setSettingsOpen] = useWorkbenchState(false);
   var [newProjectOpen, setNewProjectOpen] = useWorkbenchState(false);
   var [newTaskOpen, setNewTaskOpen] = useWorkbenchState(false);
+  var [chatCrumb, setChatCrumb] = useWorkbenchState("");
 
   function reloadWorkbench(nextProjectId, nextSessionId) {
     setLoading(true);
@@ -112,12 +113,23 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
     setFullPage(function (prev) { return prev === page ? null : page; });
   }
 
-  // The 知识库 and 日程 views keep the ProjectRail (so you can navigate while
-  // viewing them); other pages take over the full screen.
+  // Conversation → task promotion: the chat page returns the refreshed store
+  // (active = the new task session); adopt it and jump back to the task view.
+  function handleChatToTask(payload) {
+    var next = model.normalizeStore(payload);
+    setStore(next);
+    setFullPage(null);
+    setExpandedStepId("");
+    setRightTab("context");
+  }
+
+  // The 知识库 / 日程 / 记忆 / 对话 views keep the ProjectRail (so you can
+  // navigate while viewing them); other pages take over the full screen.
   var isKnowledge = fullPage === "knowledge";
   var isSchedule = fullPage === "schedule";
   var isMemory = fullPage === "memory";
-  var isModulePage = isKnowledge || isSchedule || isMemory;
+  var isChat = fullPage === "chat";
+  var isModulePage = isKnowledge || isSchedule || isMemory || isChat;
   var fullPageConfig = fullPage && !isModulePage ? workbenchFullPageConfig(fullPage, setFullPage, store) : null;
 
   return (
@@ -126,6 +138,7 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
         project={store.activeProject}
         session={store.activeSession}
         activePage={fullPage}
+        chatCrumb={chatCrumb}
         onSearch={function () { setSearchOpen(true); }}
         onSettings={function () { setSettingsOpen(true); }}
         theme={theme}
@@ -135,7 +148,7 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
       {fullPageConfig ? (
         <WorkbenchFullPage config={fullPageConfig} onClose={function () { setFullPage(null); }} />
       ) : (
-        <div className={"workbench-grid" + (isKnowledge ? " is-knowledge" : "") + (isSchedule ? " is-schedule" : "") + (isMemory ? " is-memory" : "")}>
+        <div className={"workbench-grid" + (isKnowledge ? " is-knowledge" : "") + (isSchedule ? " is-schedule" : "") + (isMemory ? " is-memory" : "") + (isChat ? " is-chat" : "")}>
           <ProjectRail
             projects={store.projects}
             activeProjectId={store.activeProjectId}
@@ -144,7 +157,13 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
             onCreateProject={createProject}
             onOpenPage={handleOpenPage}
           />
-          {isKnowledge ? (
+          {isChat ? (
+            React.createElement(window.WorkbenchChatPage || function () { return <div className="workbench-empty">对话加载中...</div>; }, {
+              project: store.activeProject,
+              onOpenTask: handleChatToTask,
+              onActiveChatChange: setChatCrumb,
+            })
+          ) : isKnowledge ? (
             React.createElement(window.WorkbenchKnowledgePage || function () { return <div className="workbench-empty">知识库加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
           ) : isSchedule ? (
             React.createElement(window.WorkbenchSchedulePage || function () { return <div className="workbench-empty">日程加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
@@ -253,10 +272,11 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   );
 }
 
-function WorkbenchTopbar({ project, session, activePage, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
+function WorkbenchTopbar({ project, session, activePage, chatCrumb, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
   var title = project ? project.name : "Project";
   var pageLabels = { chat: "对话", knowledge: "知识库", schedule: "日程", memory: "记忆" };
   var sessionTitle = activePage && pageLabels[activePage] ? pageLabels[activePage] : (session ? session.title : "Task");
+  var chatTail = activePage === "chat" ? String(chatCrumb || "").trim() : "";
   var themeTitle = theme === "system" ? "跟随系统" : actualTheme === "dark" ? "深色模式" : "浅色模式";
   var themeIcon = theme === "system" ? (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/></svg>
@@ -275,7 +295,15 @@ function WorkbenchTopbar({ project, session, activePage, onSearch, onSettings, t
       <div className="workbench-crumbs">
         <span>{title}</span>
         <span>/</span>
-        <b>{sessionTitle}</b>
+        {chatTail ? (
+          <>
+            <span>{sessionTitle}</span>
+            <span>/</span>
+            <b>{chatTail}</b>
+          </>
+        ) : (
+          <b>{sessionTitle}</b>
+        )}
       </div>
       <div className="workbench-top-actions">
         <button type="button" className="workbench-search-box" onClick={onSearch} title="搜索">
@@ -1637,24 +1665,6 @@ function WorkbenchFullPage({ config, onClose }) {
 }
 
 function workbenchFullPageConfig(page, setFullPage, store) {
-  if (page === "chat") {
-    return {
-      title: "对话",
-      render: function () {
-        return React.createElement(window.ChatPage || function () { return <div className="workbench-empty">对话界面加载中...</div>; }, {
-          selectedSessionId: null,
-          onSelectSession: function () {},
-          rightSidebarCollapsed: false,
-          setRightSidebarCollapsed: function () {},
-          rightSidebarView: "overview",
-          setRightSidebarView: function () {},
-        });
-      },
-    };
-  }
-  if (page === "memory") {
-    return { title: "记忆", render: function () { return React.createElement(window.MemoryPage || function () { return <div className="workbench-empty">记忆加载中...</div>; }); } };
-  }
   return { title: page, render: function () { return <div className="workbench-empty">未找到页面。</div>; } };
 }
 

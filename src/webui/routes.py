@@ -33,6 +33,7 @@ from webui.routes_knowledge import register_knowledge_routes
 from webui.routes_workbench_knowledge import register_workbench_knowledge_routes
 from webui.routes_workbench_memory import register_workbench_memory_routes, schedule_capture
 from webui.routes_workbench_schedule import register_workbench_schedule_routes
+from webui.routes_workbench_chat import register_workbench_chat_routes
 from webui.routes_code import router as code_router
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
@@ -1340,6 +1341,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     register_workbench_knowledge_routes(router)
     register_workbench_memory_routes(router)
     register_workbench_schedule_routes(router, db_path)
+    register_workbench_chat_routes(router, bot, db_path)
     router.include_router(code_router)
 
     # ---- SPA root ----
@@ -3432,6 +3434,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 sid = str(s.get("id") or "").strip()
                 if sid:
                     await clear_session_id(session_id=sid)
+            # Also drop the project's workbench conversations (chat-kind sessions).
+            try:
+                from webui.routes_workbench_chat import remove_project_chats
+                await remove_project_chats(project_id)
+            except Exception:
+                logger.exception("Failed to remove chats for project %s", project_id)
         next_projects = [project for project in projects if str(project.get("id") or "") != project_id]
         if len(next_projects) == len(projects):
             return JSONResponse({"error": "project not found"}, status_code=404)
