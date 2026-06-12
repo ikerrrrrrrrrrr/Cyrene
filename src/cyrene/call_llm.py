@@ -44,6 +44,33 @@ def _bg_token_task(task: asyncio.Task) -> None:
 _secondary_in_flight: int = 0
 
 # ---------------------------------------------------------------------------
+# Candidate failure cooldown — a dead endpoint must not slow down every call
+# ---------------------------------------------------------------------------
+# 连不上的候选（如下线的本地模型机器）会让每次调用都先撞一遍超时。失败后把该候选
+# 冷却一段时间，期间直接跳过；全部候选都在冷却时照常尝试，避免无模型可用。
+_CANDIDATE_COOLDOWN_SECONDS = 120.0
+_candidate_cooldowns: dict[tuple[str, str], float] = {}
+
+# httpx 连接超时与读超时分开：对不可达主机快速失败，而不是吃满整个调用超时。
+_CONNECT_TIMEOUT_SECONDS = 5.0
+
+
+def _candidate_key(candidate: dict[str, Any]) -> tuple[str, str]:
+    return (str(candidate.get("model") or ""), str(candidate.get("base_url") or ""))
+
+
+def _candidate_cooling(key: tuple[str, str]) -> bool:
+    return _candidate_cooldowns.get(key, 0.0) > _time.monotonic()
+
+
+def _set_candidate_cooldown(key: tuple[str, str]) -> None:
+    _candidate_cooldowns[key] = _time.monotonic() + _CANDIDATE_COOLDOWN_SECONDS
+
+
+def _clear_candidate_cooldown(key: tuple[str, str]) -> None:
+    _candidate_cooldowns.pop(key, None)
+
+# ---------------------------------------------------------------------------
 # Helpers moved from agent.py / attachments.py
 # ---------------------------------------------------------------------------
 
@@ -77,20 +104,41 @@ def _normalized_candidate(raw: dict[str, Any], index: int = 0, *, active_model: 
     }
 
 
+def _base_root(url: str) -> str:
+    """Normalize a base URL for equality checks ("…/v1" 与不带 /v1 视为同端点)."""
+    normalized = str(url or "").strip().rstrip("/")
+    if normalized.endswith("/v1"):
+        normalized = normalized[: -len("/v1")].rstrip("/")
+    return normalized.lower()
+
+
+def _inherit_sibling_keys(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keyless candidates inherit the key of the first same-endpoint candidate
+    that has one ("…/v1" 与不带 /v1 视为同端点)。跨提供商不继承；本地端点可以
+    始终无 key（请求时不会带 Authorization 头）。"""
+    keyed_roots: dict[str, str] = {}
+    for candidate in candidates:
+        root = _base_root(candidate.get("base_url") or "")
+        if candidate.get("api_key") and root not in keyed_roots:
+            keyed_roots[root] = candidate["api_key"]
+    for candidate in candidates:
+        if not candidate.get("api_key"):
+            candidate["api_key"] = keyed_roots.get(_base_root(candidate.get("base_url") or ""), "")
+    return candidates
+
+
 def _resolve_llm_candidates() -> list[dict[str, Any]]:
+    """模型列表是唯一事实来源：每个候选自带「标识符 + API Key + Base URL」，
+    按列表顺序逐个尝试、失败回退下一条。env 里的 OPENAI_* 只是「保存模型设置时
+    镜像 models[0]」的派生值，仅用于补全某条目缺失的 base_url/key，本身不作为
+    独立候选参与调用。列表为空（从未配置过任何模型）时返回空——调用方会抛出一个
+    明确的「未配置模型」错误，而不是用空 key 撞一个必然 401 的默认端点。"""
     active_model = str(os.environ.get("OPENAI_MODEL", "deepseek-chat") or "").strip() or "deepseek-chat"
     active_base_url = str(os.environ.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL) or "").strip() or DEFAULT_OPENAI_BASE_URL
     active_api_key = _strip_wrapping_quotes(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
 
     candidates: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
-
-    active_candidate = _normalized_candidate({}, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
-    active_candidate["id"] = "runtime-active"
-    active_key = (active_candidate["model"], active_candidate["base_url"], active_candidate["api_key"])
-    seen.add(active_key)
-    candidates.append(active_candidate)
-
     for index, raw in enumerate(get_models() or []):
         candidate = _normalized_candidate(raw, index, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
         key = (candidate["model"], candidate["base_url"], candidate["api_key"])
@@ -99,7 +147,7 @@ def _resolve_llm_candidates() -> list[dict[str, Any]]:
         seen.add(key)
         candidates.append(candidate)
 
-    return candidates
+    return _inherit_sibling_keys(candidates)
 
 
 def _resolve_secondary_candidates() -> list[dict[str, Any]]:
@@ -129,25 +177,16 @@ def _resolve_secondary_candidates() -> list[dict[str, Any]]:
 
 
 def _resolve_vision_candidates() -> list[dict[str, Any]]:
+    """Primary chain first (the primary model may be vision-capable), then the
+    dedicated vision entries — same per-entry key semantics as the primary list."""
     active_model = str(os.environ.get("OPENAI_MODEL", "deepseek-chat") or "").strip() or "deepseek-chat"
     active_base_url = str(os.environ.get("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL) or "").strip() or DEFAULT_OPENAI_BASE_URL
     active_api_key = _strip_wrapping_quotes(str(os.environ.get("OPENAI_API_KEY", "") or "").strip())
 
-    seen: set[tuple[str, str, str]] = set()
-    candidates: list[dict[str, Any]] = []
-
-    active_candidate = _normalized_candidate({}, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
-    active_candidate["id"] = "runtime-active-vision"
-    active_key = (active_candidate["model"], active_candidate["base_url"], active_candidate["api_key"])
-    seen.add(active_key)
-    candidates.append(active_candidate)
-
-    for raw in get_models() or []:
-        candidate = _normalized_candidate(raw, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
-        key = (candidate["model"], candidate["base_url"], candidate["api_key"])
-        if key not in seen:
-            seen.add(key)
-            candidates.append(candidate)
+    candidates = _resolve_llm_candidates()
+    seen: set[tuple[str, str, str]] = {
+        (candidate["model"], candidate["base_url"], candidate["api_key"]) for candidate in candidates
+    }
 
     for raw in get_vision_models() or []:
         candidate = _normalized_candidate(raw, 0, active_model=active_model, active_base_url=active_base_url, active_api_key=active_api_key)
@@ -156,7 +195,7 @@ def _resolve_vision_candidates() -> list[dict[str, Any]]:
             seen.add(key)
             candidates.append(candidate)
 
-    return candidates
+    return _inherit_sibling_keys(candidates)
 
 
 def _resolve_candidates(model_type: str) -> list[dict[str, Any]]:
@@ -643,6 +682,16 @@ async def call_llm(
     resolved = candidates if candidates is not None else _resolve_candidates(model_type)
     if not resolved:
         resolved = _resolve_llm_candidates()
+    if not resolved:
+        # No model configured at all (fresh install, never onboarded / saved a
+        # model). Keep the historical "return empty string" contract so callers
+        # degrade exactly as before, but log it — previously a phantom env
+        # candidate masked this by 401'ing on a default endpoint instead.
+        logger.error(
+            "call_llm has no model candidates [caller=%s phase=%s]; configure one in Settings → Models.",
+            caller, phase,
+        )
+        return ""
 
     # ctx_limit check for secondary model: if messages exceed the limit,
     # skip secondary and fall through to primary candidates
@@ -653,11 +702,24 @@ async def call_llm(
             if total_tokens > ctx_limit:
                 resolved = resolved[1:] if len(resolved) > 1 else _resolve_llm_candidates()
 
+    # Skip candidates that recently failed (dead endpoint / bad key). If that
+    # would leave nothing, ignore cooldowns and try the full list anyway.
+    available = [c for c in resolved if not _candidate_cooling(_candidate_key(c))]
+    skipped_cooling = [c for c in resolved if _candidate_cooling(_candidate_key(c))]
+    if not available:
+        available = resolved
+        skipped_cooling = []
+    failed_this_call: list[str] = []
+
+    def _candidate_label(c: dict[str, Any]) -> str:
+        return f"{c.get('id')}({c.get('model')}@{c.get('base_url')})"
+
     transport = httpx.AsyncHTTPTransport(retries=1)
-    async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
+    client_timeout = httpx.Timeout(timeout, connect=min(_CONNECT_TIMEOUT_SECONDS, timeout))
+    async with httpx.AsyncClient(transport=transport, timeout=client_timeout) as client:
         last_error: Exception | None = None
 
-        for candidate in resolved:
+        for candidate in available:
             is_secondary = candidate.get("id") == "secondary"
             max_conc = int(candidate.get("max_concurrency") or 0)
 
@@ -699,6 +761,15 @@ async def call_llm(
 
                         duration_ms = round((_time.monotonic() - _t0) * 1000)
 
+                        _clear_candidate_cooldown(_candidate_key(candidate))
+                        if failed_this_call or skipped_cooling:
+                            logger.warning(
+                                "call_llm succeeded on %s after %d failed and %d cooled-down candidate(s)%s "
+                                "— check the model settings for stale entries",
+                                _candidate_label(candidate), len(failed_this_call), len(skipped_cooling),
+                                (": " + "; ".join(failed_this_call)) if failed_this_call else "",
+                            )
+
                         # Success — publish events, record usage, return
                         from cyrene import debug as cy_debug
 
@@ -730,13 +801,19 @@ async def call_llm(
                         )
 
                 if candidate_error:
-                    # All endpoints for this candidate failed — try the next one.
-                    # The error is preserved in last_error and re-raised only
-                    # after all candidates are exhausted.
+                    # All endpoints for this candidate failed — cool it down and
+                    # try the next one. The error is preserved in last_error and
+                    # re-raised only after all candidates are exhausted.
+                    _set_candidate_cooldown(_candidate_key(candidate))
+                    failed_this_call.append(
+                        f"{_candidate_label(candidate)}: {_format_httpx_error(candidate_error)}"
+                    )
                     continue
 
             except Exception as exc:
                 last_error = exc
+                _set_candidate_cooldown(_candidate_key(candidate))
+                failed_this_call.append(f"{_candidate_label(candidate)}: {exc.__class__.__name__}: {exc}")
                 if model_type == "vision" and _looks_like_vision_capability_error(exc):
                     continue
                 continue

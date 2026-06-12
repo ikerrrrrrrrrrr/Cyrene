@@ -83,17 +83,41 @@ def _safe_workspace_id(workspace_id: str | None) -> str:
     return cleaned or "default"
 
 
+def _resolve_workspace_id(workspace_id: str | None) -> str:
+    """Map a Workbench project id to its storage key when possible."""
+    wid = _safe_workspace_id(workspace_id)
+    try:
+        from webui import routes as R
+
+        payload = R._read_workbench_store()
+        project = R._workbench_find_project(payload, str(workspace_id or "").strip())
+        if project:
+            return R._workbench_project_data_key(project)
+    except Exception:
+        pass
+    return wid
+
+
 def _memory_path(workspace_id: str | None) -> Path:
     """Resolve a workspace to its per-workspace memory JSON file."""
-    return STORE_DIR / f"wb_memory_{_safe_workspace_id(workspace_id)}.json"
+    return STORE_DIR / f"wb_memory_{_resolve_workspace_id(workspace_id)}.json"
 
 
 def _load(workspace_id: str | None) -> list[dict]:
+    if _resolve_workspace_id(workspace_id) == "default":
+        from cyrene.short_term import load_entries
+
+        return load_entries()
     data = read_json_safe(_memory_path(workspace_id))
     return data if isinstance(data, list) else []
 
 
 def _save(workspace_id: str | None, entries: list[dict]) -> None:
+    if _resolve_workspace_id(workspace_id) == "default":
+        from cyrene.short_term import save_entries
+
+        save_entries(entries)
+        return
     atomic_write_json(_memory_path(workspace_id), entries)
 
 
@@ -386,7 +410,7 @@ async def capture_from_exchange(workspace_id: str, user_text: str, agent_text: s
 
 def schedule_capture(workspace_id: str | None, user_text: str, agent_text: str) -> None:
     """Fire-and-forget :func:`capture_from_exchange` so it never blocks a reply."""
-    wid = _safe_workspace_id(workspace_id)
+    wid = _resolve_workspace_id(workspace_id)
 
     async def _runner() -> None:
         try:

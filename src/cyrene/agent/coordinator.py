@@ -318,8 +318,12 @@ async def _run_chat_agent(
     behavior_turn_context: dict[str, Any] | None = None
     final_output = ""
     try:
+        # 全局 short_term 只属于默认会话（旧 UI 单线程对话的跨重启恢复）。
+        # workbench 的任务/对话会话有独立 session_id，注入会把别的话题带进
+        # 全新会话造成答非所问，因此一律跳过。
+        is_default_session = not _current_session_id.get()
         restored_short_term = False
-        if not history:
+        if not history and is_default_session:
             st = get_context(max_chars=5000)
             if st:
                 history = [{"role": "system", "content": "[Restored context]\n" + st}]
@@ -341,7 +345,10 @@ async def _run_chat_agent(
                 behavior_turn_context = None
 
         try:
-            memory_context = get_memory_context(include_short_term=not restored_short_term)
+            # 同理：system prompt 里的 short_term 摘要也只给默认会话。
+            memory_context = get_memory_context(
+                include_short_term=is_default_session and not restored_short_term
+            )
         except TypeError as exc:
             if "include_short_term" not in str(exc):
                 raise

@@ -153,7 +153,7 @@ async def test_execute_tool_awaits_event_publish(monkeypatch):
     async def fake_handler(arguments, bot, chat_id, db_path, notify_state):
         return "ok"
 
-    async def fake_publish_event(event):
+    async def fake_publish_event(event, **kwargs):
         seen["published"] = True
         seen["event"] = event
 
@@ -416,6 +416,50 @@ async def test_run_chat_agent_avoids_duplicate_short_term_memory_in_system_promp
     assert result == "ok"
     assert seen["include_short_term"] is False
     assert seen["history"][0]["content"].startswith("[Restored context]")
+    assert "stable trait" in seen["system_prompt"]
+
+
+async def test_run_chat_agent_keeps_global_short_term_out_of_workbench_sessions(monkeypatch, tmp_path):
+    """Per-session workbench runs must not inherit the default session's
+    short-term context (regression: fresh task sessions answered stale topics)."""
+    from cyrene import agent
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import session as _agent_session
+    from cyrene.agent import agent as _agent_core
+
+    seen: dict[str, Any] = {}
+
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(_agent_session, "_refresh_session_labels", AsyncMock())
+    _patch_runtime_context(monkeypatch, get_context=lambda max_chars=5000: "[Previous context:]\n- stale paper topic")
+
+    def fake_get_memory_context(include_short_term: bool = True):
+        seen["include_short_term"] = include_short_term
+        return "## Memory Context\n- stable trait"
+
+    async def fake_run_main_agent(user_message, history, bot, chat_id, db_path, system_prompt="", client_request_id="", persist_user_message=True, lang="", **kwargs):
+        seen["history"] = history
+        seen["system_prompt"] = system_prompt
+        return "ok"
+
+    _patch_runtime_context(monkeypatch, get_memory_context=fake_get_memory_context)
+    monkeypatch.setattr(_agent_core, "_run_main_agent", fake_run_main_agent)
+
+    token = _agent_state._current_session_id.set("wbchat_test123")
+    try:
+        result = await agent._run_chat_agent("hello", None, 0, "db.sqlite3")
+    finally:
+        _agent_state._current_session_id.reset(token)
+
+    assert result == "ok"
+    assert seen["include_short_term"] is False
+    assert not any(
+        "[Restored context]" in str(message.get("content") or "")
+        for message in seen["history"]
+        if isinstance(message, dict)
+    )
+    assert "stale paper topic" not in seen["system_prompt"]
     assert "stable trait" in seen["system_prompt"]
 
 
@@ -4434,3 +4478,48 @@ def test_resolve_vision_candidates_cross_provider_no_key_not_inherited(monkeypat
     vision = next((c for c in candidates if c.get("model") == "vision-model"), None)
     assert vision is not None
     assert vision["api_key"] == ""
+
+
+async def test_streamed_chat_only_final_reply_persists_usage(monkeypatch, tmp_path):
+    """Streaming finals return plain text; the saved assistant entry must still
+    carry the reply call's token usage (regression: workbench chat usage was 0)."""
+    from cyrene import agent, behavior_learning
+    from cyrene.agent import state as _agent_state
+    from cyrene.agent import agent as _agent_core
+
+    _patch_state_file(monkeypatch, tmp_path / "state.json")
+    _patch_data_dir(monkeypatch, tmp_path)
+    monkeypatch.setattr(behavior_learning, "try_route_and_execute_skill", AsyncMock(return_value=None))
+
+    async def fake_phase1(messages, tools=None, max_tokens=32000, **kwargs):
+        return {"content": "plain phase1 text", "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}
+
+    async def fake_stream(messages, max_tokens=None, **kwargs):
+        return {"content": "streamed final answer", "usage": {"prompt_tokens": 30, "completion_tokens": 7, "total_tokens": 37}}
+
+    saved: dict[str, Any] = {}
+
+    async def fake_save(messages):
+        saved["messages"] = messages
+
+    _patch_call_llm(monkeypatch, fake_phase1)
+    _patch_call_llm_stream(monkeypatch, fake_stream)
+    _patch_save_session(monkeypatch, fake_save)
+    _patch_append_session(monkeypatch, AsyncMock())
+
+    async def noop_writer(event):
+        return None
+
+    token = _agent_state._reply_stream_writer.set(noop_writer)
+    try:
+        result = await agent._run_main_agent("hello", [], None, 0, "db.sqlite3")
+    finally:
+        _agent_state._reply_stream_writer.reset(token)
+
+    assert result == "streamed final answer"
+    final_entries = [
+        message for message in saved["messages"]
+        if message.get("role") == "assistant" and message.get("content") == "streamed final answer"
+    ]
+    assert final_entries, "streamed final reply should be persisted"
+    assert final_entries[-1].get("usage", {}).get("total_tokens") == 37

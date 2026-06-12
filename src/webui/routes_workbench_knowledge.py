@@ -29,6 +29,7 @@ from cyrene.attachments import (
     is_uploaded_attachment_path,
     is_exported_attachment_path,
 )
+from webui.workbench_notifications import append_notification
 
 # Cache of knowledge-db paths whose tables have already been created, so we
 # init each workspace db lazily (on first touch) exactly once per process.
@@ -45,6 +46,21 @@ def _safe_workspace_id(workspace_id: str | None) -> str:
     return cleaned or "default"
 
 
+def _resolve_workspace_id(workspace_id: str | None) -> str:
+    """Map a Workbench project id to its storage key when possible."""
+    wid = _safe_workspace_id(workspace_id)
+    try:
+        from webui import routes as R
+
+        payload = R._read_workbench_store()
+        project = R._workbench_find_project(payload, str(workspace_id or "").strip())
+        if project:
+            return R._workbench_project_data_key(project)
+    except Exception:
+        pass
+    return wid
+
+
 def _safe_upload_name(filename: str) -> str:
     """Sanitize a filename for upload."""
     raw = Path(str(filename or "upload.bin")).name
@@ -57,7 +73,7 @@ async def _ensure_kb_db(workspace_id: str | None) -> str:
     from cyrene.config import get_knowledge_db_path
     from cyrene.db import init_knowledge_db
 
-    wid = _safe_workspace_id(workspace_id)
+    wid = _resolve_workspace_id(workspace_id)
     db_path = str(get_knowledge_db_path(wid))
     if db_path not in _kb_initialized:
         async with _kb_init_lock:
@@ -87,7 +103,7 @@ def register_workbench_knowledge_routes(router: APIRouter) -> None:
             documents = await store.list_documents(
                 db_path, q=q, kind=kind, status=status, tag=tag, source=source, limit=limit
             )
-            return {"documents": documents, "workspace": _safe_workspace_id(workspace)}
+            return {"documents": documents, "workspace": _resolve_workspace_id(workspace)}
         except Exception as e:
             return JSONResponse({"error": f"List failed: {str(e)}"}, status_code=400)
 
@@ -165,7 +181,17 @@ def register_workbench_knowledge_routes(router: APIRouter) -> None:
                 return JSONResponse(
                     {"error": f"Failed to upload {file.filename}: {str(e)}"}, status_code=400
                 )
-
+        for doc in documents:
+            append_notification(
+                title="文件上传完成",
+                body=f"文件「{doc.get('name') or '未命名文件'}」已上传到知识库。",
+                tab="system",
+                project_ref=workspace,
+                source="knowledge_upload",
+                source_label="知识库",
+                link_label=str(doc.get("name") or ""),
+                meta={"documentId": doc.get("id")},
+            )
         return {"documents": documents}
 
     @router.patch("/api/workbench/knowledge/documents/{doc_id}")
@@ -192,6 +218,16 @@ def register_workbench_knowledge_routes(router: APIRouter) -> None:
             if not doc:
                 return JSONResponse({"error": "not found"}, status_code=404)
             asyncio.create_task(ingest.reindex_document(db_path, doc_id))
+            append_notification(
+                title="文件重建索引",
+                body=f"文件「{doc.get('name') or '未命名文件'}」已加入重新索引队列。",
+                tab="system",
+                project_ref=workspace,
+                source="knowledge_reindex",
+                source_label="知识库",
+                link_label=str(doc.get("name") or ""),
+                meta={"documentId": doc_id},
+            )
             return {"ok": True}
         except Exception as e:
             return JSONResponse({"error": f"Reindex failed: {str(e)}"}, status_code=400)

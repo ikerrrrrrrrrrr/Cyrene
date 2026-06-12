@@ -265,7 +265,7 @@
   // ── main page ────────────────────────────────────────────────────────
   function WorkbenchMemoryPage(props) {
     var project = props && props.project;
-    var workspace = (project && project.id) || "default";
+    var workspace = (project && (project.dataKey || project.id)) || "default";
 
     var payloadState = useState(null); var payload = payloadState[0]; var setPayload = payloadState[1];
     var loadState = useState(true); var loading = loadState[0]; var setLoading = loadState[1];

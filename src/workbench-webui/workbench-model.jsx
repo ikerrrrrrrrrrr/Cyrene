@@ -54,12 +54,42 @@ var WorkbenchModel = (function () {
     }).then(normalizeStore);
   }
 
+  function updateProject(projectId, input) {
+    return apiJson("/api/projects/" + encodeURIComponent(projectId), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input || {}),
+    }).then(normalizeStore);
+  }
+
+  function deleteProject(projectId) {
+    return apiJson("/api/projects/" + encodeURIComponent(projectId), {
+      method: "DELETE",
+    }).then(normalizeStore);
+  }
+
   function createSession(projectId, input) {
     return apiJson("/api/projects/" + encodeURIComponent(projectId) + "/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input || {}),
     }).then(normalizeStore);
+  }
+
+  function fetchNotifications(tab, limit) {
+    var qs = "?tab=" + encodeURIComponent(tab || "all") + "&limit=" + encodeURIComponent(limit || 80);
+    return apiJson("/api/workbench/notifications" + qs);
+  }
+
+  function markNotificationsRead(ids, markAll) {
+    return apiJson("/api/workbench/notifications/read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ids: Array.isArray(ids) ? ids : [],
+        markAll: !!markAll,
+      }),
+    });
   }
 
   // Ask the agent to (re)generate the onboarding questions for a project's
@@ -109,6 +139,10 @@ var WorkbenchModel = (function () {
         attachments: options.attachments || [],
         mode: options.mode || undefined,
         command: options.command || undefined,
+        stepId: options.stepId || undefined,
+        stepTitle: options.stepTitle || undefined,
+        action: options.action || undefined,
+        meta: options.meta || undefined,
       }),
     };
     if (options.signal) init.signal = options.signal;
@@ -234,12 +268,50 @@ var WorkbenchModel = (function () {
     }
   }
 
+  function formatRelativeTime(value) {
+    if (!value) return "刚刚";
+    try {
+      var date = new Date(value);
+      var diff = Date.now() - date.getTime();
+      if (!Number.isFinite(diff)) return "刚刚";
+      var minute = 60 * 1000;
+      var hour = 60 * minute;
+      var day = 24 * hour;
+      if (diff < minute) return "刚刚";
+      if (diff < hour) return Math.max(1, Math.floor(diff / minute)) + " 分钟前";
+      if (diff < day) return Math.max(1, Math.floor(diff / hour)) + " 小时前";
+      if (diff < day * 2) return "昨天";
+      if (diff < day * 7) return Math.max(1, Math.floor(diff / day)) + " 天前";
+      return formatTime(value);
+    } catch (e) {
+      return "刚刚";
+    }
+  }
+
   function initials(name) {
     var source = String(name || "C").trim();
     if (!source) return "C";
     var parts = source.split(/\s+/).filter(Boolean);
     if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
     return source.slice(0, 1).toUpperCase();
+  }
+
+  function pathLabel(path, projectName) {
+    var raw = String(path || "").trim();
+    if (!raw) return "未设置工作区";
+    var home = "";
+    try {
+      home = (window.DATA && DATA.user && DATA.user.home) || "";
+    } catch (e) {}
+    if (home && raw.indexOf(home + "/") === 0) raw = "~" + raw.slice(home.length);
+    var parts = raw.split("/").filter(Boolean);
+    if (raw[0] === "~" && parts.length) parts[0] = "~";
+    var name = String(projectName || "").trim();
+    if (name && parts.length >= 2 && parts[parts.length - 1] === "workspace" && parts[parts.length - 2] === name) {
+      return name + "/workspace";
+    }
+    if (parts.length <= 3) return raw;
+    return "..." + parts.slice(-3).join("/");
   }
 
   // Stable per-project icon gradient derived from a seed (project id or name),
@@ -328,22 +400,41 @@ var WorkbenchModel = (function () {
     return events;
   }
 
+  // Stamp a step's lifecycle timing so the plan card can show 时间/时长:
+  // record startedAt on the running transition and a concrete durationSec
+  // (start → now) once it completes.
+  function applyStepTiming(step, status, nowIso) {
+    if (status === "running" && !step.startedAt) step.startedAt = nowIso;
+    if (status === "completed" || status === "done") {
+      if (!step.completedAt) step.completedAt = nowIso;
+      if (step.startedAt && step.durationSec == null) {
+        var sec = Math.round((Date.parse(nowIso) - Date.parse(step.startedAt)) / 1000);
+        if (sec >= 1) step.durationSec = sec;
+      }
+    }
+    return step;
+  }
+
   function markStep(plan, index, status, action) {
     if (!Array.isArray(plan)) return [];
+    var now = new Date().toISOString();
     return plan.map(function (step, i) {
       if (i !== index) return step;
-      return Object.assign({}, step, {
+      var next = Object.assign({}, step, {
         status: status,
         currentAction: action != null ? action : step.currentAction,
-        updatedAt: new Date().toISOString(),
+        updatedAt: now,
       });
+      return applyStepTiming(next, status, now);
     });
   }
 
   function markAllSteps(plan, status) {
     if (!Array.isArray(plan)) return [];
+    var now = new Date().toISOString();
     return plan.map(function (step) {
-      return Object.assign({}, step, { status: status, updatedAt: new Date().toISOString() });
+      var next = Object.assign({}, step, { status: status, updatedAt: now });
+      return applyStepTiming(next, status, now);
     });
   }
 
@@ -377,7 +468,11 @@ var WorkbenchModel = (function () {
     normalizeStore: normalizeStore,
     fetchProjects: fetchProjects,
     createProject: createProject,
+    updateProject: updateProject,
+    deleteProject: deleteProject,
     createSession: createSession,
+    fetchNotifications: fetchNotifications,
+    markNotificationsRead: markNotificationsRead,
     generateInitForm: generateInitForm,
     submitInit: submitInit,
     reviseInitPlan: reviseInitPlan,
@@ -391,7 +486,9 @@ var WorkbenchModel = (function () {
     statusTone: statusTone,
     eventLabel: eventLabel,
     formatTime: formatTime,
+    formatRelativeTime: formatRelativeTime,
     initials: initials,
+    pathLabel: pathLabel,
     projectGradient: projectGradient,
     shortId: shortId,
     buildPlanSteps: buildPlanSteps,

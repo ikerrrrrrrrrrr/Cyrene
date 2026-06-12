@@ -34,6 +34,7 @@ import aiosqlite
 from croniter import croniter
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from webui.workbench_notifications import append_notification
 
 # Max concrete occurrences expanded per recurring task per window. A calendar is
 # not meant to render a sub-minute cron across a month; we cap and move on.
@@ -44,6 +45,30 @@ _DEFAULT_EVENT_MINUTES = 30
 
 # Mirrors ``routes.py``'s ``_CHAT_ID`` — the web/local chat the task belongs to.
 _DEFAULT_CHAT_ID = -1
+
+
+def _safe_workspace_id(workspace_id: str | None) -> str:
+    raw = str(workspace_id or "").strip()
+    if not raw:
+        return "default"
+    import re
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+    return cleaned or "default"
+
+
+def _resolve_workspace_id(workspace_id: str | None) -> str:
+    wid = _safe_workspace_id(workspace_id)
+    try:
+        from webui import routes as R
+
+        payload = R._read_workbench_store()
+        project = R._workbench_find_project(payload, str(workspace_id or "").strip())
+        if project:
+            return R._workbench_project_data_key(project)
+    except Exception:
+        pass
+    return wid
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -227,19 +252,19 @@ def register_workbench_schedule_routes(router: APIRouter, db_path: str) -> None:
     from cyrene import db as cy_db
     from cyrene.schedule_spec import compute_next_run
 
-    async def _all_tasks() -> list[dict]:
-        return await cy_db.get_all_tasks(db_path)
+    async def _all_tasks(workspace: str = "default") -> list[dict]:
+        return await cy_db.get_all_tasks(db_path, project_id=_resolve_workspace_id(workspace))
 
     @router.get("/api/workbench/schedule/tasks")
-    async def wb_list_tasks():
+    async def wb_list_tasks(workspace: str = "default"):
         """Raw scheduled tasks (agent 定时任务) for the management/list view."""
         try:
-            return {"tasks": await _all_tasks()}
+            return {"tasks": await _all_tasks(workspace), "workspace": _resolve_workspace_id(workspace)}
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"error": f"List failed: {e}"}, status_code=400)
 
     @router.get("/api/workbench/schedule/occurrences")
-    async def wb_list_occurrences(start: str = "", end: str = ""):
+    async def wb_list_occurrences(start: str = "", end: str = "", workspace: str = "default"):
         """Expand tasks + entity deadlines into dated events within a window.
 
         ``start`` / ``end`` are ISO-8601 (any tz; naive treated as UTC). When
@@ -252,15 +277,17 @@ def register_workbench_schedule_routes(router: APIRouter, db_path: str) -> None:
             if end_dt < start_dt:
                 start_dt, end_dt = end_dt, start_dt
 
-            tasks = await _all_tasks()
+            resolved_workspace = _resolve_workspace_id(workspace)
+            tasks = await _all_tasks(resolved_workspace)
             events: list[dict] = []
             for task in tasks:
                 events.extend(_task_events(task, start_dt, end_dt))
 
             try:
                 from cyrene.entities import list_entities
-                entities = await list_entities(db_path, has_due_date=True, limit=500)
-                events.extend(_entity_events(entities, start_dt, end_dt))
+                if resolved_workspace == "default":
+                    entities = await list_entities(db_path, has_due_date=True, limit=500)
+                    events.extend(_entity_events(entities, start_dt, end_dt))
             except Exception:  # noqa: BLE001
                 # Entities are optional context; never fail the whole calendar
                 # because the entity store hiccuped.
@@ -271,12 +298,13 @@ def register_workbench_schedule_routes(router: APIRouter, db_path: str) -> None:
                 "events": events,
                 "start": start_dt.isoformat(),
                 "end": end_dt.isoformat(),
+                "workspace": resolved_workspace,
             }
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"error": f"Occurrences failed: {e}"}, status_code=400)
 
     @router.post("/api/workbench/schedule/tasks")
-    async def wb_create_task(request: Request):
+    async def wb_create_task(request: Request, workspace: str = "default"):
         """Create a scheduled task. Mirrors the REST policy: workspace_only only
         (full-access scheduled tasks must be created via the chat agent's
         ``schedule_task`` tool, which shows a confirmation dialog)."""
@@ -301,6 +329,7 @@ def register_workbench_schedule_routes(router: APIRouter, db_path: str) -> None:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
         try:
+            resolved_workspace = _resolve_workspace_id(workspace)
             task_id = await cy_db.create_task(
                 db_path,
                 chat_id=int(body.get("chat_id", _DEFAULT_CHAT_ID)),
@@ -309,13 +338,24 @@ def register_workbench_schedule_routes(router: APIRouter, db_path: str) -> None:
                 schedule_value=svalue,
                 next_run=next_run,
                 permission_mode="workspace_only",
+                project_id=resolved_workspace,
             )
-            return {"ok": True, "id": task_id, "tasks": await _all_tasks()}
+            append_notification(
+                title="日程提醒已创建",
+                body=f"已添加提醒：{prompt[:80]}",
+                tab="system",
+                project_ref=resolved_workspace,
+                source="schedule_created",
+                source_label="日程",
+                link_label="日程",
+                meta={"taskId": task_id},
+            )
+            return {"ok": True, "id": task_id, "tasks": await _all_tasks(resolved_workspace), "workspace": resolved_workspace}
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"error": f"Create failed: {e}"}, status_code=400)
 
     @router.put("/api/workbench/schedule/tasks/{task_id}")
-    async def wb_update_task(task_id: str, request: Request):
+    async def wb_update_task(task_id: str, request: Request, workspace: str = "default"):
         """Update a task's prompt / schedule / status. Recomputes ``next_run``
         when the schedule changes (an invalid schedule is a 400)."""
         try:
@@ -342,35 +382,57 @@ def register_workbench_schedule_routes(router: APIRouter, db_path: str) -> None:
             return JSONResponse({"error": "no updatable fields provided"}, status_code=400)
 
         try:
+            resolved_workspace = _resolve_workspace_id(workspace)
             async with aiosqlite.connect(db_path) as db:
                 await db.execute(
-                    f"UPDATE scheduled_tasks SET {', '.join(sets)} WHERE id = ?",
-                    (*vals, task_id),
+                    f"UPDATE scheduled_tasks SET {', '.join(sets)} WHERE id = ? AND COALESCE(project_id, 'default') = ?",
+                    (*vals, task_id, resolved_workspace),
                 )
                 await db.commit()
-            return {"ok": True, "tasks": await _all_tasks()}
+            append_notification(
+                title="日程提醒已更新",
+                body=f"提醒任务已更新：{str(body.get('prompt') or task_id)[:80]}",
+                tab="system",
+                project_ref=resolved_workspace,
+                source="schedule_updated",
+                source_label="日程",
+                link_label="日程",
+                meta={"taskId": task_id},
+            )
+            return {"ok": True, "tasks": await _all_tasks(resolved_workspace), "workspace": resolved_workspace}
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"error": f"Update failed: {e}"}, status_code=400)
 
     @router.delete("/api/workbench/schedule/tasks/{task_id}")
-    async def wb_delete_task(task_id: str):
+    async def wb_delete_task(task_id: str, workspace: str = "default"):
         try:
-            await cy_db.delete_task(db_path, task_id)
-            return {"ok": True, "tasks": await _all_tasks()}
+            resolved_workspace = _resolve_workspace_id(workspace)
+            async with aiosqlite.connect(db_path) as db:
+                cursor = await db.execute(
+                    "DELETE FROM scheduled_tasks WHERE id = ? AND COALESCE(project_id, 'default') = ?",
+                    (task_id, resolved_workspace),
+                )
+                await db.commit()
+            if cursor.rowcount <= 0:
+                return JSONResponse({"error": "task not found"}, status_code=404)
+            return {"ok": True, "tasks": await _all_tasks(resolved_workspace), "workspace": resolved_workspace}
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"error": f"Delete failed: {e}"}, status_code=400)
 
     @router.get("/api/workbench/schedule/tasks/{task_id}/runs")
-    async def wb_task_runs(task_id: str, limit: int = 20):
+    async def wb_task_runs(task_id: str, limit: int = 20, workspace: str = "default"):
         """Recent run history for a task (from ``task_run_logs``)."""
         try:
             limit = max(1, min(int(limit), 100))
+            resolved_workspace = _resolve_workspace_id(workspace)
             async with aiosqlite.connect(db_path) as db:
                 db.row_factory = aiosqlite.Row
                 cursor = await db.execute(
-                    "SELECT id, task_id, run_at, duration_ms, status, result, error "
-                    "FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC LIMIT ?",
-                    (task_id, limit),
+                    "SELECT l.id, l.task_id, l.run_at, l.duration_ms, l.status, l.result, l.error "
+                    "FROM task_run_logs l JOIN scheduled_tasks t ON t.id = l.task_id "
+                    "WHERE l.task_id = ? AND COALESCE(t.project_id, 'default') = ? "
+                    "ORDER BY l.run_at DESC LIMIT ?",
+                    (task_id, resolved_workspace, limit),
                 )
                 rows = await cursor.fetchall()
             return {"runs": [dict(r) for r in rows]}

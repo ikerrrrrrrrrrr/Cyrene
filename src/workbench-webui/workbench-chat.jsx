@@ -92,6 +92,7 @@ var WorkbenchChatModel = (function () {
         attachments: input.attachments || [],
         mode: input.mode || "auto",
         command: input.command || "",
+        retry: !!input.retry,
         stream: true,
       }),
       signal: signal,
@@ -191,9 +192,31 @@ function wbcCompactNumber(value) {
   return String(num);
 }
 
+function wbcT(key, fallback, params) {
+  if (typeof window.t === "function") {
+    var value = window.t(key, params);
+    if (value && value !== key) return value;
+  }
+  if (params && fallback) {
+    Object.keys(params).forEach(function (name) {
+      fallback = fallback.split("{" + name + "}").join(String(params[name]));
+    });
+  }
+  return fallback || key;
+}
+
+function wbcErrorText(err) {
+  var raw = String((err && err.message) || err || "").trim();
+  if (!raw || raw === "Load failed" || raw === "Failed to fetch" || raw === "NetworkError when attempting to fetch resource.") {
+    return wbcT("workbenchChat.error.loadFailed", "Load failed");
+  }
+  return raw;
+}
+
 var WBC_ICONS = {
   plus: <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>,
   search: <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>,
+  alert: <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 4 2.5 18a1.5 1.5 0 0 0 1.3 2.3h16.4a1.5 1.5 0 0 0 1.3-2.3L13.7 4a1.5 1.5 0 0 0-3.4 0Z"/><path d="M12 9v4.5M12 17h.01"/></svg>,
   edit: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>,
   dots: <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></svg>,
   play: <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M7 4.8c0-1 1.1-1.6 2-1.1l11 6.3c.9.5.9 1.8 0 2.3L9 18.6c-.9.5-2-.1-2-1.1Z"/></svg>,
@@ -203,6 +226,7 @@ var WBC_ICONS = {
   slash: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7.5 9.5 2.5 2.5-2.5 2.5"/><path d="M12.5 15h4"/></svg>,
   bolt: <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>,
   copy: <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>,
+  retry: <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.3"/><path d="M3 4v4h4"/></svg>,
   check: <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12.5 4.5 4.5L19 7"/></svg>,
   x: <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 6 12 12M18 6 6 18"/></svg>,
   tool: <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3Z"/></svg>,
@@ -341,7 +365,7 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
         setChats(list);
         setActiveChatId(list[0] ? list[0].id : "");
       })
-      .catch(function (err) { setError(err.message || String(err)); })
+      .catch(function (err) { setError(wbcErrorText(err)); })
       .finally(function () { setLoading(false); });
   }, [projectId]);
 
@@ -351,7 +375,7 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
     var cancelled = false;
     model.getChat(activeChatId)
       .then(function (chat) { if (!cancelled) setActiveChat(chat); })
-      .catch(function (err) { if (!cancelled) setError(err.message || String(err)); });
+      .catch(function (err) { if (!cancelled) setError(wbcErrorText(err)); });
     return function () { cancelled = true; };
   }, [activeChatId]);
 
@@ -403,6 +427,27 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
     });
   }
 
+  function retryLoad() {
+    if (!projectId) return;
+    setError("");
+    setLoading(true);
+    refreshChats(activeChatId)
+      .then(function (list) {
+        var chatId = activeChatId || (list[0] && list[0].id) || "";
+        if (!chatId) {
+          setActiveChat(null);
+          return null;
+        }
+        return model.getChat(chatId).then(function (chat) {
+          setActiveChat(chat);
+          setActiveChatId(chat.id);
+          return chat;
+        });
+      })
+      .catch(function (err) { setError(wbcErrorText(err)); })
+      .finally(function () { setLoading(false); });
+  }
+
   function handleSend(input) {
     setError("");
     return ensureChat().then(function (chatId) {
@@ -411,6 +456,22 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
       syncRuntime({ chatId: chatId, text: "", progress: [], startedAt: Date.now(), replying: false });
       return model.sendMessage(chatId, input, {
         onAck: function (event) {
+          if (event.retry) {
+            // Regenerating: drop the previous reply (everything after the
+            // replayed user message) from the local transcript.
+            var afterId = String(event.truncateAfterMessageId || "");
+            setActiveChat(function (prev) {
+              if (!prev || prev.id !== chatId) return prev;
+              var list = prev.messages || [];
+              var cut = -1;
+              for (var i = 0; i < list.length; i++) {
+                if (String(list[i].id) === afterId) { cut = i; break; }
+              }
+              if (cut < 0) return prev;
+              return { ...prev, messages: list.slice(0, cut + 1) };
+            });
+            return;
+          }
           if (!event.userMessage) return;
           setActiveChat(function (prev) {
             if (!prev || prev.id !== chatId) return prev;
@@ -441,12 +502,12 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
           refreshChats(chatId);
         },
         onError: function (err) {
-          setError(err.message || String(err));
+          setError(wbcErrorText(err));
           syncRuntime(null);
         },
       }, ac ? ac.signal : undefined).catch(function (err) {
         if (err && err.name === "AbortError") return;
-        setError(err.message || String(err));
+        setError(wbcErrorText(err));
       }).finally(function () {
         abortRef.current = null;
         var current = runtimeRef.current;
@@ -458,7 +519,7 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
         }
       });
     }).catch(function (err) {
-      setError(err.message || String(err));
+      setError(wbcErrorText(err));
     });
   }
 
@@ -468,12 +529,18 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
     if (abortRef.current) { try { abortRef.current.abort(); } catch (e) {} }
   }
 
+  // Regenerate the last assistant reply (replays the last user message).
+  function handleRetryMessage() {
+    if (!activeChat || activeChat.legacy || runtimeRef.current) return;
+    handleSend({ retry: true });
+  }
+
   function handleCreateChat() {
     model.createChat(projectId).then(function (chat) {
       setChats(function (prev) { return [chat].concat(prev); });
       setActiveChatId(chat.id);
       setActiveChat(chat);
-    }).catch(function (err) { setError(err.message || String(err)); });
+    }).catch(function (err) { setError(wbcErrorText(err)); });
   }
 
   function handleRename(title) {
@@ -488,7 +555,7 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
 
   function handleDelete() {
     if (!activeChat) return;
-    if (!window.confirm("确定删除这个对话吗？对话内容将无法恢复。")) return;
+    if (!window.confirm(wbcT("workbenchChat.confirmDelete", "Delete this chat? Its messages cannot be recovered."))) return;
     var doomedId = activeChat.id;
     model.deleteChat(doomedId).then(function () {
       setActiveChat(null);
@@ -497,14 +564,14 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
         setActiveChatId(next[0] ? next[0].id : "");
         return next;
       });
-    }).catch(function (err) { setError(err.message || String(err)); });
+    }).catch(function (err) { setError(wbcErrorText(err)); });
   }
 
   function handleToTask() {
     if (!activeChat) return;
     model.toTask(activeChat.id).then(function (payload) {
       if (onOpenTask) onOpenTask(payload);
-    }).catch(function (err) { setError(err.message || String(err)); });
+    }).catch(function (err) { setError(wbcErrorText(err)); });
   }
 
   var running = !!runtime;
@@ -524,9 +591,11 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
         chat={activeChat}
         runtime={runtime}
         error={error}
+        onRetry={retryLoad}
         running={running}
         onSend={handleSend}
         onInterrupt={handleInterrupt}
+        onRetryMessage={handleRetryMessage}
         onRename={handleRename}
         onDelete={handleDelete}
         onToTask={handleToTask}
@@ -566,10 +635,10 @@ function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCrea
   return (
     <aside className="wbc-rail">
       <div className="workbench-rail-head">
-        <span>对话</span>
+        <span>{wbcT("workbenchChat.railTitle", "Chats")}</span>
         <button type="button" className="workbench-add-btn" onClick={onCreate}>
           <span>{WBC_ICONS.plus}</span>
-          <span>新建对话</span>
+          <span>{wbcT("workbenchChat.newChat", "New chat")}</span>
         </button>
       </div>
       <div className="wbc-search">
@@ -577,12 +646,12 @@ function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCrea
         <input
           value={query}
           onChange={function (e) { setQuery(e.target.value); }}
-          placeholder="搜索对话..."
+          placeholder={wbcT("workbenchChat.search", "Search chats...")}
         />
       </div>
-      {loading && <div className="workbench-muted">加载对话中...</div>}
+      {loading && <div className="workbench-muted">{wbcT("workbenchChat.loading", "Loading chats...")}</div>}
       {!loading && filtered.length === 0 && (
-        <div className="workbench-muted">{query ? "没有匹配的对话" : "暂无对话，点击右上角新建"}</div>
+        <div className="workbench-muted">{query ? wbcT("workbenchChat.noMatches", "No matching chats.") : wbcT("workbenchChat.emptyRail", "No chats yet. Create one from the top right.")}</div>
       )}
       <div className="wbc-chat-list">
         {filtered.map(function (chat) {
@@ -596,12 +665,12 @@ function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCrea
               onClick={function () { onSelect(chat.id); }}
             >
               <span className="wbc-chat-card-top">
-                <b>{chat.title || "新对话"}</b>
+                <b>{chat.title || wbcT("workbenchChat.newChat", "New chat")}</b>
                 <time>{wbcFormatTime(chat.updatedAt || chat.createdAt)}</time>
               </span>
               <span className="wbc-chat-card-preview">
                 {chatRunning ? <i className="wbc-running-dot" /> : null}
-                {chat.preview || "还没有消息"}
+                {chat.preview || wbcT("workbenchChat.noMessages", "No messages yet")}
               </span>
             </button>
           );
@@ -615,10 +684,15 @@ function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCrea
 // Conversation main (column 3)
 // ---------------------------------------------------------------------------
 
-function WbcMain({ project, chat, runtime, error, running, onSend, onInterrupt, onRename, onDelete, onToTask, onOpenFile }) {
+function WbcMain({ project, chat, runtime, error, onRetry, running, onSend, onInterrupt, onRetryMessage, onRename, onDelete, onToTask, onOpenFile }) {
   var scrollRef = useWbcRef(null);
   var stickRef = useWbcRef(true);
   var messages = chat && Array.isArray(chat.messages) ? chat.messages : [];
+  var isLegacy = !!(chat && chat.legacy);
+  var lastAssistantId = "";
+  for (var mi = messages.length - 1; mi >= 0; mi--) {
+    if (messages[mi].role !== "user") { lastAssistantId = String(messages[mi].id || ""); break; }
+  }
 
   // Track whether the user is reading scrollback; only auto-stick near bottom.
   function onScroll() {
@@ -639,7 +713,7 @@ function WbcMain({ project, chat, runtime, error, running, onSend, onInterrupt, 
   }, [chat && chat.id]);
 
   if (!project) {
-    return <main className="wbc-main"><div className="workbench-empty">请先选择一个项目。</div></main>;
+    return <main className="wbc-main"><div className="workbench-empty">{wbcT("workbenchChat.noProject", "Select a project first.")}</div></main>;
   }
 
   return (
@@ -656,24 +730,25 @@ function WbcMain({ project, chat, runtime, error, running, onSend, onInterrupt, 
       ) : (
         <div className="wbc-header">
           <div className="wbc-header-info">
-            <h1>新对话</h1>
+            <h1>{wbcT("workbenchChat.newChat", "New chat")}</h1>
             <div className="wbc-header-meta"><span>{project.name}</span></div>
           </div>
         </div>
       )}
-      {error && <div className="workbench-error">{error}</div>}
+      {error && <WbcErrorNotice message={error} onRetry={onRetry} />}
       <div className="wbc-thread" ref={scrollRef} onScroll={onScroll}>
         {messages.length === 0 && !runtime && (
           <div className="wbc-empty-thread">
             <div className="wbc-empty-icon">{WBC_ICONS.chat}</div>
-            <b>开始一段新对话</b>
-            <p>对话与当前工作区绑定，Agent 可以读取项目上下文。需要执行的工作可以随时「转为任务」。</p>
+            <b>{wbcT("workbenchChat.emptyTitle", "Start a new chat")}</b>
+            <p>{wbcT("workbenchChat.emptyBody", "Chats are bound to the current workspace. The agent can read project context, and work can be converted into a task when needed.")}</p>
           </div>
         )}
         {messages.map(function (msg) {
+          var canRetry = !isLegacy && !running && String(msg.id || "") === lastAssistantId;
           return msg.role === "user"
             ? <WbcUserMessage key={msg.id} msg={msg} onOpenFile={onOpenFile} />
-            : <WbcAssistantMessage key={msg.id} msg={msg} onOpenFile={onOpenFile} />;
+            : <WbcAssistantMessage key={msg.id} msg={msg} onOpenFile={onOpenFile} onRetryMessage={canRetry ? onRetryMessage : null} />;
         })}
         {runtime && <WbcLiveMessage runtime={runtime} />}
       </div>
@@ -685,6 +760,29 @@ function WbcMain({ project, chat, runtime, error, running, onSend, onInterrupt, 
         onInterrupt={onInterrupt}
       />
     </main>
+  );
+}
+
+function WbcErrorNotice({ message, onRetry }) {
+  var title = wbcT("workbenchChat.error.title", "Could not load this chat");
+  var detail = String(message || "").trim() || wbcT("workbenchChat.error.loadFailed", "Load failed");
+  var generic = wbcT("workbenchChat.error.loadFailed", "Load failed");
+  var body = detail === generic
+    ? wbcT("workbenchChat.error.body", "The conversation data did not load. Check the local service and try again.")
+    : detail;
+  return (
+    <div className="workbench-error wbc-error-card" role="alert">
+      <span className="wbc-error-icon">{WBC_ICONS.alert}</span>
+      <span className="wbc-error-copy">
+        <b>{title}</b>
+        <small>{body}</small>
+      </span>
+      {onRetry && (
+        <button type="button" className="wbc-error-retry" onClick={onRetry}>
+          {wbcT("workbenchChat.error.retry", "Retry")}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -714,7 +812,10 @@ function WbcHeader({ project, chat, running, onRename, onDelete, onToTask }) {
     });
   }
 
-  var statusText = running ? "回复中" : "空闲";
+  var isLegacy = !!chat.legacy;
+  var statusText = isLegacy
+    ? wbcT("workbenchChat.status.archived", "Archived")
+    : running ? wbcT("workbenchChat.status.replying", "Replying") : wbcT("workbenchChat.status.idle", "Idle");
 
   return (
     <div className="wbc-header">
@@ -731,12 +832,12 @@ function WbcHeader({ project, chat, running, onRename, onDelete, onToTask }) {
                 if (e.key === "Enter") commitTitle();
                 if (e.key === "Escape") { setDraft(chat.title || ""); setEditing(false); }
               }}
-              aria-label="对话标题"
+              aria-label={wbcT("workbenchChat.titleLabel", "Chat title")}
             />
           ) : (
-            <h1 title={chat.title}>{chat.title || "新对话"}</h1>
+            <h1 title={chat.title}>{chat.title || wbcT("workbenchChat.newChat", "New chat")}</h1>
           )}
-          {!editing && (
+          {!editing && !isLegacy && (
             <button type="button" className="wbc-icon-btn" title="重命名" onClick={function () { setEditing(true); }}>
               {WBC_ICONS.edit}
             </button>
@@ -749,24 +850,28 @@ function WbcHeader({ project, chat, running, onRename, onDelete, onToTask }) {
         </div>
       </div>
       <div className="wbc-header-actions">
-        <button type="button" className="wb-btn primary wbc-totask" disabled={running} onClick={onToTask} title="基于这个对话创建任务">
-          {WBC_ICONS.play}<span>转为任务</span>
-        </button>
-        <div className="wbc-menu-wrap">
-          <button type="button" className="wbc-icon-btn" title="更多" onClick={function () { setMenuOpen(!menuOpen); }}>
-            {WBC_ICONS.dots}
+        {!isLegacy && (
+          <button type="button" className="wb-btn primary wbc-totask" disabled={running} onClick={onToTask} title={wbcT("workbenchChat.toTaskTitle", "Create a task from this chat")}>
+            {WBC_ICONS.play}<span>{wbcT("workbenchChat.toTask", "Convert to task")}</span>
           </button>
-          {menuOpen && (
-            <>
-              <div className="wbc-menu-scrim" onClick={function () { setMenuOpen(false); }}></div>
-              <div className="wbc-menu">
-                <button type="button" onClick={function () { setMenuOpen(false); setEditing(true); }}>重命名对话</button>
-                <button type="button" onClick={function () { setMenuOpen(false); onToTask(); }}>转为任务</button>
-                <button type="button" className="danger" onClick={function () { setMenuOpen(false); onDelete(); }}>删除对话</button>
-              </div>
-            </>
-          )}
-        </div>
+        )}
+        {!isLegacy && (
+          <div className="wbc-menu-wrap">
+            <button type="button" className="wbc-icon-btn" title="更多" onClick={function () { setMenuOpen(!menuOpen); }}>
+              {WBC_ICONS.dots}
+            </button>
+            {menuOpen && (
+              <>
+                <div className="wbc-menu-scrim" onClick={function () { setMenuOpen(false); }}></div>
+                <div className="wbc-menu">
+                  <button type="button" onClick={function () { setMenuOpen(false); setEditing(true); }}>{wbcT("workbenchChat.rename", "Rename chat")}</button>
+                  <button type="button" onClick={function () { setMenuOpen(false); onToTask(); }}>{wbcT("workbenchChat.toTask", "Convert to task")}</button>
+                  <button type="button" className="danger" onClick={function () { setMenuOpen(false); onDelete(); }}>{wbcT("workbenchChat.delete", "Delete chat")}</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -851,7 +956,7 @@ function WbcTraceCard({ trace, live, label }) {
   );
 }
 
-function WbcAssistantMessage({ msg, onOpenFile }) {
+function WbcAssistantMessage({ msg, onOpenFile, onRetryMessage }) {
   var [copied, setCopied] = useWbcState(false);
   function copyText() {
     try {
@@ -867,9 +972,14 @@ function WbcAssistantMessage({ msg, onOpenFile }) {
       <div className="wbc-msg-body markdown" dangerouslySetInnerHTML={{ __html: wbcRenderMarkdown(msg.content) }} />
       <WbcAgentFiles files={msg.attachments} onOpenFile={onOpenFile} />
       <div className="wbc-msg-foot">
-        <button type="button" className="wbc-msg-action" onClick={copyText} title="复制">
+        <button type="button" className="wbc-msg-action" onClick={copyText} title={wbcT("workbenchChat.copy", "Copy")}>
           {copied ? WBC_ICONS.check : WBC_ICONS.copy}
         </button>
+        {onRetryMessage && (
+          <button type="button" className="wbc-msg-action" onClick={onRetryMessage} title={wbcT("workbenchChat.regenerate", "Regenerate")}>
+            {WBC_ICONS.retry}
+          </button>
+        )}
         <time>{wbcFormatTime(msg.createdAt)}</time>
         {msg.usage && msg.usage.total_tokens ? <small>{wbcCompactNumber(msg.usage.total_tokens)} tokens</small> : null}
       </div>
@@ -923,7 +1033,7 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
     setCommand("");
     setSlashOpen(false);
     setModeOpen(false);
-  }, [chatId]);
+      }, [chatId]);
 
   useWbcEffect(function () {
     var cancelled = false;
@@ -968,7 +1078,7 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
     setUploading(true);
     model.uploadFiles(files)
       .then(function (uploaded) { setAttachments(function (prev) { return prev.concat(uploaded); }); })
-      .catch(function (err) { window.alert("上传失败：" + (err.message || String(err))); })
+      .catch(function (err) { window.alert(wbcT("workbenchChat.uploadFailed", "Upload failed: {error}", { error: wbcErrorText(err) })); })
       .finally(function () { setUploading(false); if (fileRef.current) fileRef.current.value = ""; });
   }
 
@@ -983,6 +1093,17 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
   var soulOn = !contextState || contextState.soul_active !== false;
   var modelName = (chat && chat.model) || (project && project.model) || "";
   var sendDisabled = running ? false : (!draft.trim() && attachments.length === 0);
+  var isLegacy = !!(chat && chat.legacy);
+
+  if (isLegacy) {
+    return (
+      <div className="wbc-composer">
+        <div className="wbc-composer-box wbc-composer-readonly">
+          {wbcT("workbenchChat.legacyReadonly", "This is an archived legacy session — read-only. Start a new chat to continue the topic.")}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="wbc-composer">
@@ -991,7 +1112,7 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
           <span className="wbc-command-chip">
             {WBC_ICONS.slash}
             {activeCommand.label}
-            <button type="button" onClick={function () { setCommand(""); }} aria-label="移除命令">{WBC_ICONS.x}</button>
+            <button type="button" onClick={function () { setCommand(""); }} aria-label={wbcT("workbenchChat.removeCommand", "Remove command")}>{WBC_ICONS.x}</button>
           </span>
         </div>
       )}
@@ -1007,7 +1128,7 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
                     : <span className="wbc-attach-name" title={file.name}>{file.name || "file"}</span>}
                   <button type="button" className="wbc-attach-x" onClick={function () {
                     setAttachments(attachments.filter(function (_f, idx) { return idx !== i; }));
-                  }} aria-label="移除附件">{WBC_ICONS.x}</button>
+                  }} aria-label={wbcT("workbenchChat.removeAttachment", "Remove attachment")}>{WBC_ICONS.x}</button>
                 </div>
               );
             })}
@@ -1020,19 +1141,19 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
           disabled={running}
           onChange={function (e) { setDraft(e.target.value); syncHeight(); }}
           onKeyDown={onKeyDown}
-          placeholder={running ? "Agent 正在回复，可点击停止…" : "给 Cyrene 发送消息...（Enter 发送、Shift+Enter 换行）"}
+          placeholder={running ? wbcT("workbenchChat.placeholderRunning", "The agent is replying. Click stop to interrupt...") : wbcT("workbenchChat.placeholder", "Message Cyrene... (Enter to send, Shift+Enter for a new line)")}
         />
         <div className="wbc-context-chips">
-          <span className="wbc-ctx-chip" title={soulOn ? "人格上下文已启用" : "人格上下文已关闭"}>
-            {WBC_ICONS.spark}<span>人格{soulOn ? "" : "：关"}</span>
+          <span className="wbc-ctx-chip" title={soulOn ? wbcT("workbenchChat.personaOnTitle", "Persona context is on") : wbcT("workbenchChat.personaOffTitle", "Persona context is off")}>
+            {WBC_ICONS.spark}<span>{soulOn ? wbcT("workbenchChat.persona", "Persona") : wbcT("workbenchChat.personaOff", "Persona: off")}</span>
           </span>
           <span className="wbc-ctx-chip" title={project && project.workspacePath}>
-            {WBC_ICONS.folder}<span>工作路径: {workspaceTail}</span>
+            {WBC_ICONS.folder}<span>{wbcT("workbenchChat.workspaceChip", "Workspace: {name}", { name: workspaceTail })}</span>
           </span>
         </div>
         <div className="wbc-composer-actions">
           <input ref={fileRef} type="file" multiple style={{ display: "none" }} onChange={onFilePick} />
-          <button type="button" className="wbc-composer-icon" title={uploading ? "上传中…" : "添加附件"} disabled={uploading || running} onClick={pickFiles}>
+          <button type="button" className="wbc-composer-icon" title={uploading ? wbcT("workbenchChat.uploading", "Uploading...") : wbcT("workbenchChat.addAttachment", "Add attachment")} disabled={uploading || running} onClick={pickFiles}>
             {uploading ? <span className="wb-spinner small" /> : WBC_ICONS.attach}
           </button>
           <span className="wbc-pop-anchor">
@@ -1041,7 +1162,7 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
             </button>
             {showSlash && (
               <div className="wbc-popmenu">
-                <div className="wbc-popmenu-head">命令</div>
+                <div className="wbc-popmenu-head">{wbcT("workbenchChat.commands", "Commands")}</div>
                 {slashItems.map(function (c) {
                   var on = command === c.id;
                   return (
@@ -1061,13 +1182,13 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
             )}
           </span>
           <span className="wbc-pop-anchor">
-            <button type="button" className={"wbc-composer-icon mode" + (modeOpen ? " active" : "")} title="权限模式" onClick={function () { setModeOpen(!modeOpen); setSlashOpen(false); }}>
+            <button type="button" className={"wbc-composer-icon mode" + (modeOpen ? " active" : "")} title={wbcT("workbenchChat.permissionMode", "Permission mode")} onClick={function () { setModeOpen(!modeOpen); setSlashOpen(false); }}>
               {WBC_ICONS.bolt}
               <span>{currentMode.label}</span>
             </button>
             {modeOpen && (
               <div className="wbc-popmenu">
-                <div className="wbc-popmenu-head">权限模式</div>
+                <div className="wbc-popmenu-head">{wbcT("workbenchChat.permissionMode", "Permission mode")}</div>
                 {WBC_MODES.map(function (m) {
                   var on = mode === m.id;
                   return (
@@ -1082,20 +1203,20 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
             )}
           </span>
           <span className="wbc-composer-spacer" />
-          {modelName ? <span className="wbc-model-label" title="当前模型">{modelName}</span> : null}
+          {modelName ? <span className="wbc-model-label" title={wbcT("workbenchChat.currentModel", "Current model")}>{modelName}</span> : null}
           <button
             type="button"
             className={"wbc-send" + (running ? " stop" : "")}
             onClick={submit}
             disabled={sendDisabled}
-            title={running ? "停止" : "发送"}
+            title={running ? wbcT("workbenchChat.stop", "Stop") : wbcT("workbenchChat.send", "Send")}
           >
             {running ? WBC_ICONS.stop : WBC_ICONS.send}
-            <span>{running ? "停止" : "发送"}</span>
+            <span>{running ? wbcT("workbenchChat.stop", "Stop") : wbcT("workbenchChat.send", "Send")}</span>
           </button>
         </div>
       </div>
-      <div className="wb-composer-disclaimer">内容由 AI 生成，请仔细甄别。</div>
+      <div className="wb-composer-disclaimer">{wbcT("workbench.composerDisclaimer", "Cyrene is AI and can make mistakes. Please verify responses.")}</div>
     </div>
   );
 }
@@ -1250,22 +1371,68 @@ function WbcViewerTab({ file }) {
 
 // ---- side map (pin_location / connect_pins 结果) ----------------------------
 
+// WGS-84 → GCJ-02 (火星坐标) — AMap tiles use GCJ-02, so raw WGS pins must be
+// shifted or they land ~500m off. Same math as the legacy map view.
+function wbcWgs84ToGcj02(wgsLat, wgsLng) {
+  if (wgsLng < 72.004 || wgsLng > 137.8347 || wgsLat < 0.8293 || wgsLat > 55.8271) return [wgsLat, wgsLng];
+  var pi = 3.1415926535897932384626, a = 6378245.0, ee = 0.00669342162296594323;
+  function tLat(x, y) {
+    var r = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    r += (20.0 * Math.sin(6.0 * x * pi) + 20.0 * Math.sin(2.0 * x * pi)) * 2.0 / 3.0;
+    r += (20.0 * Math.sin(y * pi) + 40.0 * Math.sin(y / 3.0 * pi)) * 2.0 / 3.0;
+    r += (160.0 * Math.sin(y / 12.0 * pi) + 320.0 * Math.sin(y * pi / 30.0)) * 2.0 / 3.0;
+    return r;
+  }
+  function tLng(x, y) {
+    var r = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    r += (20.0 * Math.sin(6.0 * x * pi) + 20.0 * Math.sin(2.0 * x * pi)) * 2.0 / 3.0;
+    r += (20.0 * Math.sin(x * pi) + 40.0 * Math.sin(x / 3.0 * pi)) * 2.0 / 3.0;
+    r += (150.0 * Math.sin(x / 12.0 * pi) + 300.0 * Math.sin(x / 30.0 * pi)) * 2.0 / 3.0;
+    return r;
+  }
+  var dlat = tLat(wgsLng - 105.0, wgsLat - 35.0);
+  var dlng = tLng(wgsLng - 105.0, wgsLat - 35.0);
+  var radlat = wgsLat / 180.0 * pi;
+  var magic = Math.sin(radlat);
+  magic = 1 - ee * magic * magic;
+  var sqrtmagic = Math.sqrt(magic);
+  dlat = (dlat * 180.0) / ((a * (1 - ee)) / (magic * sqrtmagic) * pi);
+  dlng = (dlng * 180.0) / (a / sqrtmagic * Math.cos(radlat) * pi);
+  return [wgsLat + dlat, wgsLng + dlng];
+}
+
+// Same provider setting as the legacy map ("direct" = CARTO, "amap" = 高德).
+function wbcMapProvider() {
+  try { return localStorage.getItem("cyrene-tweak-map-provider") || "direct"; } catch (e) { return "direct"; }
+}
+
+function wbcTileConfig(provider) {
+  var isDark = document.documentElement.dataset.theme === "dark";
+  if (provider === "amap") {
+    return {
+      url: "https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=" + (isDark ? 8 : 7) + "&x={x}&y={y}&z={z}",
+      options: {},
+    };
+  }
+  return {
+    url: "https://{s}.basemaps.cartocdn.com/" + (isDark ? "dark_all" : "light_all") + "/{z}/{x}/{y}{r}.png",
+    options: { subdomains: "abcd" },
+  };
+}
+
 function WbcMapTab({ chatId }) {
   var holderRef = useWbcRef(null);
   var mapRef = useWbcRef(null);
   var layerRef = useWbcRef(null);
-  var [empty, setEmpty] = useWbcState(false);
+  var tileRef = useWbcRef(null);
+  var switchedRef = useWbcRef(false);
+  var [provider, setProvider] = useWbcState(wbcMapProvider());
+  var [data, setData] = useWbcState(null);
 
   useWbcEffect(function () {
     if (!window.L || !holderRef.current || mapRef.current) return;
     var L = window.L;
-    var isDark = document.documentElement.dataset.theme === "dark";
-    var isZh = String(navigator.language || "").toLowerCase().indexOf("zh") === 0;
-    var tileUrl = isZh
-      ? ("https://webrd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=" + (isDark ? 8 : 7) + "&x={x}&y={y}&z={z}")
-      : ("https://{s}.basemaps.cartocdn.com/" + (isDark ? "dark_all" : "light_all") + "/{z}/{x}/{y}{r}.png");
     var map = L.map(holderRef.current, { zoomControl: true, attributionControl: false }).setView([35, 105], 4);
-    L.tileLayer(tileUrl, { subdomains: isZh ? [] : "abcd" }).addTo(map);
     mapRef.current = map;
     layerRef.current = L.layerGroup().addTo(map);
     setTimeout(function () { try { map.invalidateSize(); } catch (e) {} }, 100);
@@ -1273,53 +1440,83 @@ function WbcMapTab({ chatId }) {
       try { map.remove(); } catch (e) {}
       mapRef.current = null;
       layerRef.current = null;
+      tileRef.current = null;
     };
   }, []);
+
+  // (Re)mount the tile layer per provider; on repeated tile failures fall back
+  // to the other provider once (e.g. CARTO unreachable → 高德, and vice versa).
+  useWbcEffect(function () {
+    var map = mapRef.current;
+    if (!map || !window.L) return;
+    var L = window.L;
+    if (tileRef.current) { try { map.removeLayer(tileRef.current); } catch (e) {} }
+    var config = wbcTileConfig(provider);
+    var errors = 0;
+    var tiles = L.tileLayer(config.url, config.options);
+    tiles.on("tileerror", function () {
+      errors += 1;
+      if (errors >= 3 && !switchedRef.current) {
+        switchedRef.current = true;
+        setProvider(provider === "amap" ? "direct" : "amap");
+      }
+    });
+    tiles.addTo(map);
+    tileRef.current = tiles;
+  }, [provider]);
 
   useWbcEffect(function () {
     if (!chatId) return;
     var cancelled = false;
     fetch("/api/map/pins?session_id=" + encodeURIComponent(chatId))
       .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (cancelled || !mapRef.current || !layerRef.current || !window.L) return;
-        var L = window.L;
-        var layer = layerRef.current;
-        layer.clearLayers();
-        var pins = Array.isArray(data.pins) ? data.pins : [];
-        var routes = Array.isArray(data.routes) ? data.routes : [];
-        setEmpty(pins.length === 0);
-        var byName = {};
-        var latlngs = [];
-        pins.forEach(function (pin) {
-          var lat = Number(pin.lat), lng = Number(pin.lng);
-          if (!isFinite(lat) || !isFinite(lng)) return;
-          byName[String(pin.name || "")] = [lat, lng];
-          latlngs.push([lat, lng]);
-          var marker = L.marker([lat, lng]).addTo(layer);
-          var note = String(pin.note || "").trim();
-          marker.bindPopup("<b>" + String(pin.name || "") + "</b>" + (note ? "<br/>" + note.replace(/</g, "&lt;") : ""));
-        });
-        routes.forEach(function (route) {
-          var from = byName[String(route.from_name || route.from || "")];
-          var to = byName[String(route.to_name || route.to || "")];
-          if (!from || !to) return;
-          var line = L.polyline([from, to], { color: "#1f9d57", weight: 3, opacity: 0.8, dashArray: "6 6" }).addTo(layer);
-          var label = [route.transport, route.route_note].filter(Boolean).join(" · ");
-          if (label) line.bindPopup(String(label).replace(/</g, "&lt;"));
-        });
-        if (latlngs.length) {
-          try { mapRef.current.fitBounds(latlngs, { padding: [28, 28], maxZoom: 12 }); } catch (e) {}
-        }
-      })
-      .catch(function () {});
+      .then(function (payload) { if (!cancelled) setData(payload || {}); })
+      .catch(function () { if (!cancelled) setData({}); });
     return function () { cancelled = true; };
   }, [chatId]);
+
+  // Render pins + routes; AMap needs GCJ-02 coordinates.
+  useWbcEffect(function () {
+    var layer = layerRef.current;
+    if (!layer || !window.L || !data) return;
+    var L = window.L;
+    layer.clearLayers();
+    var pins = Array.isArray(data.pins) ? data.pins : [];
+    var routes = Array.isArray(data.routes) ? data.routes : [];
+    var convert = provider === "amap"
+      ? function (lat, lng) { return wbcWgs84ToGcj02(lat, lng); }
+      : function (lat, lng) { return [lat, lng]; };
+    var byName = {};
+    var latlngs = [];
+    pins.forEach(function (pin) {
+      var lat = Number(pin.lat), lng = Number(pin.lng);
+      if (!isFinite(lat) || !isFinite(lng)) return;
+      var pos = convert(lat, lng);
+      byName[String(pin.name || "")] = pos;
+      latlngs.push(pos);
+      var marker = L.marker(pos).addTo(layer);
+      var note = String(pin.note || "").trim();
+      marker.bindPopup("<b>" + String(pin.name || "").replace(/</g, "&lt;") + "</b>" + (note ? "<br/>" + note.replace(/</g, "&lt;") : ""));
+    });
+    routes.forEach(function (route) {
+      var from = byName[String(route.from_name || route.from || "")];
+      var to = byName[String(route.to_name || route.to || "")];
+      if (!from || !to) return;
+      var line = L.polyline([from, to], { color: "#1f9d57", weight: 3, opacity: 0.8, dashArray: "6 6" }).addTo(layer);
+      var label = [route.transport, route.route_note].filter(Boolean).join(" · ");
+      if (label) line.bindPopup(String(label).replace(/</g, "&lt;"));
+    });
+    if (latlngs.length && mapRef.current) {
+      try { mapRef.current.fitBounds(latlngs, { padding: [28, 28], maxZoom: 12 }); } catch (e) {}
+    }
+  }, [data, provider]);
+
+  var empty = data && (!Array.isArray(data.pins) || data.pins.length === 0);
 
   return (
     <div className="wbc-map">
       <div className="wbc-map-holder" ref={holderRef}></div>
-      {empty && <div className="wbc-map-empty">这个对话还没有地图标记。</div>}
+      {empty && <div className="wbc-map-empty">{wbcT("workbenchChat.mapEmpty", "No map pins in this chat yet.")}</div>}
     </div>
   );
 }

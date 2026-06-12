@@ -34,6 +34,7 @@ from webui.routes_workbench_knowledge import register_workbench_knowledge_routes
 from webui.routes_workbench_memory import register_workbench_memory_routes, schedule_capture
 from webui.routes_workbench_schedule import register_workbench_schedule_routes
 from webui.routes_workbench_chat import register_workbench_chat_routes
+from webui.workbench_notifications import append_notification, list_notifications, mark_notifications_read
 from webui.routes_code import router as code_router
 from cyrene.call_llm import _format_httpx_error as format_httpx_error
 from cyrene.attachments import (
@@ -110,6 +111,27 @@ _APP_DIR = _STATIC_DIR / "app"
 _UPLOADS_DIR = DATA_DIR / "webui_uploads"
 _WORKBENCH_STORE = DATA_DIR / "workbench_projects.json"
 _SERVER_STARTED_AT = time.time()
+_WORKBENCH_LEGACY_DATA_KEY = "default"
+
+
+def _safe_workbench_data_key(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return _WORKBENCH_LEGACY_DATA_KEY
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._")
+    return cleaned or _WORKBENCH_LEGACY_DATA_KEY
+
+
+def _workbench_default_project_name() -> str:
+    if WORKSPACE_DIR.name == "workspace" and WORKSPACE_DIR.parent.name:
+        return WORKSPACE_DIR.parent.name
+    return WORKSPACE_DIR.name or "Cyrene"
+
+
+def _workbench_project_data_key(project: dict[str, Any] | None) -> str:
+    if not project:
+        return _WORKBENCH_LEGACY_DATA_KEY
+    return _safe_workbench_data_key(project.get("dataKey") or project.get("id"))
 
 
 def _ndjson_line(payload: dict[str, Any]) -> str:
@@ -198,13 +220,14 @@ def _short_id(prefix: str) -> str:
 def _workbench_default_project() -> dict[str, Any]:
     now = _utc_now_iso()
     project_id = _short_id("project")
-    workspace_name = WORKSPACE_DIR.name or "Workspace"
+    workspace_name = _workbench_default_project_name()
     initial_session = _workbench_new_session(project_id, "新任务", "通过对话明确当前任务目标。", now)
     return {
         "projects": [
             {
                 "id": project_id,
                 "name": workspace_name,
+                "dataKey": _WORKBENCH_LEGACY_DATA_KEY,
                 "workspacePath": str(WORKSPACE_DIR),
                 "status": "active",
                 "model": _get_model(),
@@ -464,14 +487,17 @@ async def _workbench_generate_init_form(project: dict[str, Any]) -> dict[str, An
     )
 
     try:
+        # 结构化 JSON 输出：关闭 thinking 降低延迟；预算放宽到 60s，
+        # 否则模型稍慢一点就会静默退回通用问题。
         response = await asyncio.wait_for(
             _call_llm(
                 [{"role": "user", "content": prompt}],
                 tools=None,
                 max_tokens=2000,
                 secondary=True,
+                thinking="disabled",
             ),
-            timeout=30,
+            timeout=60,
         )
     except Exception:
         logger.exception("Workbench init-question generation failed for project %s", project.get("id"))
@@ -612,8 +638,13 @@ async def _workbench_generate_init_task_plan(
     project: dict[str, Any],
     form: dict[str, Any],
     feedback: str = "",
-) -> list[dict[str, Any]]:
-    """Ask the initialization agent to split the project into major task sessions."""
+) -> tuple[list[dict[str, Any]], bool]:
+    """Ask the initialization agent to split the project into major task sessions.
+
+    Returns ``(plan, from_llm)`` — ``from_llm`` is False when generation failed
+    and the deterministic fallback was used, so callers can tell the user the
+    truth instead of pretending the feedback was applied.
+    """
     fallback = _workbench_fallback_init_task_plan(project, form)
     brief = _workbench_init_brief(project, form)
     feedback = str(feedback or "").strip()
@@ -640,18 +671,20 @@ async def _workbench_generate_init_task_plan(
         "保留初始化回答中的时间、范围、技术约束。"
     )
     try:
+        # 结构化 JSON 输出：关闭 thinking 降低延迟；预算放宽到 75s。
         response = await asyncio.wait_for(
             _call_llm(
                 [{"role": "user", "content": prompt}],
                 tools=None,
                 max_tokens=2400,
                 secondary=True,
+                thinking="disabled",
             ),
-            timeout=35,
+            timeout=75,
         )
     except Exception:
         logger.exception("Workbench init task-plan generation failed for project %s", project.get("id"))
-        return fallback
+        return fallback, False
     text = ""
     if isinstance(response, dict):
         content = response.get("content")
@@ -661,12 +694,12 @@ async def _workbench_generate_init_task_plan(
     except Exception:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if not match:
-            return fallback
+            return fallback, False
         try:
             parsed = json.loads(match.group(0))
         except Exception:
-            return fallback
-    return _workbench_coerce_init_task_plan(parsed, fallback)
+            return fallback, False
+    return _workbench_coerce_init_task_plan(parsed, fallback), True
 
 
 def _workbench_create_sessions_from_init_plan(
@@ -762,6 +795,22 @@ def _workbench_ensure_invariants(payload: dict[str, Any]) -> None:
         project.setdefault("context", {"summary": "", "stack": [], "decisions": [], "knowledgeDocumentIds": []})
         project.setdefault("createdAt", now)
         project.setdefault("updatedAt", now)
+        if not project.get("dataKey"):
+            is_legacy_default = (
+                str(project.get("name") or "").strip().lower() == "workspace"
+                and str(project.get("workspacePath") or "") == str(WORKSPACE_DIR)
+                and str((project.get("context") or {}).get("summary") or "").startswith("Workspace at ")
+            )
+            project["dataKey"] = _WORKBENCH_LEGACY_DATA_KEY if is_legacy_default else _safe_workbench_data_key(project.get("id"))
+            changed = True
+        if _workbench_project_data_key(project) == _WORKBENCH_LEGACY_DATA_KEY:
+            default_name = _workbench_default_project_name()
+            if str(project.get("name") or "") in ("", "Workspace", "workspace"):
+                project["name"] = default_name
+                changed = True
+            if not str(project.get("workspacePath") or "").strip():
+                project["workspacePath"] = str(WORKSPACE_DIR)
+                changed = True
         sessions = project.setdefault("sessions", [])
         if not sessions:
             sessions.append(_workbench_new_session(project["id"], "新任务", "通过对话明确当前任务目标。", now))
@@ -3323,6 +3372,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if "notify_wechat" in body:
             set_setting("notify_wechat", bool(body["notify_wechat"]))
             changed.append("notify_wechat")
+        if "redact_secrets" in body:
+            set_setting("redact_secrets", bool(body["redact_secrets"]))
+            changed.append("redact_secrets")
         return {"ok": True, "changed": changed}
 
     @router.post("/api/settings/reset-data")
@@ -3367,6 +3419,18 @@ def register_routes(app, bot: Any, db_path: str) -> None:
     async def api_workbench_projects():
         return _read_workbench_store()
 
+    @router.get("/api/workbench/notifications")
+    async def api_workbench_notifications(tab: str = "all", limit: int = 80):
+        return list_notifications(tab=tab, limit=limit)
+
+    @router.post("/api/workbench/notifications/read")
+    async def api_workbench_notifications_read(request: Request):
+        body = await request.json()
+        ids = body.get("ids") if isinstance(body.get("ids"), list) else []
+        mark_all = bool(body.get("markAll"))
+        result = mark_notifications_read(ids, mark_all=mark_all)
+        return {**result, **list_notifications(limit=80)}
+
     @router.post("/api/projects")
     async def api_workbench_create_project(request: Request):
         body = await request.json()
@@ -3379,6 +3443,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         project = {
             "id": project_id,
             "name": name,
+            "dataKey": _safe_workbench_data_key(project_id),
             "description": description,
             "icon": str(body.get("icon") or "spark").strip() or "spark",
             "color": str(body.get("color") or "").strip(),
@@ -3405,6 +3470,15 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeProjectId"] = project_id
         payload["activeSessionId"] = initial_session["id"]
         _write_workbench_store(payload)
+        append_notification(
+            title="项目创建完成",
+            body=f"已创建 workspace「{name}」。",
+            tab="system",
+            project_ref=project_id,
+            source="project_created",
+            source_label="Workspace",
+            link_label=name,
+        )
         return {"ok": True, "project": project, "session": initial_session, **payload}
 
     @router.patch("/api/projects/{project_id}")
@@ -3430,6 +3504,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         # Collect session IDs before filtering so we can clean up agent state
         doomed_project = next((p for p in projects if str(p.get("id") or "") == project_id), None)
         if doomed_project:
+            doomed_data_key = _workbench_project_data_key(doomed_project)
             for s in (doomed_project.get("sessions") or []):
                 sid = str(s.get("id") or "").strip()
                 if sid:
@@ -3440,6 +3515,20 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 await remove_project_chats(project_id)
             except Exception:
                 logger.exception("Failed to remove chats for project %s", project_id)
+            if doomed_data_key != _WORKBENCH_LEGACY_DATA_KEY:
+                try:
+                    from cyrene.config import get_knowledge_db_path, STORE_DIR
+                    _remove_path(get_knowledge_db_path(doomed_data_key))
+                    _remove_path(STORE_DIR / f"wb_memory_{doomed_data_key}.json")
+                    import aiosqlite
+                    async with aiosqlite.connect(_db_path) as db:
+                        await db.execute(
+                            "DELETE FROM scheduled_tasks WHERE COALESCE(project_id, 'default') = ?",
+                            (doomed_data_key,),
+                        )
+                        await db.commit()
+                except Exception:
+                    logger.exception("Failed to remove project-scoped data for %s", project_id)
         next_projects = [project for project in projects if str(project.get("id") or "") != project_id]
         if len(next_projects) == len(projects):
             return JSONResponse({"error": "project not found"}, status_code=404)
@@ -3477,6 +3566,16 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeProjectId"] = project_id
         payload["activeSessionId"] = session["id"]
         _write_workbench_store(payload)
+        append_notification(
+            title="新任务已创建",
+            body=f"任务「{title}」已加入 {project.get('name') or 'workspace'}。",
+            tab="comment",
+            project_ref=project_id,
+            source="task_created",
+            source_label="任务",
+            link_label=title,
+            meta={"sessionId": session["id"]},
+        )
         return {"ok": True, "session": session, **payload}
 
     @router.post("/api/projects/{project_id}/init/generate")
@@ -3531,6 +3630,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         project, session = _workbench_find_session(payload, session_id)
         if not session or not project:
             return JSONResponse({"error": "session not found"}, status_code=404)
+        prev_status = str(session.get("status") or "")
         for field in ("title", "goal", "status", "priority", "agentReply", "summary", "kind"):
             if field in body:
                 session[field] = body[field]
@@ -3545,6 +3645,34 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeProjectId"] = project.get("id")
         payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
+        next_status = str(session.get("status") or "")
+        if next_status != prev_status and next_status in ("done", "completed", "failed", "blocked", "paused", "review"):
+            status_titles = {
+                "done": "任务完成",
+                "completed": "任务完成",
+                "failed": "任务失败",
+                "blocked": "任务阻塞",
+                "paused": "任务已暂停",
+                "review": "任务待验收",
+            }
+            status_labels = {
+                "done": "已完成",
+                "completed": "已完成",
+                "failed": "失败",
+                "blocked": "阻塞",
+                "paused": "已暂停",
+                "review": "待验收",
+            }
+            append_notification(
+                title=status_titles.get(next_status, "任务状态更新"),
+                body=f"任务「{session.get('title') or '未命名任务'}」当前状态：{status_labels.get(next_status, next_status)}。",
+                tab="system" if next_status != "review" else "comment",
+                project_ref=project.get("id"),
+                source="task_status",
+                source_label="任务",
+                link_label=str(session.get("title") or ""),
+                meta={"sessionId": session_id, "status": next_status},
+            )
         return {"ok": True, "project": project, "session": session, **payload}
 
     @router.post("/api/task-sessions/{session_id}/runs")
@@ -3576,7 +3704,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         session["agentReply"] = agent_reply
         # Sink durable memories from this exchange into the project's workspace store.
         if not command:
-            schedule_capture(project.get("id"), user_input, agent_reply)
+            schedule_capture(_workbench_project_data_key(project), user_input, agent_reply)
         session["status"] = "planning" if session.get("status") in ("idle", "pending") else session.get("status", "planning")
         session["updatedAt"] = now
         project["updatedAt"] = now
@@ -3622,6 +3750,16 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeProjectId"] = project.get("id")
         payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
+        append_notification(
+            title="任务回复完成",
+            body=f"Agent 已更新任务「{session.get('title') or '未命名任务'}」。",
+            tab="comment",
+            project_ref=project.get("id"),
+            source="task_reply",
+            source_label="任务",
+            link_label=str(session.get("title") or ""),
+            meta={"sessionId": session_id, "runId": run_id},
+        )
         return {"ok": True, "project": project, "session": session, "run": run, **payload}
 
     @router.post("/api/task-sessions/{session_id}/chat")
@@ -3642,7 +3780,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         session["agentReply"] = agent_reply
         # Sink durable memories from this exchange into the project's workspace store.
         if not command:
-            schedule_capture(project.get("id"), message, agent_reply)
+            schedule_capture(_workbench_project_data_key(project), message, agent_reply)
         session["status"] = "completed"
         now = _utc_now_iso()
         session["updatedAt"] = now
@@ -3650,6 +3788,16 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeProjectId"] = project.get("id")
         payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
+        append_notification(
+            title="Agent 回复完成",
+            body=f"Agent 在「{session.get('title') or '对话'}」中回复了你。",
+            tab="mention",
+            project_ref=project.get("id"),
+            source="chat_reply",
+            source_label="对话",
+            link_label=str(session.get("title") or ""),
+            meta={"sessionId": session_id},
+        )
         return {"ok": True, "project": project, "session": session, **payload}
 
     @router.post("/api/task-sessions/{session_id}/init/submit")
@@ -3687,13 +3835,17 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         project["context"] = context
         if not str(project.get("description") or "").strip() and goal:
             project["description"] = goal[:200]
-        task_plan = await _workbench_generate_init_task_plan(project, form)
+        task_plan, plan_from_llm = await _workbench_generate_init_task_plan(project, form)
         form["taskPlan"] = task_plan
         form["planReady"] = True
         form["completed"] = False
+        form["planSource"] = "llm" if plan_from_llm else "fallback"
         session["init"] = form
         session["status"] = "waiting_for_user"
-        session["agentReply"] = "我已根据你的初始化回答拆解出大任务计划。你可以直接编辑，或继续告诉我如何调整；确认后我会把每个大任务创建为独立 session。"
+        if plan_from_llm:
+            session["agentReply"] = "我已根据你的初始化回答拆解出大任务计划。你可以直接编辑，或继续告诉我如何调整；确认后我会把每个大任务创建为独立 session。"
+        else:
+            session["agentReply"] = "计划生成服务暂时不可用，我先按你的回答生成了一份基础计划。你可以直接编辑后确认，或稍后让我重新拆解。"
         session["summary"] = brief or session.get("summary")
         session["updatedAt"] = now
         project["updatedAt"] = now
@@ -3716,12 +3868,22 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         form = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
         if bool(form.get("completed")):
             return JSONResponse({"error": "init already completed"}, status_code=409)
-        task_plan = await _workbench_generate_init_task_plan(project, form, feedback=feedback)
-        form["taskPlan"] = task_plan
+        task_plan, plan_from_llm = await _workbench_generate_init_task_plan(project, form, feedback=feedback)
+        if plan_from_llm:
+            form["taskPlan"] = task_plan
+            form["planSource"] = "llm"
+            session["agentReply"] = "我已按你的反馈更新任务计划。你可以继续修改，或确认创建 sessions。"
+        else:
+            # 生成失败时保留当前计划——直接用兜底计划覆盖会吞掉用户反馈，
+            # 还会把之前 LLM 生成的计划替换成模板。
+            existing = form.get("taskPlan")
+            if not (isinstance(existing, list) and existing):
+                form["taskPlan"] = task_plan
+                form["planSource"] = "fallback"
+            session["agentReply"] = "计划生成服务暂时不可用，这次的反馈还没有应用，当前计划保持不变。你可以稍后重试，或直接手动编辑计划。"
         form["planReady"] = True
         session["init"] = form
         session["status"] = "waiting_for_user"
-        session["agentReply"] = "我已按你的反馈更新任务计划。你可以继续修改，或确认创建 sessions。"
         now = _utc_now_iso()
         session["updatedAt"] = now
         project["updatedAt"] = now
@@ -3769,6 +3931,16 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeProjectId"] = project.get("id")
         payload["activeSessionId"] = created[0]["id"]
         _write_workbench_store(payload)
+        append_notification(
+            title="初始化任务已生成",
+            body=f"{project.get('name') or 'Workspace'} 已创建 {len(created)} 个任务 session。",
+            tab="system",
+            project_ref=project.get("id"),
+            source="init_confirmed",
+            source_label="系统",
+            link_label=str(project.get("name") or ""),
+            meta={"createdSessionIds": [item["id"] for item in created]},
+        )
         return {"ok": True, "project": project, "session": created[0], "initSession": session, "createdSessions": created, **payload}
 
     @router.get("/api/task-sessions/{session_id}/events")
@@ -5945,6 +6117,7 @@ def _build_config() -> dict:
         "max_tool_rounds": settings.get("max_tool_rounds", 15),
         "notify_telegram": settings.get("notify_telegram", True),
         "notify_wechat": settings.get("notify_wechat", True),
+        "redact_secrets": settings.get("redact_secrets", True),
         "search_port": str(SEARXNG_PORT),
         "search_host": SEARXNG_HOST,
     }

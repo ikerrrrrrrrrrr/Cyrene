@@ -148,6 +148,9 @@ _DEFAULT_SETTINGS: dict = {
     "soul_active": True,
     "agent_proactive": True,
     "max_tool_rounds": 15,
+    "redact_secrets": True,
+    "notify_telegram": True,
+    "notify_wechat": True,
 }
 
 _EDITABLE_ENV_KEYS = {

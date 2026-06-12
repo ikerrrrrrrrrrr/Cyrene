@@ -551,12 +551,33 @@ def _strip_visible_dsml_tool_blocks(text: str) -> str:
     return _VISIBLE_DSML_TOOL_BLOCK_RE.sub("", str(text or "")).strip()
 
 
+def _record_final_reply_usage(*responses: Any) -> None:
+    """Stash the merged usage of the final-reply call(s) for the persist layer.
+
+    Streaming finals return plain text to their callers, so without this the
+    token usage of the reply call never reaches the saved assistant entry.
+    """
+    from cyrene.agent.state import _last_final_reply_usage
+    merged: dict[str, Any] = {}
+    for response in responses:
+        usage = response.get("usage") if isinstance(response, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        for key, value in usage.items():
+            if isinstance(value, (int, float)) and isinstance(merged.get(key), (int, float)):
+                merged[key] = merged[key] + value
+            else:
+                merged.setdefault(key, value)
+    _last_final_reply_usage.set(merged or None)
+
+
 async def _validated_final_no_tool_reply(messages: list[dict], max_tokens: int | None = None) -> str:
     """Generate final user-visible text without leaking textual DSML tool markup."""
     if _streaming_reply_requested():
         response = await _call_llm_stream(messages, max_tokens=max_tokens)
     else:
         response = await _call_llm(messages, tools=None, max_tokens=max_tokens)
+    _record_final_reply_usage(response)
     text = _assistant_text(response).strip()
     if not _VISIBLE_DSML_TOOL_BLOCK_RE.search(text):
         return text
@@ -574,6 +595,7 @@ async def _validated_final_no_tool_reply(messages: list[dict], max_tokens: int |
         },
     ]
     retry_response = await _call_llm(retry_messages, tools=None, max_tokens=max_tokens)
+    _record_final_reply_usage(response, retry_response)
     retry_text = _assistant_text(retry_response).strip()
     if _VISIBLE_DSML_TOOL_BLOCK_RE.search(retry_text):
         return _strip_visible_dsml_tool_blocks(retry_text)

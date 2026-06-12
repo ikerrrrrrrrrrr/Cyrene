@@ -44,6 +44,7 @@ from cyrene.agent.state import (
     _deep_research_mode,
     _emit_reply_stream_event,
     _ensure_session,
+    _last_final_reply_usage,
     _LIGHT_TOOL_DEFS,
     _get_max_tool_rounds,
     _publish_runtime_event,
@@ -56,6 +57,15 @@ from cyrene.context_trace import attach_context, context_block
 from cyrene.tools import _execute_tool, get_active_tool_defs
 
 logger = logging.getLogger(__name__)
+
+
+def _attach_final_usage(entry: dict[str, Any]) -> dict[str, Any]:
+    """Carry the final-reply call's token usage onto the persisted entry."""
+    usage = _last_final_reply_usage.get()
+    if usage:
+        entry["usage"] = dict(usage)
+        _last_final_reply_usage.set(None)
+    return entry
 
 
 def _annotate_history_context(history: list) -> list[dict[str, Any]]:
@@ -395,7 +405,7 @@ async def _run_main_agent(
                 if _streaming_reply_requested():
                     messages.pop()
                     final_text = await _final_reply_from_history(project_history_for_llm(messages), max_tokens=None)
-                    final_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
+                    final_entry: dict[str, Any] = _attach_final_usage({"role": "assistant", "content": final_text})
                     if client_request_id:
                         final_entry["client_request_id"] = client_request_id
                     if round_id:
@@ -411,7 +421,7 @@ async def _run_main_agent(
                 if _streaming_reply_requested():
                     messages.pop()
                     final_text = await _final_reply_from_history(project_history_for_llm(messages), max_tokens=None)
-                    final_entry = {"role": "assistant", "content": final_text}
+                    final_entry = _attach_final_usage({"role": "assistant", "content": final_text})
                     if client_request_id:
                         final_entry["client_request_id"] = client_request_id
                     if round_id:
@@ -682,7 +692,7 @@ async def _run_main_agent(
                 "but I have summarized the available results above."
             ),
         )
-        final_entry: dict[str, Any] = {"role": "assistant", "content": final_text}
+        final_entry: dict[str, Any] = _attach_final_usage({"role": "assistant", "content": final_text})
         if client_request_id:
             final_entry["client_request_id"] = client_request_id
         if round_id:
@@ -752,7 +762,7 @@ async def _run_main_agent(
             content=user_entry.get("content") or "",
         ))]
         final_text = await _final_reply_from_history(project_history_for_llm(messages), max_tokens=None)
-        final_entry = {"role": "assistant", "content": final_text}
+        final_entry = _attach_final_usage({"role": "assistant", "content": final_text})
         if client_request_id:
             final_entry["client_request_id"] = client_request_id
         if round_id:

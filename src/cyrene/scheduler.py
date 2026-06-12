@@ -38,6 +38,7 @@ from cyrene.notifications import notify
 from cyrene.schedule_spec import compute_next_run
 from cyrene.short_term import clear_old_entries, get_context as get_short_term_context
 from cyrene.soul import apply_soul_update, read_shallow_memory, read_soul
+from webui.workbench_notifications import append_notification
 
 logger = logging.getLogger(__name__)
 
@@ -554,6 +555,16 @@ async def _execute_task(task: dict, bot, db_path: str) -> None:
             body=summary,
             channel="wechat",
         )
+        append_notification(
+            title="日程提醒",
+            body=summary,
+            tab="system",
+            project_ref=task.get("project_id"),
+            source="scheduled_task_run",
+            source_label="日程",
+            link_label="日程",
+            meta={"taskId": task_id, "status": status_label},
+        )
     except Exception:
         logger.exception("Failed to send task execution notifications")
 
@@ -742,6 +753,15 @@ async def _heartbeat_proactive_check(bot, db_path: str) -> None:
         # Web UI tab is in the background.
         try:
             await notify(title="Cyrene", body=str(text)[:120], channel="auto")
+            append_notification(
+                title="Cyrene 提醒",
+                body=str(text)[:120],
+                tab="mention",
+                project_ref="default",
+                source="proactive_message",
+                source_label="系统",
+                link_label="Cyrene",
+            )
         except Exception:
             logger.debug("Proactive notification delivery failed", exc_info=True)
 

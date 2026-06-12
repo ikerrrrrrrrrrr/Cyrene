@@ -21,7 +21,21 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   var [settingsOpen, setSettingsOpen] = useWorkbenchState(false);
   var [newProjectOpen, setNewProjectOpen] = useWorkbenchState(false);
   var [newTaskOpen, setNewTaskOpen] = useWorkbenchState(false);
+  var [editProject, setEditProject] = useWorkbenchState(null);
   var [chatCrumb, setChatCrumb] = useWorkbenchState("");
+  var [notifications, setNotifications] = useWorkbenchState({ items: [], counts: { all: 0, mention: 0, comment: 0, system: 0 }, unreadByTab: { all: 0, mention: 0, comment: 0, system: 0 }, unreadCount: 0 });
+
+  function reloadNotifications(tab, limit) {
+    return model.fetchNotifications(tab || "all", limit || 80).then(function (payload) {
+      setNotifications({
+        items: Array.isArray(payload.items) ? payload.items : [],
+        counts: payload.counts || { all: 0, mention: 0, comment: 0, system: 0 },
+        unreadByTab: payload.unreadByTab || { all: 0, mention: 0, comment: 0, system: 0 },
+        unreadCount: Number(payload.unreadCount || 0),
+      });
+      return payload;
+    }).catch(function () {});
+  }
 
   function reloadWorkbench(nextProjectId, nextSessionId) {
     setLoading(true);
@@ -49,6 +63,21 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
 
   useWorkbenchEffect(function () {
     reloadWorkbench();
+    reloadNotifications();
+  }, []);
+
+  useWorkbenchEffect(function () {
+    function handleEvent(data) {
+      if (!data || data.type !== "notification") return;
+      reloadNotifications();
+    }
+    if (window.__sseHandlers && window.__sseHandlers.add) {
+      window.__sseHandlers.add(handleEvent);
+      return function () {
+        window.__sseHandlers.delete(handleEvent);
+      };
+    }
+    return undefined;
   }, []);
 
   function selectProject(projectId) {
@@ -102,6 +131,26 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
     });
   }
 
+  function handleUpdateProject(projectId, input) {
+    return model.updateProject(projectId, input).then(function (next) {
+      setStore(next);
+      return next;
+    });
+  }
+
+  function handleDeleteProject(project) {
+    if (!project) return Promise.resolve();
+    if (!window.confirm("确定删除项目「" + project.name + "」吗？项目内的数据将一起删除。")) return Promise.resolve();
+    return model.deleteProject(project.id).then(function (next) {
+      setStore(next);
+      setFullPage(null);
+      setExpandedStepId("");
+      return next;
+    }).catch(function (err) {
+      setError(err.message || String(err));
+    });
+  }
+
   function handleRunCreated(next) {
     setStore(next);
     setExpandedStepId(next.activeSession && next.activeSession.plan[0] ? next.activeSession.plan[0].id : "");
@@ -139,6 +188,8 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
         session={store.activeSession}
         activePage={fullPage}
         chatCrumb={chatCrumb}
+        notifications={notifications}
+        onReloadNotifications={reloadNotifications}
         onSearch={function () { setSearchOpen(true); }}
         onSettings={function () { setSettingsOpen(true); }}
         theme={theme}
@@ -155,6 +206,8 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
             activePage={fullPage}
             onSelectProject={selectProject}
             onCreateProject={createProject}
+            onEditProject={setEditProject}
+            onDeleteProject={handleDeleteProject}
             onOpenPage={handleOpenPage}
           />
           {isChat ? (
@@ -259,6 +312,15 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
           },
         }
       )}
+      {editProject && (
+        <WorkbenchEditProjectModal
+          project={editProject}
+          onClose={function () { setEditProject(null); }}
+          onSave={function (input) {
+            return handleUpdateProject(editProject.id, input).then(function () { setEditProject(null); });
+          }}
+        />
+      )}
       {newTaskOpen && window.WorkbenchNewTaskModal && React.createElement(
         window.WorkbenchNewTaskModal,
         {
@@ -272,7 +334,7 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   );
 }
 
-function WorkbenchTopbar({ project, session, activePage, chatCrumb, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
+function WorkbenchTopbar({ project, session, activePage, chatCrumb, notifications, onReloadNotifications, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
   var title = project ? project.name : "Project";
   var pageLabels = { chat: "对话", knowledge: "知识库", schedule: "日程", memory: "记忆" };
   var sessionTitle = activePage && pageLabels[activePage] ? pageLabels[activePage] : (session ? session.title : "Task");
@@ -310,10 +372,7 @@ function WorkbenchTopbar({ project, session, activePage, chatCrumb, onSearch, on
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
           <span>搜索</span>
         </button>
-        <button type="button" className="workbench-icon-btn workbench-notif-btn" title="通知">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
-          <span className="workbench-notif-badge"></span>
-        </button>
+        <WorkbenchNotificationCenter notifications={notifications} onReload={onReloadNotifications} onSettings={onSettings} />
         <button type="button" className="workbench-icon-btn" onClick={onToggleTheme} title={themeTitle}>{themeIcon}</button>
         <button type="button" className="workbench-icon-btn" title="帮助">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
@@ -327,7 +386,198 @@ function WorkbenchTopbar({ project, session, activePage, chatCrumb, onSearch, on
   );
 }
 
-function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, onCreateProject, onOpenPage }) {
+function WorkbenchNotificationCenter({ notifications, onReload, onSettings }) {
+  var model = window.WorkbenchModel;
+  var [open, setOpen] = useWorkbenchState(false);
+  var [tab, setTab] = useWorkbenchState("all");
+  var [busy, setBusy] = useWorkbenchState(false);
+  var rootRef = useWorkbenchRef(null);
+  var items = notifications && Array.isArray(notifications.items) ? notifications.items : [];
+  var unreadCount = notifications && notifications.unreadCount ? notifications.unreadCount : 0;
+  var counts = notifications && notifications.counts ? notifications.counts : { all: 0, mention: 0, comment: 0, system: 0 };
+
+  useWorkbenchEffect(function () {
+    if (!open) return undefined;
+    function handlePointer(event) {
+      if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false);
+    }
+    function handleKey(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointer);
+    document.addEventListener("keydown", handleKey);
+    return function () {
+      document.removeEventListener("mousedown", handlePointer);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
+  useWorkbenchEffect(function () {
+    if (!open) return;
+    onReload && onReload(tab, 80);
+  }, [open, tab]);
+
+  function markRead(ids, markAll) {
+    setBusy(true);
+    return model.markNotificationsRead(ids, markAll).then(function (payload) {
+      if (onReload) onReload(tab, 80);
+      return payload;
+    }).finally(function () {
+      setBusy(false);
+    });
+  }
+
+  return (
+    <div className={"workbench-notif-anchor" + (open ? " open" : "")} ref={rootRef}>
+      <button type="button" className={"workbench-icon-btn workbench-notif-btn" + (open ? " active" : "")} title="通知" onClick={function () { setOpen(!open); }}>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+        {unreadCount > 0 ? <span className="workbench-notif-badge">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
+      </button>
+      {open ? (
+        <div className="workbench-notif-popover">
+          <div className="workbench-notif-popover-arrow"></div>
+          <div className="workbench-notif-head">
+            <b>通知</b>
+            <button type="button" className="workbench-notif-markread" disabled={busy || !unreadCount} onClick={function () { markRead([], true); }}>全部已读</button>
+          </div>
+          <div className="workbench-notif-tabs">
+            {[
+              { id: "all", label: "全部" },
+              { id: "mention", label: "@ 提及" },
+              { id: "comment", label: "评论" },
+              { id: "system", label: "系统" },
+            ].map(function (item) {
+              return (
+                <button key={item.id} type="button" className={"workbench-notif-tab" + (tab === item.id ? " active" : "")} onClick={function () { setTab(item.id); }}>
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+            <button type="button" className="workbench-notif-settings" onClick={onSettings} title="通知设置">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div className="workbench-notif-list">
+            {!items.length ? <div className="workbench-notif-empty">暂无通知</div> : items.map(function (item) {
+              return <WorkbenchNotificationItem key={item.id} item={item} onOpen={function () { markRead([item.id], false); }} />;
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WorkbenchNotificationItem({ item, onOpen }) {
+  var tab = String(item && item.tab || "system");
+  var iconClass = "system";
+  var icon = null;
+  if (tab === "mention") {
+    iconClass = "mention";
+    icon = <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4.5"/><path d="M16.5 12v1a2.5 2.5 0 0 0 5 0V12a9.5 9.5 0 1 0-3 6.9"/></svg>;
+  } else if (tab === "comment") {
+    iconClass = "comment";
+    icon = <svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor"><path d="M12 2.5 13.7 9 20 10.7 13.7 12.4 12 19l-1.7-6.6L4 10.7 10.3 9Z"/></svg>;
+  } else {
+    var src = String(item && item.source || "");
+    if (src.indexOf("knowledge") === 0) {
+      iconClass = "upload";
+      icon = <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V6"/><path d="m8.5 9.5 3.5-3.5 3.5 3.5"/><path d="M20 16.5a4 4 0 0 1-4 4H8a4 4 0 1 1 .9-7.9A5 5 0 0 1 18 10a4 4 0 0 1 2 6.5Z"/></svg>;
+    } else if (src.indexOf("schedule") === 0 || src.indexOf("scheduled") === 0) {
+      iconClass = "schedule";
+      icon = <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></svg>;
+    } else if (src.indexOf("task") === 0) {
+      iconClass = "success";
+      icon = <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12 2.7 2.7L16 9.4"/></svg>;
+    } else {
+      iconClass = "system";
+      icon = <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>;
+    }
+  }
+  return (
+    <button type="button" className={"workbench-notif-item" + (item.read ? "" : " unread")} onClick={onOpen}>
+      <span className={"workbench-notif-item-icon " + iconClass}>{icon}</span>
+      <span className="workbench-notif-item-main">
+        <span className="workbench-notif-item-top">
+          <b>{item.title}</b>
+          <time>{window.WorkbenchModel.formatRelativeTime(item.createdAt)}</time>
+        </span>
+        {item.body ? <span className="workbench-notif-item-body">{item.body}</span> : null}
+        <span className="workbench-notif-item-meta">{item.sourceLabel || item.projectName || item.linkLabel || "通知"}</span>
+      </span>
+    </button>
+  );
+}
+
+function WorkbenchEditProjectModal({ project, onClose, onSave }) {
+  var [name, setName] = useWorkbenchState(project.name || "");
+  var [description, setDescription] = useWorkbenchState(project.description || "");
+  var [workspacePath, setWorkspacePath] = useWorkbenchState(project.workspacePath || "");
+  var [color, setColor] = useWorkbenchState(project.color || "#22b07a");
+  var [busy, setBusy] = useWorkbenchState(false);
+  var [error, setError] = useWorkbenchState("");
+  function save() {
+    var trimmed = name.trim();
+    if (!trimmed) { setError("请填写项目名称"); return; }
+    setBusy(true);
+    setError("");
+    Promise.resolve(onSave({
+      name: trimmed,
+      description: description.trim(),
+      workspacePath: workspacePath.trim(),
+      color: color,
+    })).catch(function (err) {
+      setBusy(false);
+      setError(err.message || String(err));
+    });
+  }
+  return (
+    <div className="workbench-modal-scrim" onMouseDown={function (e) { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="workbench-project-edit-modal" role="dialog" aria-modal="true">
+        <div className="workbench-project-edit-head">
+          <b>编辑项目</b>
+          <button type="button" className="workbench-icon-btn" onClick={onClose} title="关闭">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+        <div className="workbench-project-edit-body">
+          <label>项目名称</label>
+          <input value={name} maxLength={60} onChange={function (e) { setName(e.target.value); }} />
+          <label>项目描述</label>
+          <textarea value={description} rows={3} maxLength={240} onChange={function (e) { setDescription(e.target.value); }} />
+          <label>工作区路径</label>
+          <input value={workspacePath} onChange={function (e) { setWorkspacePath(e.target.value); }} />
+          <label>项目颜色</label>
+          <input className="workbench-project-color-input" type="color" value={color || "#22b07a"} onChange={function (e) { setColor(e.target.value); }} />
+        </div>
+        {error && <div className="workbench-project-edit-error">{error}</div>}
+        <div className="workbench-project-edit-foot">
+          <button type="button" className="wb-btn ghost" disabled={busy} onClick={onClose}>取消</button>
+          <button type="button" className="wb-btn primary" disabled={busy} onClick={save}>{busy ? "保存中..." : "保存"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, onCreateProject, onEditProject, onDeleteProject, onOpenPage }) {
+  var [menuProjectId, setMenuProjectId] = useWorkbenchState("");
+
+  useWorkbenchEffect(function () {
+    if (!menuProjectId) return undefined;
+    function closeMenu(event) {
+      if (event.key && event.key !== "Escape") return;
+      if (!event.key && event.target && event.target.closest && event.target.closest(".workbench-project-card.menu-open")) return;
+      setMenuProjectId("");
+    }
+    document.addEventListener("mousedown", closeMenu);
+    document.addEventListener("keydown", closeMenu);
+    return function () {
+      document.removeEventListener("mousedown", closeMenu);
+      document.removeEventListener("keydown", closeMenu);
+    };
+  }, [menuProjectId]);
+
   var navItems = [
     { id: "task", label: "任务", icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1.5"/><path d="M9 14 10.5 15.5 15 11"/></svg>
@@ -359,23 +609,42 @@ function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, o
       <div className="workbench-project-list">
         {projects.map(function (project) {
           var active = project.id === activeProjectId;
+          var isCyrene = project.dataKey === "default" || project.name === "Cyrene";
+          var menuOpen = menuProjectId === project.id;
           return (
-            <button
-              type="button"
+            <div
               key={project.id}
-              className={"workbench-project-card" + (active ? " active" : "")}
-              onClick={function () { onSelectProject(project.id); }}
+              className={"workbench-project-card" + (active ? " active" : "") + (menuOpen ? " menu-open" : "")}
               title={project.workspacePath}
             >
-              <span
-                className="workbench-project-icon"
-                style={{ background: project.color || WorkbenchModel.projectGradient(project.id || project.name) }}
-              >{WorkbenchModel.initials(project.name)}</span>
-              <span className="workbench-project-meta">
-                <b>{project.name}</b>
-                <small>{project.workspacePath || "—"}</small>
-              </span>
-            </button>
+              <button type="button" className="workbench-project-main" onClick={function () { onSelectProject(project.id); setMenuProjectId(""); }}>
+                <span
+                  className={"workbench-project-icon" + (isCyrene ? " logo" : "")}
+                  style={isCyrene ? null : { background: project.color || WorkbenchModel.projectGradient(project.id || project.name) }}
+                >{isCyrene ? <span className="brand-mark" aria-hidden="true"></span> : WorkbenchModel.initials(project.name)}</span>
+                <span className="workbench-project-meta">
+                  <b>{project.name}</b>
+                  <small title={project.workspacePath || ""}>{WorkbenchModel.pathLabel(project.workspacePath, project.name)}</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                className="workbench-project-menu-btn"
+                title="项目操作"
+                onClick={function (e) {
+                  e.stopPropagation();
+                  setMenuProjectId(menuOpen ? "" : project.id);
+                }}
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+              </button>
+              {menuOpen && (
+                <div className="workbench-project-menu">
+                  <button type="button" onClick={function () { setMenuProjectId(""); onEditProject(project); }}>编辑项目</button>
+                  <button type="button" className="danger" onClick={function () { setMenuProjectId(""); onDeleteProject(project); }}>删除项目</button>
+                </div>
+              )}
+            </div>
           );
         })}
       </div>
@@ -514,6 +783,68 @@ function wbModeMeta(id) {
   return WB_MODES[1];
 }
 
+function isDoneStepStatus(status) {
+  return status === "completed" || status === "done";
+}
+
+function isRunningStepStatus(status) {
+  return status === "running";
+}
+
+function stepExecutionPrompt(session, step) {
+  var lines = [
+    "请为当前任务计划中的这个步骤生成一个 subagent 执行，并在完成后汇总结果。",
+    "当前任务：" + String((session && (session.goal || session.title)) || "").trim(),
+    "步骤：" + String((step && step.title) || "").trim(),
+  ];
+  if (step && step.description) lines.push("步骤说明：" + String(step.description).trim());
+  return lines.filter(Boolean).join("\n");
+}
+
+function formatDurationSec(sec) {
+  if (!Number.isFinite(sec) || sec < 1) return "";
+  sec = Math.max(1, Math.round(sec));
+  if (sec < 60) return sec + "s";
+  var min = Math.floor(sec / 60);
+  var rest = sec % 60;
+  if (min < 60) return rest ? (min + "m " + rest + "s") : (min + "m");
+  var hour = Math.floor(min / 60);
+  var remMin = min % 60;
+  return remMin ? (hour + "h " + remMin + "m") : (hour + "h");
+}
+
+// Duration of a step, in priority order: an explicit recorded `durationSec`,
+// then the startedAt→completedAt/updatedAt span, then the first/last
+// progress-event timestamps. Returns "" when nothing reliable is known.
+function stepDurationText(step) {
+  if (!step) return "";
+  if (Number.isFinite(step.durationSec)) return formatDurationSec(step.durationSec);
+  var startMs = step.startedAt ? Date.parse(step.startedAt) : NaN;
+  var endMs = (step.completedAt || step.updatedAt) ? Date.parse(step.completedAt || step.updatedAt) : NaN;
+  if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+    return formatDurationSec((endMs - startMs) / 1000);
+  }
+  if (Array.isArray(step.progressEvents) && step.progressEvents.length >= 2) {
+    var first = Date.parse(step.progressEvents[0] && step.progressEvents[0].time || "");
+    var last = Date.parse(step.progressEvents[step.progressEvents.length - 1] && step.progressEvents[step.progressEvents.length - 1].time || "");
+    if (Number.isFinite(first) && Number.isFinite(last) && last > first) {
+      return formatDurationSec((last - first) / 1000);
+    }
+  }
+  return "";
+}
+
+function stepMetaText(step) {
+  var duration = stepDurationText(step);
+  if (duration) return duration;
+  if (!step) return "";
+  if (isRunningStepStatus(step.status)) return "进行中";
+  if (isDoneStepStatus(step.status)) return "已完成";
+  if (step.status === "failed") return "需处理";
+  if (step.status === "paused") return "已暂停";
+  return "";
+}
+
 function useTaskController(session, onRefresh, runtime) {
   var model = window.WorkbenchModel;
   var [busy, setBusy] = useWorkbenchState(false);
@@ -577,6 +908,7 @@ function useTaskController(session, onRefresh, runtime) {
     // Sends the composer's attachments + permission mode, and is abortable.
     execute: function (inputOverride) {
       setBusy(true);
+      var runStartMs = Date.now();
       interruptedRef.current = false;
       var ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
       runAbortRef.current = ac;
@@ -596,6 +928,13 @@ function useTaskController(session, onRefresh, runtime) {
         .then(function (next) {
           var s2 = next.activeSession || session;
           var donePlan = model.markAllSteps(s2.plan, "completed");
+          // Agent ran the plan as one unit; spread the real elapsed time across
+          // steps with no measured duration so each row still shows a 时长.
+          var totalSec = Math.max(donePlan.length, Math.round((Date.now() - runStartMs) / 1000));
+          var perStep = Math.max(1, Math.round(totalSec / Math.max(1, donePlan.length)));
+          donePlan = donePlan.map(function (st) {
+            return (st && st.durationSec != null) ? st : Object.assign({}, st, { durationSec: perStep });
+          });
           var passed = model.markAllAcceptance(s2.acceptanceCriteria, "passed");
           var artifacts = model.ensureArtifacts(s2);
           var events2 = model.withEvent(s2, "ExecutionFinished", "Agent 执行完成，等待你验收。");
@@ -610,8 +949,13 @@ function useTaskController(session, onRefresh, runtime) {
           // Interrupted by the user → interrupt() already moved it to paused.
           if (interruptedRef.current || (err && err.name === "AbortError")) return;
           var msg = (err && err.message) || String(err);
+          // Don't leave the first step spinning as "running" after a failure.
+          var failedPlan = Array.isArray(startPlan) ? startPlan.map(function (s) {
+            return (s && s.status === "running") ? Object.assign({}, s, { status: "failed", error: msg, updatedAt: new Date().toISOString() }) : s;
+          }) : startPlan;
           return model.patchSession(sid, {
             status: "failed",
+            plan: failedPlan,
             agentReply: "执行失败：" + msg,
             events: model.withEvent(session, "ExecutionFailed", msg),
           }).then(apply).catch(fail);
@@ -620,12 +964,21 @@ function useTaskController(session, onRefresh, runtime) {
     },
 
     // Stop the in-flight run (abort the fetch + server-side interrupt) → paused.
+    // A running STEP must also drop out of "running" — otherwise the plan card
+    // keeps the step spinning with a live 停止 button and the click looks dead.
+    // Reset startedAt so a later re-run times the step fresh.
     interrupt: function () {
       interruptedRef.current = true;
       if (runAbortRef.current) { try { runAbortRef.current.abort(); } catch (e) {} }
       model.interruptSession(sid);
+      var now = new Date().toISOString();
+      var stoppedPlan = Array.isArray(session.plan) ? session.plan.map(function (s) {
+        if (!s || s.status !== "running") return s;
+        return Object.assign({}, s, { status: "pending", startedAt: null, currentAction: "已停止，可重新执行。", updatedAt: now });
+      }) : session.plan;
       return model.patchSession(sid, {
         status: "paused",
+        plan: stoppedPlan,
         agentReply: "执行已被你中断，可继续或调整后重试。",
         events: model.withEvent(session, "Paused", "用户中断了执行。"),
       }).then(apply).catch(fail);
@@ -633,6 +986,63 @@ function useTaskController(session, onRefresh, runtime) {
 
     pause: function () {
       return run(patch({ status: "paused", events: model.withEvent(session, "Paused", "任务已暂停。") }));
+    },
+
+    runStep: function (step, index) {
+      if (!step || index < 0) return Promise.resolve();
+      setBusy(true);
+      interruptedRef.current = false;
+      var ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      runAbortRef.current = ac;
+      var stepTitle = String(step.title || ("步骤 " + (index + 1))).trim();
+      var startPlan = model.markStep(session.plan, index, "running", "已派发给 subagent 执行…");
+      var startEvents = model.withEvent(session, "ExecutionStarted", "开始执行步骤：" + stepTitle, { stepId: step.id || "" });
+      return patch({ status: "running", plan: startPlan, agentReply: "正在执行步骤：" + stepTitle, events: startEvents })
+        .then(apply)
+        .then(function () {
+          return model.createRun(sid, stepExecutionPrompt(session, step), {
+            attachments: (runtime && runtime.attachments) || [],
+            mode: (runtime && runtime.mode) || undefined,
+            command: (runtime && runtime.command) || undefined,
+            stepId: step.id || undefined,
+            stepTitle: stepTitle,
+            action: "spawn_subagent",
+            meta: { scope: "plan_step" },
+            signal: ac ? ac.signal : undefined,
+          });
+        })
+        .then(function (next) {
+          var s2 = next.activeSession || session;
+          var returnedPlan = Array.isArray(s2.plan) && s2.plan.length ? s2.plan : (session.plan || []);
+          var completedPlan = model.markStep(returnedPlan, index, "completed", "subagent 已完成该步骤。");
+          var doneCount = completedPlan.filter(function (item) { return isDoneStepStatus(item && item.status); }).length;
+          var fullyDone = doneCount >= completedPlan.length && completedPlan.length > 0;
+          var events2 = model.withEvent(s2, "ExecutionFinished", "步骤「" + stepTitle + "」执行完成。", { stepId: step.id || "" });
+          var finalPatch = {
+            status: fullyDone ? "review" : "paused",
+            plan: completedPlan,
+            events: events2,
+          };
+          if (fullyDone) {
+            finalPatch.acceptanceCriteria = model.markAllAcceptance(s2.acceptanceCriteria, "passed");
+            finalPatch.artifacts = model.ensureArtifacts(s2);
+          }
+          if (runtime && runtime.clearAttachments) runtime.clearAttachments();
+          if (runtime && runtime.clearCommand) runtime.clearCommand();
+          return model.patchSession(sid, finalPatch);
+        })
+        .then(apply)
+        .catch(function (err) {
+          if (interruptedRef.current || (err && err.name === "AbortError")) return;
+          var msg = (err && err.message) || String(err);
+          return model.patchSession(sid, {
+            status: "failed",
+            plan: model.markStep(session.plan, index, "failed", msg),
+            agentReply: "步骤执行失败：" + msg,
+            events: model.withEvent(session, "ExecutionFailed", "步骤「" + stepTitle + "」执行失败：" + msg, { stepId: step.id || "" }),
+          }).then(apply).catch(fail);
+        })
+        .finally(function () { runAbortRef.current = null; setBusy(false); });
     },
 
     resume: function () {
@@ -730,6 +1140,7 @@ function TaskWorkArea(props) {
             expandedStepId={props.expandedStepId}
             onToggleStep={props.onToggleStep}
             onRightTab={props.onRightTab}
+            controller={controller}
           />
         )}
       </div>
@@ -878,15 +1289,16 @@ function TaskHeader({ project, session, controller, onRightTab }) {
         <HeaderActions status={status} controller={controller} onRightTab={onRightTab} />
         <button
           type="button"
-          className="wb-btn wb-th-pause"
+          className="wb-th-control-btn wb-th-pause"
           disabled={controller.busy || status === "paused" || status === "completed" || status === "cancelled"}
           onClick={function () { status === "running" ? controller.interrupt() : controller.pause(); }}
           title="暂停任务"
+          aria-label="暂停任务"
         >
-          {ICONS.pause}<span>暂停任务</span>
+          {ICONS.pause}
         </button>
         <div className="wb-th-menu-wrap">
-          <button type="button" className="wb-th-menu-btn" onClick={function () { setMenuOpen(!menuOpen); }} title="详情菜单">
+          <button type="button" className="wb-th-control-btn wb-th-menu-btn" onClick={function () { setMenuOpen(!menuOpen); }} title="详情菜单" aria-label="详情菜单">
             {ICONS.dots}
           </button>
           {menuOpen && (
@@ -1153,52 +1565,142 @@ function CancelledCard({ session, controller }) {
   );
 }
 
+var ICON_CLOCK = (
+  <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ flexShrink: 0 }}>
+    <circle cx="8" cy="8" r="6.5" /><path d="M8 5v3.2l1.8 1.8" />
+  </svg>
+);
+
+var ICON_CHEVRON = (
+  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+    <path d="M5 7l3 3 3-3" />
+  </svg>
+);
+
+var ICON_FILE = (
+  <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+    <path d="M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6L9 2z" /><path d="M9 2v4h4" />
+  </svg>
+);
+
 // The 执行计划 list — collapsible steps with per-step status + progress.
-function TaskPlanList({ session, expandedStepId, onToggleStep, onRightTab }) {
+// Visual: timeline rail (done = green check, running = spinner ring, idle =
+// hollow dot) + a status / time / duration row. Click a row to expand detail.
+function TaskPlanList({ session, expandedStepId, onToggleStep, onRightTab, controller }) {
   var steps = Array.isArray(session.plan) ? session.plan : [];
-  var done = steps.filter(function (step) { return step.status === "completed" || step.status === "done"; }).length;
   return (
-    <section className="workbench-flow">
-      <div className="workbench-flow-head">
+    <section className="workbench-flow wbp">
+      <div className="wbp-head">
         <b>执行计划</b>
-        <span>{done}/{steps.length}</span>
       </div>
-      {steps.map(function (step, index) {
-        var expanded = expandedStepId === step.id;
-        var tone = WorkbenchModel.statusTone(step.status);
-        return (
-          <div key={step.id} className={"workbench-step" + (expanded ? " expanded" : "")}>
-            <button type="button" className="workbench-step-row" onClick={function () { onToggleStep(step.id); }}>
-              <span className={"workbench-status-dot " + tone}></span>
-              <span className="workbench-step-index">{index + 1}.</span>
-              <b>{step.title}</b>
-              <small>{WorkbenchModel.statusText(step.status)}</small>
-              <span>{step.updatedAt ? WorkbenchModel.formatTime(step.updatedAt) : ""}</span>
-              <i>{expanded ? "⌃" : "⌄"}</i>
-            </button>
-            {expanded && (
-              <div className="workbench-step-detail">
-                <div>
-                  <label>正在执行</label>
-                  <p>{step.currentAction || step.description || "等待 Agent 更新这个步骤的进展。"}</p>
-                </div>
-                <div>
-                  <label>相关文件</label>
-                  {(step.relatedFiles || []).length === 0 ? (
-                    <p className="workbench-muted">暂无相关文件</p>
-                  ) : (
-                    <div className="workbench-file-list">
-                      {step.relatedFiles.map(function (file) {
-                        return <button key={file.path || file.name} type="button" onClick={function () { onRightTab("files"); }}>{file.path || file.name}</button>;
-                      })}
-                    </div>
-                  )}
-                </div>
+      <div className="wbp-list">
+        {steps.map(function (step, index) {
+          var expanded = expandedStepId === step.id;
+          var doneStep = isDoneStepStatus(step.status);
+          var runningStep = isRunningStepStatus(step.status);
+          var failedStep = step.status === "failed";
+          var state = doneStep ? "done" : runningStep ? "current" : failedStep ? "failed" : "idle";
+          var statusLabel = doneStep ? "已完成" : runningStep ? "进行中" : failedStep ? "需处理" : "等待执行";
+          var doneStamp = step.completedAt || step.updatedAt || "";
+          var time = doneStep && doneStamp ? WorkbenchModel.formatTime(doneStamp) : "";
+          var duration = doneStep ? stepDurationText(step) : "";
+          var estimate = runningStep && step.estimate ? String(step.estimate) : "";
+          var hasFiles = Array.isArray(step.relatedFiles) && step.relatedFiles.length > 0;
+          var progressText = step.currentAction || step.description || "";
+          var isLast = index === steps.length - 1;
+          return (
+            <div key={step.id} className={"wbp-step " + state + (expanded ? " expanded" : "")}>
+              {/* Timeline rail: node + connector line */}
+              <div className="wbp-rail">
+                <button
+                  type="button"
+                  className={"wbp-node " + state}
+                  onClick={function () { onToggleStep(step.id); }}
+                  aria-label={expanded ? "收起步骤" : "展开步骤"}
+                >
+                  {doneStep ? ICONS.checkSmall : null}
+                </button>
+                {!isLast && <span className={"wbp-line" + (doneStep ? " done" : "")} />}
               </div>
-            )}
-          </div>
-        );
-      })}
+
+              {/* Row (click to expand) */}
+              <div
+                className="wbp-row"
+                onClick={function () { onToggleStep(step.id); }}
+                role="button"
+                tabIndex={0}
+                onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggleStep(step.id); } }}
+              >
+                <div className="wbp-line-main">
+                  <div className="wbp-copy">
+                    <span className="wbp-idx">{index + 1}.</span>
+                    <span className="wbp-title">{step.title}</span>
+                  </div>
+                  <span className={"wbp-status " + state}>{statusLabel}</span>
+                  <time className="wbp-time">{time}</time>
+                  <span className="wbp-dur">
+                    {duration ? <>{ICON_CLOCK}<span>{duration}</span></> : estimate ? <span className="wbp-estimate">预计 {estimate}</span> : null}
+                  </span>
+                  <span className={"wbp-caret" + (expanded ? " open" : "")}>{ICON_CHEVRON}</span>
+                </div>
+
+                {/* Expanded detail */}
+                {expanded && (
+                  <div className="wbp-detail" onClick={function (e) { e.stopPropagation(); }}>
+                    <div className="wbp-detail-grid">
+                      <div className="wbp-detail-card">
+                        <div className="wbp-detail-label">步骤进展</div>
+                        <p className="wbp-detail-body">{progressText || "等待 Agent 更新这个步骤的进展。"}</p>
+                        {Array.isArray(step.progressEvents) && step.progressEvents.length > 0 && (
+                          <ul className="wbp-events">
+                            {step.progressEvents.slice(-3).map(function (ev, i) {
+                              return <li key={i}>{ev.body || ev.text || ev.message || String(ev)}</li>;
+                            })}
+                          </ul>
+                        )}
+                      </div>
+                      <div className="wbp-detail-card">
+                        <div className="wbp-detail-label">
+                          {ICON_FILE}<span>相关文件</span>
+                          {hasFiles && <span className="wbp-file-count">{step.relatedFiles.length}</span>}
+                        </div>
+                        {hasFiles ? (
+                          <div className="wbp-file-chips">
+                            {step.relatedFiles.map(function (file) {
+                              return (
+                                <button
+                                  key={file.path || file.name}
+                                  type="button"
+                                  className="wbp-file-chip"
+                                  onClick={function () { onRightTab("files"); }}
+                                >
+                                  {(file.path || file.name || "").split("/").pop()}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="wbp-detail-empty">暂无相关文件</p>
+                        )}
+                      </div>
+                    </div>
+                    {!doneStep && (
+                      <div className="wbp-detail-actions">
+                        {runningStep ? (
+                          <button type="button" className="wb-btn danger" onClick={function () { controller.interrupt(); }}>停止执行</button>
+                        ) : (
+                          <button type="button" className="wb-btn primary" disabled={controller.busy} onClick={function () { controller.runStep(step, index); }}>执行此步骤</button>
+                        )}
+                        <button type="button" className="wb-btn ghost" onClick={function () { onRightTab("logs"); }}>查看日志</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -1544,7 +2046,6 @@ function ContextTab({ project, session, activeStep }) {
         <div className="wb-kv"><span>状态</span><b>{WorkbenchModel.statusText(session.status)}</b></div>
         {!isInit && <div className="wb-kv"><span>优先级</span><b>{priorityText(session.priority)}</b></div>}
         <p>{session.goal || "暂无任务目标"}</p>
-        {activeStep && <p className="workbench-muted">当前步骤：{activeStep.title}</p>}
       </SideSection>
       <SideSection title="项目上下文">
         <div className="wb-kv"><span>项目</span><b>{project ? project.name : "—"}</b></div>

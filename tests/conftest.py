@@ -73,6 +73,12 @@ def _reset_agent_global_state():
     #    previous test does not bleed into this one.
     _state._interrupt_event.clear()
 
+    # 2b. Reset the candidate failure-cooldown cache: a test that exercises a
+    #     failing candidate must not make a later test silently skip it.
+    from cyrene import call_llm as _call_llm_mod
+    _call_llm_mod._candidate_cooldowns.clear()
+
+
     # 3/4. Cancel + clear all fire-and-forget task registries.
     _cancel_pending_tasks(_state._pending_interrupt_clearers)
     _cancel_pending_tasks(_state._pending_label_refreshes)

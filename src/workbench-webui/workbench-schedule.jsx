@@ -73,30 +73,35 @@
     if (!r.ok) throw new Error(payload.error || payload.detail || ("HTTP " + r.status));
     return payload;
   }
-  var API = {
-    occurrences: async function (startISO, endISO) {
-      var r = await fetch("/api/workbench/schedule/occurrences?start=" + encodeURIComponent(startISO) + "&end=" + encodeURIComponent(endISO));
-      var p = await jsonOrThrow(r);
-      return (p && p.events) || [];
-    },
-    create: async function (body) {
-      var r = await fetch("/api/workbench/schedule/tasks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      return jsonOrThrow(r);
-    },
-    update: async function (id, body) {
-      var r = await fetch("/api/workbench/schedule/tasks/" + encodeURIComponent(id), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      return jsonOrThrow(r);
-    },
-    remove: async function (id) {
-      var r = await fetch("/api/workbench/schedule/tasks/" + encodeURIComponent(id), { method: "DELETE" });
-      return jsonOrThrow(r);
-    },
-    runs: async function (id) {
-      var r = await fetch("/api/workbench/schedule/tasks/" + encodeURIComponent(id) + "/runs?limit=20");
-      var p = await jsonOrThrow(r);
-      return (p && p.runs) || [];
-    },
-  };
+  function scheduleApi(workspace) {
+    function qs(extra) {
+      return "workspace=" + encodeURIComponent(workspace || "default") + (extra ? "&" + extra : "");
+    }
+    return {
+      occurrences: async function (startISO, endISO) {
+        var r = await fetch("/api/workbench/schedule/occurrences?" + qs("start=" + encodeURIComponent(startISO) + "&end=" + encodeURIComponent(endISO)));
+        var p = await jsonOrThrow(r);
+        return (p && p.events) || [];
+      },
+      create: async function (body) {
+        var r = await fetch("/api/workbench/schedule/tasks?" + qs(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        return jsonOrThrow(r);
+      },
+      update: async function (id, body) {
+        var r = await fetch("/api/workbench/schedule/tasks/" + encodeURIComponent(id) + "?" + qs(), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        return jsonOrThrow(r);
+      },
+      remove: async function (id) {
+        var r = await fetch("/api/workbench/schedule/tasks/" + encodeURIComponent(id) + "?" + qs(), { method: "DELETE" });
+        return jsonOrThrow(r);
+      },
+      runs: async function (id) {
+        var r = await fetch("/api/workbench/schedule/tasks/" + encodeURIComponent(id) + "/runs?" + qs("limit=20"));
+        var p = await jsonOrThrow(r);
+        return (p && p.runs) || [];
+      },
+    };
+  }
 
   // ── schedule <-> form mapping ────────────────────────────────────────
   // Build a backend schedule spec from the friendly form. Cron fields use the
@@ -290,16 +295,18 @@
     var durMin = Math.max(24, (ev._dayEnd || ev._end).getTime() / 60000 - (ev._dayStart || ev._start).getTime() / 60000);
     var lanes = ev._lanes || 1, lane = ev._lane || 0;
     var widthPct = 100 / lanes;
+    var blockHeight = Math.max(22, durMin / 60 * HOUR_PX - 2);
+    var compact = blockHeight < 40;
     var style = {
       top: (topMin / 60 * HOUR_PX) + "px",
-      height: Math.max(22, durMin / 60 * HOUR_PX - 2) + "px",
+      height: blockHeight + "px",
       left: "calc(" + (lane * widthPct) + "% + 2px)",
       width: "calc(" + widthPct + "% - 4px)",
     };
     return React.createElement(
       "button", {
         type: "button",
-        className: "wb-sched-block cat-" + ev.category + (ev.status === "paused" ? " paused" : "") + (props.active ? " active" : ""),
+        className: "wb-sched-block cat-" + ev.category + (compact ? " compact" : "") + (ev.status === "paused" ? " paused" : "") + (props.active ? " active" : ""),
         style: style, onClick: function (e) { e.stopPropagation(); props.onSelect(ev); }, title: ev.title,
       },
       React.createElement("span", { className: "wb-sched-block-time" }, clockHM(ev._start) + " – " + clockHM(ev._end)),
@@ -741,6 +748,9 @@
 
   // ── main page ────────────────────────────────────────────────────────
   function WorkbenchSchedulePage(props) {
+    var project = props && props.project;
+    var workspace = (project && (project.dataKey || project.id)) || "default";
+    var API = useMemo(function () { return scheduleApi(workspace); }, [workspace]);
     var today = startOfDay(new Date());
     var viewState = useState("day"); var viewMode = viewState[0], setViewMode = viewState[1];
     var anchorState = useState(today); var anchorDate = anchorState[0], setAnchorDate = anchorState[1];
@@ -773,7 +783,7 @@
         .catch(function (e) { setError(e.message || String(e)); setRawEvents([]); })
         .finally(function () { setLoading(false); });
     }
-    useEffect(function () { load(); /* eslint-disable-next-line */ }, [windowRange.start.getTime(), windowRange.end.getTime()]);
+    useEffect(function () { load(); /* eslint-disable-next-line */ }, [windowRange.start.getTime(), windowRange.end.getTime(), workspace]);
 
     var events = useMemo(function () {
       return decorate(rawEvents).filter(function (ev) { return visible[ev.category]; });

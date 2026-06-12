@@ -61,3 +61,37 @@ def test_workbench_init_tool_creates_task_sessions_from_major_plan():
     assert created[0]["constraints"] == ["范围限制：不做移动端"]
     assert created[0]["acceptanceCriteria"][0]["text"] == "需求边界已确认"
     assert created[0]["events"][0]["type"] == "CreatedFromInitPlan"
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_workbench_init_task_plan_reports_llm_success(monkeypatch):
+    from webui import routes as R
+
+    async def fake_call_llm(messages, tools=None, max_tokens=None, secondary=False, thinking="auto"):
+        return {"content": '{"tasks": [{"title": "拆解需求", "goal": "明确范围", "priority": "high"}]}'}
+
+    monkeypatch.setattr(R, "_call_llm", fake_call_llm)
+    plan, from_llm = await R._workbench_generate_init_task_plan(
+        {"id": "p1", "name": "Demo", "template": "blank"}, {"answers": {}},
+    )
+    assert from_llm is True
+    assert plan[0]["title"] == "拆解需求"
+
+
+@pytest.mark.asyncio
+async def test_workbench_init_task_plan_reports_fallback_on_failure(monkeypatch):
+    from webui import routes as R
+
+    async def failing_call_llm(messages, tools=None, max_tokens=None, secondary=False, thinking="auto"):
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(R, "_call_llm", failing_call_llm)
+    plan, from_llm = await R._workbench_generate_init_task_plan(
+        {"id": "p1", "name": "Demo", "template": "blank"},
+        {"answers": {"goal": "做一个 CLI 工具"}},
+    )
+    assert from_llm is False
+    assert plan, "fallback plan must not be empty"

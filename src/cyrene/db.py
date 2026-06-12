@@ -15,6 +15,7 @@ _CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id TEXT PRIMARY KEY,
     chat_id INTEGER NOT NULL,
+    project_id TEXT DEFAULT 'default',
     prompt TEXT NOT NULL,
     schedule_type TEXT NOT NULL,
     schedule_value TEXT NOT NULL,
@@ -224,6 +225,13 @@ async def init_db(db_path: str) -> None:
             await db.execute("ALTER TABLE scheduled_tasks ADD COLUMN permission_mode TEXT DEFAULT 'workspace_only'")
         except Exception:
             pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE scheduled_tasks ADD COLUMN project_id TEXT DEFAULT 'default'")
+        except Exception:
+            pass  # Column already exists
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_project_id ON scheduled_tasks(project_id)"
+        )
         try:
             await db.execute("ALTER TABLE kb_documents ADD COLUMN content_hash TEXT DEFAULT ''")
         except Exception:
@@ -818,21 +826,27 @@ async def _maybe_backfill_analytics(db_path: str) -> None:
 
 # --- Task CRUD ---
 
-async def create_task(db_path: str, chat_id: int, prompt: str, schedule_type: str, schedule_value: str, next_run: str, permission_mode: str = "workspace_only") -> str:
+async def create_task(db_path: str, chat_id: int, prompt: str, schedule_type: str, schedule_value: str, next_run: str, permission_mode: str = "workspace_only", project_id: str = "default") -> str:
     task_id = uuid.uuid4().hex[:8]
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
-            "INSERT INTO scheduled_tasks (id, chat_id, prompt, schedule_type, schedule_value, next_run, created_at, permission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (task_id, chat_id, prompt, schedule_type, schedule_value, next_run, datetime.now(timezone.utc).isoformat(), permission_mode),
+            "INSERT INTO scheduled_tasks (id, chat_id, project_id, prompt, schedule_type, schedule_value, next_run, created_at, permission_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (task_id, chat_id, project_id or "default", prompt, schedule_type, schedule_value, next_run, datetime.now(timezone.utc).isoformat(), permission_mode),
         )
         await db.commit()
     return task_id
 
 
-async def get_all_tasks(db_path: str) -> list[dict]:
+async def get_all_tasks(db_path: str, project_id: str | None = None) -> list[dict]:
     async with aiosqlite.connect(db_path) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM scheduled_tasks")
+        if project_id is None:
+            cursor = await db.execute("SELECT * FROM scheduled_tasks")
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM scheduled_tasks WHERE COALESCE(project_id, 'default') = ?",
+                (project_id or "default",),
+            )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 

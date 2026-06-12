@@ -120,6 +120,9 @@ _persist_history_prefix_len: ContextVar[int] = ContextVar("_persist_history_pref
 _persist_insert_at: ContextVar[int | None] = ContextVar("_persist_insert_at", default=None)
 _pending_intermediate_user_replies: ContextVar[list[dict[str, Any]] | None] = ContextVar("_pending_intermediate_user_replies", default=None)
 _reply_stream_writer: ContextVar[Callable[[dict[str, Any]], Awaitable[None]] | None] = ContextVar("_reply_stream_writer", default=None)
+# Usage dict of the most recent final-reply LLM call (streaming finals return
+# plain text, so token usage would otherwise be lost before persisting).
+_last_final_reply_usage: ContextVar[dict[str, Any] | None] = ContextVar("_last_final_reply_usage", default=None)
 
 _ui_round_hide_initial_detail: ContextVar[bool] = ContextVar("_ui_round_hide_initial_detail", default=False)
 _ui_round_assistant_meta: ContextVar[dict[str, Any] | None] = ContextVar("_ui_round_assistant_meta", default=None)

@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from cyrene.config import DATA_DIR
 from cyrene.io_utils import atomic_write_json, read_json_safe
+from webui.workbench_notifications import append_notification
 
 logger = logging.getLogger(__name__)
 
@@ -121,10 +122,69 @@ def _public_chat_light(chat: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Transcript entry without server-private fields (local upload paths)."""
+    if isinstance(message, dict) and "agentAttachments" in message:
+        return {k: v for k, v in message.items() if k != "agentAttachments"}
+    return message
+
+
 def _public_chat_full(chat: dict[str, Any]) -> dict[str, Any]:
     payload = _public_chat_light(chat)
-    payload["messages"] = chat.get("messages") or []
+    payload["messages"] = [_public_message(m) for m in (chat.get("messages") or [])]
     return payload
+
+
+def _legacy_message(message: dict[str, Any], index: int) -> dict[str, Any]:
+    role = "assistant" if message.get("role") in ("agent", "assistant") else str(message.get("role") or "user")
+    out: dict[str, Any] = {
+        "id": str(message.get("id") or f"legacy_msg_{index}"),
+        "role": role,
+        "content": str(message.get("content") or message.get("body") or ""),
+        "createdAt": str(message.get("createdAt") or message.get("time") or ""),
+        "legacy": True,
+    }
+    if isinstance(message.get("attachments"), list):
+        out["attachments"] = message.get("attachments")
+    return out
+
+
+def _legacy_chat_from_session(session: dict[str, Any], project_id: str, *, full: bool = False) -> dict[str, Any]:
+    raw_messages = ((session.get("chat") or {}).get("messages") or []) if isinstance(session.get("chat"), dict) else []
+    messages = [_legacy_message(message, index) for index, message in enumerate(raw_messages)]
+    chat = {
+        "id": "legacy:" + project_id + ":" + str(session.get("id") or ""),
+        "projectId": project_id,
+        "kind": "chat",
+        "title": str(session.get("title") or "旧对话"),
+        "status": session.get("status") or "done",
+        "model": session.get("model") or "",
+        "createdAt": session.get("started") or "",
+        "updatedAt": session.get("started") or "",
+        "preview": str(session.get("preview") or ""),
+        "messageCount": len(messages),
+        "usage": {},
+        "legacy": True,
+    }
+    if full:
+        chat["messages"] = messages
+    return chat
+
+
+def _legacy_chats(project_id: str, *, full_id: str = "") -> list[dict[str, Any]]:
+    try:
+        from webui import routes as R
+
+        out: list[dict[str, Any]] = []
+        for session in R._build_sessions():
+            chat_id = "legacy:" + project_id + ":" + str(session.get("id") or "")
+            if full_id and chat_id != full_id:
+                continue
+            out.append(_legacy_chat_from_session(session, project_id, full=bool(full_id)))
+        return out
+    except Exception:
+        logger.exception("Failed to build legacy chats for workbench")
+        return []
 
 
 def _aggregate_usage(messages: list[dict[str, Any]]) -> dict[str, int]:
@@ -216,6 +276,38 @@ def _extract_exchange_meta(
     return trace[:40], usage, files[:20]
 
 
+def _truncate_state_for_retry(session_id: str) -> bool:
+    """Drop the last exchange from the agent's raw state so a retry regenerates
+    the reply without seeing the previous answer.
+
+    Cuts the message list right BEFORE the last visible user entry — a user
+    message is always a valid history boundary, so the remaining prefix stays
+    structurally sound (no orphan tool results). ``run_agent`` re-appends the
+    user message itself.
+    """
+    from cyrene.agent.state import _session_state_file
+    path = _session_state_file(session_id)
+    data = read_json_safe(path)
+    if not isinstance(data, dict):
+        return False
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    cut_at = None
+    for index in range(len(messages) - 1, -1, -1):
+        entry = messages[index]
+        if not isinstance(entry, dict) or entry.get("compacted_block"):
+            continue
+        if str(entry.get("role") or "") == "user" and not entry.get("hidden_from_ui"):
+            cut_at = index
+            break
+    if cut_at is None:
+        return False
+    data["messages"] = messages[:cut_at]
+    atomic_write_json(path, data)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -228,15 +320,26 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
         from webui import routes as legacy_routes
         return legacy_routes
 
+    def _project_data_key(project_id: str) -> str:
+        R = _routes()
+        store = R._read_workbench_store()
+        project = R._workbench_find_project(store, project_id)
+        return R._workbench_project_data_key(project) if project else project_id
+
     @router.get("/api/workbench/chats")
     async def api_workbench_list_chats(project: str = ""):
         payload = _read_chats_store()
+        data_key = _project_data_key(project) if project else ""
         chats = [
             _public_chat_light(chat)
             for chat in payload.get("chats", [])
             if not project or str(chat.get("projectId") or "") == project
         ]
-        chats.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+        if project and data_key == "default":
+            chats.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
+            chats = _legacy_chats(project) + chats
+        else:
+            chats.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return {"chats": chats}
 
     @router.post("/api/workbench/chats")
@@ -257,6 +360,14 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
 
     @router.get("/api/workbench/chats/{chat_id}")
     async def api_workbench_get_chat(chat_id: str):
+        if chat_id.startswith("legacy:"):
+            _prefix, project_id, _session_id = (chat_id.split(":", 2) + ["", ""])[:3]
+            if not project_id or _project_data_key(project_id) != "default":
+                return JSONResponse({"error": "chat not found"}, status_code=404)
+            legacy = _legacy_chats(project_id, full_id=chat_id)
+            if not legacy:
+                return JSONResponse({"error": "chat not found"}, status_code=404)
+            return {"chat": legacy[0]}
         payload = _read_chats_store()
         chat = _find_chat(payload, chat_id)
         if not chat:
@@ -266,6 +377,8 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
     @router.patch("/api/workbench/chats/{chat_id}")
     async def api_workbench_update_chat(chat_id: str, request: Request):
         body = await request.json()
+        if chat_id.startswith("legacy:"):
+            return JSONResponse({"error": "legacy chat metadata is read-only"}, status_code=403)
         payload = _read_chats_store()
         chat = _find_chat(payload, chat_id)
         if not chat:
@@ -279,6 +392,8 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
     @router.delete("/api/workbench/chats/{chat_id}")
     async def api_workbench_delete_chat(chat_id: str):
         from cyrene.agent import clear_session_id, interrupt_active_run
+        if chat_id.startswith("legacy:"):
+            return JSONResponse({"error": "delete legacy sessions from the legacy session view"}, status_code=403)
         payload = _read_chats_store()
         chats = payload.get("chats", [])
         next_chats = [chat for chat in chats if str(chat.get("id") or "") != chat_id]
@@ -303,6 +418,7 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
         attachments = body.get("attachments") if isinstance(body.get("attachments"), list) else []
         command = str(body.get("command") or "").strip()
         wants_stream = bool(body.get("stream"))
+        retry = bool(body.get("retry"))
         mode = str(body.get("mode") or "auto").strip().lower()
         if mode not in PERMISSION_MODES:
             mode = "auto"
@@ -310,7 +426,7 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
         R = _routes()
         normalized = R._workbench_normalize_attachments(attachments)
         public_attachments = [R.build_public_attachment_payload(item) for item in normalized]
-        if not message and not normalized:
+        if not retry and not message and not normalized:
             return JSONResponse({"error": "message is required"}, status_code=400)
 
         payload = _read_chats_store()
@@ -320,19 +436,43 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
         project_id = str(chat.get("projectId") or "")
 
         now = _utc_now_iso()
-        user_entry: dict[str, Any] = {
-            "id": _short_id("msg"),
-            "role": "user",
-            "content": message,
-            "createdAt": now,
-        }
-        if public_attachments:
-            user_entry["attachments"] = public_attachments
         messages = chat.setdefault("messages", [])
-        is_first_message = not any(m.get("role") == "user" for m in messages)
-        messages.append(user_entry)
-        if is_first_message and chat.get("title") in ("", "新对话", None) and message:
-            chat["title"] = message.replace("\n", " ")[:24]
+        user_entry: dict[str, Any]
+        truncate_after_id = ""
+        if retry:
+            # Regenerate: replay the last user message; drop everything after it
+            # from both the public transcript and the agent's raw state.
+            last_user_index = -1
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index].get("role") == "user":
+                    last_user_index = index
+                    break
+            if last_user_index < 0:
+                return JSONResponse({"error": "nothing to retry"}, status_code=400)
+            user_entry = messages[last_user_index]
+            del messages[last_user_index + 1:]
+            truncate_after_id = str(user_entry.get("id") or "")
+            message = str(user_entry.get("content") or "").strip()
+            command = ""
+            normalized = R._workbench_normalize_attachments(user_entry.get("agentAttachments") or [])
+            public_attachments = user_entry.get("attachments") if isinstance(user_entry.get("attachments"), list) else []
+            _truncate_state_for_retry(chat_id)
+        else:
+            user_entry = {
+                "id": _short_id("msg"),
+                "role": "user",
+                "content": message,
+                "createdAt": now,
+            }
+            if public_attachments:
+                user_entry["attachments"] = public_attachments
+                # Keep the normalized (path-bearing) attachments privately so a
+                # later retry can rebuild the agent prompt + read-guard map.
+                user_entry["agentAttachments"] = normalized
+            is_first_message = not any(m.get("role") == "user" for m in messages)
+            messages.append(user_entry)
+            if is_first_message and chat.get("title") in ("", "新对话", None) and message:
+                chat["title"] = message.replace("\n", " ")[:24]
         chat["status"] = "running"
         chat["model"] = R._get_model()
         chat["updatedAt"] = now
@@ -394,8 +534,18 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
             fresh_chat["status"] = "idle"
             fresh_chat["updatedAt"] = assistant_entry["createdAt"]
             _write_chats_store(fresh)
-            if not command:
-                R.schedule_capture(project_id, message, str(reply_text or ""))
+            if not command and not retry:
+                R.schedule_capture(_project_data_key(project_id), message, str(reply_text or ""))
+                append_notification(
+                    title="Agent 回复完成",
+                    body=f"Agent 在「{fresh_chat.get('title') or '新对话'}」中回复了你。",
+                    tab="mention",
+                    project_ref=project_id,
+                    source="workbench_chat_reply",
+                    source_label="对话",
+                    link_label=str(fresh_chat.get("title") or ""),
+                    meta={"chatId": chat_id},
+                )
             return assistant_entry
 
         def _settle_status() -> None:
@@ -413,7 +563,7 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
                 _settle_status()
                 return JSONResponse({"error": "agent run failed", "detail": str(exc)}, status_code=502)
             assistant_entry = _finalize(reply)
-            return {"ok": True, "userMessage": user_entry, "assistantMessage": assistant_entry}
+            return {"ok": True, "userMessage": _public_message(user_entry), "assistantMessage": assistant_entry, "retry": retry}
 
         async def event_stream():
             queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -426,7 +576,13 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
             task = asyncio.create_task(_run())
             _reply_stream_writer.reset(token)
 
-            yield _ndjson_line({"type": "ack", "userMessage": user_entry, "chatId": chat_id})
+            ack: dict[str, Any] = {"type": "ack", "chatId": chat_id}
+            if retry:
+                ack["retry"] = True
+                ack["truncateAfterMessageId"] = truncate_after_id
+            else:
+                ack["userMessage"] = _public_message(user_entry)
+            yield _ndjson_line(ack)
             try:
                 while True:
                     if task.done() and queue.empty():
@@ -502,6 +658,16 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
         store["activeProjectId"] = project.get("id")
         store["activeSessionId"] = session["id"]
         R._write_workbench_store(store)
+        append_notification(
+            title="对话已转为任务",
+            body=f"对话「{chat.get('title') or '新对话'}」已创建任务「{title}」。",
+            tab="comment",
+            project_ref=project.get("id"),
+            source="chat_to_task",
+            source_label="任务",
+            link_label=title,
+            meta={"chatId": chat_id, "sessionId": session["id"]},
+        )
         return {"ok": True, "session": session, **store}
 
 

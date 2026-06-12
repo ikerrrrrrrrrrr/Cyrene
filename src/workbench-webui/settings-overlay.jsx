@@ -14,6 +14,15 @@ function readTweak(key, fallback) {
   try { var v = localStorage.getItem("cyrene-tweak-" + key); return v !== null ? JSON.parse(v) : fallback; } catch (e) { return fallback; }
 }
 
+function readCapability(key, fallback) {
+  try {
+    var v = localStorage.getItem("cyrene-tweak-cap-" + key);
+    return v !== null ? JSON.parse(v) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
 function createEmptyModel() {
   return {
     id: "candidate-" + Date.now() + "-" + Math.random().toString(16).slice(2, 6),
@@ -89,16 +98,18 @@ function SettingsOverlay({
   var [soulDraft, setSoulDraft] = useStateSt("");
   var [soulStatus, setSoulStatus] = useStateSt("");
   var [agentProactive, setAgentProactive] = useStateSt(true);
-  var [streamThinking, setStreamThinking] = useStateSt(function () { return readTweak("cap-streamThinking", true); });
 
   // ── Channels state ──
   var [telegramToken, setTelegramToken] = useStateSt("");
   var [telegramSaved, setTelegramSaved] = useStateSt("");
+  var [wechatToken, setWechatToken] = useStateSt("");
+  var [wechatSaved, setWechatSaved] = useStateSt("");
   var [notifyTelegram, setNotifyTelegram] = useStateSt(true);
+  var [notifyWechat, setNotifyWechat] = useStateSt(true);
 
   // ── Capabilities state ──
-  var [browserTools, setBrowserTools] = useStateSt(true);
-  var [redactSecrets, setRedactSecrets] = useStateSt(function () { return readTweak("cap-redactSecrets", true); });
+  var [browserTools, setBrowserTools] = useStateSt(function () { return readCapability("browserTools", true); });
+  var [redactSecrets, setRedactSecrets] = useStateSt(function () { return readCapability("redactSecrets", true); });
   var [mcpConfigs, setMcpConfigs] = useStateSt([]);
   var [mcpServers, setMcpServers] = useStateSt([]);
   var [mcpSaved, setMcpSaved] = useStateSt("");
@@ -122,14 +133,19 @@ function SettingsOverlay({
     accent: readTweak("accent", null),
     textSize: readTweak("textSize", "default"),
     density: readTweak("density", "cozy"),
-    orientation: readTweak("orientation", "horizontal"),
-    showLegend: readTweak("showLegend", true),
     animatePulse: readTweak("animatePulse", true),
   };
 
   function setTweak(key, val) {
     try { localStorage.setItem("cyrene-tweak-" + key, JSON.stringify(val)); } catch (e) {}
+    if (key === "density") document.documentElement.dataset.density = val;
+    if (key === "textSize") document.documentElement.dataset.textSize = val || "default";
+    if (key === "animatePulse") document.documentElement.dataset.animPulse = val ? "on" : "off";
     window.dispatchEvent(new Event("cyrene-tweak-" + key + "-change"));
+  }
+
+  function setCapability(key, val) {
+    try { localStorage.setItem("cyrene-tweak-cap-" + key, JSON.stringify(val)); } catch (e) {}
   }
 
   // ── Keyboard: Escape to close ──
@@ -151,11 +167,18 @@ function SettingsOverlay({
 
   // Load settings
   useEffectSt(function () {
+    document.documentElement.dataset.density = tweaks.density;
+    document.documentElement.dataset.textSize = tweaks.textSize || "default";
+    document.documentElement.dataset.animPulse = tweaks.animatePulse ? "on" : "off";
+
     setConfigLoading(true);
     fetch("/api/settings/config").then(function (r) { return r.ok ? r.json() : Promise.reject("HTTP " + r.status); })
       .then(function (p) {
         setConfig(p);
         setSoulDraft(p.soul_content || "");
+        if (p.notify_telegram !== undefined) setNotifyTelegram(p.notify_telegram);
+        if (p.notify_wechat !== undefined) setNotifyWechat(p.notify_wechat);
+        if (p.redact_secrets !== undefined) setRedactSecrets(!!p.redact_secrets);
         if (p.agent_proactive !== undefined) setAgentProactive(p.agent_proactive);
         setConfigLoading(false);
       }).catch(function () { setConfigLoading(false); });
@@ -179,11 +202,21 @@ function SettingsOverlay({
       });
     }).catch(function () {});
 
-    fetch("/api/settings/tools").then(function (r) { return r.json(); }).then(function (p) { setToolList(p.tools || []); }).catch(function () {});
+    fetch("/api/settings/tools").then(function (r) { return r.json(); }).then(function (p) {
+      var tools = p.tools || [];
+      var browserToolNames = ["browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_request_takeover"];
+      setToolList(tools);
+      if (tools.length) {
+        var browserToolsList = tools.filter(function (tool) { return browserToolNames.indexOf(tool.name) >= 0; });
+        if (browserToolsList.length) setBrowserTools(browserToolsList.every(function (tool) { return tool.enabled !== false; }));
+      }
+    }).catch(function () {});
     fetch("/api/settings/mcp").then(function (r) { return r.json(); }).then(function (p) { setMcpServers(p.servers || []); setMcpConfigs(p.configs || []); }).catch(function () {});
     fetch("/api/settings/keys").then(function (r) { return r.json(); }).then(function (p) {
       var tk = (p.keys || []).find(function (item) { return item.key === "TELEGRAM_BOT_TOKEN"; });
       if (tk) setTelegramToken(tk.value || "");
+      var wk = (p.keys || []).find(function (item) { return item.key === "WECHAT_BOT_TOKEN"; });
+      if (wk) setWechatToken(wk.value || "");
       var ak = (p.keys || []).find(function (item) { return item.key === "AMAP_API_KEY"; });
       if (ak) setAmapKey(ak.value || "");
     }).catch(function () {});
@@ -254,7 +287,23 @@ function SettingsOverlay({
     }).catch(function () {});
   }
 
-  function toggleCapability(key) { setStreamThinking(function (prev) { var n = !prev; try { localStorage.setItem("cyrene-tweak-cap-" + key, JSON.stringify(n)); } catch (e) {} return n; }); }
+  function saveBrowserTools(nextEnabled) {
+    var browserToolNames = ["browser_navigate", "browser_screenshot", "browser_click", "browser_type", "browser_request_takeover"];
+    var nextToolList = toolList.map(function (tool) {
+      return browserToolNames.indexOf(tool.name) >= 0 ? { ...tool, enabled: nextEnabled } : tool;
+    });
+    var map = {};
+    nextToolList.forEach(function (tool) { map[tool.name] = tool.enabled; });
+    setBrowserTools(nextEnabled);
+    setToolList(nextToolList);
+    fetch("/api/settings/tools", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tools: map }) }).catch(function () {});
+  }
+
+  function saveRedactSecrets(nextEnabled) {
+    setRedactSecrets(nextEnabled);
+    setCapability("redactSecrets", nextEnabled);
+    fetch("/api/settings/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ redact_secrets: nextEnabled }) }).catch(function () {});
+  }
 
   function saveMcp() {
     setMcpSaved(t("settings.saving"));
@@ -312,11 +361,11 @@ function SettingsOverlay({
         React.createElement("div", { className: "settings-overlay-content" },
           tab === "general" && GeneralPanel({ t, lang, setLang, developerMode, setDeveloperMode, desktopNotifications, toggleDesktopNotifications, mapProvider, setMapProvider, amapKey, setAmapKey, amapKeySaved, setAmapKeySaved }),
           tab === "models" && ModelsPanel({ t, models, setModels, draftModel, setDraftModel, visionModels, setVisionModels, draftVision, setDraftVision, secondaryModel, setSecondaryModel, modelsSaved, saveModels, config }),
-          tab === "channels" && ChannelsPanel({ t, telegramToken, setTelegramToken, telegramSaved, setTelegramSaved, notifyTelegram, setNotifyTelegram }),
-          tab === "agents" && AgentsPanel({ t, config, setConfig, configLoading, soulDraft, setSoulDraft, soulStatus, saveSoul, agentProactive, setAgentProactive, streamThinking, toggleCapability, saveAgents }),
+          tab === "channels" && ChannelsPanel({ t, telegramToken, setTelegramToken, telegramSaved, setTelegramSaved, wechatToken, setWechatToken, wechatSaved, setWechatSaved, notifyTelegram, setNotifyTelegram, notifyWechat, setNotifyWechat }),
+          tab === "agents" && AgentsPanel({ t, config, setConfig, configLoading, soulDraft, setSoulDraft, soulStatus, saveSoul, agentProactive, setAgentProactive, saveAgents }),
           tab === "appearance" && AppearancePanel({ t, tweaks, setTweak, actualTheme, theme: initialTheme }),
-          tab === "capabilities" && CapabilitiesPanel({ t, browserTools, setBrowserTools, mcpConfigs, setMcpConfigs, mcpServers, toolList, toolsExpanded, setToolsExpanded, toolsSaved, saveTools, newMcpServer, setNewMcpServer, mcpSaved, saveMcp, config }),
-          tab === "data" && DataPanel({ t, redactSecrets, setRedactSecrets, config, configLoading, resetStatus, setResetStatus, resetting, setResetting, backupList, backupMsg, setBackupMsg, loadBackups, exportSid, setExportSid, exportFmt, setExportFmt, exportMsg, setExportMsg, formatBytes, formatDate }),
+          tab === "capabilities" && CapabilitiesPanel({ t, browserTools, saveBrowserTools, mcpConfigs, setMcpConfigs, mcpServers, toolList, toolsExpanded, setToolsExpanded, toolsSaved, saveTools, newMcpServer, setNewMcpServer, mcpSaved, saveMcp, config }),
+          tab === "data" && DataPanel({ t, redactSecrets, saveRedactSecrets, config, configLoading, resetStatus, setResetStatus, resetting, setResetting, backupList, backupMsg, setBackupMsg, loadBackups, exportSid, setExportSid, exportFmt, setExportFmt, exportMsg, setExportMsg, formatBytes, formatDate }),
           tab === "about" && AboutPanel({ t, config }),
         ),
       ),
@@ -492,7 +541,7 @@ function modelDraftField(draft, setDraft, onAdd) {
 
 // ── Channels Panel ──
 function ChannelsPanel(p) {
-  var { t, telegramToken, setTelegramToken, telegramSaved, setTelegramSaved, notifyTelegram, setNotifyTelegram } = p;
+  var { t, telegramToken, setTelegramToken, telegramSaved, setTelegramSaved, wechatToken, setWechatToken, wechatSaved, setWechatSaved, notifyTelegram, setNotifyTelegram, notifyWechat, setNotifyWechat } = p;
 
   function saveTelegram() {
     if (!telegramToken || telegramToken.startsWith("••")) { setTelegramSaved(t("settings.noChanges")); setTimeout(function () { setTelegramSaved(""); }, 1500); return; }
@@ -500,6 +549,14 @@ function ChannelsPanel(p) {
     fetch("/api/settings/keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ TELEGRAM_BOT_TOKEN: telegramToken }) })
       .then(function () { setTelegramSaved(t("settings.saved")); setTimeout(function () { setTelegramSaved(""); }, 1500); })
       .catch(function () { setTelegramSaved(t("settings.error")); });
+  }
+
+  function saveWechat() {
+    if (!wechatToken || wechatToken.startsWith("••")) { setWechatSaved(t("settings.noChanges")); setTimeout(function () { setWechatSaved(""); }, 1500); return; }
+    setWechatSaved(t("settings.saving"));
+    fetch("/api/settings/keys", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ WECHAT_BOT_TOKEN: wechatToken }) })
+      .then(function () { setWechatSaved(t("settings.saved")); setTimeout(function () { setWechatSaved(""); }, 1500); })
+      .catch(function () { setWechatSaved(t("settings.error")); });
   }
 
   return React.createElement("div", { className: "settings-panel" },
@@ -533,30 +590,35 @@ function ChannelsPanel(p) {
         React.createElement("span", { className: "wb-channel-icon" }, "⌖"),
         React.createElement("b", null, "微信 / WeChat"),
       ),
-      React.createElement("p", { className: "wb-channel-desc" }, "微信接入功能需要配置自己的微信企业号或个人号。"),
+      React.createElement("p", { className: "wb-channel-desc" }, "通过 WeChat token 接入本地微信通道，用于通知与消息投递。"),
       FieldRow("WeChat Bot Token", null,
         React.createElement("div", { className: "wb-inline-row" },
-          React.createElement("input", { className: "wb-input mono", type: "password", placeholder: "WECHAT_BOT_TOKEN" }),
-          React.createElement("button", { className: "wb-btn primary" }, "保存"),
+          React.createElement("input", { className: "wb-input mono", type: "password", value: wechatToken, onChange: function (e) { setWechatToken(e.target.value); }, placeholder: "WECHAT_BOT_TOKEN" }),
+          React.createElement("button", { className: "wb-btn primary", onClick: saveWechat }, "保存"),
         ),
+        wechatSaved && React.createElement("span", { className: "wb-hint saved" }, wechatSaved),
       ),
-      FieldRow("通知推送", null, Toggle(true, function () {})),
+      FieldRow("通知推送", null, Toggle(notifyWechat, function () {
+        var next = !notifyWechat;
+        setNotifyWechat(next);
+        fetch("/api/settings/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notify_wechat: next }) }).catch(function () {});
+      })),
     ),
   );
 }
 
 // ── Agents Panel ──
 function AgentsPanel(p) {
-  var { t, config, setConfig, configLoading, soulDraft, setSoulDraft, soulStatus, saveSoul, agentProactive, setAgentProactive, streamThinking, toggleCapability, saveAgents } = p;
+  var { t, config, setConfig, configLoading, soulDraft, setSoulDraft, soulStatus, saveSoul, agentProactive, setAgentProactive, saveAgents } = p;
 
   return React.createElement("div", { className: "settings-panel" },
     SectionTitle(t("settings.agents"), t("settings.agentsSubtitle")),
 
     // SOUL.md
-    React.createElement("div", { className: "wb-field" },
+    React.createElement("div", { className: "wb-field wb-field-stack wb-field-soul" },
       React.createElement("div", { className: "wb-label" }, t("settings.soulMd"), React.createElement("small", null, t("settings.soulMdHint"))),
       React.createElement("textarea", { className: "wb-input mono wb-textarea-soul", value: soulDraft, onChange: function (e) { setSoulDraft(e.target.value); } }),
-      React.createElement("div", { className: "wb-inline-row", style: { marginTop: 8 } },
+      React.createElement("div", { className: "wb-inline-row wb-inline-row-start", style: { marginTop: 8 } },
         React.createElement("button", { className: "wb-btn primary", onClick: saveSoul }, t("settings.saveSoul")),
         React.createElement("span", { className: "wb-hint" }, soulStatus || (configLoading ? t("settings.pathLoading") : config.soul_path)),
       ),
@@ -570,7 +632,6 @@ function AgentsPanel(p) {
       ),
     ),
     FieldRow(t("settings.agentProactive"), t("settings.agentProactiveHint"), Toggle(agentProactive, function () { setAgentProactive(!agentProactive); })),
-    FieldRow(t("settings.streamReasoning"), t("settings.streamReasoningHint"), Toggle(streamThinking, function () { toggleCapability("streamThinking"); })),
     FieldRow(t("settings.heartbeatInterval"), t("settings.heartbeatIntervalHint"),
       React.createElement("input", { className: "wb-input mono", type: "number", min: "60", step: "60", value: config.heartbeat_interval, onChange: function (e) { setConfig({ ...config, heartbeat_interval: Number(e.target.value) || 1800 }); }, style: { maxWidth: 120 } }),
     ),
@@ -622,20 +683,13 @@ function AppearancePanel(p) {
         React.createElement("button", { className: "wb-seg-btn" + (tweaks.density === "compact" ? " active" : ""), onClick: function () { setTweak("density", "compact"); } }, t("settings.compact")),
       ),
     ),
-    FieldRow(t("settings.flowchartOrientation"), t("settings.flowchartOrientationHint"),
-      React.createElement("div", { className: "wb-seg" },
-        React.createElement("button", { className: "wb-seg-btn" + (tweaks.orientation === "horizontal" ? " active" : ""), onClick: function () { setTweak("orientation", "horizontal"); } }, "→ ", t("settings.horizontal")),
-        React.createElement("button", { className: "wb-seg-btn" + (tweaks.orientation === "vertical" ? " active" : ""), onClick: function () { setTweak("orientation", "vertical"); } }, "↓ ", t("settings.vertical")),
-      ),
-    ),
-    FieldRow(t("settings.canvasLegend"), t("settings.canvasLegendHint"), Toggle(tweaks.showLegend, function () { setTweak("showLegend", !tweaks.showLegend); })),
     FieldRow(t("settings.pulseAnimation"), t("settings.pulseAnimationHint"), Toggle(tweaks.animatePulse, function () { setTweak("animatePulse", !tweaks.animatePulse); })),
   );
 }
 
 // ── Capabilities Panel ──
 function CapabilitiesPanel(p) {
-  var { t, browserTools, setBrowserTools, mcpConfigs, setMcpConfigs, mcpServers, toolList, toolsExpanded, setToolsExpanded, toolsSaved, saveTools, newMcpServer, setNewMcpServer, mcpSaved, saveMcp, config } = p;
+  var { t, browserTools, saveBrowserTools, mcpConfigs, setMcpConfigs, mcpServers, toolList, toolsExpanded, setToolsExpanded, toolsSaved, saveTools, newMcpServer, setNewMcpServer, mcpSaved, saveMcp, config } = p;
 
   function addMcp() {
     var name = (newMcpServer.name || "").trim();
@@ -656,7 +710,7 @@ function CapabilitiesPanel(p) {
 
   return React.createElement("div", { className: "settings-panel" },
     SectionTitle(t("settings.capabilities"), t("settings.capabilitiesSubtitle")),
-    FieldRow(t("settings.browserTools"), t("settings.browserToolsHint"), Toggle(browserTools, function () { setBrowserTools(!browserTools); })),
+    FieldRow(t("settings.browserTools"), t("settings.browserToolsHint"), Toggle(browserTools, function () { saveBrowserTools(!browserTools); })),
 
     // Web Search (read only)
     SectionBlock(t("settings.webSearch"), null,
@@ -725,7 +779,7 @@ function CapabilitiesPanel(p) {
 
 // ── Data Panel ──
 function DataPanel(p) {
-  var { t, redactSecrets, setRedactSecrets, config, configLoading, resetStatus, setResetStatus, resetting, setResetting, backupList, backupMsg, setBackupMsg, loadBackups, exportSid, setExportSid, exportFmt, setExportFmt, exportMsg, setExportMsg, formatBytes, formatDate } = p;
+  var { t, redactSecrets, saveRedactSecrets, config, configLoading, resetStatus, setResetStatus, resetting, setResetting, backupList, backupMsg, setBackupMsg, loadBackups, exportSid, setExportSid, exportFmt, setExportFmt, exportMsg, setExportMsg, formatBytes, formatDate } = p;
 
   var DATA = window.DATA || {};
 
@@ -746,14 +800,20 @@ function DataPanel(p) {
 
   return React.createElement("div", { className: "settings-panel" },
     SectionTitle(t("settings.data"), t("settings.dataSubtitle")),
-    FieldRow(t("settings.redactSecrets"), t("settings.redactSecretsHint"), Toggle(redactSecrets, function () { setRedactSecrets(!redactSecrets); })),
+    FieldRow(t("settings.redactSecrets"), t("settings.redactSecretsHint"), Toggle(redactSecrets, function () { saveRedactSecrets(!redactSecrets); })),
     FieldRow(t("settings.clearSession"), t("settings.clearSessionHint"),
       React.createElement("button", { className: "wb-btn muted", onClick: clearSession }, t("settings.clearSessionBtn")),
     ),
-    FieldRow(t("settings.resetAppData"), t("settings.resetAppDataHint"),
-      React.createElement("div", { className: "wb-inline-row" },
-        React.createElement("button", { className: "wb-btn danger", onClick: resetData, disabled: resetting }, resetting ? t("settings.resettingData") : t("settings.resetAppDataBtn")),
-        resetStatus && React.createElement("span", { className: "wb-hint" }, resetStatus),
+    React.createElement("div", { className: "wb-field wb-field-stack wb-field-danger" },
+      React.createElement("div", { className: "wb-label" },
+        t("settings.resetAppData"),
+        React.createElement("small", null, t("settings.resetAppDataHint")),
+      ),
+      React.createElement("div", { className: "wb-controls" },
+        React.createElement("div", { className: "wb-inline-row wb-inline-row-start" },
+          React.createElement("button", { className: "wb-btn danger", onClick: resetData, disabled: resetting }, resetting ? t("settings.resettingData") : t("settings.resetAppDataBtn")),
+          resetStatus && React.createElement("span", { className: "wb-hint" }, resetStatus),
+        ),
       ),
     ),
 
@@ -827,6 +887,9 @@ function AboutPanel(p) {
     SectionTitle(t("settings.about"), t("settings.aboutSubtitle")),
 
     React.createElement("div", { className: "wb-about-hero" },
+      React.createElement("div", { className: "wb-about-logo", "aria-hidden": "true" },
+        React.createElement("div", { className: "brand-mark" }),
+      ),
       React.createElement("h3", null, "Cyrene"),
       React.createElement("p", null, t("settings.aboutHeroCopy")),
     ),
@@ -835,7 +898,12 @@ function AboutPanel(p) {
       React.createElement("div", { className: "wb-about-card" },
         React.createElement("span", { className: "wb-about-label" }, t("settings.projectName")),
         React.createElement("strong", null, "Cyrene"),
-        React.createElement("a", { className: "wb-btn", href: REPO_URL, target: "_blank", rel: "noopener noreferrer" }, "GitHub"),
+        React.createElement("a", { className: "wb-btn", href: REPO_URL, target: "_blank", rel: "noopener noreferrer" },
+          React.createElement("svg", { width: "14", height: "14", viewBox: "0 0 16 16", fill: "currentColor", "aria-hidden": "true" },
+            React.createElement("path", { d: "M8 0C3.58 0 0 3.58 0 8C0 11.54 2.29 14.53 5.47 15.59C5.87 15.66 6.02 15.42 6.02 15.21C6.02 15.02 6.01 14.39 6.01 13.56C4 13.93 3.48 13.07 3.32 12.62C3.23 12.39 2.84 11.68 2.5 11.49C2.22 11.34 1.82 10.96 2.49 10.95C3.12 10.94 3.57 11.53 3.72 11.76C4.44 12.97 5.59 12.63 6.05 12.42C6.12 11.9 6.33 11.55 6.56 11.35C4.78 11.15 2.92 10.46 2.92 7.4C2.92 6.53 3.23 5.82 3.74 5.26C3.66 5.06 3.38 4.24 3.82 3.13C3.82 3.13 4.49 2.92 6.02 3.95C6.66 3.77 7.34 3.68 8.02 3.68C8.7 3.68 9.38 3.77 10.02 3.95C11.55 2.91 12.22 3.13 12.22 3.13C12.66 4.24 12.38 5.06 12.3 5.26C12.8 5.82 13.12 6.52 13.12 7.4C13.12 10.47 11.25 11.15 9.47 11.35C9.76 11.6 10.01 12.08 10.01 12.83C10.01 13.9 10 14.76 10 15.21C10 15.42 10.15 15.67 10.56 15.59C13.7277 14.5265 16.0087 11.5363 16 8C16 3.58 12.42 0 8 0Z" })
+          ),
+          "GitHub"
+        ),
       ),
       React.createElement("div", { className: "wb-about-card" },
         React.createElement("span", { className: "wb-about-label" }, t("settings.version")),
@@ -879,13 +947,15 @@ function UpdateSection({ t }) {
     return function () { clearInterval(timer); };
   }, [downloading]);
 
-  var cv = info && info.current_version ? "v" + info.current_version : DATA.appVersion || "—";
   var lv = info && info.latest_version ? "v" + info.latest_version : "";
+  var statusText = checking
+    ? t("settings.updateChecking")
+    : (info && info.update_available
+      ? t("settings.updateAvailable")
+      : (info ? t("settings.upToDate") : "—"));
 
   return React.createElement("div", { className: "wb-update-section" },
-    info && info.update_available
-      ? React.createElement("p", { className: "wb-hint" }, cv, " → ", lv, " ", t("settings.updateAvailable"))
-      : React.createElement("p", { className: "wb-hint" }, cv, info ? " · " + t("settings.upToDate") : ""),
+    React.createElement("strong", { className: "wb-update-status" }, statusText),
     error && React.createElement("p", { className: "wb-hint", style: { color: "var(--wb-red)" } }, error),
     React.createElement("button", {
       className: "wb-btn" + (downloaded ? " primary" : ""),
