@@ -286,59 +286,269 @@ def _workbench_new_session(
 # The default onboarding form. Also doubles as the schema the LLM is asked to
 # mirror, and as the fallback whenever agent generation is unavailable.
 def _workbench_default_init_form(project: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return a deterministic onboarding form for empty-workspace projects.
+
+    The section structure and questions are chosen by template so users get
+    scoping questions that fit their project type. ``project`` is optional so
+    callers that don't have it yet get the generic blank form.
+    """
+    template = str(project.get("template") or "blank").strip() if project else "blank"
+    greeting = (
+        "你好！我是你的项目初始化助理。"
+        "我先从几个关键问题开始，以便更好地理解你的需求。"
+    )
+
+    FORMS: dict[str, dict] = {
+        "blank": {
+            "sections": [
+                {
+                    "id": "basics", "title": "项目概览",
+                    "questions": [
+                        {"id": "goal", "type": "textarea", "label": "你想做什么？期望达成什么目标？",
+                         "placeholder": "例如：写一份市场分析报告、开发一个博客网站、完成期末作业"},
+                        {"id": "description", "type": "textarea", "label": "具体描述一下要做的事情，包括背景和期望的结果",
+                         "placeholder": "例如：分析 Q3 的销售数据，输出一份包含图表的 PDF 报告"},
+                    ],
+                },
+                {
+                    "id": "scope", "title": "范围与要求",
+                    "questions": [
+                        {"id": "requirements", "type": "textarea", "label": "有哪些具体要求或内容需要包含？",
+                         "placeholder": "例如：数据分析图表、Python 后端、中英文双语输出"},
+                        {"id": "out_of_scope", "type": "textarea", "label": "有哪些明确不需要的或排除在外的？",
+                         "placeholder": "例如：不需要用户界面、不需要实时更新"},
+                    ],
+                },
+                {
+                    "id": "resources", "title": "资源与约束",
+                    "questions": [
+                        {"id": "resource", "type": "text", "label": "有哪些可用的资源或输入材料？",
+                         "placeholder": "例如：项目代码仓库、数据集、参考文档、设计稿"},
+                        {"id": "tech", "type": "text", "label": "是否有偏好的工具、技术栈或平台？",
+                         "placeholder": "例如：Python、LaTeX、Figma、GitHub Pages"},
+                    ],
+                },
+                {
+                    "id": "timeline", "title": "时间计划",
+                    "questions": [
+                        {"id": "deadline", "type": "text", "label": "期望什么时候完成？有没有关键时间点？",
+                         "placeholder": "例如：下周五之前"},
+                        {"id": "milestones", "type": "textarea", "label": "有哪些阶段性的交付节点？",
+                         "placeholder": "例如：周三前出初稿、周五前完成终版"},
+                    ],
+                },
+            ],
+        },
+        "product": {
+            "sections": [
+                {
+                    "id": "basics", "title": "产品概览",
+                    "questions": [
+                        {"id": "goal", "type": "textarea", "label": "这个产品的核心目标是什么？",
+                         "placeholder": "例如：打造一个团队协作工具，提高跨部门任务管理效率"},
+                        {"id": "problem", "type": "textarea", "label": "要解决用户的什么痛点？",
+                         "placeholder": "例如：任务分散、进度不透明、沟通成本高"},
+                        {"id": "users", "type": "text", "label": "目标用户是谁？",
+                         "placeholder": "例如：中小团队的 PM 和开发者"},
+                    ],
+                },
+                {
+                    "id": "scope", "title": "功能规划",
+                    "questions": [
+                        {"id": "features", "type": "textarea", "label": "核心功能有哪些？优先级如何？",
+                         "placeholder": "例如：任务看板（P0）、进度报表（P1）、消息通知（P2）"},
+                        {"id": "mvp", "type": "textarea", "label": "MVP 需要包含哪些功能？",
+                         "placeholder": "例如：用户登录、任务创建与指派、看板视图"},
+                    ],
+                },
+                {
+                    "id": "resources", "title": "资源与时间",
+                    "questions": [
+                        {"id": "team", "type": "text", "label": "团队规模和角色是怎样的？",
+                         "placeholder": "例如：2 前端 + 2 后端 + 1 设计"},
+                        {"id": "tech", "type": "text", "label": "确定的技术栈是什么？",
+                         "placeholder": "例如：React、Node.js、PostgreSQL"},
+                        {"id": "deadline", "type": "text", "label": "计划什么时候上线？",
+                         "placeholder": "例如：8 周内交付 MVP"},
+                    ],
+                },
+                {
+                    "id": "quality", "title": "质量与验收",
+                    "questions": [
+                        {"id": "standard", "type": "textarea", "label": "有哪些质量要求或验收标准？",
+                         "placeholder": "例如：页面加载 < 2s、核心流程覆盖测试、WCAG 无障碍"},
+                    ],
+                },
+            ],
+        },
+        "pm": {
+            "sections": [
+                {
+                    "id": "basics", "title": "项目概览",
+                    "questions": [
+                        {"id": "goal", "type": "textarea", "label": "这个项目的目标是什么？",
+                         "placeholder": "例如：完成公司官网改版，提升品牌形象和转化率"},
+                        {"id": "stakeholders", "type": "text", "label": "关键干系人或合作方有哪些？",
+                         "placeholder": "例如：市场部、设计团队、外包开发"},
+                    ],
+                },
+                {
+                    "id": "scope", "title": "范围与任务",
+                    "questions": [
+                        {"id": "deliverables", "type": "textarea", "label": "主要交付物或产出有哪些？",
+                         "placeholder": "例如：新版官网页面、CMS 后台、部署文档"},
+                        {"id": "deps", "type": "textarea", "label": "有哪些外部依赖或前置条件？",
+                         "placeholder": "例如：需要设计团队先输出视觉稿、第三方 API 密钥"},
+                    ],
+                },
+                {
+                    "id": "team", "title": "团队与协作",
+                    "questions": [
+                        {"id": "team", "type": "text", "label": "团队如何组成？协作方式是什么？",
+                         "placeholder": "例如：5 人内部团队 + 外部顾问，每日站会 + 周报"},
+                        {"id": "tools", "type": "text", "label": "使用的协作工具和平台有哪些？",
+                         "placeholder": "例如：Jira、Confluence、Slack、GitHub"},
+                    ],
+                },
+                {
+                    "id": "timeline", "title": "时间与风险",
+                    "questions": [
+                        {"id": "deadline", "type": "text", "label": "关键里程碑和截止日期是什么？",
+                         "placeholder": "例如：第 4 周设计定稿、第 8 周上线"},
+                        {"id": "risks", "type": "textarea", "label": "已知的风险或阻塞项有哪些？",
+                         "placeholder": "例如：设计资源紧张、第三方 API 稳定性未知"},
+                    ],
+                },
+            ],
+        },
+        "knowledge": {
+            "sections": [
+                {
+                    "id": "direction", "title": "研究方向",
+                    "questions": [
+                        {"id": "goal", "type": "textarea", "label": "你当前想研究的具体方向是什么？",
+                         "placeholder": "例如：基于大语言模型的分子动力学模拟方法优化"},
+                        {"id": "scenario", "type": "textarea", "label": "这个方向主要面向什么任务、场景或应用？",
+                         "placeholder": "例如：药物分子筛选中的构象采样效率提升"},
+                    ],
+                },
+                {
+                    "id": "problem", "title": "问题定位",
+                    "questions": [
+                        {"id": "problem", "type": "textarea", "label": "你希望优先解决什么问题？",
+                         "placeholder": "例如：现有 MD 模拟方法在长时程构象变化上的采样效率不足"},
+                        {"id": "gap", "type": "textarea", "label": "你认为现有方法最明显的不足是什么？",
+                         "placeholder": "例如：计算成本高、对稀有事件的采样不足、缺乏可解释性"},
+                    ],
+                },
+                {
+                    "id": "conditions", "title": "现有条件",
+                    "questions": [
+                        {"id": "basis", "type": "textarea", "label": "你目前已有的信息或基础是什么？",
+                         "placeholder": "例如：论文、想法、数据、代码、实验结果"},
+                        {"id": "resources", "type": "text", "label": "你有哪些可用资源或限制？",
+                         "placeholder": "例如：数据、算力、时间、工具、投稿目标"},
+                    ],
+                },
+                {
+                    "id": "output", "title": "最终产出",
+                    "questions": [
+                        {"id": "outcome", "type": "textarea", "label": "你希望最终形成什么成果？",
+                         "placeholder": "例如：研究方案、实验结果、论文初稿、代码原型"},
+                        {"id": "min_requirement", "type": "textarea", "label": "你对结果有什么最低要求？",
+                         "placeholder": "例如：指标提升、可复现实验、能投稿、能开题"},
+                    ],
+                },
+            ],
+        },
+        "ai": {
+            "sections": [
+                {
+                    "id": "basics", "title": "项目概览",
+                    "questions": [
+                        {"id": "goal", "type": "textarea", "label": "你想构建什么？它的核心能力是什么？",
+                         "placeholder": "例如：一个代码审查助手，能自动检查 PR 并给出改进建议"},
+                        {"id": "users", "type": "text", "label": "谁会用？在什么场景下使用？",
+                         "placeholder": "例如：开发团队，在提 PR 时自动触发"},
+                    ],
+                },
+                {
+                    "id": "capability", "title": "能力设计",
+                    "questions": [
+                        {"id": "tools", "type": "textarea", "label": "需要具备哪些能力或工具调用？",
+                         "placeholder": "例如：读取代码文件、调用 Lint 工具、查询文档、评论 PR"},
+                        {"id": "knowledge", "type": "textarea", "label": "需要参考哪些知识或上下文？",
+                         "placeholder": "例如：项目编码规范、API 文档、历史 PR 模式"},
+                    ],
+                },
+                {
+                    "id": "resources", "title": "开发资源",
+                    "questions": [
+                        {"id": "model", "type": "text", "label": "使用什么模型或推理服务？",
+                         "placeholder": "例如：Claude API、本地开源模型、Azure OpenAI"},
+                        {"id": "tech", "type": "text", "label": "技术栈和运行环境是什么？",
+                         "placeholder": "例如：Python、Docker、GitHub Actions"},
+                    ],
+                },
+                {
+                    "id": "timeline", "title": "计划与交付",
+                    "questions": [
+                        {"id": "deadline", "type": "text", "label": "期望什么时候可用？",
+                         "placeholder": "例如：2 周出原型、6 周正式上线"},
+                        {"id": "milestones", "type": "textarea", "label": "有哪些重要的交付节点？",
+                         "placeholder": "例如：第 2 周核心逻辑完成、第 4 周集成测试、第 6 周上线"},
+                    ],
+                },
+            ],
+        },
+        "import": {
+            "sections": [
+                {
+                    "id": "basics", "title": "导入概览",
+                    "questions": [
+                        {"id": "goal", "type": "textarea", "label": "导入的项目或内容是什么？",
+                         "placeholder": "例如：从 GitHub 导入一个开源博客系统"},
+                        {"id": "source", "type": "text", "label": "来源是什么？目前的状态如何？",
+                         "placeholder": "例如：GitHub 仓库、本地文件夹、导出文件"},
+                    ],
+                },
+                {
+                    "id": "scope", "title": "导入范围",
+                    "questions": [
+                        {"id": "parts", "type": "textarea", "label": "需要导入全部内容还是部分内容？",
+                         "placeholder": "例如：只导入源码和文档，不需要导入历史提交"},
+                        {"id": "adapt", "type": "textarea", "label": "导入后需要做哪些适配或改造？",
+                         "placeholder": "例如：修改配置为本地环境、更新依赖版本"},
+                    ],
+                },
+                {
+                    "id": "resources", "title": "环境与工具",
+                    "questions": [
+                        {"id": "tech", "type": "text", "label": "项目使用的技术栈是什么？",
+                         "placeholder": "例如：React、Express、MongoDB"},
+                        {"id": "env", "type": "textarea", "label": "运行需要哪些环境或配置？",
+                         "placeholder": "例如：Node 18+、Docker、MySQL 8.0"},
+                    ],
+                },
+                {
+                    "id": "timeline", "title": "后续计划",
+                    "questions": [
+                        {"id": "next", "type": "textarea", "label": "导入完成后的下一步计划是什么？",
+                         "placeholder": "例如：修复已知 bug、补充测试、部署上线"},
+                        {"id": "deadline", "type": "text", "label": "期望什么时候完成导入和适配？",
+                         "placeholder": "例如：本周内完成导入，下周完成适配"},
+                    ],
+                },
+            ],
+        },
+    }
+
+    form = FORMS.get(template, FORMS["blank"])
     return {
         "generated": False,
         "completed": False,
-        "greeting": (
-            "你好！我是你的项目初始化助理，我将帮助你完成项目的基础设置和初始规划。"
-            "我们先从几个关键问题开始，以便我更好地理解你的需求。"
-        ),
-        "sections": [
-            {
-                "id": "basics",
-                "title": "项目基础信息",
-                "questions": [
-                    {"id": "goal", "type": "textarea", "label": "这个项目的主要目标是什么？",
-                     "placeholder": "例如：开发一款任务管理应用，提高团队协作效率"},
-                    {"id": "problem", "type": "textarea", "label": "你希望这个项目解决什么问题？",
-                     "placeholder": "例如：团队任务分散、进度不透明、沟通成本高"},
-                    {"id": "users", "type": "text", "label": "你的目标用户是谁？",
-                     "placeholder": "例如：中小型团队、产品经理、项目经理"},
-                    {"id": "stage", "type": "single", "label": "目前项目处于什么阶段？",
-                     "options": ["想法阶段", "需求分析", "设计阶段", "开发中", "已上线"]},
-                ],
-            },
-            {
-                "id": "scope",
-                "title": "项目范围",
-                "questions": [
-                    {"id": "deliverables", "type": "textarea", "label": "这个项目主要包含哪些核心功能或交付物？",
-                     "placeholder": "例如：任务看板、进度报表、团队协作"},
-                    {"id": "out_of_scope", "type": "textarea", "label": "有哪些明确不在范围内的内容？",
-                     "placeholder": "例如：暂不考虑移动端、不做权限系统"},
-                ],
-            },
-            {
-                "id": "team",
-                "title": "团队与资源",
-                "questions": [
-                    {"id": "team", "type": "text", "label": "团队规模和主要角色构成是怎样的？",
-                     "placeholder": "例如：3 名工程师 + 1 名产品 + 1 名设计"},
-                    {"id": "tech", "type": "text", "label": "有哪些已确定的技术栈或工具？",
-                     "placeholder": "例如：React、FastAPI、PostgreSQL"},
-                ],
-            },
-            {
-                "id": "timeline",
-                "title": "时间计划",
-                "questions": [
-                    {"id": "deadline", "type": "text", "label": "项目的关键时间节点或截止日期？",
-                     "placeholder": "例如：6 周内交付 MVP"},
-                    {"id": "milestones", "type": "textarea", "label": "有哪些重要的里程碑？",
-                     "placeholder": "例如：第 2 周完成设计、第 4 周完成开发"},
-                ],
-            },
-        ],
+        "greeting": greeting,
+        "sections": form["sections"],
         "answers": {},
     }
 
@@ -367,7 +577,7 @@ _WORKBENCH_TEMPLATE_LABELS = {
     "blank": "空白项目",
     "product": "产品开发",
     "pm": "项目管理",
-    "knowledge": "知识库搭建",
+    "knowledge": "科学研究",
     "ai": "AI 应用开发",
     "import": "导入项目",
 }
@@ -440,12 +650,39 @@ def _workbench_coerce_init_form(raw: Any, base: dict[str, Any]) -> dict[str, Any
     }
 
 
+_WORKBENCH_EMPTY_WORKSPACE_SKIP_DIRS = frozenset({
+    ".git", ".github", ".vscode", ".idea", "__pycache__",
+    "node_modules", ".venv", "venv", ".tox", ".egg-info",
+    "dist", "build", "target", ".next", ".nuxt", ".cache",
+})
+
+
+def _is_workspace_empty(workspace_root: Path | None) -> bool:
+    """Return True when the workspace directory is missing, empty, or only
+    contains hidden / build-artifact metadata (no actual source files)."""
+    if not workspace_root or not workspace_root.is_dir():
+        return True
+    try:
+        for p in workspace_root.iterdir():
+            if p.name.startswith(".") or p.name in _WORKBENCH_EMPTY_WORKSPACE_SKIP_DIRS:
+                continue
+            if p.name in ("LICENSE", "LICENSE.txt", "LICENSE.md"):
+                continue
+            return False
+    except OSError:
+        pass
+    return True
+
+
 async def _workbench_generate_init_form(
     project: dict[str, Any],
     lang: str = "",
 ) -> dict[str, Any] | None:
     """Ask an agent (with file-exploration tools) to produce onboarding
     questions tailored to this project.
+
+    If the workspace is empty (no real source files), returns a lightweight
+    deterministic form directly — no point asking the LLM to explore nothing.
 
     ``lang`` is the user's UI language code (e.g. ``"zh"``, ``"en"``) —
     defaults to ``"zh"`` when empty so the prompt instructs the LLM in the
@@ -474,14 +711,43 @@ async def _workbench_generate_init_form(
     workspace_path = str(project.get("workspacePath") or "").strip()
     workspace_root = Path(workspace_path).expanduser().resolve() if workspace_path else None
 
+    # ── Empty / no real files → skip the LLM entirely ──────────────────
+    if _is_workspace_empty(workspace_root):
+        logger.info(
+            "Workspace %s is empty — using fixed init form for project %s",
+            workspace_path or "(none)", project.get("id"),
+        )
+        # Return a computed form so the caller doesn't fall back to the
+        # full default form which suggests the LLM *might* generate.
+        empty_form = _workbench_default_init_form(project)
+        empty_form["generated"] = True
+        # Override greeting to reflect that there's no existing codebase.
+        if language == "English":
+            empty_form["greeting"] = (
+                "Hi! I'm your project initialization assistant. It looks like this is a "
+                "brand-new project with no code in the workspace yet. Let's start with a few "
+                "key questions to help you plan the direction and scope."
+            )
+        else:
+            empty_form["greeting"] = (
+                "你好！我是你的项目初始化助理。看起来这是一个全新的项目，工作区还没有代码。"
+                "我们先从几个关键问题开始，帮你规划好方向和范围。"
+            )
+        return empty_form
+
+    # ── Has real files → agent explores thoroughly ─────────────────────
     prompt = (
-        "你是一个项目初始化助理。用户刚刚创建了一个新项目，你需要设计一组用于"
-        "了解项目背景的引导式问题，帮助用户完成项目初始化。\n\n"
+        "你是一个项目初始化助理。用户刚刚创建了一个新项目，工作区已有文件。"
+        "你需要深度探索工作区，了解项目的内容、结构和现状，"
+        "然后设计一组贴合实际的引导式问题，帮助用户完成项目初始化。\n\n"
         f"项目信息：\n{details_block}\n\n"
-        "你可以使用 list_directory、read_file 和 glob 工具探索工作区文件，"
-        "了解项目的技术栈和现有代码结构，然后生成贴合该项目的初始化问题。\n\n"
-        "先探索工作区（至少先看看顶层目录结构），再根据实际发现的内容生成问题。"
-        "如果工作区是空的或不存在的目录，直接生成通用问题即可。\n\n"
+        "你可以使用 list_directory、read_file 和 glob 工具深度探索工作区。\n\n"
+        "请多花几轮仔细探索，推荐的探索步骤：\n"
+        "1. list_directory('.') — 先了解顶层结构\n"
+        "2. glob('**/*') 或按文件类型了解内容分布\n"
+        "3. 读 README、配置文件或关键入口文件了解项目概况\n"
+        "4. 如果文件较多，深入看几个关键目录的内容\n\n"
+        "充分了解后再生成 JSON，不要过早下结论。\n\n"
         "最后只返回一个 JSON 对象，不要包含任何额外说明或 Markdown 代码块标记。"
         "JSON 结构如下：\n"
         "{\n"
@@ -501,7 +767,7 @@ async def _workbench_generate_init_form(
         "要求：\n"
         "- 根据工作区的实际情况，自主决定需要几个分组以及覆盖哪些方向；\n"
         "- 每个分组 2-4 个问题，问题要贴合项目实际情况，避免空泛；\n"
-        "- 如果工作区已有代码，优先围绕代码的现状提问（如完善功能、修复问题、补充测试、架构调整等）；\n"
+        "- 优先围绕项目已有的内容提问（如需要完善的地方、可以补充的方向、后续步骤等）；\n"
         "- 多数问题用 text 或 textarea；涉及阶段/选择类的用 single 或 multi 并给出 options；\n"
         f"- 全部使用{language}，语气友好专业。最后只返回 JSON。"
     )
@@ -704,10 +970,9 @@ def _workbench_answer_text(form: dict[str, Any], key: str) -> str:
 
 
 def _workbench_fallback_init_task_plan(project: dict[str, Any], form: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build a useful deterministic major-task plan from onboarding answers."""
+    """Build a useful deterministic task plan from onboarding answers."""
     goal = _workbench_answer_text(form, "goal") or str(project.get("description") or "").strip()
-    deliverables = _workbench_answer_text(form, "deliverables")
-    milestones = _workbench_answer_text(form, "milestones")
+    requirements = _workbench_answer_text(form, "requirements")
     tech = _workbench_answer_text(form, "tech")
     out_of_scope = _workbench_answer_text(form, "out_of_scope")
     deadline = _workbench_answer_text(form, "deadline")
@@ -718,30 +983,30 @@ def _workbench_fallback_init_task_plan(project: dict[str, Any], form: dict[str, 
     if deadline:
         constraints.append(f"时间约束：{deadline}")
     if tech:
-        constraints.append(f"技术约束：{tech}")
+        constraints.append(f"偏好工具或平台：{tech}")
 
-    base_goal = goal or f"推进 {project.get('name') or '项目'} 的核心交付。"
+    base_goal = goal or f"推进 {project.get('name') or '项目'}。"
     tasks = [
         {
-            "title": "明确需求与范围",
-            "goal": f"整理项目目标、用户、问题与边界，形成可执行的需求范围。{(' 重点覆盖：' + deliverables) if deliverables else ''}".strip(),
+            "title": "明确目标与范围",
+            "goal": f"整理项目目标、背景和边界，形成清晰的范围定义。{(' 重点覆盖：' + requirements) if requirements else ''}".strip(),
             "priority": "high",
             "constraints": constraints[:],
-            "acceptanceCriteria": ["需求范围清晰", "关键边界已记录", "优先级已确认"],
+            "acceptanceCriteria": ["目标清晰", "范围已定义", "优先级已确认"],
         },
         {
-            "title": "制定方案与里程碑",
-            "goal": f"基于初始化信息设计执行方案、阶段计划和主要里程碑。{(' 参考里程碑：' + milestones) if milestones else ''}".strip(),
+            "title": "制定执行方案",
+            "goal": f"基于项目信息设计具体执行方案和计划。项目总目标：{base_goal}",
             "priority": "high",
             "constraints": constraints[:],
-            "acceptanceCriteria": ["执行方案已形成", "阶段目标可追踪", "风险与依赖已记录"],
+            "acceptanceCriteria": ["执行方案已形成", "步骤可追踪", "依赖已记录"],
         },
         {
-            "title": "推进核心交付",
-            "goal": f"完成项目的核心交付内容。项目总目标：{base_goal}",
+            "title": "推进执行与交付",
+            "goal": f"按计划推进执行，完成项目目标。项目总目标：{base_goal}",
             "priority": "medium",
             "constraints": constraints[:],
-            "acceptanceCriteria": ["核心交付可验收", "变更记录完整", "结果符合初始化目标"],
+            "acceptanceCriteria": ["项目目标已完成", "结果可验证", "符合预期要求"],
         },
     ]
     return tasks
@@ -1033,10 +1298,10 @@ def _workbench_plan_from_input(user_input: str, session: dict[str, Any]) -> list
         return existing
     base_steps = [
         "理解目标与约束",
-        "读取项目上下文",
-        "分析相关文件结构",
-        "设计执行方案",
-        "实施或生成变更",
+        "收集相关信息和上下文",
+        "分析现有内容",
+        "制定执行方案",
+        "推进执行",
         "验证结果并总结",
     ]
     return [
@@ -1067,7 +1332,7 @@ def _workbench_acceptance_from_session(session: dict[str, Any]) -> list[dict[str
     constraints = session.get("constraints") if isinstance(session.get("constraints"), list) else []
     items = [str(item) for item in constraints if str(item).strip()]
     if not items:
-        items = ["任务目标已明确", "计划已生成", "相关变更可追踪", "最终总结已生成"]
+        items = ["任务目标已明确", "计划已生成", "执行进度可追踪", "最终总结已生成"]
     return [
         {"id": _short_id("accept"), "text": item, "status": "pending"}
         for item in items[:8]

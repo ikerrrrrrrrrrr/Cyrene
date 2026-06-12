@@ -437,7 +437,7 @@
     function addTask() {
       props.onChange(tasks.concat([{
         id: "draft_" + Date.now(),
-        title: "新的大任务",
+        title: "新步骤",
         goal: "",
         priority: "medium",
         constraints: [],
@@ -648,18 +648,24 @@
         </div>
 
         <div className="wb-init-scroll">
-          <div className="wb-init-greeting">
-            <span className="wb-init-greeting-ico">{SparkIcon}</span>
-            <div className="wb-init-greeting-body">
-              {greetingLines.map(function (line, i) { return <p key={i}>{line || " "}</p>; })}
-            </div>
-          </div>
-
-          {generating && (
-            <div className="wb-init-generating"><span className="wb-spinner" /> 正在根据项目信息生成初始化问题…</div>
+          {!init.generated && generating && (
+            <div className="wb-init-generating"><span className="wb-spinner" /> Agent 正在初始化项目中…</div>
           )}
 
-          {!showPlan && (
+          {init.generated && (
+            <React.Fragment>
+              <div className="wb-init-greeting">
+                <span className="wb-init-greeting-ico">{SparkIcon}</span>
+                <div className="wb-init-greeting-body">
+                  {greetingLines.map(function (line, i) { return <p key={i}>{line || " "}</p>; })}
+                </div>
+              </div>
+
+              {generating && (
+                <div className="wb-init-generating"><span className="wb-spinner" /> 正在重新生成问题…</div>
+              )}
+
+              {!showPlan && (
             <div className="wb-init-sections">
               {sections.map(function (section, sIdx) {
                 var open = expanded === section.id;
@@ -694,7 +700,7 @@
                     className="wb-init-textarea"
                     rows={2}
                     value={feedback}
-                    placeholder="告诉初始化 Agent 如何调整计划，例如：先做 MVP，把上线推广放到后面。"
+                    placeholder="告诉初始化 Agent 如何调整计划，例如：先做核心部分，其他后续迭代。"
                     onChange={function (e) { setFeedback(e.target.value); }}
                   />
                   <button type="button" className="wb-btn ghost" disabled={planning} onClick={revisePlan}>{planning ? "调整中…" : "让 Agent 调整计划"}</button>
@@ -702,13 +708,15 @@
               )}
             </React.Fragment>
           )}
+            </React.Fragment>
+          )}
         </div>
 
         <div className="wb-init-foot">
           <div className="wb-init-foot-hint">
             {completed ? "项目初始化已完成。你仍可以修改问题答案并保存。"
-              : planReady ? "确认后会按上方大任务计划创建多个 session。"
-                : "完成问题后会先生成可编辑的大任务计划。"}
+              : planReady ? "确认后会按拆分好的步骤逐步推进。"
+                : "完成问题后会生成可执行的计划。"}
           </div>
           {completed && <button type="button" className="wb-btn primary" disabled={busy} onClick={saveCompletedAnswers}>{busy ? "保存中…" : "保存修改"}</button>}
           {!completed && !planReady && <button type="button" className="wb-btn primary" disabled={busy} onClick={complete}>{busy ? "生成计划中…" : "完成问题并生成计划"}</button>}

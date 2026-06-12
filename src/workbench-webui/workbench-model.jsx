@@ -475,7 +475,7 @@ var WorkbenchModel = (function () {
   // task (rule 2 — "Agent 不应脱离当前任务")?
   function looksOutOfScope(text) {
     var src = String(text || "");
-    return /(顺便|另外|额外|再帮我|再做|新功能|加一个功能|做个新的|新的任务|新建一个)/.test(src);
+    return /(顺便|另外|额外|再帮我|再做|加一个新的|重新做一个|新建一个)/.test(src);
   }
 
   window.WorkbenchModel = {
