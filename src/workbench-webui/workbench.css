@@ -4524,20 +4524,43 @@ html[data-theme="light"] .wb-tool-list .mono {
 .wb-sched-run-body { margin: 7px 0 0; font-size: 12.5px; color: var(--wb-muted); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 
 /* ── schedule create / edit modal ─────────────────────────────────── */
-.wb-sched-create-modal { width: 560px; }
-.wb-sched-create-body { display: flex; flex-direction: column; gap: 16px; }
+.wb-sched-create-modal {
+  width: 560px;
+}
+.wb-sched-create-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 .wb-sched-create-kind { display: flex; flex-direction: column; gap: 10px; }
 .wb-sched-create-label { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: var(--wb-faint); text-transform: uppercase; }
-.wb-sched-create-hero {
-  display: flex; flex-direction: column; gap: 6px;
-  padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--wb-line));
-  border-radius: 14px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, #ffffff), color-mix(in srgb, var(--wb-card-bg) 92%, transparent));
+.wb-sched-kind-switch { display: flex; gap: 10px; }
+.wb-sched-kind-btn {
+  min-width: 128px;
+  height: 52px;
+  padding: 0 20px;
+  border: 1px solid var(--wb-line);
+  border-radius: 12px;
+  background: var(--wb-control-bg);
+  color: var(--wb-muted);
+  font-size: 13px;
+  font-weight: 650;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s, box-shadow 0.12s;
 }
-.wb-sched-create-hero b { font-size: 16px; font-weight: 760; color: var(--wb-text); }
-.wb-sched-create-hero p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--wb-muted); }
+.wb-sched-kind-btn:hover {
+  background: var(--wb-row-hover-bg);
+  color: var(--wb-text);
+  border-color: var(--wb-active-border);
+}
+.wb-sched-kind-btn.on {
+  background: var(--wb-active-bg);
+  color: var(--wb-text);
+  border-color: var(--wb-active-border);
+}
 .wb-sched-create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .wb-sched-field { display: flex; flex-direction: column; gap: 6px; }
 .wb-sched-field > span { font-size: 13px; font-weight: 620; color: var(--wb-text); }
@@ -4566,6 +4589,7 @@ html[data-theme="light"] .wb-tool-list .mono {
 }
 @media (max-width: 640px) {
   .wb-sched-create-modal { width: 100%; }
+  .wb-sched-kind-switch { flex-wrap: wrap; }
   .wb-sched-create-grid { grid-template-columns: 1fr; }
 }
 
@@ -4953,8 +4977,10 @@ html[data-theme="light"] .wb-tool-list .mono {
    Workbench-only; theme via --wb-* tokens.
    =================================================================== */
 .wb-create-scrim {
-  position: fixed; inset: 0; z-index: 90;
-  background: color-mix(in srgb, #0b1220 46%, transparent);
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center; padding: 24px;
   animation: wb-create-fade 0.12s ease-out;
 }
@@ -5276,7 +5302,7 @@ html[data-theme="light"] .wb-tool-list .mono {
    In dark, --wb-line is nearly invisible and the flat greys read muddy. These
    rules lift inset surfaces and use --wb-line-2 for visible edges, while
    :not(...) keeps every selected / active / focus state untouched. ── */
-html[data-theme="dark"] .wb-create-scrim { background: color-mix(in srgb, #05080f 64%, transparent); }
+html[data-theme="dark"] .wb-create-scrim { background: rgba(0, 0, 0, 0.62); }
 html[data-theme="dark"] .wb-create-modal { box-shadow: 0 30px 72px rgba(0, 0, 0, 0.55); }
 
 /* Text fields: softer inset (not near-black) + a readable edge */

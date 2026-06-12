@@ -229,75 +229,77 @@ function TaskForm({ task, onSave, onCancel }) {
     : t("tasks.hintOnce");
 
   return (
-    <form className="tasks-form" onSubmit={handleSubmit}>
-      <div className="tasks-form-head">
-        <span>{isEdit ? t("tasks.editTask") : t("tasks.newTask")}</span>
-        <button type="button" className="iconbtn" onClick={onCancel}>&times;</button>
-      </div>
-      <label className="tasks-form-field">
-        <span>{t("tasks.prompt")}</span>
-        <textarea
-          ref={promptRef}
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          rows={3}
-          placeholder={t("tasks.promptPlaceholder")}
-          required
-        />
-      </label>
-      <div className="tasks-form-row">
+    <div className="tasks-form-overlay" onClick={onCancel}>
+      <form className="tasks-form tasks-form-modal" onSubmit={handleSubmit} onClick={(e) => e.stopPropagation()}>
+        <div className="tasks-form-head">
+          <span>{isEdit ? t("tasks.editTask") : t("tasks.newTask")}</span>
+          <button type="button" className="iconbtn" onClick={onCancel}>&times;</button>
+        </div>
         <label className="tasks-form-field">
-          <span>{t("tasks.scheduleType")}</span>
-          <select value={scheduleType} onChange={(e) => setScheduleType(e.target.value)}>
-            <option value="cron">{t("tasks.cron")}</option>
-            <option value="interval">{t("tasks.interval")}</option>
-            <option value="once">{t("tasks.once")}</option>
-          </select>
-        </label>
-        <label className="tasks-form-field">
-          <span>{t("tasks.scheduleValue")}</span>
-          <input
-            type="text"
-            value={scheduleValue}
-            onChange={(e) => setScheduleValue(e.target.value)}
-            placeholder={scheduleHint}
+          <span>{t("tasks.prompt")}</span>
+          <textarea
+            ref={promptRef}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={3}
+            placeholder={t("tasks.promptPlaceholder")}
             required
           />
         </label>
-      </div>
-      {scheduleType === "once" && (
-        <label className="tasks-form-field">
-          <span>{t("tasks.nextRun")}</span>
-          <input
-            type="datetime-local"
-            value={nextRun ? nextRun.slice(0, 16) : ""}
-            onChange={(e) => setNextRun(e.target.value ? new Date(e.target.value).toISOString() : "")}
-          />
-        </label>
-      )}
-      <div className="tasks-form-field">
-        <span>{t("tasks.permissionMode")}</span>
-        <div className="seg" style={{ marginTop: 4 }}>
-          <button type="button" className={"seg-btn " + (permissionMode === "workspace_only" ? "active" : "")}
-            onClick={() => setPermissionMode("workspace_only")}>
-            {t("tasks.workspaceOnly")}
-          </button>
-          <button type="button" className={"seg-btn " + (permissionMode === "full_access" ? "active" : "")}
-            onClick={() => setPermissionMode("full_access")}>
-            {t("tasks.fullAccess")}
-          </button>
+        <div className="tasks-form-row">
+          <label className="tasks-form-field">
+            <span>{t("tasks.scheduleType")}</span>
+            <select value={scheduleType} onChange={(e) => setScheduleType(e.target.value)}>
+              <option value="cron">{t("tasks.cron")}</option>
+              <option value="interval">{t("tasks.interval")}</option>
+              <option value="once">{t("tasks.once")}</option>
+            </select>
+          </label>
+          <label className="tasks-form-field">
+            <span>{t("tasks.scheduleValue")}</span>
+            <input
+              type="text"
+              value={scheduleValue}
+              onChange={(e) => setScheduleValue(e.target.value)}
+              placeholder={scheduleHint}
+              required
+            />
+          </label>
         </div>
-        <small className="hint" style={{ marginTop: 4, display: "block" }}>
-          {permissionMode === "full_access" ? t("tasks.fullAccessHint") : t("tasks.workspaceOnlyHint")}
-        </small>
-      </div>
-      <div className="tasks-form-actions">
-        <button type="submit" className="iconbtn tasks-form-submit" disabled={saving || !prompt.trim() || !scheduleValue.trim()}>
-          {saving ? t("tasks.saving") : (isEdit ? t("tasks.save") : t("tasks.create"))}
-        </button>
-        <button type="button" className="iconbtn" onClick={onCancel}>{t("tasks.cancel")}</button>
-      </div>
-    </form>
+        {scheduleType === "once" && (
+          <label className="tasks-form-field">
+            <span>{t("tasks.nextRun")}</span>
+            <input
+              type="datetime-local"
+              value={nextRun ? nextRun.slice(0, 16) : ""}
+              onChange={(e) => setNextRun(e.target.value ? new Date(e.target.value).toISOString() : "")}
+            />
+          </label>
+        )}
+        <div className="tasks-form-field">
+          <span>{t("tasks.permissionMode")}</span>
+          <div className="seg" style={{ marginTop: 4 }}>
+            <button type="button" className={"seg-btn " + (permissionMode === "workspace_only" ? "active" : "")}
+              onClick={() => setPermissionMode("workspace_only")}>
+              {t("tasks.workspaceOnly")}
+            </button>
+            <button type="button" className={"seg-btn " + (permissionMode === "full_access" ? "active" : "")}
+              onClick={() => setPermissionMode("full_access")}>
+              {t("tasks.fullAccess")}
+            </button>
+          </div>
+          <small className="hint" style={{ marginTop: 4, display: "block" }}>
+            {permissionMode === "full_access" ? t("tasks.fullAccessHint") : t("tasks.workspaceOnlyHint")}
+          </small>
+        </div>
+        <div className="tasks-form-actions">
+          <button type="submit" className="iconbtn tasks-form-submit" disabled={saving || !prompt.trim() || !scheduleValue.trim()}>
+            {saving ? t("tasks.saving") : (isEdit ? t("tasks.save") : t("tasks.create"))}
+          </button>
+          <button type="button" className="iconbtn" onClick={onCancel}>{t("tasks.cancel")}</button>
+        </div>
+      </form>
+    </div>
   );
 }
 

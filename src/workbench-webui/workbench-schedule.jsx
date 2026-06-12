@@ -752,29 +752,22 @@
             "div", { className: "wb-sched-create-kind" },
             React.createElement("span", { className: "wb-sched-create-label" }, "添加类型"),
             React.createElement(
-              "div", { className: "wb-cp-seg" },
+              "div", { className: "wb-sched-kind-switch" },
               React.createElement("button", {
-                type: "button", className: "wb-cp-seg-btn" + (formKind === "entity" ? " on" : ""),
+                type: "button", className: "wb-sched-kind-btn" + (formKind === "entity" ? " on" : ""),
                 onClick: function () { setFormKind("entity"); setErr(""); },
               }, "日程"),
               React.createElement("button", {
-                type: "button", className: "wb-cp-seg-btn" + (formKind === "task" ? " on" : ""),
+                type: "button", className: "wb-sched-kind-btn" + (formKind === "task" ? " on" : ""),
                 onClick: function () { setFormKind("task"); setErr(""); },
               }, "定时任务")
             )
           ),
           React.createElement(
-            "div", { className: "wb-sched-create-hero" },
-            React.createElement("b", null, formKind === "task" ? "定时任务" : "日程"),
-            React.createElement("p", null, formKind === "task"
-              ? "适合需要触发 Agent 执行的提醒、汇总、巡检或自动化任务。"
-              : "适合记录某一天的安排、截止日或需要在日历中占位的事项。")
-          ),
-          React.createElement(
             "label", { className: "wb-sched-field" },
             React.createElement("span", null, formKind === "task" ? "任务内容" : "日程标题"),
             React.createElement("textarea", {
-              value: prompt, rows: formKind === "task" ? 3 : 2, autoFocus: true,
+              value: prompt, rows: 3, autoFocus: true,
               placeholder: formKind === "task" ? "例如：每天早上汇总今天的待办并提醒我" : "例如：产品评审会 / 提案截止 / 出差行程",
               onChange: function (e) { setPrompt(e.target.value); },
             })

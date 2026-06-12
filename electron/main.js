@@ -49,6 +49,21 @@ const DEFAULT_DESKTOP_SETTINGS = Object.freeze({
   runInBackground: false,
 });
 
+function getNotificationIconPath() {
+  const candidates = [
+    path.join(__dirname, '..', 'build', 'icon.png'),
+    path.join(process.resourcesPath || '', 'build', 'icon.png'),
+    path.join(process.resourcesPath || '', 'cyrene.png'),
+  ];
+  return candidates.find((candidate) => {
+    try {
+      return candidate && fs.existsSync(candidate);
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
 function getDesktopSettingsPath() {
   return path.join(app.getPath('userData'), 'desktop_settings.json');
 }
@@ -484,7 +499,8 @@ if (!gotSingleInstanceLock) {
     ipcMain.handle('desktop-settings:get', () => getDesktopSettings());
     ipcMain.handle('desktop-settings:update', (_event, updates) => saveDesktopSettings(updates || {}));
     ipcMain.handle('notification:show', (_event, { title, body }) => {
-      new Notification({ title, body }).show();
+      const icon = getNotificationIconPath();
+      new Notification({ title, body, ...(icon ? { icon } : {}) }).show();
     });
     ipcMain.handle('window:switch-shell', (_event, mode) => {
       const target = (mode === 'legacy' || mode === 'agent') ? 'legacy' : 'workbench';
