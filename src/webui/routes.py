@@ -440,8 +440,16 @@ def _workbench_coerce_init_form(raw: Any, base: dict[str, Any]) -> dict[str, Any
     }
 
 
-async def _workbench_generate_init_form(project: dict[str, Any]) -> dict[str, Any] | None:
-    """Ask the agent to produce onboarding questions tailored to this project.
+async def _workbench_generate_init_form(
+    project: dict[str, Any],
+    lang: str = "",
+) -> dict[str, Any] | None:
+    """Ask an agent (with file-exploration tools) to produce onboarding
+    questions tailored to this project.
+
+    ``lang`` is the user's UI language code (e.g. ``"zh"``, ``"en"``) —
+    defaults to ``"zh"`` when empty so the prompt instructs the LLM in the
+    right language without hardcoding.
 
     Returns a normalized init form, or ``None`` when generation is unavailable
     (the caller then keeps the deterministic fallback form).
@@ -452,6 +460,10 @@ async def _workbench_generate_init_form(project: dict[str, Any]) -> dict[str, An
     template_label = _WORKBENCH_TEMPLATE_LABELS.get(template, template)
     base_form = _workbench_default_init_form(project)
 
+    # Map language code to the human-readable name used in the prompt.
+    _LANG_NAMES = {"zh": "简体中文", "en": "English", "ja": "日本語"}
+    language = _LANG_NAMES.get(lang, _LANG_NAMES.get("zh"))
+
     details = [f"项目名称：{name}"]
     if description:
         details.append(f"项目描述：{description}")
@@ -459,64 +471,207 @@ async def _workbench_generate_init_form(project: dict[str, Any]) -> dict[str, An
         details.append(f"项目类型：{template_label}")
     details_block = "\n".join(details)
 
+    workspace_path = str(project.get("workspacePath") or "").strip()
+    workspace_root = Path(workspace_path).expanduser().resolve() if workspace_path else None
+
     prompt = (
         "你是一个项目初始化助理。用户刚刚创建了一个新项目，你需要设计一组用于"
         "了解项目背景的引导式问题，帮助用户完成项目初始化。\n\n"
         f"项目信息：\n{details_block}\n\n"
-        "请根据上述项目信息，生成贴合该项目的初始化问题，并只返回一个 JSON 对象，"
-        "不要包含任何额外说明或 Markdown 代码块标记。JSON 结构如下：\n"
+        "你可以使用 list_directory、read_file 和 glob 工具探索工作区文件，"
+        "了解项目的技术栈和现有代码结构，然后生成贴合该项目的初始化问题。\n\n"
+        "先探索工作区（至少先看看顶层目录结构），再根据实际发现的内容生成问题。"
+        "如果工作区是空的或不存在的目录，直接生成通用问题即可。\n\n"
+        "最后只返回一个 JSON 对象，不要包含任何额外说明或 Markdown 代码块标记。"
+        "JSON 结构如下：\n"
         "{\n"
         '  "greeting": "一句友好的开场白，说明你将协助完成项目初始化",\n'
         '  "sections": [\n'
         "    {\n"
         '      "id": "英文小写下划线短标识",\n'
-        '      "title": "分组标题（中文，简洁）",\n'
+        f'      "title": "分组标题（{language}，简洁）",\n'
         '      "questions": [\n'
         '        {"id": "英文标识", "type": "text|textarea|single|multi", '
-        '"label": "问题（中文）", "placeholder": "示例答案（text/textarea 适用）", '
+        f'"label": "问题（{language}）", "placeholder": "示例答案（text/textarea 适用）", '
         '"options": ["选项1", "选项2"]}\n'
         "      ]\n"
         "    }\n"
         "  ]\n"
         "}\n\n"
         "要求：\n"
-        "- 生成 4 个分组，依次覆盖：基础信息、范围/交付物、团队与资源、时间计划；\n"
-        "- 每个分组 2-4 个问题，问题要针对该项目类型量身定制，避免空泛；\n"
+        "- 根据工作区的实际情况，自主决定需要几个分组以及覆盖哪些方向；\n"
+        "- 每个分组 2-4 个问题，问题要贴合项目实际情况，避免空泛；\n"
+        "- 如果工作区已有代码，优先围绕代码的现状提问（如完善功能、修复问题、补充测试、架构调整等）；\n"
         "- 多数问题用 text 或 textarea；涉及阶段/选择类的用 single 或 multi 并给出 options；\n"
-        "- 全部使用简体中文，语气友好专业。只返回 JSON。"
+        f"- 全部使用{language}，语气友好专业。最后只返回 JSON。"
     )
 
-    try:
-        # 结构化 JSON 输出：关闭 thinking 降低延迟；预算放宽到 60s，
-        # 否则模型稍慢一点就会静默退回通用问题。
-        response = await asyncio.wait_for(
-            _call_llm(
-                [{"role": "user", "content": prompt}],
-                tools=None,
-                max_tokens=2000,
-                secondary=True,
-                thinking="disabled",
-            ),
-            timeout=60,
-        )
-    except Exception:
-        logger.exception("Workbench init-question generation failed for project %s", project.get("id"))
-        return None
-    text = ""
-    if isinstance(response, dict):
-        content = response.get("content")
-        text = content if isinstance(content, str) else ""
-    try:
-        parsed = json.loads(text.strip())
-    except Exception:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            return None
+    # Lightweight tools the init agent can use to explore the workspace.
+    # Note: list_directory and read_file use target=resolved from args.path;
+    # glob uses workspace_root directly since it has its own pattern parameter.
+    init_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_directory",
+                "description": "列出工作区指定路径下的文件和目录。返回文件名/目录名列表，不递归。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "相对于工作区根目录的路径，例如 '.'（根目录）或 'src'。默认 '.'",
+                            "default": ".",
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "读取工作区中指定文本文件的内容（最多 4000 字符）。二进制文件会提示不可读。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "相对于工作区根目录的文件路径，例如 'README.md' 或 'src/main.py'",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "glob",
+                "description": "按通配符模式搜索工作区中的文件路径。支持 ** 递归匹配。例如：'**/*.py' 查找所有 Python 文件，'*.toml' 查找根目录下的 TOML 文件，'src/**/*.tsx' 查找 src 下所有 React 组件。自动跳过隐藏文件。最多返回 50 条结果。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "glob 搜索模式，相对于工作区根目录",
+                        },
+                    },
+                    "required": ["pattern"],
+                },
+            },
+        },
+    ]
+
+    async def _exec_init_tool(tc: dict) -> str:
+        name = tc["function"]["name"]
         try:
-            parsed = json.loads(match.group(0))
+            args = json.loads(tc["function"].get("arguments") or "{}")
+        except json.JSONDecodeError:
+            return "Error: invalid tool arguments"
+
+        rel_path = str(args.get("path") or ".").strip()
+        if not workspace_root or not workspace_root.is_dir():
+            return "Error: workspace directory does not exist or is inaccessible"
+
+        target = (workspace_root / rel_path).resolve()
+        if not str(target).startswith(str(workspace_root)):
+            return "Error: path is outside the workspace directory"
+
+        try:
+            if name == "list_directory":
+                entries: list[str] = []
+                for p in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                    if p.name.startswith("."):
+                        continue
+                    suffix = "/" if p.is_dir() else ""
+                    entries.append(f"{p.name}{suffix}")
+                if not entries:
+                    return "(empty directory)"
+                return "\n".join(entries)
+
+            elif name == "read_file":
+                if not target.is_file():
+                    return "Error: not a file or does not exist"
+                if target.stat().st_size > 256 * 1024:
+                    return "Error: file too large (>256KB)"
+                try:
+                    text = target.read_text(encoding="utf-8", errors="replace")
+                    if len(text) > 4000:
+                        text = text[:4000] + "\n\n...(truncated)"
+                    return text
+                except (UnicodeDecodeError, LookupError):
+                    return "Error: binary file (cannot read as text)"
+
+            elif name == "glob":
+                pattern = str(args.get("pattern") or "").strip()
+                if not pattern:
+                    return "Error: missing glob pattern"
+                # Python 3.12 Path.glob("**") requires recursive=True which
+                # the method doesn't support for Path; use rglob instead.
+                it = workspace_root.rglob(pattern.lstrip("/"))
+                matches: list[str] = []
+                for p in sorted(it):
+                    rel = str(p.relative_to(workspace_root))
+                    suffix = "/" if p.is_dir() else ""
+                    matches.append(f"{rel}{suffix}")
+                if len(matches) > 50:
+                    matches = matches[:50] + [f"... and {len(matches) - 50} more"]
+                return "\n".join(matches) if matches else "(no matches)"
+
+        except PermissionError:
+            return "Error: permission denied"
+        except OSError as e:
+            return f"Error: {e}"
+
+        return f"Error: unknown tool '{name}'"
+
+    messages = [{"role": "user", "content": prompt}]
+    MAX_TURNS = 6
+
+    for turn in range(MAX_TURNS):
+        try:
+            response = await asyncio.wait_for(
+                _call_llm(
+                    messages,
+                    tools=init_tools,
+                    max_tokens=3000,
+                    secondary=False,
+                    thinking="disabled",
+                ),
+                timeout=90,
+            )
         except Exception:
-            return None
-    return _workbench_coerce_init_form(parsed, base_form)
+            logger.exception(
+                "Workbench init-question generation failed (turn %d) for project %s",
+                turn + 1, project.get("id"),
+            )
+            break
+
+        tool_calls = response.get("tool_calls") or []
+        if not tool_calls:
+            text = response.get("content") or ""
+            try:
+                parsed = json.loads(text.strip())
+            except Exception:
+                match = re.search(r"\{.*\}", text, re.DOTALL)
+                if not match:
+                    break
+                try:
+                    parsed = json.loads(match.group(0))
+                except Exception:
+                    break
+            return _workbench_coerce_init_form(parsed, base_form)
+
+        for tc in tool_calls:
+            result = await _exec_init_tool(tc)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": result,
+            })
+
+    return None
 
 
 def _workbench_init_brief(project: dict[str, Any], form: dict[str, Any]) -> str:
@@ -3579,13 +3734,15 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         return {"ok": True, "session": session, **payload}
 
     @router.post("/api/projects/{project_id}/init/generate")
-    async def api_workbench_generate_init(project_id: str):
+    async def api_workbench_generate_init(project_id: str, request: Request):
         """(Re)generate the onboarding questions for a project's init session.
 
-        Runs the agent against the project's metadata; on any failure it keeps
-        the deterministic fallback form. Either way the form is marked as
-        ``generated`` so the client only requests this once.
+        Runs the agent against the project's metadata and workspace files; on
+        any failure it keeps the deterministic fallback form. Either way the
+        form is marked as ``generated`` so the client only requests this once.
         """
+        body = await request.json()
+        lang = str(body.get("lang") or "").strip()
         payload = _read_workbench_store()
         project = _workbench_find_project(payload, project_id)
         if not project:
@@ -3597,7 +3754,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not session:
             return JSONResponse({"error": "init session not found"}, status_code=404)
         current = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
-        generated = await _workbench_generate_init_form(project)
+        generated = await _workbench_generate_init_form(project, lang=lang)
         if generated:
             # Preserve any answers the user already entered.
             generated["answers"] = current.get("answers") if isinstance(current.get("answers"), dict) else {}
@@ -5001,6 +5158,23 @@ def _build_simple_flow(messages: list[dict]) -> dict:
                 "detail": {
                     "kind": "Output",
                     "content": (last_agent["body"][:600] if last_agent else "—"),
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "glob",
+                    "description": "按通配符模式搜索工作区中的文件路径。例如：'**/*.py' 查找所有 Python 文件，'**/*.tsx' 查找所有 React 组件。自动跳过 node_modules、.git、__pycache__ 等目录。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {
+                                "type": "string",
+                                "description": "glob 搜索模式，相对于工作区根目录，例如 '**/*.py' 或 'src/**/*.ts'",
+                            },
+                        },
+                        "required": ["pattern"],
+                    },
                 },
             },
         ])

@@ -2,6 +2,18 @@
 // Keeps the new Project/Task Session UI decoupled from the legacy chat shell.
 
 var WorkbenchModel = (function () {
+  function wbModelT(key, fallback, params) {
+    if (window.WorkbenchI18n && typeof window.WorkbenchI18n.t === "function") {
+      return window.WorkbenchI18n.t(key, params, fallback);
+    }
+    if (params && fallback) {
+      Object.keys(params).forEach(function (name) {
+        fallback = fallback.split("{" + name + "}").join(String(params[name]));
+      });
+    }
+    return fallback || key;
+  }
+
   function apiJson(url, options) {
     return fetch(url, options || {}).then(function (response) {
       return response.json().catch(function () { return {}; }).then(function (payload) {
@@ -95,10 +107,11 @@ var WorkbenchModel = (function () {
   // Ask the agent to (re)generate the onboarding questions for a project's
   // "初始化项目" session, tailored to the project's name/description/template.
   function generateInitForm(projectId) {
+    var lang = (window.WorkbenchI18n && window.WorkbenchI18n.getLang ? window.WorkbenchI18n.getLang() : "zh").trim();
     return apiJson("/api/projects/" + encodeURIComponent(projectId) + "/init/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}",
+      body: JSON.stringify({ lang: lang }),
     }).then(normalizeStore);
   }
 
@@ -200,23 +213,23 @@ var WorkbenchModel = (function () {
   function statusText(status) {
     var raw = String(status || "idle");
     var map = {
-      idle: "未开始",
-      pending: "待执行",
-      initializing: "初始化中",
-      planning: "规划中",
-      running: "进行中",
-      waiting_for_user: "等待确认",
-      waiting_for_approval: "等待确认",
-      blocked: "阻塞",
-      review: "待验收",
-      failed: "失败",
-      paused: "已暂停",
-      cancelled: "已取消",
-      done: "已完成",
-      completed: "已完成",
-      skipped: "已跳过",
+      idle: ["status.idle", "Not started"],
+      pending: ["status.pending", "Pending"],
+      initializing: ["status.initializing", "Initializing"],
+      planning: ["status.planning", "Planning"],
+      running: ["status.running", "Running"],
+      waiting_for_user: ["status.waiting", "Waiting"],
+      waiting_for_approval: ["status.waiting", "Waiting"],
+      blocked: ["status.blocked", "Blocked"],
+      review: ["status.review", "In review"],
+      failed: ["status.failed", "Failed"],
+      paused: ["status.paused", "Paused"],
+      cancelled: ["status.cancelled", "Cancelled"],
+      done: ["status.done", "Done"],
+      completed: ["status.done", "Done"],
+      skipped: ["status.skipped", "Skipped"],
     };
-    return map[raw] || raw;
+    return map[raw] ? wbModelT(map[raw][0], map[raw][1]) : raw;
   }
 
   function statusTone(status) {
@@ -232,24 +245,25 @@ var WorkbenchModel = (function () {
   // Short human-readable label for a run-log event type.
   function eventLabel(type) {
     var map = {
-      UserMessageEvent: "用户输入",
-      AgentResponseEvent: "Agent 回复",
-      PlanUpdatedEvent: "计划更新",
-      PlanGenerated: "生成计划",
-      PlanRevised: "调整计划",
-      PlanApproved: "批准计划",
-      ActionRejected: "拒绝操作",
-      ExecutionStarted: "开始执行",
-      ExecutionFinished: "执行完成",
-      ExecutionFailed: "执行失败",
-      Paused: "暂停任务",
-      Resumed: "继续任务",
-      StepSkipped: "跳过步骤",
-      TaskCompleted: "任务完成",
-      Reopened: "重新打开",
-      Cancelled: "取消任务",
+      UserMessageEvent: ["event.userMessage", "User input"],
+      AgentResponseEvent: ["event.agentResponse", "Agent response"],
+      PlanUpdatedEvent: ["event.planUpdated", "Plan updated"],
+      PlanGenerated: ["event.planGenerated", "Plan generated"],
+      PlanRevised: ["event.planRevised", "Plan revised"],
+      PlanApproved: ["event.planApproved", "Plan approved"],
+      ActionRejected: ["event.actionRejected", "Action rejected"],
+      ExecutionStarted: ["event.executionStarted", "Execution started"],
+      ExecutionFinished: ["event.executionFinished", "Execution finished"],
+      ExecutionFailed: ["event.executionFailed", "Execution failed"],
+      Paused: ["event.paused", "Task paused"],
+      Resumed: ["event.resumed", "Task resumed"],
+      StepSkipped: ["event.stepSkipped", "Step skipped"],
+      TaskCompleted: ["event.taskCompleted", "Task completed"],
+      Reopened: ["event.reopened", "Reopened"],
+      Cancelled: ["event.cancelled", "Task cancelled"],
     };
-    return map[String(type || "")] || String(type || "事件");
+    var item = map[String(type || "")];
+    return item ? wbModelT(item[0], item[1]) : String(type || wbModelT("event.generic", "Event"));
   }
 
   function formatTime(value) {
@@ -269,22 +283,22 @@ var WorkbenchModel = (function () {
   }
 
   function formatRelativeTime(value) {
-    if (!value) return "刚刚";
+    if (!value) return wbModelT("time.justNow", "Just now");
     try {
       var date = new Date(value);
       var diff = Date.now() - date.getTime();
-      if (!Number.isFinite(diff)) return "刚刚";
+      if (!Number.isFinite(diff)) return wbModelT("time.justNow", "Just now");
       var minute = 60 * 1000;
       var hour = 60 * minute;
       var day = 24 * hour;
-      if (diff < minute) return "刚刚";
-      if (diff < hour) return Math.max(1, Math.floor(diff / minute)) + " 分钟前";
-      if (diff < day) return Math.max(1, Math.floor(diff / hour)) + " 小时前";
-      if (diff < day * 2) return "昨天";
-      if (diff < day * 7) return Math.max(1, Math.floor(diff / day)) + " 天前";
+      if (diff < minute) return wbModelT("time.justNow", "Just now");
+      if (diff < hour) return wbModelT("time.minutesAgo", "{n}m ago", { n: Math.max(1, Math.floor(diff / minute)) });
+      if (diff < day) return wbModelT("time.hoursAgo", "{n}h ago", { n: Math.max(1, Math.floor(diff / hour)) });
+      if (diff < day * 2) return wbModelT("time.yesterday", "Yesterday");
+      if (diff < day * 7) return wbModelT("time.daysAgo", "{n}d ago", { n: Math.max(1, Math.floor(diff / day)) });
       return formatTime(value);
     } catch (e) {
-      return "刚刚";
+      return wbModelT("time.justNow", "Just now");
     }
   }
 
@@ -298,7 +312,7 @@ var WorkbenchModel = (function () {
 
   function pathLabel(path, projectName) {
     var raw = String(path || "").trim();
-    if (!raw) return "未设置工作区";
+    if (!raw) return wbModelT("path.unsetWorkspace", "Workspace not set");
     var home = "";
     try {
       home = (window.DATA && DATA.user && DATA.user.home) || "";

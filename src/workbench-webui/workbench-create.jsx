@@ -13,6 +13,9 @@
   var useState = React.useState;
   var useEffect = React.useEffect;
   var useRef = React.useRef;
+  function T(key, params, fallback) {
+    return window.WorkbenchI18n && window.WorkbenchI18n.t ? window.WorkbenchI18n.t(key, params, fallback) : (fallback || key);
+  }
 
   function Svg(props) {
     return React.createElement(
@@ -45,22 +48,22 @@
   var PROJECT_COLORS = ["#7c6cf0", "#3b82f6", "#22c08a", "#f5a623", "#ef4d57", "#a855f7"];
 
   var TEMPLATES = [
-    { id: "blank", title: "空白项目", desc: "从空白开始，自由配置你的项目",
+    { id: "blank", titleKey: "create.template.blank.title", descKey: "create.template.blank.desc",
       icon: <Svg><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M12 9v6M9 12h6" /></Svg> },
-    { id: "product", title: "产品开发", desc: "适用于产品需求管理、迭代规划与跟踪",
+    { id: "product", titleKey: "create.template.product.title", descKey: "create.template.product.desc",
       icon: <Svg><path d="M12 3 20 7.5v9L12 21 4 16.5v-9Z" /><path d="M12 3v18M4 7.5l8 4.5 8-4.5" /></Svg> },
-    { id: "pm", title: "项目管理", desc: "适用于任务分解、进度跟踪与团队协作",
+    { id: "pm", titleKey: "create.template.pm.title", descKey: "create.template.pm.desc",
       icon: <Svg><rect x="4" y="4" width="16" height="16" rx="3" /><path d="m8 12 2.5 2.5L16 9" /></Svg> },
-    { id: "knowledge", title: "知识库搭建", desc: "适用于文档管理、知识沉淀与共享",
+    { id: "knowledge", titleKey: "create.template.knowledge.title", descKey: "create.template.knowledge.desc",
       icon: <Svg><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5Z" /><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19" /></Svg> },
-    { id: "ai", title: "AI 应用开发", desc: "适用于 Agent 开发、提示词管理与测试",
+    { id: "ai", titleKey: "create.template.ai.title", descKey: "create.template.ai.desc",
       icon: <Svg><rect x="5" y="7" width="14" height="12" rx="3" /><path d="M12 3v4M9 12h.01M15 12h.01M9.5 16h5" /></Svg> },
-    { id: "import", title: "导入项目", desc: "从文件或外部工具导入现有项目",
+    { id: "import", titleKey: "create.template.import.title", descKey: "create.template.import.desc",
       icon: <Svg><path d="M12 3v11m0 0 4-4m-4 4-4-4" /><path d="M5 16.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1.5" /></Svg> },
   ];
   function templateLabel(id) {
-    for (var i = 0; i < TEMPLATES.length; i++) if (TEMPLATES[i].id === id) return TEMPLATES[i].title;
-    return "空白项目";
+    for (var i = 0; i < TEMPLATES.length; i++) if (TEMPLATES[i].id === id) return T(TEMPLATES[i].titleKey);
+    return T("create.template.blank.title");
   }
 
   var XIcon = <Svg sw={1.9}><path d="m6 6 12 12M18 6 6 18" /></Svg>;
@@ -76,6 +79,7 @@
 
   // ── New Project wizard ───────────────────────────────────────────────
   function WorkbenchNewProjectModal(props) {
+    window.useWorkbenchI18n();
     var [step, setStep] = useState(0); // 0 = config (basics + template), 1 = finish
     var [name, setName] = useState("");
     var [description, setDescription] = useState("");
@@ -90,9 +94,9 @@
 
     var trimmedName = name.trim();
     var stepDots = [
-      { label: "基础信息" },
-      { label: "选择模版（可选）" },
-      { label: "完成" },
+      { labelKey: "create.project.step.basic" },
+      { labelKey: "create.project.step.template" },
+      { labelKey: "create.project.step.finish" },
     ];
     function dotState(index) {
       if (step === 0) return index < 2 ? "current" : "idle";
@@ -100,7 +104,7 @@
     }
 
     function next() {
-      if (!trimmedName) { setError("请填写项目名称"); return; }
+      if (!trimmedName) { setError(T("create.project.error.nameRequired")); return; }
       setError("");
       setStep(1);
     }
@@ -143,8 +147,8 @@
       <ModalScrim onClose={props.onClose}>
         <div className="wb-create-modal wb-create-project" role="dialog" aria-modal="true">
           <div className="wb-create-head">
-            <b>新建项目</b>
-            <button type="button" className="wb-create-x" onClick={props.onClose} title="关闭">{XIcon}</button>
+            <b>{T("create.project.title")}</b>
+            <button type="button" className="wb-create-x" onClick={props.onClose} title={T("common.close")}>{XIcon}</button>
           </div>
           <div className="wb-create-steps">
             {stepDots.map(function (s, i) {
@@ -153,7 +157,7 @@
                   {i > 0 && <span className="wb-create-step-line" />}
                   <span className={"wb-create-step " + dotState(i)}>
                     <span className="wb-create-step-dot">{dotState(i) === "done" ? <Svg size={13} sw={2.4}><path d="m5 12.5 4.5 4.5L19 7" /></Svg> : i + 1}</span>
-                    <span className="wb-create-step-label">{s.label}</span>
+                    <span className="wb-create-step-label">{T(s.labelKey)}</span>
                   </span>
                 </React.Fragment>
               );
@@ -164,33 +168,33 @@
             {step === 0 ? (
               <div className="wb-cp-cols">
                 <div className="wb-cp-left">
-                  <label className="wb-cp-label">项目名称 <i className="wb-cp-req">*</i></label>
+                  <label className="wb-cp-label">{T("create.project.name")} <i className="wb-cp-req">*</i></label>
                   <div className="wb-cp-field">
                     <input
                       className="wb-cp-input"
                       value={name}
                       maxLength={50}
                       autoFocus
-                      placeholder="输入项目名称，例如：产品需求管理"
+                      placeholder={T("create.project.namePlaceholder")}
                       onChange={function (e) { setName(e.target.value); }}
                     />
                     <span className="wb-cp-counter">{name.length}/50</span>
                   </div>
 
-                  <label className="wb-cp-label">项目描述</label>
+                  <label className="wb-cp-label">{T("create.project.description")}</label>
                   <div className="wb-cp-field">
                     <textarea
                       className="wb-cp-textarea"
                       value={description}
                       maxLength={200}
                       rows={3}
-                      placeholder="请输入项目描述，说明项目的目标、用途或背景（可选）"
+                      placeholder={T("create.project.descriptionPlaceholder")}
                       onChange={function (e) { setDescription(e.target.value); }}
                     />
                     <span className="wb-cp-counter">{description.length}/200</span>
                   </div>
 
-                  <label className="wb-cp-label">项目图标</label>
+                  <label className="wb-cp-label">{T("create.project.icon")}</label>
                   <div className="wb-cp-icons">
                     {PROJECT_ICON_ORDER.map(function (id) {
                       return (
@@ -204,7 +208,7 @@
                     })}
                   </div>
 
-                  <label className="wb-cp-label">项目颜色</label>
+                  <label className="wb-cp-label">{T("create.project.color")}</label>
                   <div className="wb-cp-colors">
                     {PROJECT_COLORS.map(function (c) {
                       return (
@@ -217,29 +221,29 @@
                         >{color === c ? <Svg size={13} sw={2.6}><path d="m5 12.5 4.5 4.5L19 7" /></Svg> : null}</button>
                       );
                     })}
-                    <button type="button" className="wb-cp-color custom" onClick={function () { if (customColorRef.current) customColorRef.current.click(); }} title="自定义颜色">
+                    <button type="button" className="wb-cp-color custom" onClick={function () { if (customColorRef.current) customColorRef.current.click(); }} title={T("create.project.customColor")}>
                       <Svg size={14} sw={2}><path d="M12 5v14M5 12h14" /></Svg>
                       <input ref={customColorRef} type="color" value={color} onChange={function (e) { setColor(e.target.value); }} />
                     </button>
                   </div>
 
                   <button type="button" className="wb-cp-advanced-toggle" onClick={function () { setAdvancedOpen(!advancedOpen); }}>
-                    <span>高级设置</span>
-                    <span className="wb-cp-advanced-state">{advancedOpen ? "收起" : "展开"} <i className={"wb-cp-caret" + (advancedOpen ? " up" : "")}>⌄</i></span>
+                    <span>{T("create.project.advanced")}</span>
+                    <span className="wb-cp-advanced-state">{advancedOpen ? T("common.collapse") : T("common.expand")} <i className={"wb-cp-caret" + (advancedOpen ? " up" : "")}>⌄</i></span>
                   </button>
                   {advancedOpen && (
                     <div className="wb-cp-advanced">
-                      <label className="wb-cp-label">工作区路径</label>
+                      <label className="wb-cp-label">{T("create.project.workspacePath")}</label>
                       <button type="button" className="wb-cp-path-button" disabled={busy} onClick={pickWorkspacePath}>
-                        <span className={"wb-cp-path-text" + (!workspacePath.trim() ? " empty" : "")}>{workspacePath.trim() || "选择工作区路径"}</span>
-                        <span className="wb-cp-path-action">选择路径</span>
+                        <span className={"wb-cp-path-text" + (!workspacePath.trim() ? " empty" : "")}>{workspacePath.trim() || T("create.project.selectWorkspacePath")}</span>
+                        <span className="wb-cp-path-action">{T("create.project.choosePath")}</span>
                       </button>
                     </div>
                   )}
                 </div>
 
                 <div className="wb-cp-right">
-                  <div className="wb-cp-right-title">选择模版（可选）</div>
+                  <div className="wb-cp-right-title">{T("create.project.step.template")}</div>
                   <div className="wb-cp-templates">
                     {TEMPLATES.map(function (t) {
                       var on = template === t.id;
@@ -247,8 +251,8 @@
                         <button type="button" key={t.id} className={"wb-cp-template" + (on ? " active" : "")} onClick={function () { setTemplate(t.id); }}>
                           <span className="wb-cp-template-ico">{t.icon}</span>
                           <span className="wb-cp-template-meta">
-                            <b>{t.title}</b>
-                            <small>{t.desc}</small>
+                            <b>{T(t.titleKey)}</b>
+                            <small>{T(t.descKey)}</small>
                           </span>
                           <span className={"wb-cp-template-check" + (on ? " on" : "")}>
                             {on ? <Svg size={14} sw={2.4}><path d="m5 12.5 4.5 4.5L19 7" /></Svg> : null}
@@ -262,13 +266,13 @@
             ) : (
               <div className="wb-cp-finish">
                 <div className="wb-cp-finish-icon" style={previewStyle}>{PROJECT_ICONS[icon]}</div>
-                <h3>{trimmedName || "未命名项目"}</h3>
+                <h3>{trimmedName || T("create.project.untitled")}</h3>
                 {description.trim() && <p className="wb-cp-finish-desc">{description.trim()}</p>}
                 <div className="wb-cp-finish-meta">
-                  <span><i>模版</i>{templateLabel(template)}</span>
-                  <span><i>路径</i>{workspacePath.trim() || "默认工作区"}</span>
+                  <span><i>{T("create.project.template")}</i>{templateLabel(template)}</span>
+                  <span><i>{T("create.project.path")}</i>{workspacePath.trim() || T("create.project.defaultWorkspace")}</span>
                 </div>
-                <p className="wb-cp-finish-hint">创建后将自动进入「初始化项目」对话，初始化助理会根据项目信息生成引导问题，帮助你完成项目初始化。</p>
+                <p className="wb-cp-finish-hint">{T("create.project.finishHint")}</p>
               </div>
             )}
           </div>
@@ -278,13 +282,13 @@
           <div className="wb-create-foot">
             {step === 0 ? (
               <React.Fragment>
-                <button type="button" className="wb-btn ghost" onClick={props.onClose}>取消</button>
-                <button type="button" className="wb-btn primary" disabled={!trimmedName} onClick={next}>下一步</button>
+                <button type="button" className="wb-btn ghost" onClick={props.onClose}>{T("common.cancel")}</button>
+                <button type="button" className="wb-btn primary" disabled={!trimmedName} onClick={next}>{T("common.next")}</button>
               </React.Fragment>
             ) : (
               <React.Fragment>
-                <button type="button" className="wb-btn ghost" disabled={busy} onClick={function () { setStep(0); }}>上一步</button>
-                <button type="button" className="wb-btn primary" disabled={busy} onClick={create}>{busy ? "创建中…" : "创建项目"}</button>
+                <button type="button" className="wb-btn ghost" disabled={busy} onClick={function () { setStep(0); }}>{T("common.previous")}</button>
+                <button type="button" className="wb-btn primary" disabled={busy} onClick={create}>{busy ? T("common.creating") : T("create.project.create")}</button>
               </React.Fragment>
             )}
           </div>
@@ -294,8 +298,9 @@
   }
 
   // ── New Task dialog ──────────────────────────────────────────────────
-  var PRIORITIES = [{ id: "high", label: "高" }, { id: "medium", label: "中" }, { id: "low", label: "低" }];
+  var PRIORITIES = [{ id: "high", labelKey: "priority.high" }, { id: "medium", labelKey: "priority.medium" }, { id: "low", labelKey: "priority.low" }];
   function WorkbenchNewTaskModal(props) {
+    window.useWorkbenchI18n();
     var [title, setTitle] = useState("");
     var [goal, setGoal] = useState("");
     var [priority, setPriority] = useState("medium");
@@ -304,7 +309,7 @@
     var trimmed = title.trim();
 
     function create() {
-      if (!trimmed) { setError("请填写任务名称"); return; }
+      if (!trimmed) { setError(T("create.task.error.nameRequired")); return; }
       setBusy(true);
       setError("");
       Promise.resolve(props.onCreate({ title: trimmed, goal: goal.trim(), priority: priority }))
@@ -315,41 +320,41 @@
       <ModalScrim onClose={props.onClose}>
         <div className="wb-create-modal wb-create-task" role="dialog" aria-modal="true">
           <div className="wb-create-head">
-            <b>新建任务</b>
-            <button type="button" className="wb-create-x" onClick={props.onClose} title="关闭">{XIcon}</button>
+            <b>{T("create.task.title")}</b>
+            <button type="button" className="wb-create-x" onClick={props.onClose} title={T("common.close")}>{XIcon}</button>
           </div>
           <div className="wb-create-body wb-ct-body">
-            <label className="wb-cp-label">任务名称 <i className="wb-cp-req">*</i></label>
+            <label className="wb-cp-label">{T("create.task.name")} <i className="wb-cp-req">*</i></label>
             <input
               className="wb-cp-input"
               value={title}
               maxLength={80}
               autoFocus
-              placeholder="输入任务名称，例如：实现登录页面"
+              placeholder={T("create.task.namePlaceholder")}
               onChange={function (e) { setTitle(e.target.value); }}
               onKeyDown={function (e) { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) create(); }}
             />
-            <label className="wb-cp-label">任务目标（可选）</label>
+            <label className="wb-cp-label">{T("create.task.goal")}</label>
             <textarea
               className="wb-cp-textarea"
               value={goal}
               rows={3}
-              placeholder="描述这个任务的目标、边界和验收标准，Agent 会把它整理成结构化任务。"
+              placeholder={T("create.task.goalPlaceholder")}
               onChange={function (e) { setGoal(e.target.value); }}
             />
-            <label className="wb-cp-label">优先级</label>
+            <label className="wb-cp-label">{T("create.task.priority")}</label>
             <div className="wb-cp-seg">
               {PRIORITIES.map(function (p) {
                 return (
-                  <button type="button" key={p.id} className={"wb-cp-seg-btn" + (priority === p.id ? " on" : "")} onClick={function () { setPriority(p.id); }}>{p.label}</button>
+                  <button type="button" key={p.id} className={"wb-cp-seg-btn" + (priority === p.id ? " on" : "")} onClick={function () { setPriority(p.id); }}>{T(p.labelKey)}</button>
                 );
               })}
             </div>
           </div>
           {error && <div className="wb-create-error">{error}</div>}
           <div className="wb-create-foot">
-            <button type="button" className="wb-btn ghost" onClick={props.onClose}>取消</button>
-            <button type="button" className="wb-btn primary" disabled={busy || !trimmed} onClick={create}>{busy ? "创建中…" : "创建任务"}</button>
+            <button type="button" className="wb-btn ghost" onClick={props.onClose}>{T("common.cancel")}</button>
+            <button type="button" className="wb-btn primary" disabled={busy || !trimmed} onClick={create}>{busy ? T("common.creating") : T("create.task.create")}</button>
           </div>
         </div>
       </ModalScrim>

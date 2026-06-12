@@ -8,6 +8,8 @@ var {
 
 function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   useDataVersion();
+  var workbenchI18n = window.useWorkbenchI18n();
+  var t = workbenchI18n.t;
   var model = window.WorkbenchModel;
   var [store, setStore] = useWorkbenchState(function () {
     return model.normalizeStore({ projects: [] });
@@ -140,7 +142,7 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
 
   function handleDeleteProject(project) {
     if (!project) return Promise.resolve();
-    if (!window.confirm("确定删除项目「" + project.name + "」吗？项目内的数据将一起删除。")) return Promise.resolve();
+    if (!window.confirm(wbT("project.confirmDelete", "Delete project \"{name}\"? Data inside the project will also be deleted.", { name: project.name }))) return Promise.resolve();
     return model.deleteProject(project.id).then(function (next) {
       setStore(next);
       setFullPage(null);
@@ -211,17 +213,17 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
             onOpenPage={handleOpenPage}
           />
           {isChat ? (
-            React.createElement(window.WorkbenchChatPage || function () { return <div className="workbench-empty">对话加载中...</div>; }, {
+            React.createElement(window.WorkbenchChatPage || function () { return <div className="workbench-empty">{t("workbench.chatLoading")}</div>; }, {
               project: store.activeProject,
               onOpenTask: handleChatToTask,
               onActiveChatChange: setChatCrumb,
             })
           ) : isKnowledge ? (
-            React.createElement(window.WorkbenchKnowledgePage || function () { return <div className="workbench-empty">知识库加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
+            React.createElement(window.WorkbenchKnowledgePage || function () { return <div className="workbench-empty">{t("workbench.knowledgeLoading")}</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
           ) : isSchedule ? (
-            React.createElement(window.WorkbenchSchedulePage || function () { return <div className="workbench-empty">日程加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
+            React.createElement(window.WorkbenchSchedulePage || function () { return <div className="workbench-empty">{t("workbench.scheduleLoading")}</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
           ) : isMemory ? (
-            React.createElement(window.WorkbenchMemoryPage || function () { return <div className="workbench-empty">记忆加载中...</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
+            React.createElement(window.WorkbenchMemoryPage || function () { return <div className="workbench-empty">{t("workbench.memoryLoading")}</div>; }, { project: store.activeProject, onBack: function () { setFullPage(null); } })
           ) : (
           <>
           <TaskRail
@@ -335,11 +337,12 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
 }
 
 function WorkbenchTopbar({ project, session, activePage, chatCrumb, notifications, onReloadNotifications, onSearch, onSettings, theme, actualTheme, onToggleTheme }) {
+  var { t } = window.useWorkbenchI18n();
   var title = project ? project.name : "Project";
-  var pageLabels = { chat: "对话", knowledge: "知识库", schedule: "日程", memory: "记忆" };
-  var sessionTitle = activePage && pageLabels[activePage] ? pageLabels[activePage] : (session ? session.title : "Task");
+  var pageLabels = { chat: t("workbench.page.chat"), knowledge: t("workbench.page.knowledge"), schedule: t("workbench.page.schedule"), memory: t("workbench.page.memory") };
+  var sessionTitle = activePage && pageLabels[activePage] ? pageLabels[activePage] : (session ? session.title : t("workbench.page.task"));
   var chatTail = activePage === "chat" ? String(chatCrumb || "").trim() : "";
-  var themeTitle = theme === "system" ? "跟随系统" : actualTheme === "dark" ? "深色模式" : "浅色模式";
+  var themeTitle = theme === "system" ? t("workbench.theme.system") : actualTheme === "dark" ? t("workbench.theme.dark") : t("workbench.theme.light");
   var themeIcon = theme === "system" ? (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none"/></svg>
   ) : actualTheme === "dark" ? (
@@ -368,16 +371,16 @@ function WorkbenchTopbar({ project, session, activePage, chatCrumb, notification
         )}
       </div>
       <div className="workbench-top-actions">
-        <button type="button" className="workbench-search-box" onClick={onSearch} title="搜索">
+        <button type="button" className="workbench-search-box" onClick={onSearch} title={t("workbench.search")}>
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
-          <span>搜索</span>
+          <span>{t("workbench.search")}</span>
         </button>
         <WorkbenchNotificationCenter notifications={notifications} onReload={onReloadNotifications} onSettings={onSettings} />
         <button type="button" className="workbench-icon-btn" onClick={onToggleTheme} title={themeTitle}>{themeIcon}</button>
-        <button type="button" className="workbench-icon-btn" title="帮助">
+        <button type="button" className="workbench-icon-btn" title={t("workbench.help")}>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
         </button>
-        <button type="button" className="workbench-icon-btn" onClick={onSettings} title="设置">
+        <button type="button" className="workbench-icon-btn" onClick={onSettings} title={t("nav.settings")}>
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
         <div className="workbench-avatar">{WorkbenchModel.initials(DATA.user && DATA.user.name)}</div>
@@ -387,6 +390,7 @@ function WorkbenchTopbar({ project, session, activePage, chatCrumb, notification
 }
 
 function WorkbenchNotificationCenter({ notifications, onReload, onSettings }) {
+  var { t } = window.useWorkbenchI18n();
   var model = window.WorkbenchModel;
   var [open, setOpen] = useWorkbenchState(false);
   var [tab, setTab] = useWorkbenchState("all");
@@ -429,7 +433,7 @@ function WorkbenchNotificationCenter({ notifications, onReload, onSettings }) {
 
   return (
     <div className={"workbench-notif-anchor" + (open ? " open" : "")} ref={rootRef}>
-      <button type="button" className={"workbench-icon-btn workbench-notif-btn" + (open ? " active" : "")} title="通知" onClick={function () { setOpen(!open); }}>
+      <button type="button" className={"workbench-icon-btn workbench-notif-btn" + (open ? " active" : "")} title={t("notifications.title")} onClick={function () { setOpen(!open); }}>
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
         {unreadCount > 0 ? <span className="workbench-notif-badge">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
       </button>
@@ -437,15 +441,15 @@ function WorkbenchNotificationCenter({ notifications, onReload, onSettings }) {
         <div className="workbench-notif-popover">
           <div className="workbench-notif-popover-arrow"></div>
           <div className="workbench-notif-head">
-            <b>通知</b>
-            <button type="button" className="workbench-notif-markread" disabled={busy || !unreadCount} onClick={function () { markRead([], true); }}>全部已读</button>
+            <b>{t("notifications.title")}</b>
+            <button type="button" className="workbench-notif-markread" disabled={busy || !unreadCount} onClick={function () { markRead([], true); }}>{t("notifications.markAllRead")}</button>
           </div>
           <div className="workbench-notif-tabs">
             {[
-              { id: "all", label: "全部" },
-              { id: "mention", label: "@ 提及" },
-              { id: "comment", label: "评论" },
-              { id: "system", label: "系统" },
+              { id: "all", label: t("notifications.tab.all") },
+              { id: "mention", label: t("notifications.tab.mention") },
+              { id: "comment", label: t("notifications.tab.comment") },
+              { id: "system", label: t("notifications.tab.system") },
             ].map(function (item) {
               return (
                 <button key={item.id} type="button" className={"workbench-notif-tab" + (tab === item.id ? " active" : "")} onClick={function () { setTab(item.id); }}>
@@ -453,12 +457,12 @@ function WorkbenchNotificationCenter({ notifications, onReload, onSettings }) {
                 </button>
               );
             })}
-            <button type="button" className="workbench-notif-settings" onClick={onSettings} title="通知设置">
+            <button type="button" className="workbench-notif-settings" onClick={onSettings} title={t("notifications.settings")}>
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"/><circle cx="12" cy="12" r="3"/></svg>
             </button>
           </div>
           <div className="workbench-notif-list">
-            {!items.length ? <div className="workbench-notif-empty">暂无通知</div> : items.map(function (item) {
+            {!items.length ? <div className="workbench-notif-empty">{t("notifications.empty")}</div> : items.map(function (item) {
               return <WorkbenchNotificationItem key={item.id} item={item} onOpen={function () { markRead([item.id], false); }} />;
             })}
           </div>
@@ -469,6 +473,7 @@ function WorkbenchNotificationCenter({ notifications, onReload, onSettings }) {
 }
 
 function WorkbenchNotificationItem({ item, onOpen }) {
+  var { t } = window.useWorkbenchI18n();
   var tab = String(item && item.tab || "system");
   var iconClass = "system";
   var icon = null;
@@ -503,13 +508,14 @@ function WorkbenchNotificationItem({ item, onOpen }) {
           <time>{window.WorkbenchModel.formatRelativeTime(item.createdAt)}</time>
         </span>
         {item.body ? <span className="workbench-notif-item-body">{item.body}</span> : null}
-        <span className="workbench-notif-item-meta">{item.sourceLabel || item.projectName || item.linkLabel || "通知"}</span>
+        <span className="workbench-notif-item-meta">{item.sourceLabel || item.projectName || item.linkLabel || t("notifications.title")}</span>
       </span>
     </button>
   );
 }
 
 function WorkbenchEditProjectModal({ project, onClose, onSave }) {
+  var { t } = window.useWorkbenchI18n();
   var [name, setName] = useWorkbenchState(project.name || "");
   var [description, setDescription] = useWorkbenchState(project.description || "");
   var [workspacePath, setWorkspacePath] = useWorkbenchState(project.workspacePath || "");
@@ -518,7 +524,7 @@ function WorkbenchEditProjectModal({ project, onClose, onSave }) {
   var [error, setError] = useWorkbenchState("");
   function save() {
     var trimmed = name.trim();
-    if (!trimmed) { setError("请填写项目名称"); return; }
+    if (!trimmed) { setError(t("create.project.error.nameRequired")); return; }
     setBusy(true);
     setError("");
     Promise.resolve(onSave({
@@ -535,25 +541,25 @@ function WorkbenchEditProjectModal({ project, onClose, onSave }) {
     <div className="workbench-modal-scrim" onMouseDown={function (e) { if (e.target === e.currentTarget) onClose(); }}>
       <div className="workbench-project-edit-modal" role="dialog" aria-modal="true">
         <div className="workbench-project-edit-head">
-          <b>编辑项目</b>
-          <button type="button" className="workbench-icon-btn" onClick={onClose} title="关闭">
+          <b>{t("rail.editProject")}</b>
+          <button type="button" className="workbench-icon-btn" onClick={onClose} title={t("common.close")}>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
         </div>
         <div className="workbench-project-edit-body">
-          <label>项目名称</label>
+          <label>{t("create.project.name")}</label>
           <input value={name} maxLength={60} onChange={function (e) { setName(e.target.value); }} />
-          <label>项目描述</label>
+          <label>{t("create.project.description")}</label>
           <textarea value={description} rows={3} maxLength={240} onChange={function (e) { setDescription(e.target.value); }} />
-          <label>工作区路径</label>
+          <label>{t("create.project.workspacePath")}</label>
           <input value={workspacePath} onChange={function (e) { setWorkspacePath(e.target.value); }} />
-          <label>项目颜色</label>
+          <label>{t("create.project.color")}</label>
           <input className="workbench-project-color-input" type="color" value={color || "#22b07a"} onChange={function (e) { setColor(e.target.value); }} />
         </div>
         {error && <div className="workbench-project-edit-error">{error}</div>}
         <div className="workbench-project-edit-foot">
-          <button type="button" className="wb-btn ghost" disabled={busy} onClick={onClose}>取消</button>
-          <button type="button" className="wb-btn primary" disabled={busy} onClick={save}>{busy ? "保存中..." : "保存"}</button>
+          <button type="button" className="wb-btn ghost" disabled={busy} onClick={onClose}>{t("common.cancel")}</button>
+          <button type="button" className="wb-btn primary" disabled={busy} onClick={save}>{busy ? t("settings.saving") : t("common.save")}</button>
         </div>
       </div>
     </div>
@@ -561,6 +567,7 @@ function WorkbenchEditProjectModal({ project, onClose, onSave }) {
 }
 
 function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, onCreateProject, onEditProject, onDeleteProject, onOpenPage }) {
+  var { t } = window.useWorkbenchI18n();
   var [menuProjectId, setMenuProjectId] = useWorkbenchState("");
 
   useWorkbenchEffect(function () {
@@ -579,31 +586,31 @@ function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, o
   }, [menuProjectId]);
 
   var navItems = [
-    { id: "task", label: "任务", icon: (
+    { id: "task", label: t("workbench.page.task"), icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1.5"/><path d="M9 14 10.5 15.5 15 11"/></svg>
     ), action: function () { onOpenPage("task"); } },
-    { id: "chat", label: "对话", icon: (
+    { id: "chat", label: t("workbench.page.chat"), icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.5 8.5 0 0 1-12.2 7.6L3 21l1.9-5.8A8.5 8.5 0 1 1 21 11.5Z"/></svg>
     ), action: function () { onOpenPage("chat"); } },
-    { id: "knowledge", label: "知识库", icon: (
+    { id: "knowledge", label: t("workbench.page.knowledge"), icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M5 4.5A2.5 2.5 0 0 1 7.5 2H20v15H7.5A2.5 2.5 0 0 0 5 19.5Z"/><path d="M5 19.5A2.5 2.5 0 0 0 7.5 22H20"/></svg>
     ), action: function () { onOpenPage("knowledge"); } },
-    { id: "schedule", label: "日程", icon: (
+    { id: "schedule", label: t("workbench.page.schedule"), icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>
     ), action: function () { onOpenPage("schedule"); } },
-    { id: "memory", label: "记忆", icon: (
+    { id: "memory", label: t("workbench.page.memory"), icon: (
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 4 13.6 10.4 20 12 13.6 13.6 12 20 10.4 13.6 4 12 10.4 10.4Z"/></svg>
     ), action: function () { onOpenPage("memory"); } },
   ];
   return (
     <aside className="workbench-project-rail">
       <div className="workbench-rail-head">
-        <span>项目</span>
+        <span>{t("rail.projects")}</span>
         <button type="button" className="workbench-add-btn" onClick={onCreateProject}>
           <span>
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
           </span>
-          <span>新建项目</span>
+          <span>{t("rail.newProject")}</span>
         </button>
       </div>
       <div className="workbench-project-list">
@@ -630,7 +637,7 @@ function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, o
               <button
                 type="button"
                 className="workbench-project-menu-btn"
-                title="项目操作"
+                title={t("rail.projectActions")}
                 onClick={function (e) {
                   e.stopPropagation();
                   setMenuProjectId(menuOpen ? "" : project.id);
@@ -640,8 +647,8 @@ function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, o
               </button>
               {menuOpen && (
                 <div className="workbench-project-menu">
-                  <button type="button" onClick={function () { setMenuProjectId(""); onEditProject(project); }}>编辑项目</button>
-                  <button type="button" className="danger" onClick={function () { setMenuProjectId(""); onDeleteProject(project); }}>删除项目</button>
+                  <button type="button" onClick={function () { setMenuProjectId(""); onEditProject(project); }}>{t("rail.editProject")}</button>
+                  <button type="button" className="danger" onClick={function () { setMenuProjectId(""); onDeleteProject(project); }}>{t("rail.deleteProject")}</button>
                 </div>
               )}
             </div>
@@ -673,15 +680,16 @@ function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, o
 }
 
 function TaskRail({ project, activeSessionId, onSelectSession, onCreateSession, loading }) {
+  var { t } = window.useWorkbenchI18n();
   var sessions = project && Array.isArray(project.sessions) ? project.sessions : [];
   return (
     <aside className="workbench-task-rail">
       <div className="workbench-rail-head">
-        <span>任务</span>
-        <button type="button" onClick={onCreateSession} disabled={!project}>+ 新建任务</button>
+        <span>{t("rail.tasks")}</span>
+        <button type="button" onClick={onCreateSession} disabled={!project}>+ {t("rail.newTask")}</button>
       </div>
-      {loading && <div className="workbench-muted">加载任务中...</div>}
-      {!loading && sessions.length === 0 && <div className="workbench-muted">暂无任务</div>}
+      {loading && <div className="workbench-muted">{t("rail.loadingTasks")}</div>}
+      {!loading && sessions.length === 0 && <div className="workbench-muted">{t("rail.noTasks")}</div>}
       <div className="workbench-task-list">
         {sessions.map(function (session) {
           var tone = WorkbenchModel.statusTone(session.status);
@@ -747,22 +755,37 @@ var ICONS = {
   checkSmall: <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12.5 4.5 4.5L19 7"/></svg>,
 };
 
+function wbT(key, fallback, params) {
+  if (window.WorkbenchI18n && typeof window.WorkbenchI18n.t === "function") {
+    return window.WorkbenchI18n.t(key, params, fallback);
+  }
+  if (params && fallback) {
+    Object.keys(params).forEach(function (name) {
+      fallback = fallback.split("{" + name + "}").join(String(params[name]));
+    });
+  }
+  return fallback || key;
+}
+
 // Legacy chat slash commands, surfaced in the composer's "/" menu. Selecting one
 // sets `command`, which is passed to the agent run at execution time.
 var WB_SLASH_COMMANDS = [
-  { id: "quick-answer", label: "快速回答", desc: "用最简洁的方式直接回答", icon: ICONS.cmdQuick },
-  { id: "deep-research", label: "深度研究", desc: "联网检索并产出研究报告", icon: ICONS.cmdResearch },
-  { id: "deep-reflect", label: "深度反思", desc: "对话题做多角度深入思考", icon: ICONS.cmdReflect },
-  { id: "help-me-decide", label: "帮我决定", desc: "梳理选项与利弊给出建议", icon: ICONS.cmdDecide },
-  { id: "learning-plan", label: "学习计划", desc: "为一个主题制定学习路径", icon: ICONS.cmdLearn },
-  { id: "daily-review", label: "每日回顾", desc: "回顾并总结今天的事项", icon: ICONS.cmdReview },
-  { id: "deep-compare", label: "深度对比", desc: "对多个对象做结构化对比", icon: ICONS.cmdCompare },
-  { id: "claude-code", label: "Claude Code", desc: "用 Claude Code 处理代码任务", icon: ICONS.cmdCode },
+  { id: "quick-answer", labelKey: "workbenchChat.command.quick-answer.label", descKey: "workbenchChat.command.quick-answer.desc", icon: ICONS.cmdQuick },
+  { id: "deep-research", labelKey: "workbenchChat.command.deep-research.label", descKey: "workbenchChat.command.deep-research.desc", icon: ICONS.cmdResearch },
+  { id: "deep-reflect", labelKey: "workbenchChat.command.deep-reflect.label", descKey: "workbenchChat.command.deep-reflect.desc", icon: ICONS.cmdReflect },
+  { id: "help-me-decide", labelKey: "workbenchChat.command.help-me-decide.label", descKey: "workbenchChat.command.help-me-decide.desc", icon: ICONS.cmdDecide },
+  { id: "learning-plan", labelKey: "workbenchChat.command.learning-plan.label", descKey: "workbenchChat.command.learning-plan.desc", icon: ICONS.cmdLearn },
+  { id: "daily-review", labelKey: "workbenchChat.command.daily-review.label", descKey: "workbenchChat.command.daily-review.desc", icon: ICONS.cmdReview },
+  { id: "deep-compare", labelKey: "workbenchChat.command.deep-compare.label", descKey: "workbenchChat.command.deep-compare.desc", icon: ICONS.cmdCompare },
+  { id: "claude-code", labelKey: "workbenchChat.command.claude-code.label", descKey: "workbenchChat.command.claude-code.desc", icon: ICONS.cmdCode },
 ];
 
 function wbCommandMeta(id) {
   for (var i = 0; i < WB_SLASH_COMMANDS.length; i++) {
-    if (WB_SLASH_COMMANDS[i].id === id) return WB_SLASH_COMMANDS[i];
+    if (WB_SLASH_COMMANDS[i].id === id) {
+      var c = WB_SLASH_COMMANDS[i];
+      return { ...c, label: wbT(c.labelKey, c.id), desc: wbT(c.descKey, "") };
+    }
   }
   return null;
 }
@@ -770,17 +793,18 @@ function wbCommandMeta(id) {
 // Permission modes for the composer mode-switcher (mirrors the legacy chat
 // modes; the workbench default is "auto" since it executes tasks).
 var WB_MODES = [
-  { id: "default", label: "默认", desc: "敏感操作前先询问你", icon: ICONS.modeDefault },
-  { id: "auto", label: "自动", desc: "自动批准，加速执行", icon: ICONS.modeAuto },
-  { id: "plan", label: "规划", desc: "只制定方案，不改动文件", icon: ICONS.modePlan },
-  { id: "full_access", label: "完全访问", desc: "允许所有操作（谨慎使用）", icon: ICONS.modeFull },
+  { id: "default", labelKey: "workbenchChat.mode.default.label", descKey: "workbenchChat.mode.default.desc", icon: ICONS.modeDefault },
+  { id: "auto", labelKey: "workbenchChat.mode.auto.label", descKey: "workbenchChat.mode.auto.desc", icon: ICONS.modeAuto },
+  { id: "plan", labelKey: "workbenchChat.mode.plan.label", descKey: "workbenchChat.mode.plan.desc", icon: ICONS.modePlan },
+  { id: "full_access", labelKey: "workbenchChat.mode.full_access.label", descKey: "workbenchChat.mode.full_access.desc", icon: ICONS.modeFull },
 ];
 
 function wbModeMeta(id) {
+  var meta = WB_MODES[1];
   for (var i = 0; i < WB_MODES.length; i++) {
-    if (WB_MODES[i].id === id) return WB_MODES[i];
+    if (WB_MODES[i].id === id) meta = WB_MODES[i];
   }
-  return WB_MODES[1];
+  return { ...meta, label: wbT(meta.labelKey, meta.id), desc: wbT(meta.descKey, "") };
 }
 
 function isDoneStepStatus(status) {
@@ -1174,7 +1198,8 @@ function StateCard(props) {
 }
 
 function priorityText(p) {
-  return ({ high: "高", medium: "中", low: "低" })[String(p || "medium")] || String(p || "中");
+  var raw = String(p || "medium");
+  return ({ high: wbT("priority.high", "High"), medium: wbT("priority.medium", "Medium"), low: wbT("priority.low", "Low") })[raw] || raw;
 }
 
 function focusComposer() {
@@ -1706,12 +1731,12 @@ function TaskPlanList({ session, expandedStepId, onToggleStep, onRightTab, contr
 }
 
 function composerPlaceholder(status) {
-  if (status === "idle" || status === "pending") return "描述这个任务的目标、边界和验收标准…";
-  if (status === "running") return "Agent 正在执行，暂时无法输入…";
-  if (status === "planning") return "补充或修改执行计划…";
-  if (status === "waiting_for_approval" || status === "waiting_for_user") return "修改要求，或直接批准执行…";
-  if (status === "failed") return "说明如何修复，或修改要求…";
-  return "补充要求、提出修改，或继续这个任务…";
+  if (status === "idle" || status === "pending") return wbT("task.placeholder.idle", "Describe this task's goal, boundaries, and acceptance criteria...");
+  if (status === "running") return wbT("task.placeholder.running", "The agent is running; input is temporarily disabled...");
+  if (status === "planning") return wbT("task.placeholder.planning", "Add to or revise the execution plan...");
+  if (status === "waiting_for_approval" || status === "waiting_for_user") return wbT("task.placeholder.waiting", "Revise requirements, or approve execution...");
+  if (status === "failed") return wbT("task.placeholder.failed", "Explain how to fix it, or revise the request...");
+  return wbT("task.placeholder.default", "Add requirements, request changes, or continue this task...");
 }
 
 // Quick-action chips below the composer; the set changes with status.
@@ -1722,54 +1747,54 @@ function composerChips(status, controller, onRightTab) {
   }
   if (status === "planning") {
     return [
-      { label: "批准执行", onClick: function () { controller.approvePlan(); } },
-      { label: "修改计划", onClick: focusComposer },
-      { label: "重新生成", onClick: function () { controller.regeneratePlan(); } },
+      { label: wbT("task.action.approveExecution", "Approve execution"), onClick: function () { controller.approvePlan(); } },
+      { label: wbT("task.action.editPlan", "Edit plan"), onClick: focusComposer },
+      { label: wbT("task.action.regenerate", "Regenerate"), onClick: function () { controller.regeneratePlan(); } },
     ];
   }
   if (status === "waiting_for_approval" || status === "waiting_for_user" || status === "blocked") {
     return [
-      { label: "批准执行", onClick: function () { controller.execute(); } },
-      { label: "查看详情", guard: false, onClick: function () { onRightTab && onRightTab("context"); } },
-      { label: "拒绝", onClick: function () { controller.reject(); } },
+      { label: wbT("task.action.approveExecution", "Approve execution"), onClick: function () { controller.execute(); } },
+      { label: wbT("task.action.viewDetails", "View details"), guard: false, onClick: function () { onRightTab && onRightTab("context"); } },
+      { label: wbT("task.action.reject", "Reject"), onClick: function () { controller.reject(); } },
     ];
   }
   if (status === "running") {
     return [
-      { label: "停止执行", guard: false, onClick: function () { controller.interrupt(); } },
-      { label: "查看日志", guard: false, onClick: function () { onRightTab && onRightTab("logs"); } },
-      { label: "查看变更", guard: false, onClick: function () { onRightTab && onRightTab("files"); } },
+      { label: wbT("task.action.stopExecution", "Stop execution"), guard: false, onClick: function () { controller.interrupt(); } },
+      { label: wbT("task.action.viewLogs", "View logs"), guard: false, onClick: function () { onRightTab && onRightTab("logs"); } },
+      { label: wbT("task.action.viewChanges", "View changes"), guard: false, onClick: function () { onRightTab && onRightTab("files"); } },
     ];
   }
   if (status === "paused") {
     return [
-      { label: "继续任务", onClick: function () { controller.resume(); } },
-      { label: "修改要求", onClick: focusComposer },
-      { label: "取消任务", onClick: function () { controller.cancel(); } },
+      { label: wbT("task.action.resumeTask", "Resume task"), onClick: function () { controller.resume(); } },
+      { label: wbT("task.action.reviseRequest", "Revise request"), onClick: focusComposer },
+      { label: wbT("task.action.cancelTask", "Cancel task"), onClick: function () { controller.cancel(); } },
     ];
   }
   if (status === "failed") {
     return [
-      { label: "重试", onClick: function () { controller.retry(); } },
-      { label: "修改要求", onClick: focusComposer },
-      { label: "跳过此步骤", onClick: function () { controller.skipStep(); } },
+      { label: wbT("task.action.retry", "Retry"), onClick: function () { controller.retry(); } },
+      { label: wbT("task.action.reviseRequest", "Revise request"), onClick: focusComposer },
+      { label: wbT("task.action.skipStep", "Skip this step"), onClick: function () { controller.skipStep(); } },
     ];
   }
   if (status === "review" || status === "done") {
     return [
-      { label: "标记完成", onClick: function () { controller.markComplete(); } },
-      { label: "继续修改", onClick: focusComposer },
-      { label: "创建后续任务", onClick: function () { controller.createFollowUp(); } },
+      { label: wbT("task.action.markComplete", "Mark complete"), onClick: function () { controller.markComplete(); } },
+      { label: wbT("task.action.continueEditing", "Continue editing"), onClick: focusComposer },
+      { label: wbT("task.action.createFollowUp", "Create follow-up task"), onClick: function () { controller.createFollowUp(); } },
     ];
   }
   if (status === "completed") {
     return [
-      { label: "创建后续任务", onClick: function () { controller.createFollowUp(); } },
-      { label: "重新打开", onClick: function () { controller.reopen(); } },
+      { label: wbT("task.action.createFollowUp", "Create follow-up task"), onClick: function () { controller.createFollowUp(); } },
+      { label: wbT("task.action.reopen", "Reopen"), onClick: function () { controller.reopen(); } },
     ];
   }
   if (status === "cancelled") {
-    return [{ label: "重新打开", onClick: function () { controller.reopen(); } }];
+    return [{ label: wbT("task.action.reopen", "Reopen"), onClick: function () { controller.reopen(); } }];
   }
   return [];
 }
@@ -1841,7 +1866,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
     setUploading(true);
     model.uploadAttachments(files)
       .then(function (uploaded) { onAttachmentsChange(attachments.concat(uploaded)); })
-      .catch(function (err) { window.alert("上传失败：" + (err.message || String(err))); })
+      .catch(function (err) { window.alert(wbT("workbenchChat.uploadFailed", "Upload failed: {error}", { error: err.message || String(err) })); })
       .finally(function () { setUploading(false); if (fileRef.current) fileRef.current.value = ""; });
   }
   function removeAttachment(index) {
@@ -1850,7 +1875,9 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
 
   // Slash menu = the legacy agent commands, filtered by the text after "/".
   var slashQuery = draft.indexOf("/") === 0 ? draft.slice(1).toLowerCase() : "";
-  var slashItems = WB_SLASH_COMMANDS.filter(function (c) {
+  var translatedCommands = WB_SLASH_COMMANDS.map(function (c) { return wbCommandMeta(c.id); }).filter(Boolean);
+  var translatedModes = WB_MODES.map(function (m) { return wbModeMeta(m.id); });
+  var slashItems = translatedCommands.filter(function (c) {
     return !slashQuery || c.id.indexOf(slashQuery) !== -1 || c.label.toLowerCase().indexOf(slashQuery) !== -1;
   });
   var showSlash = (slashOpen || (draft.indexOf("/") === 0 && draft.indexOf(" ") === -1)) && slashItems.length > 0 && !running;
@@ -1871,11 +1898,11 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
     <div className="workbench-composer compact">
       {scopePrompt && (
         <div className="wb-scope-prompt">
-          <p>这超出了当前任务的范围。要把它创建为新的子任务吗？</p>
+          <p>{wbT("task.scopePrompt", "This is outside the current task. Create it as a new follow-up task?")}</p>
           <div className="wb-card-actions">
-            <button type="button" className="wb-btn primary" onClick={function () { controller.createFollowUp(scopePrompt.text.slice(0, 40)); setScopePrompt(null); resetDraft(); }}>创建新任务</button>
-            <button type="button" className="wb-btn ghost" onClick={function () { var t = scopePrompt.text; setScopePrompt(null); dispatch(t); }}>并入当前任务</button>
-            <button type="button" className="wb-btn ghost" onClick={function () { setScopePrompt(null); }}>取消</button>
+            <button type="button" className="wb-btn primary" onClick={function () { controller.createFollowUp(scopePrompt.text.slice(0, 40)); setScopePrompt(null); resetDraft(); }}>{wbT("task.createNewTask", "Create new task")}</button>
+            <button type="button" className="wb-btn ghost" onClick={function () { var t = scopePrompt.text; setScopePrompt(null); dispatch(t); }}>{wbT("task.mergeCurrent", "Merge into current task")}</button>
+            <button type="button" className="wb-btn ghost" onClick={function () { setScopePrompt(null); }}>{wbT("common.cancel", "Cancel")}</button>
           </div>
         </div>
       )}
@@ -1891,7 +1918,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
           <span className="wb-command-chip">
             <span className="wb-command-chip-ico">{activeCommand.icon}</span>
             {activeCommand.label}
-            <button type="button" className="wb-command-chip-x" onClick={function () { onCommandChange(""); }} aria-label="移除命令">{ICONS.x}</button>
+            <button type="button" className="wb-command-chip-x" onClick={function () { onCommandChange(""); }} aria-label={wbT("workbenchChat.removeCommand", "Remove command")}>{ICONS.x}</button>
           </span>
         </div>
       )}
@@ -1905,7 +1932,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
                   {isImg && file.url
                     ? <img src={file.url} alt={file.name || "image"} />
                     : <span className="wb-attach-name" title={file.name}>{file.name || "file"}</span>}
-                  <button type="button" className="wb-attach-x" onClick={function () { removeAttachment(i); }} aria-label="移除附件">{ICONS.x}</button>
+                  <button type="button" className="wb-attach-x" onClick={function () { removeAttachment(i); }} aria-label={wbT("workbenchChat.removeAttachment", "Remove attachment")}>{ICONS.x}</button>
                 </div>
               );
             })}
@@ -1922,14 +1949,14 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
         />
         <div className="workbench-composer-actions">
           <input ref={fileRef} type="file" multiple style={{ display: "none" }} onChange={onFilePick} />
-          <button type="button" className="wb-composer-icon" title={uploading ? "上传中…" : "添加附件"} disabled={uploading || running} onClick={pickFiles}>
+          <button type="button" className="wb-composer-icon" title={uploading ? wbT("workbenchChat.uploading", "Uploading...") : wbT("workbenchChat.addAttachment", "Add attachment")} disabled={uploading || running} onClick={pickFiles}>
             {uploading ? <span className="wb-spinner" /> : ICONS.attach}
           </button>
           <span className="wb-popover-anchor">
-            <button type="button" className={"wb-composer-icon" + (showSlash || command ? " active" : "")} title="斜杠命令" disabled={running} onClick={function () { setSlashOpen(!slashOpen); setModeOpen(false); }}>{ICONS.slash}</button>
+            <button type="button" className={"wb-composer-icon" + (showSlash || command ? " active" : "")} title={wbT("workbenchChat.commands", "Commands")} disabled={running} onClick={function () { setSlashOpen(!slashOpen); setModeOpen(false); }}>{ICONS.slash}</button>
             {showSlash && (
               <div className="wb-popmenu wb-mode-menu wb-slash-menu">
-                <div className="wb-menu-head">命令</div>
+                <div className="wb-menu-head">{wbT("workbenchChat.commands", "Commands")}</div>
                 {slashItems.map(function (c) {
                   var on = command === c.id;
                   return (
@@ -1947,14 +1974,14 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
             )}
           </span>
           <span className="wb-popover-anchor">
-            <button type="button" className={"wb-composer-icon mode" + (modeOpen ? " active" : "")} title="权限模式" onClick={function () { setModeOpen(!modeOpen); setSlashOpen(false); }}>
+            <button type="button" className={"wb-composer-icon mode" + (modeOpen ? " active" : "")} title={wbT("workbenchChat.permissionMode", "Permission mode")} onClick={function () { setModeOpen(!modeOpen); setSlashOpen(false); }}>
               <span className="wb-mode-ico">{current.icon}</span>
               <span className="wb-mode-label">{current.label}</span>
             </button>
             {modeOpen && (
               <div className="wb-popmenu wb-mode-menu">
-                <div className="wb-menu-head">权限模式</div>
-                {WB_MODES.map(function (m) {
+                <div className="wb-menu-head">{wbT("workbenchChat.permissionMode", "Permission mode")}</div>
+                {translatedModes.map(function (m) {
                   var active = (mode || "auto") === m.id;
                   return (
                     <button key={m.id} type="button" className={"wb-mode-item" + (active ? " active" : "")} onClick={function () { onModeChange(m.id); setModeOpen(false); }}>
@@ -1976,10 +2003,10 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
             className={"wb-composer-send" + (running ? " stop" : "")}
             onClick={submit}
             disabled={sendDisabled}
-            title={running ? "停止" : "发送"}
+            title={running ? wbT("workbenchChat.stop", "Stop") : wbT("workbenchChat.send", "Send")}
           >
             {running ? ICONS.stop : (controller.busy ? <span className="wb-spinner" /> : ICONS.send)}
-            <span className="wb-composer-send-label">{running ? "停止" : "发送"}</span>
+            <span className="wb-composer-send-label">{running ? wbT("workbenchChat.stop", "Stop") : wbT("workbenchChat.send", "Send")}</span>
           </button>
         </div>
       </div>
@@ -1990,7 +2017,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
 
 // AI-generated content disclaimer shown under the composer (i18n).
 function ComposerDisclaimer() {
-  var t = window.useI18n().t;
+  var t = window.useWorkbenchI18n().t;
   return <div className="wb-composer-disclaimer">{t("workbench.composerDisclaimer")}</div>;
 }
 

@@ -45,14 +45,14 @@ function normalizeModel(raw, idx, fbBaseUrl, fbKey) {
 
 // ── Tab definitions ──
 var TABS = [
-  { id: "general", label: "一般" },
-  { id: "models", label: "模型" },
-  { id: "channels", label: "频道" },
-  { id: "agents", label: "代理" },
-  { id: "appearance", label: "外观" },
-  { id: "capabilities", label: "能力" },
-  { id: "data", label: "数据" },
-  { id: "about", label: "关于" },
+  { id: "general", labelKey: "settings.general" },
+  { id: "models", labelKey: "settings.models" },
+  { id: "channels", labelKey: "settings.channels" },
+  { id: "agents", labelKey: "settings.agents" },
+  { id: "appearance", labelKey: "settings.appearance" },
+  { id: "capabilities", labelKey: "settings.capabilities" },
+  { id: "data", labelKey: "settings.data" },
+  { id: "about", labelKey: "settings.about" },
 ];
 
 // ── Settings Overlay ──
@@ -62,7 +62,7 @@ function SettingsOverlay({
   actualTheme,
   onToggleTheme,
 }) {
-  var { t, lang, setLang } = useI18n();
+  var { t, lang, setLang } = useWorkbenchI18n();
   var [tab, setTab] = useStateSt("general");
 
   // ── General state ──
@@ -353,7 +353,7 @@ function SettingsOverlay({
               key: item.id,
               className: "settings-overlay-tab" + (tab === item.id ? " active" : ""),
               onClick: function () { setTab(item.id); },
-            }, item.label);
+            }, t(item.labelKey));
           }),
         ),
 
@@ -393,7 +393,7 @@ function GeneralPanel(p) {
 
   return React.createElement("div", { className: "settings-panel" },
     SectionTitle(t("settings.general")),
-    FieldRow(t("settings.language"), null,
+    FieldRow(t("settings.language"), t("settings.languageHint"),
       React.createElement("div", { className: "wb-seg" },
         React.createElement("button", { className: "wb-seg-btn" + (lang === "en" ? " active" : ""), onClick: function () { setLang("en"); } }, "English"),
         React.createElement("button", { className: "wb-seg-btn" + (lang === "zh" ? " active" : ""), onClick: function () { setLang("zh"); } }, "中文"),
@@ -414,7 +414,7 @@ function GeneralPanel(p) {
     mapProvider === "amap" && FieldRow(t("settings.amapKey"), t("settings.amapKeyHint"),
       React.createElement("div", { className: "wb-inline-row" },
         React.createElement("input", { className: "wb-input mono", type: "password", value: amapKey, onChange: function (e) { setAmapKey(e.target.value); }, placeholder: "高德 Web 服务 Key" }),
-        React.createElement("button", { className: "wb-btn primary", onClick: saveAmapKey }, "保存"),
+        React.createElement("button", { className: "wb-btn primary", onClick: saveAmapKey }, t("settings.save")),
       ),
       amapKeySaved && React.createElement("span", { className: "wb-hint saved" }, amapKeySaved),
     ),
@@ -487,7 +487,7 @@ function ModelsPanel(p) {
         ]);
       }),
     ),
-    modelDraftField(draftModel, setDraftModel, addModel),
+    modelDraftField(draftModel, setDraftModel, addModel, t),
 
     SectionBlock(t("settings.secondaryModelSlot"), t("settings.secondaryModelHint"),
       secondaryModel && ModelCard([
@@ -521,7 +521,7 @@ function ModelsPanel(p) {
         ]);
       }),
     ),
-    modelDraftField(draftVision, setDraftVision, addVisionModel),
+    modelDraftField(draftVision, setDraftVision, addVisionModel, t),
 
     React.createElement("div", { className: "wb-save-actions" },
       React.createElement("button", { className: "wb-btn primary", onClick: saveModels }, t("settings.saveApply")),
@@ -530,12 +530,12 @@ function ModelsPanel(p) {
   );
 }
 
-function modelDraftField(draft, setDraft, onAdd) {
+function modelDraftField(draft, setDraft, onAdd, t) {
   return React.createElement("div", { className: "wb-model-draft" },
-    React.createElement("input", { className: "wb-input mono", value: draft.model, onChange: function (e) { setDraft({ ...draft, model: e.target.value, name: e.target.value }); }, placeholder: "新模型标识符" }),
+    React.createElement("input", { className: "wb-input mono", value: draft.model, onChange: function (e) { setDraft({ ...draft, model: e.target.value, name: e.target.value }); }, placeholder: t("settings.placeholderModelIdentifier") }),
     React.createElement("input", { className: "wb-input mono", type: "password", value: draft.api_key, onChange: function (e) { setDraft({ ...draft, api_key: e.target.value }); }, placeholder: "sk-..." }),
     React.createElement("input", { className: "wb-input mono", value: draft.base_url, onChange: function (e) { setDraft({ ...draft, base_url: e.target.value }); }, placeholder: DEFAULT_MODEL_BASE_URL }),
-    React.createElement("button", { className: "wb-btn", onClick: onAdd }, "添加"),
+    React.createElement("button", { className: "wb-btn", onClick: onAdd }, t("settings.add")),
   );
 }
 
@@ -594,7 +594,7 @@ function ChannelsPanel(p) {
       FieldRow("WeChat Bot Token", null,
         React.createElement("div", { className: "wb-inline-row" },
           React.createElement("input", { className: "wb-input mono", type: "password", value: wechatToken, onChange: function (e) { setWechatToken(e.target.value); }, placeholder: "WECHAT_BOT_TOKEN" }),
-          React.createElement("button", { className: "wb-btn primary", onClick: saveWechat }, "保存"),
+          React.createElement("button", { className: "wb-btn primary", onClick: saveWechat }, t("settings.save")),
         ),
         wechatSaved && React.createElement("span", { className: "wb-hint saved" }, wechatSaved),
       ),

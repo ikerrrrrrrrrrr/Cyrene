@@ -116,7 +116,7 @@ var WorkbenchChatModel = (function () {
         else if (type === "reply_delta" && handlers.onReplyDelta) handlers.onReplyDelta(event.delta || "");
         else if (type === "reply_done" && handlers.onReplyDone) handlers.onReplyDone(event.response || "");
         else if (type === "saved" && handlers.onSaved) handlers.onSaved(event);
-        else if (type === "error" && handlers.onError) handlers.onError(new Error(event.message || "执行失败"));
+        else if (type === "error" && handlers.onError) handlers.onError(new Error(event.message || wbcT("settings.failed", "Failed")));
       }
 
       function pump() {
@@ -175,9 +175,9 @@ function wbcFormatTime(value) {
     if (date >= startOfDay) {
       return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     }
-    if (date >= new Date(startOfDay.getTime() - dayMs)) return "昨天";
+    if (date >= new Date(startOfDay.getTime() - dayMs)) return wbcT("workbenchChat.time.yesterday", "Yesterday");
     var days = Math.floor((startOfDay.getTime() - date.getTime()) / dayMs) + 1;
-    if (days <= 7) return days + "天前";
+    if (days <= 7) return wbcT("workbenchChat.time.daysAgo", "{n}d ago", { n: days });
     return date.toLocaleDateString([], { month: "2-digit", day: "2-digit" });
   } catch (e) {
     return "";
@@ -193,8 +193,8 @@ function wbcCompactNumber(value) {
 }
 
 function wbcT(key, fallback, params) {
-  if (typeof window.t === "function") {
-    var value = window.t(key, params);
+  if (window.WorkbenchI18n && typeof window.WorkbenchI18n.t === "function") {
+    var value = window.WorkbenchI18n.t(key, params, fallback);
     if (value && value !== key) return value;
   }
   if (params && fallback) {
@@ -241,26 +241,31 @@ var WBC_ICONS = {
 // Slash commands + permission modes (mirrors the legacy agent capabilities;
 // defined locally so this page stays independent from workbench.jsx).
 var WBC_COMMANDS = [
-  { id: "quick-answer", label: "快速回答", desc: "用最简洁的方式直接回答" },
-  { id: "deep-research", label: "深度研究", desc: "联网检索并产出研究报告" },
-  { id: "deep-reflect", label: "深度反思", desc: "对话题做多角度深入思考" },
-  { id: "help-me-decide", label: "帮我决定", desc: "梳理选项与利弊给出建议" },
-  { id: "learning-plan", label: "学习计划", desc: "为一个主题制定学习路径" },
-  { id: "daily-review", label: "每日回顾", desc: "回顾并总结今天的事项" },
-  { id: "deep-compare", label: "深度对比", desc: "对多个对象做结构化对比" },
-  { id: "claude-code", label: "Claude Code", desc: "用 Claude Code 处理代码任务" },
+  { id: "quick-answer", labelKey: "workbenchChat.command.quick-answer.label", descKey: "workbenchChat.command.quick-answer.desc" },
+  { id: "deep-research", labelKey: "workbenchChat.command.deep-research.label", descKey: "workbenchChat.command.deep-research.desc" },
+  { id: "deep-reflect", labelKey: "workbenchChat.command.deep-reflect.label", descKey: "workbenchChat.command.deep-reflect.desc" },
+  { id: "help-me-decide", labelKey: "workbenchChat.command.help-me-decide.label", descKey: "workbenchChat.command.help-me-decide.desc" },
+  { id: "learning-plan", labelKey: "workbenchChat.command.learning-plan.label", descKey: "workbenchChat.command.learning-plan.desc" },
+  { id: "daily-review", labelKey: "workbenchChat.command.daily-review.label", descKey: "workbenchChat.command.daily-review.desc" },
+  { id: "deep-compare", labelKey: "workbenchChat.command.deep-compare.label", descKey: "workbenchChat.command.deep-compare.desc" },
+  { id: "claude-code", labelKey: "workbenchChat.command.claude-code.label", descKey: "workbenchChat.command.claude-code.desc" },
 ];
 
 var WBC_MODES = [
-  { id: "default", label: "默认", desc: "敏感操作前先询问你" },
-  { id: "auto", label: "自动", desc: "自动批准，加速执行" },
-  { id: "plan", label: "规划", desc: "只制定方案，不改动文件" },
-  { id: "full_access", label: "完全访问", desc: "允许所有操作（谨慎使用）" },
+  { id: "default", labelKey: "workbenchChat.mode.default.label", descKey: "workbenchChat.mode.default.desc" },
+  { id: "auto", labelKey: "workbenchChat.mode.auto.label", descKey: "workbenchChat.mode.auto.desc" },
+  { id: "plan", labelKey: "workbenchChat.mode.plan.label", descKey: "workbenchChat.mode.plan.desc" },
+  { id: "full_access", labelKey: "workbenchChat.mode.full_access.label", descKey: "workbenchChat.mode.full_access.desc" },
 ];
 
 function wbcModeMeta(id) {
-  for (var i = 0; i < WBC_MODES.length; i++) if (WBC_MODES[i].id === id) return WBC_MODES[i];
-  return WBC_MODES[1];
+  var meta = WBC_MODES[1];
+  for (var i = 0; i < WBC_MODES.length; i++) if (WBC_MODES[i].id === id) meta = WBC_MODES[i];
+  return {
+    id: meta.id,
+    label: wbcT(meta.labelKey, meta.id),
+    desc: wbcT(meta.descKey, ""),
+  };
 }
 
 // ---- file classification for the side viewer -------------------------------
@@ -306,7 +311,15 @@ function wbcChatUsedMap(chat, runtime) {
 }
 
 function wbcCommandMeta(id) {
-  for (var i = 0; i < WBC_COMMANDS.length; i++) if (WBC_COMMANDS[i].id === id) return WBC_COMMANDS[i];
+  for (var i = 0; i < WBC_COMMANDS.length; i++) {
+    if (WBC_COMMANDS[i].id === id) {
+      return {
+        id: WBC_COMMANDS[i].id,
+        label: wbcT(WBC_COMMANDS[i].labelKey, WBC_COMMANDS[i].id),
+        desc: wbcT(WBC_COMMANDS[i].descKey, ""),
+      };
+    }
+  }
   return null;
 }
 
@@ -315,6 +328,7 @@ function wbcCommandMeta(id) {
 // ---------------------------------------------------------------------------
 
 function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
+  window.useWorkbenchI18n();
   var model = window.WorkbenchChatModel;
   var projectId = project ? project.id : "";
   var [chats, setChats] = useWbcState([]);
@@ -402,7 +416,7 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
       if (event.type === "tool_call") {
         var args = event.args || {};
         var preview = Object.values(args).filter(Boolean).map(String).join(", ").slice(0, 60);
-        entry = { kind: "tool", text: String(event.tool || "工具"), preview: preview };
+        entry = { kind: "tool", text: String(event.tool || wbcT("settings.tools", "Tools")), preview: preview };
       } else if (event.type === "phase_transition" && event.detail) {
         entry = { kind: "phase", text: String(event.detail).slice(0, 80), preview: "" };
       }
@@ -838,7 +852,7 @@ function WbcHeader({ project, chat, running, onRename, onDelete, onToTask }) {
             <h1 title={chat.title}>{chat.title || wbcT("workbenchChat.newChat", "New chat")}</h1>
           )}
           {!editing && !isLegacy && (
-            <button type="button" className="wbc-icon-btn" title="重命名" onClick={function () { setEditing(true); }}>
+            <button type="button" className="wbc-icon-btn" title={wbcT("workbenchChat.rename", "Rename chat")} onClick={function () { setEditing(true); }}>
               {WBC_ICONS.edit}
             </button>
           )}
@@ -857,7 +871,7 @@ function WbcHeader({ project, chat, running, onRename, onDelete, onToTask }) {
         )}
         {!isLegacy && (
           <div className="wbc-menu-wrap">
-            <button type="button" className="wbc-icon-btn" title="更多" onClick={function () { setMenuOpen(!menuOpen); }}>
+            <button type="button" className="wbc-icon-btn" title={wbcT("workbenchChat.more", "More")} onClick={function () { setMenuOpen(!menuOpen); }}>
               {WBC_ICONS.dots}
             </button>
             {menuOpen && (
@@ -891,7 +905,7 @@ function WbcUserMessage({ msg, onOpenFile }) {
                 var open = function () { if (onOpenFile && file.url) onOpenFile(file); };
                 return isImg && file.url
                   ? <img key={file.id || i} src={file.url} alt={file.name || "image"} onClick={open} style={{ cursor: "zoom-in" }} />
-                  : <button type="button" key={file.id || i} className="wbc-attach-chip" onClick={open} title="在右侧查看">{WBC_ICONS.file}{file.name || "file"}</button>;
+                  : <button type="button" key={file.id || i} className="wbc-attach-chip" onClick={open} title={wbcT("workbenchChat.viewInSide", "View on the right")}>{WBC_ICONS.file}{file.name || "file"}</button>;
               })}
             </div>
           )}
@@ -917,8 +931,8 @@ function WbcAgentFiles({ files, onOpenFile }) {
               <small>{file.content_type || ""}</small>
             </span>
             <span className="wbc-agent-file-actions">
-              <button type="button" className="wb-btn ghost" onClick={function () { onOpenFile && onOpenFile(file); }}>查看</button>
-              {file.url ? <a className="wb-btn ghost" href={file.url} target="_blank" rel="noreferrer" title="新窗口打开">↗</a> : null}
+              <button type="button" className="wb-btn ghost" onClick={function () { onOpenFile && onOpenFile(file); }}>{wbcT("workbenchChat.viewer", "Viewer")}</button>
+              {file.url ? <a className="wb-btn ghost" href={file.url} target="_blank" rel="noreferrer" title={wbcT("workbenchChat.viewerOpenExternal", "Open in a new window")}>↗</a> : null}
             </span>
           </div>
         );
@@ -934,7 +948,7 @@ function WbcTraceCard({ trace, live, label }) {
     <div className={"wbc-trace" + (live ? " live" : "")}>
       <div className="wbc-trace-head">
         {live ? <span className="wb-spinner" /> : <span className="wbc-trace-icon">{WBC_ICONS.tool}</span>}
-        <b>{label || (live ? "正在处理..." : "执行过程（" + entries.length + " 个工具调用）")}</b>
+        <b>{label || (live ? wbcT("workbenchChat.traceIdle", "Thinking...") : wbcT("workbenchChat.traceSummary", "Execution ({count} tool calls)", { count: entries.length }))}</b>
       </div>
       {entries.length > 0 && (
         <ul className="wbc-trace-list">
@@ -997,7 +1011,7 @@ function WbcLiveMessage({ runtime }) {
         <WbcTraceCard
           trace={progressEntries}
           live={true}
-          label={runtime.text ? "执行过程" : (progressEntries.length ? "正在调用工具..." : "正在思考...")}
+          label={runtime.text ? wbcT("workbenchChat.traceLabel", "Execution") : (progressEntries.length ? wbcT("workbenchChat.toolRunning", "Calling tools...") : wbcT("workbenchChat.traceIdle", "Thinking..."))}
         />
       )}
       {runtime.text && (
@@ -1083,7 +1097,9 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
   }
 
   var slashQuery = draft.indexOf("/") === 0 ? draft.slice(1).toLowerCase() : "";
-  var slashItems = WBC_COMMANDS.filter(function (c) {
+  var translatedCommands = WBC_COMMANDS.map(function (c) { return wbcCommandMeta(c.id); }).filter(Boolean);
+  var translatedModes = WBC_MODES.map(function (m) { return wbcModeMeta(m.id); });
+  var slashItems = translatedCommands.filter(function (c) {
     return !slashQuery || c.id.indexOf(slashQuery) !== -1 || c.label.toLowerCase().indexOf(slashQuery) !== -1;
   });
   var showSlash = (slashOpen || (draft.indexOf("/") === 0 && draft.indexOf(" ") === -1)) && slashItems.length > 0 && !running;
@@ -1157,7 +1173,7 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
             {uploading ? <span className="wb-spinner small" /> : WBC_ICONS.attach}
           </button>
           <span className="wbc-pop-anchor">
-            <button type="button" className={"wbc-composer-icon" + (showSlash || command ? " active" : "")} title="斜杠命令" disabled={running} onClick={function () { setSlashOpen(!slashOpen); setModeOpen(false); }}>
+            <button type="button" className={"wbc-composer-icon" + (showSlash || command ? " active" : "")} title={wbcT("workbenchChat.commands", "Commands")} disabled={running} onClick={function () { setSlashOpen(!slashOpen); setModeOpen(false); }}>
               {WBC_ICONS.slash}
             </button>
             {showSlash && (
@@ -1189,7 +1205,7 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
             {modeOpen && (
               <div className="wbc-popmenu">
                 <div className="wbc-popmenu-head">{wbcT("workbenchChat.permissionMode", "Permission mode")}</div>
-                {WBC_MODES.map(function (m) {
+                {translatedModes.map(function (m) {
                   var on = mode === m.id;
                   return (
                     <button key={m.id} type="button" className={on ? "active" : ""} onClick={function () { setMode(m.id); setModeOpen(false); }}>
@@ -1228,12 +1244,12 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
 function WbcSide({ project, chat, runtime, tab, onTabChange, viewerFile, onOpenFile, onRename, onDelete, onToTask }) {
   var hasMap = wbcChatUsedMap(chat, runtime);
   var tabs = [
-    { id: "overview", label: "概览" },
-    { id: "context", label: "上下文" },
-    { id: "artifacts", label: "产物" },
+    { id: "overview", label: wbcT("chat.side.overview", "Overview") },
+    { id: "context", label: wbcT("workbenchChat.context", "Context") },
+    { id: "artifacts", label: wbcT("workbenchChat.artifacts", "Artifacts") },
   ];
-  if (viewerFile) tabs.push({ id: "viewer", label: "查看器" });
-  if (hasMap) tabs.push({ id: "map", label: "地图" });
+  if (viewerFile) tabs.push({ id: "viewer", label: wbcT("workbenchChat.viewer", "Viewer") });
+  if (hasMap) tabs.push({ id: "map", label: wbcT("chat.side.map", "Map") });
   var activeTab = tabs.some(function (item) { return item.id === tab; }) ? tab : "overview";
   var flush = activeTab === "viewer" || activeTab === "map";
   return (
@@ -1311,15 +1327,15 @@ function WbcViewerTab({ file }) {
     }
   }, [text, kind]);
 
-  if (!file) return <p className="workbench-muted">从消息附件或产物列表选择一个文件。</p>;
+  if (!file) return <p className="workbench-muted">{wbcT("workbenchChat.viewerEmpty", "Select a file from message attachments or artifacts.")}</p>;
 
   var head = (
     <div className="wbc-viewer-head">
       <span className="wbc-viewer-name" title={file.name}>{file.name || "file"}</span>
       {kind === "html" && (
         <span className="wbc-viewer-switch">
-          <button type="button" className={htmlMode === "rendered" ? "active" : ""} onClick={function () { setHtmlMode("rendered"); }}>渲染</button>
-          <button type="button" className={htmlMode === "source" ? "active" : ""} onClick={function () { setHtmlMode("source"); }}>源码</button>
+          <button type="button" className={htmlMode === "rendered" ? "active" : ""} onClick={function () { setHtmlMode("rendered"); }}>{wbcT("workbenchChat.viewerRendered", "Rendered")}</button>
+          <button type="button" className={htmlMode === "source" ? "active" : ""} onClick={function () { setHtmlMode("source"); }}>{wbcT("workbenchChat.viewerSource", "Source")}</button>
         </span>
       )}
       {kind === "pdf" && (
@@ -1329,13 +1345,13 @@ function WbcViewerTab({ file }) {
           <button type="button" onClick={function () { setZoom(function (z) { return Math.min(3, z + 0.2); }); }}>+</button>
         </span>
       )}
-      {url ? <a className="wbc-viewer-open" href={url} target="_blank" rel="noreferrer" title="新窗口打开">↗</a> : null}
+      {url ? <a className="wbc-viewer-open" href={url} target="_blank" rel="noreferrer" title={wbcT("workbenchChat.viewerOpenExternal", "Open in a new window")}>↗</a> : null}
     </div>
   );
 
   var body = null;
   if (failed) {
-    body = <p className="workbench-muted wbc-viewer-pad">文件加载失败。{url ? "可尝试新窗口打开。" : ""}</p>;
+    body = <p className="workbench-muted wbc-viewer-pad">{wbcT("workbenchChat.viewerLoadFailed", "File failed to load.")}{url ? " " + wbcT("workbenchChat.viewerOpenFallback", "Try opening it in a new window.") : ""}</p>;
   } else if (kind === "image") {
     body = <div className="wbc-viewer-scroll center"><img className="wbc-viewer-img" src={url} alt={file.name || "image"} /></div>;
   } else if (kind === "pdf") {
@@ -1343,7 +1359,7 @@ function WbcViewerTab({ file }) {
       <div className="wbc-viewer-scroll">
         <embed className="wbc-viewer-embed" src={blobUrl} type="application/pdf" style={{ width: (zoom * 100) + "%", height: zoom >= 1 ? (zoom * 100) + "%" : "100%" }} />
       </div>
-    ) : <p className="workbench-muted wbc-viewer-pad">加载中…</p>;
+    ) : <p className="workbench-muted wbc-viewer-pad">{wbcT("settings.pathLoading", "Loading...")}</p>;
   } else if (kind === "html") {
     body = htmlMode === "rendered"
       ? <iframe className="wbc-viewer-iframe" sandbox="allow-scripts" srcDoc={text} title={file.name || "HTML"} />
@@ -1355,8 +1371,8 @@ function WbcViewerTab({ file }) {
   } else {
     body = (
       <div className="wbc-viewer-pad">
-        <p className="workbench-muted">暂不支持预览该类型。</p>
-        {url ? <a className="wb-btn ghost" href={url} target="_blank" rel="noreferrer">下载 / 打开</a> : null}
+        <p className="workbench-muted">{wbcT("workbenchChat.viewerUnsupported", "Preview is not supported for this file type.")}</p>
+        {url ? <a className="wb-btn ghost" href={url} target="_blank" rel="noreferrer">{wbcT("workbenchChat.viewerOpenExternal", "Open in a new window")}</a> : null}
       </div>
     );
   }
@@ -1531,7 +1547,7 @@ function WbcUsageRing({ usage }) {
   var cacheTotal = hit + miss;
   var ratio = cacheTotal > 0 ? hit / cacheTotal : 0;
   var label = cacheTotal > 0 ? Math.round(ratio * 100) + "%" : (total ? wbcCompactNumber(total) : "—");
-  var sub = cacheTotal > 0 ? "缓存命中率" : "Token 合计";
+  var sub = cacheTotal > 0 ? wbcT("workbenchChat.cacheHitRate", "Cache hit rate") : wbcT("workbenchChat.tokenTotal", "Total");
   var r = 40, c = 2 * Math.PI * r;
   var dashOffset = c * (1 - (cacheTotal > 0 ? ratio : (total ? 1 : 0)));
   return (
@@ -1549,9 +1565,9 @@ function WbcUsageRing({ usage }) {
         </div>
       </div>
       <div className="wbc-ring-meta">
-        <div><span className="wbc-dot in" />输入<b>{prompt ? wbcCompactNumber(prompt) : "—"}</b></div>
-        <div><span className="wbc-dot out" />输出<b>{completion ? wbcCompactNumber(completion) : "—"}</b></div>
-        <div><span className="wbc-dot total" />合计<b>{total ? wbcCompactNumber(total) : "—"}</b></div>
+        <div><span className="wbc-dot in" />{wbcT("workbenchChat.tokenInput", "Input")}<b>{prompt ? wbcCompactNumber(prompt) : "—"}</b></div>
+        <div><span className="wbc-dot out" />{wbcT("workbenchChat.tokenOutput", "Output")}<b>{completion ? wbcCompactNumber(completion) : "—"}</b></div>
+        <div><span className="wbc-dot total" />{wbcT("workbenchChat.tokenTotal", "Total")}<b>{total ? wbcCompactNumber(total) : "—"}</b></div>
       </div>
     </div>
   );
@@ -1573,7 +1589,7 @@ function WbcModelUsage() {
   if (!entries.length) return null;
   return (
     <section className="workbench-side-section">
-      <h3>模型占比</h3>
+      <h3>{wbcT("workbenchChat.modelShare", "Model share")}</h3>
       {entries.map(function (m) {
         var pct = totalRequests ? Math.round(m.requests / totalRequests * 100) : 0;
         return (
@@ -1590,33 +1606,33 @@ function WbcModelUsage() {
 
 function WbcOverviewTab({ chat, onRename, onDelete, onToTask }) {
   if (!chat) {
-    return <p className="workbench-muted">选择或新建一个对话。</p>;
+    return <p className="workbench-muted">{wbcT("workbenchChat.noMessages", "Select or create a chat.")}</p>;
   }
   var usage = chat.usage || {};
   return (
     <div className="workbench-side-stack">
       <section className="workbench-side-section">
-        <h3>运行概要</h3>
+        <h3>{wbcT("chat.runSummary", "Run summary")}</h3>
         <WbcUsageRing usage={usage} />
       </section>
       <section className="workbench-side-section">
-        <h3>会话信息</h3>
-        <div className="wb-kv"><span>状态</span><b>{chat.status === "running" ? "回复中" : "空闲"}</b></div>
-        <div className="wb-kv"><span>消息数</span><b>{chat.messageCount != null ? chat.messageCount : (chat.messages || []).length}</b></div>
-        <div className="wb-kv"><span>模型</span><b className="wbc-kv-mono">{chat.model || "—"}</b></div>
-        <div className="wb-kv"><span>会话 ID</span><b className="wbc-kv-mono">{chat.id}</b></div>
-        <div className="wb-kv"><span>创建时间</span><b>{wbcFormatTime(chat.createdAt) || "—"}</b></div>
+        <h3>{wbcT("workbenchChat.sessionInfo", "Session info")}</h3>
+        <div className="wb-kv"><span>{wbcT("workbenchChat.statusLabel", "Status")}</span><b>{chat.status === "running" ? wbcT("workbenchChat.status.replying", "Replying") : wbcT("workbenchChat.status.idle", "Idle")}</b></div>
+        <div className="wb-kv"><span>{wbcT("workbenchChat.messageCount", "Messages")}</span><b>{chat.messageCount != null ? chat.messageCount : (chat.messages || []).length}</b></div>
+        <div className="wb-kv"><span>{wbcT("workbenchChat.model", "Model")}</span><b className="wbc-kv-mono">{chat.model || "—"}</b></div>
+        <div className="wb-kv"><span>{wbcT("chat.runId", "Session ID")}</span><b className="wbc-kv-mono">{chat.id}</b></div>
+        <div className="wb-kv"><span>{wbcT("workbenchChat.createdAt", "Created")}</span><b>{wbcFormatTime(chat.createdAt) || "—"}</b></div>
       </section>
       <WbcModelUsage />
       <section className="workbench-side-section">
-        <h3>快捷操作</h3>
+        <h3>{wbcT("workbenchChat.quickActions", "Quick actions")}</h3>
         <div className="wbc-quick-actions">
           <button type="button" onClick={function () {
-            var next = window.prompt("对话标题", chat.title || "");
+            var next = window.prompt(wbcT("workbenchChat.titleLabel", "Chat title"), chat.title || "");
             if (next != null) onRename(String(next).trim() || chat.title);
-          }}>{WBC_ICONS.edit}<span>重命名对话</span></button>
-          <button type="button" onClick={onToTask}>{WBC_ICONS.task}<span>转为任务</span></button>
-          <button type="button" className="danger" onClick={onDelete}>{WBC_ICONS.trash}<span>删除对话</span></button>
+          }}>{WBC_ICONS.edit}<span>{wbcT("workbenchChat.rename", "Rename chat")}</span></button>
+          <button type="button" onClick={onToTask}>{WBC_ICONS.task}<span>{wbcT("workbenchChat.toTask", "Convert to task")}</span></button>
+          <button type="button" className="danger" onClick={onDelete}>{WBC_ICONS.trash}<span>{wbcT("workbenchChat.delete", "Delete chat")}</span></button>
         </div>
       </section>
     </div>
@@ -1635,27 +1651,27 @@ function WbcContextTab({ project, chat }) {
   return (
     <div className="workbench-side-stack">
       <section className="workbench-side-section">
-        <h3>项目上下文</h3>
-        <div className="wb-kv"><span>项目</span><b>{project ? project.name : "—"}</b></div>
+        <h3>{wbcT("workbenchChat.projectContext", "Project context")}</h3>
+        <div className="wb-kv"><span>{wbcT("settings.projectName", "Project")}</span><b>{project ? project.name : "—"}</b></div>
         <p className="workbench-muted">{(project && project.workspacePath) || "—"}</p>
         {project && project.context && project.context.summary ? <p>{project.context.summary}</p> : null}
       </section>
       <section className="workbench-side-section">
-        <h3>注入上下文</h3>
+        <h3>{wbcT("workbenchChat.injectedContext", "Injected context")}</h3>
         <div className="workbench-check">
           <span className={"workbench-status-dot " + (!state || state.soul_active !== false ? "green" : "muted")}></span>
-          人格（SOUL.md）
+          {wbcT("settings.soulMd", "SOUL.md")}
         </div>
         <div className="workbench-check">
           <span className={"workbench-status-dot " + (!state || state.workspace_active !== false ? "green" : "muted")}></span>
-          工作区文件
+          {wbcT("settings.workspaceDir", "Workspace directory")}
         </div>
         {state && state.workspace_dir ? <p className="workbench-muted">{state.workspace_dir}</p> : null}
       </section>
       <section className="workbench-side-section">
-        <h3>对话统计</h3>
-        <div className="wb-kv"><span>消息数</span><b>{chat ? (chat.messages || []).length : 0}</b></div>
-        <div className="wb-kv"><span>最近更新</span><b>{chat ? (wbcFormatTime(chat.updatedAt) || "—") : "—"}</b></div>
+        <h3>{wbcT("workbenchChat.stats", "Chat stats")}</h3>
+        <div className="wb-kv"><span>{wbcT("workbenchChat.messageCount", "Messages")}</span><b>{chat ? (chat.messages || []).length : 0}</b></div>
+        <div className="wb-kv"><span>{wbcT("workbenchChat.updatedAt", "Last updated")}</span><b>{chat ? (wbcFormatTime(chat.updatedAt) || "—") : "—"}</b></div>
       </section>
     </div>
   );
@@ -1669,8 +1685,8 @@ function WbcArtifactsTab({ chat, onOpenFile }) {
   return (
     <div className="workbench-side-stack">
       <section className="workbench-side-section">
-        <h3>{"文件与产物 (" + files.length + ")"}</h3>
-        {files.length === 0 && <p className="workbench-muted">这个对话还没有产生文件。上传的附件和 Agent 生成的文件会出现在这里。</p>}
+        <h3>{wbcT("workbenchChat.filesAndArtifacts", "Files and artifacts") + " (" + files.length + ")"}</h3>
+        {files.length === 0 && <p className="workbench-muted">{wbcT("workbenchChat.noFiles", "This chat has not produced files yet. Uploads and agent-generated files will appear here.")}</p>}
         {files.map(function (item, i) {
           var file = item.file;
           return (
@@ -1678,12 +1694,12 @@ function WbcArtifactsTab({ chat, onOpenFile }) {
               className="wbc-file-row clickable"
               key={(file.id || file.url || i) + "_" + i}
               onClick={function () { if (onOpenFile && file.url) onOpenFile(file); }}
-              title="在查看器中打开"
+              title={wbcT("workbenchChat.viewInSide", "View on the right")}
             >
               <span className="wbc-file-icon">{WBC_ICONS.file}</span>
               <span className="wbc-file-meta">
                 <b>{file.name || "file"}</b>
-                <small>{item.role === "user" ? "用户上传" : "Agent 生成"}</small>
+                <small>{item.role === "user" ? wbcT("workbenchChat.userUpload", "User upload") : wbcT("workbenchChat.agentGenerated", "Agent generated")}</small>
               </span>
               {file.url ? (
                 <a
@@ -1691,7 +1707,7 @@ function WbcArtifactsTab({ chat, onOpenFile }) {
                   href={file.url}
                   target="_blank"
                   rel="noreferrer"
-                  title="新窗口打开"
+                  title={wbcT("workbenchChat.viewerOpenExternal", "Open in a new window")}
                   onClick={function (e) { e.stopPropagation(); }}
                 >↗</a>
               ) : null}
