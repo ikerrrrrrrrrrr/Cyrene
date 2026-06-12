@@ -1479,7 +1479,7 @@ async def test_schedule_task_once_normalizes_naive_local_time_to_utc(monkeypatch
 
     seen = {}
 
-    async def fake_create_task(db_path, chat_id, prompt, schedule_type, schedule_value, next_run, permission_mode="workspace_only"):
+    async def fake_create_task(db_path, chat_id, prompt, schedule_type, schedule_value, next_run, permission_mode="workspace_only", project_id="default"):
         seen["db_path"] = db_path
         seen["chat_id"] = chat_id
         seen["prompt"] = prompt
@@ -1487,6 +1487,7 @@ async def test_schedule_task_once_normalizes_naive_local_time_to_utc(monkeypatch
         seen["schedule_value"] = schedule_value
         seen["next_run"] = next_run
         seen["permission_mode"] = permission_mode
+        seen["project_id"] = project_id
         return "task_local"
 
     class _FakeLocalNow(datetime):
@@ -1515,6 +1516,62 @@ async def test_schedule_task_once_normalizes_naive_local_time_to_utc(monkeypatch
     assert seen["schedule_value"] == "2026-05-20T11:35:35+00:00"
     assert seen["next_run"] == "2026-05-20T11:35:35+00:00"
     assert seen["permission_mode"] == "workspace_only"
+    assert seen["project_id"] == "default"
+
+
+async def test_schedule_task_uses_workbench_project_scope(monkeypatch, tmp_path):
+    import json
+
+    from cyrene import tools
+    from cyrene.agent import state as agent_state
+    import cyrene.workbench_context as workbench_context
+
+    seen = {}
+
+    projects_store = tmp_path / "workbench_projects.json"
+    projects_store.write_text(json.dumps({
+        "projects": [
+            {
+                "id": "proj_demo",
+                "dataKey": "proj_demo_scope",
+                "sessions": [{"id": "task_session_1"}],
+            }
+        ]
+    }), encoding="utf-8")
+
+    chats_store = tmp_path / "workbench_chats.json"
+    chats_store.write_text(json.dumps({
+        "chats": [
+            {"id": "wbchat_1", "projectId": "proj_demo"}
+        ]
+    }), encoding="utf-8")
+
+    async def fake_create_task(db_path, chat_id, prompt, schedule_type, schedule_value, next_run, permission_mode="workspace_only", project_id="default"):
+        seen["project_id"] = project_id
+        return "task_scope"
+
+    monkeypatch.setattr(workbench_context, "_WORKBENCH_STORE", projects_store)
+    monkeypatch.setattr(workbench_context, "_WORKBENCH_CHATS_STORE", chats_store)
+    monkeypatch.setattr(tools.db, "create_task", fake_create_task)
+
+    token = agent_state._current_session_id.set("wbchat_1")
+    try:
+        result = await tools._tool_schedule_task(
+            {
+                "prompt": "send_message(\"scope\")",
+                "schedule_type": "interval",
+                "schedule_value": "3600",
+            },
+            None,
+            -1,
+            "db.sqlite3",
+            None,
+        )
+    finally:
+        agent_state._current_session_id.reset(token)
+
+    assert result.startswith("Task task_scope scheduled.")
+    assert seen["project_id"] == "proj_demo_scope"
 
 
 async def test_ask_user_tool_persists_pending_question(monkeypatch, tmp_path):

@@ -4523,24 +4523,29 @@ html[data-theme="light"] .wb-tool-list .mono {
 .wb-sched-run-head small { margin-left: auto; font-size: 11.5px; color: var(--wb-faint); }
 .wb-sched-run-body { margin: 7px 0 0; font-size: 12.5px; color: var(--wb-muted); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 
-/* ── new / edit modal ──────────────────────────────────────────────── */
-.wb-sched-modal-scrim {
-  position: fixed; inset: 0; z-index: 60;
-  background: rgba(15, 20, 30, 0.42); backdrop-filter: blur(2px);
-  display: flex; align-items: center; justify-content: center; padding: 24px;
+/* ── schedule create / edit modal ─────────────────────────────────── */
+.wb-sched-create-modal { width: 560px; }
+.wb-sched-create-body { display: flex; flex-direction: column; gap: 16px; }
+.wb-sched-create-kind { display: flex; flex-direction: column; gap: 10px; }
+.wb-sched-create-label { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: var(--wb-faint); text-transform: uppercase; }
+.wb-sched-create-hero {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--wb-line));
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 6%, #ffffff), color-mix(in srgb, var(--wb-card-bg) 92%, transparent));
 }
-.wb-sched-modal {
-  width: min(520px, 100%); max-height: 88vh; display: flex; flex-direction: column;
-  background: var(--wb-bg-2); border: 1px solid var(--wb-line); border-radius: 14px;
-  box-shadow: 0 24px 60px rgba(0,0,0,0.32); overflow: hidden;
-}
-.wb-sched-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--wb-line); }
-.wb-sched-modal-head b { font-size: 16px; font-weight: 720; }
-.wb-sched-modal-head .wb-sched-detail-close { padding: 0; margin: 0; }
-.wb-sched-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+.wb-sched-create-hero b { font-size: 16px; font-weight: 760; color: var(--wb-text); }
+.wb-sched-create-hero p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--wb-muted); }
+.wb-sched-create-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .wb-sched-field { display: flex; flex-direction: column; gap: 6px; }
 .wb-sched-field > span { font-size: 13px; font-weight: 620; color: var(--wb-text); }
 .wb-sched-field textarea, .wb-sched-field input[type="text"], .wb-sched-field input[type="datetime-local"], .wb-sched-field input[type="number"], .wb-sched-field select {
+  border: 1px solid var(--wb-line); border-radius: 8px; background: var(--wb-control-bg);
+  color: var(--wb-text); font-size: 13.5px; padding: 9px 11px; outline: none; width: 100%;
+}
+.wb-sched-field input[type="date"] {
   border: 1px solid var(--wb-line); border-radius: 8px; background: var(--wb-control-bg);
   color: var(--wb-text); font-size: 13.5px; padding: 9px 11px; outline: none; width: 100%;
 }
@@ -4559,7 +4564,10 @@ html[data-theme="light"] .wb-tool-list .mono {
   background: var(--wb-error-bg); color: var(--wb-error-text);
   border-radius: 8px; padding: 8px 11px; font-size: 12.5px;
 }
-.wb-sched-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--wb-line); }
+@media (max-width: 640px) {
+  .wb-sched-create-modal { width: 100%; }
+  .wb-sched-create-grid { grid-template-columns: 1fr; }
+}
 
 /* responsive: collapse the detail panel on narrow widths */
 @media (max-width: 1240px) {

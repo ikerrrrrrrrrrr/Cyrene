@@ -52,6 +52,7 @@ from cyrene.skills_registry import (
 from cyrene.subagent import register as _reg_subagent, can_receive, _run_subagent, _spawn_subagent_task
 from cyrene.inbox import send_message as _send_inbox
 from cyrene.soul import read_shallow_memory
+from cyrene.workbench_context import resolve_project_data_key_for_session
 
 logger = logging.getLogger(__name__)
 _CC_PROJECT_DIR = WORKSPACE_DIR.parent
@@ -864,6 +865,8 @@ async def _tool_prompt_claude_code(args: dict[str, Any], _bot: Any, _chat_id: in
 
 
 async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.agent.state import _current_session_id
+
     stype = str(args["schedule_type"])
     svalue = str(args["schedule_value"])
     now = datetime.now(timezone.utc)
@@ -892,7 +895,17 @@ async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_
         if str(status.get("status", "")).strip() == "awaiting_user":
             return elevation_result
 
-    task_id = await db.create_task(db_path, chat_id, str(args["prompt"]), stype, svalue, next_run, permission_mode=permission_mode)
+    project_id = resolve_project_data_key_for_session(_current_session_id.get())
+    task_id = await db.create_task(
+        db_path,
+        chat_id,
+        str(args["prompt"]),
+        stype,
+        svalue,
+        next_run,
+        permission_mode=permission_mode,
+        project_id=project_id,
+    )
     return f"Task {task_id} scheduled. Next run: {next_run} 权限模式：{permission_mode}"
 
 

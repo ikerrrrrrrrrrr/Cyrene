@@ -44,6 +44,12 @@
     return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) +
       "T" + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
   }
+  function toDateInputValue(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
 
   function dayHeading(d) {
     return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 周" + WEEKDAY_CN[d.getDay()];
@@ -62,9 +68,9 @@
   var CATEGORIES = [
     { id: "task_recurring", label: "定时任务", hint: "重复执行的 Agent 任务" },
     { id: "task_once", label: "单次任务", hint: "执行一次的 Agent 任务" },
-    { id: "entity_due", label: "任务截止", hint: "带截止日期的事务" },
+    { id: "entity_due", label: "日程", hint: "记录在日历中的普通事项" },
   ];
-  var CATEGORY_LABEL = { task_recurring: "定时任务", task_once: "单次任务", entity_due: "任务截止" };
+  var CATEGORY_LABEL = { task_recurring: "定时任务", task_once: "单次任务", entity_due: "日程" };
 
   // ── API model ────────────────────────────────────────────────────────
 
@@ -99,6 +105,22 @@
         var r = await fetch("/api/workbench/schedule/tasks/" + encodeURIComponent(id) + "/runs?" + qs("limit=20"));
         var p = await jsonOrThrow(r);
         return (p && p.runs) || [];
+      },
+      getEntity: async function (id) {
+        var r = await fetch("/api/entities/" + encodeURIComponent(id));
+        return jsonOrThrow(r);
+      },
+      createEntity: async function (body) {
+        var r = await fetch("/api/entities", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        return jsonOrThrow(r);
+      },
+      updateEntity: async function (id, body) {
+        var r = await fetch("/api/entities/" + encodeURIComponent(id), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        return jsonOrThrow(r);
+      },
+      removeEntity: async function (id) {
+        var r = await fetch("/api/entities/" + encodeURIComponent(id), { method: "DELETE" });
+        return jsonOrThrow(r);
       },
     };
   }
@@ -587,11 +609,21 @@
             React.createElement(KV, { k: "类型", v: ev.entity_type || "—" }),
             React.createElement(KV, { k: "优先级", v: ev.priority || "—" })
           ),
+          !isTask && ev.content && React.createElement(
+            "div", { className: "wb-sched-detail-sec" },
+            React.createElement("div", { className: "wb-sched-detail-sec-title" }, "备注"),
+            React.createElement("p", { className: "wb-sched-detail-prompt" }, ev.content)
+          ),
           isTask && React.createElement(
             "div", { className: "wb-sched-detail-actions" },
             React.createElement("button", { type: "button", className: "wb-btn", onClick: function () { props.onEdit(ev); } }, "编辑"),
             React.createElement("button", { type: "button", className: "wb-btn", onClick: function () { props.onToggleStatus(ev); } },
               ev.status === "paused" ? "启用" : "暂停"),
+            React.createElement("button", { type: "button", className: "wb-btn danger", onClick: function () { props.onDelete(ev); } }, "删除")
+          ),
+          !isTask && React.createElement(
+            "div", { className: "wb-sched-detail-actions" },
+            React.createElement("button", { type: "button", className: "wb-btn", onClick: function () { props.onEdit(ev); } }, "编辑"),
             React.createElement("button", { type: "button", className: "wb-btn danger", onClick: function () { props.onDelete(ev); } }, "删除")
           )
         ),
@@ -653,7 +685,12 @@
       return { repeat: "none", start: s, cronText: "", intervalValue: 1, intervalUnit: "h" };
     }, [props.task, props.defaultDate]);
 
-    var promptState = useState(props.task ? props.task.prompt : ""); var prompt = promptState[0], setPrompt = promptState[1];
+    var formKindState = useState(props.task ? "task" : props.entity ? "entity" : "entity"); var formKind = formKindState[0], setFormKind = formKindState[1];
+    var promptState = useState(props.task ? props.task.prompt : props.entity ? (props.entity.title || "") : ""); var prompt = promptState[0], setPrompt = promptState[1];
+    var noteState = useState(props.entity ? (props.entity.content || "") : ""); var note = noteState[0], setNote = noteState[1];
+    var entityDateState = useState(toDateInputValue(props.entity && props.entity.due_date)); var entityDate = entityDateState[0], setEntityDate = entityDateState[1];
+    var entityStatusState = useState(props.entity ? (props.entity.status || "active") : "active"); var entityStatus = entityStatusState[0], setEntityStatus = entityStatusState[1];
+    var entityPriorityState = useState(props.entity ? (props.entity.priority || "medium") : "medium"); var entityPriority = entityPriorityState[0], setEntityPriority = entityPriorityState[1];
     var startState = useState(toLocalInputValue(initial.start)); var startVal = startState[0], setStartVal = startState[1];
     var repeatState = useState(initial.repeat); var repeat = repeatState[0], setRepeat = repeatState[1];
     var cronState = useState(initial.cronText); var cronText = cronState[0], setCronText = cronState[1];
@@ -669,45 +706,124 @@
 
     function submit() {
       var p = prompt.trim();
-      if (!p) { setErr("请填写日程标题 / 任务内容"); return; }
+      if (!p) { setErr(formKind === "task" ? "请填写任务内容" : "请填写日程标题"); return; }
+      if (formKind === "entity") {
+        if (!entityDate) { setErr("请选择日程日期"); return; }
+        var dueDate = new Date(entityDate + "T23:59:59");
+        if (isNaN(dueDate.getTime())) { setErr("请选择有效的日程日期"); return; }
+        var entityBody = {
+          title: p,
+          content: note.trim(),
+          due_date: dueDate.toISOString(),
+          status: entityStatus,
+          priority: entityPriority,
+        };
+        setSaving(true); setErr("");
+        var entityOp = props.entity
+          ? props.api.updateEntity(props.entity.id, entityBody)
+          : props.api.createEntity(Object.assign({ type: "event", source: "user" }, entityBody));
+        entityOp.then(function () { props.onSaved(); }).catch(function (e) { setErr(e.message || String(e)); }).finally(function () { setSaving(false); });
+        return;
+      }
       var startDate = new Date(startVal);
-      if (repeat !== "cron" && repeat !== "interval" && isNaN(startDate.getTime())) { setErr("请选择有效的开始时间"); return; }
+      if (repeat !== "cron" && repeat !== "interval" && isNaN(startDate.getTime())) { setErr("请选择有效的首次时间"); return; }
       var spec = buildSchedule(repeat, startDate, cronText, ivVal, ivUnit);
       if ((spec.schedule_type === "cron" || spec.schedule_type === "interval") && !spec.schedule_value) { setErr("请填写重复规则"); return; }
       var body = { prompt: p, schedule_type: spec.schedule_type, schedule_value: spec.schedule_value };
       if (spec.schedule_type === "once") body.next_run = startDate.toISOString();
       setSaving(true); setErr("");
-      var op = props.task ? API.update(props.task.id, body) : API.create(body);
+      var op = props.task ? props.api.update(props.task.id, body) : props.api.create(body);
       op.then(function () { props.onSaved(); }).catch(function (e) { setErr(e.message || String(e)); }).finally(function () { setSaving(false); });
     }
 
-    var showStart = repeat !== "cron" && repeat !== "interval";
+    var showStart = formKind === "task" && repeat !== "cron" && repeat !== "interval";
     return React.createElement(
-      "div", { className: "wb-sched-modal-scrim", onClick: function (e) { if (e.target === e.currentTarget) props.onClose(); } },
+      "div", { className: "wb-create-scrim", onClick: function (e) { if (e.target === e.currentTarget) props.onClose(); } },
       React.createElement(
-        "div", { className: "wb-sched-modal" },
+        "div", { className: "wb-create-modal wb-create-task wb-sched-create-modal" },
         React.createElement(
-          "div", { className: "wb-sched-modal-head" },
-          React.createElement("b", null, props.task ? "编辑日程" : "新建日程"),
-          React.createElement("button", { type: "button", className: "wb-sched-detail-close", onClick: props.onClose }, "×")
+          "div", { className: "wb-create-head" },
+          React.createElement("b", null, props.task ? "编辑定时任务" : props.entity ? "编辑日程" : "新增内容"),
+          React.createElement("button", { type: "button", className: "wb-create-x", onClick: props.onClose, title: "关闭" }, "×")
         ),
         React.createElement(
-          "div", { className: "wb-sched-modal-body" },
+          "div", { className: "wb-create-body wb-sched-create-body" },
+          !props.task && !props.entity && React.createElement(
+            "div", { className: "wb-sched-create-kind" },
+            React.createElement("span", { className: "wb-sched-create-label" }, "添加类型"),
+            React.createElement(
+              "div", { className: "wb-cp-seg" },
+              React.createElement("button", {
+                type: "button", className: "wb-cp-seg-btn" + (formKind === "entity" ? " on" : ""),
+                onClick: function () { setFormKind("entity"); setErr(""); },
+              }, "日程"),
+              React.createElement("button", {
+                type: "button", className: "wb-cp-seg-btn" + (formKind === "task" ? " on" : ""),
+                onClick: function () { setFormKind("task"); setErr(""); },
+              }, "定时任务")
+            )
+          ),
+          React.createElement(
+            "div", { className: "wb-sched-create-hero" },
+            React.createElement("b", null, formKind === "task" ? "定时任务" : "日程"),
+            React.createElement("p", null, formKind === "task"
+              ? "适合需要触发 Agent 执行的提醒、汇总、巡检或自动化任务。"
+              : "适合记录某一天的安排、截止日或需要在日历中占位的事项。")
+          ),
           React.createElement(
             "label", { className: "wb-sched-field" },
-            React.createElement("span", null, "标题 / 任务内容"),
+            React.createElement("span", null, formKind === "task" ? "任务内容" : "日程标题"),
             React.createElement("textarea", {
-              value: prompt, rows: 3, autoFocus: true,
-              placeholder: "例如：每天早上汇总今天的待办并提醒我",
+              value: prompt, rows: formKind === "task" ? 3 : 2, autoFocus: true,
+              placeholder: formKind === "task" ? "例如：每天早上汇总今天的待办并提醒我" : "例如：产品评审会 / 提案截止 / 出差行程",
               onChange: function (e) { setPrompt(e.target.value); },
             })
+          ),
+          formKind === "entity" && React.createElement(
+            React.Fragment, null,
+            React.createElement(
+              "div", { className: "wb-sched-create-grid" },
+              React.createElement(
+                "label", { className: "wb-sched-field" },
+                React.createElement("span", null, "日期"),
+                React.createElement("input", { type: "date", value: entityDate, onChange: function (e) { setEntityDate(e.target.value); } })
+              ),
+              React.createElement(
+                "label", { className: "wb-sched-field" },
+                React.createElement("span", null, "优先级"),
+                React.createElement("select", { value: entityPriority, onChange: function (e) { setEntityPriority(e.target.value); } },
+                  React.createElement("option", { value: "high" }, "高"),
+                  React.createElement("option", { value: "medium" }, "中"),
+                  React.createElement("option", { value: "low" }, "低"))
+              )
+            ),
+            React.createElement(
+              "label", { className: "wb-sched-field" },
+              React.createElement("span", null, "状态"),
+              React.createElement("div", { className: "wb-sched-seg" },
+                [{ id: "pending", label: "待处理" }, { id: "active", label: "进行中" }, { id: "done", label: "已完成" }].map(function (it) {
+                  return React.createElement("button", {
+                    key: it.id, type: "button", className: entityStatus === it.id ? "on" : "",
+                    onClick: function () { setEntityStatus(it.id); },
+                  }, it.label);
+                }))
+            ),
+            React.createElement(
+              "label", { className: "wb-sched-field" },
+              React.createElement("span", null, "备注"),
+              React.createElement("textarea", {
+                value: note, rows: 4,
+                placeholder: "补充地点、参与人或上下文（可选）",
+                onChange: function (e) { setNote(e.target.value); },
+              })
+            )
           ),
           showStart && React.createElement(
             "label", { className: "wb-sched-field" },
             React.createElement("span", null, repeat === "none" ? "时间" : "首次时间"),
             React.createElement("input", { type: "datetime-local", value: startVal, onChange: function (e) { setStartVal(e.target.value); } })
           ),
-          React.createElement(
+          formKind === "task" && React.createElement(
             "label", { className: "wb-sched-field" },
             React.createElement("span", null, "重复"),
             React.createElement("div", { className: "wb-sched-seg" },
@@ -718,7 +834,7 @@
                 }, r.label);
               }))
           ),
-          repeat === "interval" && React.createElement(
+          formKind === "task" && repeat === "interval" && React.createElement(
             "label", { className: "wb-sched-field" },
             React.createElement("span", null, "间隔"),
             React.createElement("div", { className: "wb-sched-inline" },
@@ -728,19 +844,21 @@
                 React.createElement("option", { value: "h" }, "小时"),
                 React.createElement("option", { value: "d" }, "天")))
           ),
-          repeat === "cron" && React.createElement(
+          formKind === "task" && repeat === "cron" && React.createElement(
             "label", { className: "wb-sched-field" },
             React.createElement("span", null, "Cron 表达式 (UTC)"),
             React.createElement("input", { type: "text", value: cronText, placeholder: "例如 30 1 * * 1  （周一 01:30 UTC）", onChange: function (e) { setCronText(e.target.value); } })
           ),
-          React.createElement("p", { className: "wb-sched-form-note" }, "通过日历创建的为「仅工作区」权限任务；需要完整权限的定时任务请在对话中创建。"),
+          React.createElement("p", { className: "wb-sched-form-note" }, formKind === "task"
+            ? "通过这里创建的为「仅工作区」权限任务；需要完整权限的定时任务请在对话中创建。"
+            : "普通日程会作为日历事项保存，并以全天形式显示在对应日期。"),
           err && React.createElement("div", { className: "wb-sched-form-err" }, err)
         ),
         React.createElement(
-          "div", { className: "wb-sched-modal-foot" },
+          "div", { className: "wb-create-foot" },
           React.createElement("button", { type: "button", className: "wb-btn", onClick: props.onClose }, "取消"),
           React.createElement("button", { type: "button", className: "wb-btn primary", onClick: submit, disabled: saving || !prompt.trim() },
-            saving ? "保存中…" : (props.task ? "保存" : "创建"))
+            saving ? "保存中…" : (props.task || props.entity ? "保存" : "创建"))
         )
       )
     );
@@ -764,6 +882,7 @@
     var detailTabState = useState("detail"); var detailTab = detailTabState[0], setDetailTab = detailTabState[1];
     var runsState = useState([]); var runs = runsState[0], setRuns = runsState[1];
     var runsLoadState = useState(false); var runsLoading = runsLoadState[0], setRunsLoading = runsLoadState[1];
+    var entityDetailState = useState(null); var entityDetail = entityDetailState[0], setEntityDetail = entityDetailState[1];
     var formState = useState(null); var formMode = formState[0], setFormMode = formState[1]; // null | {task?, defaultDate?}
 
     // Visible window for the occurrences query (a touch wider than the view).
@@ -804,16 +923,23 @@
 
     var selectedEvent = useMemo(function () {
       if (!selectedId) return null;
-      return events.find(function (ev) { return ev.id === selectedId; }) ||
+      var base = events.find(function (ev) { return ev.id === selectedId; }) ||
         decorate(rawEvents).find(function (ev) { return ev.id === selectedId; }) || null;
-    }, [selectedId, events, rawEvents]);
+      if (!base) return null;
+      if (base.source === "entity" && entityDetail && entityDetail.id === base.entity_id) return Object.assign({}, base, entityDetail);
+      return base;
+    }, [selectedId, events, rawEvents, entityDetail]);
 
     function selectEvent(ev) {
       setSelectedId(ev.id);
       setDetailTab("detail");
       if (ev.source === "task" && ev.task_id) {
+        setEntityDetail(null);
         setRuns([]); setRunsLoading(true);
         API.runs(ev.task_id).then(function (r) { setRuns(r); }).catch(function () { setRuns([]); }).finally(function () { setRunsLoading(false); });
+      } else if (ev.source === "entity" && ev.entity_id) {
+        setRuns([]); setRunsLoading(false);
+        API.getEntity(ev.entity_id).then(function (ent) { setEntityDetail(ent); }).catch(function () { setEntityDetail(null); });
       }
     }
 
@@ -837,6 +963,21 @@
     function removeTask(ev) {
       if (!window.confirm("确定删除该定时任务？此操作不可撤销。")) return;
       API.remove(ev.task_id).then(function () { setSelectedId(null); load(); }).catch(function (e) { setError(e.message || String(e)); });
+    }
+    function removeEntity(ev) {
+      if (!window.confirm("确定删除该日程？此操作不可撤销。")) return;
+      API.removeEntity(ev.entity_id).then(function () { setSelectedId(null); setEntityDetail(null); load(); }).catch(function (e) { setError(e.message || String(e)); });
+    }
+    function openEdit(ev) {
+      if (ev.source === "task") {
+        setFormMode({ task: rawTaskOf(rawEvents, ev) });
+        return;
+      }
+      if (entityDetail && entityDetail.id === ev.entity_id) {
+        setFormMode({ entity: entityDetail });
+        return;
+      }
+      API.getEntity(ev.entity_id).then(function (ent) { setFormMode({ entity: ent }); }).catch(function (e) { setError(e.message || String(e)); });
     }
 
     var headingText = viewMode === "day" ? dayHeading(anchorDate) : viewMode === "week" ? weekHeading(anchorDate) : monthHeading(anchorDate);
@@ -876,7 +1017,7 @@
             React.createElement(
               "button", { type: "button", className: "wb-btn primary wb-sched-new", onClick: function () { setFormMode({ defaultDate: anchorDate }); } },
               svg(["M12 5v14M5 12h14"], { width: 15, height: 15, strokeWidth: 2.4 }),
-              React.createElement("span", null, "新建日程")
+              React.createElement("span", null, "新增")
             )
           )
         ),
@@ -896,8 +1037,9 @@
           event: selectedEvent, tab: detailTab, setTab: setDetailTab,
           runs: runs, runsLoading: runsLoading,
           onClose: function () { setSelectedId(null); },
-          onEdit: function (ev) { setFormMode({ task: rawTaskOf(rawEvents, ev) }); },
-          onToggleStatus: toggleStatus, onDelete: removeTask,
+          onEdit: openEdit,
+          onToggleStatus: toggleStatus,
+          onDelete: function (ev) { return ev.source === "task" ? removeTask(ev) : removeEntity(ev); },
         })
         : React.createElement(
           "aside", { className: "wb-sched-detail empty" },
@@ -906,9 +1048,11 @@
             React.createElement("p", null, "选择一个日程查看详情"))
         ),
       formMode && React.createElement(ScheduleForm, {
+        api: API,
         task: formMode.task, defaultDate: formMode.defaultDate,
+        entity: formMode.entity,
         onClose: function () { setFormMode(null); },
-        onSaved: function () { setFormMode(null); setSelectedId(null); load(); },
+        onSaved: function () { setFormMode(null); setSelectedId(null); setEntityDetail(null); load(); },
       })
     );
   }

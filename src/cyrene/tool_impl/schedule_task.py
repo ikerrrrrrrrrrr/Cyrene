@@ -13,12 +13,15 @@ from cyrene.tool_legacy import (
     json,
     timezone,
 )
+from cyrene.workbench_context import resolve_project_data_key_for_session
 
 TOOL_NAME = 'schedule_task'
 TOOL_DEF = next(td for td in _legacy.TOOL_DEFS if td["function"]["name"] == TOOL_NAME)
 
 
 async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_path: str, _notify_state: dict[str, bool] | None) -> str:
+    from cyrene.agent.state import _current_session_id
+
     stype = str(args["schedule_type"])
     svalue = str(args["schedule_value"])
     now = datetime.now(timezone.utc)
@@ -49,7 +52,17 @@ async def _tool_schedule_task(args: dict[str, Any], _bot: Any, chat_id: int, db_
             if str(status.get("status", "")).strip() == "awaiting_user":
                 return elevation_result
 
-    task_id = await db.create_task(db_path, chat_id, str(args["prompt"]), stype, svalue, next_run, permission_mode=permission_mode)
+    project_id = resolve_project_data_key_for_session(_current_session_id.get())
+    task_id = await db.create_task(
+        db_path,
+        chat_id,
+        str(args["prompt"]),
+        stype,
+        svalue,
+        next_run,
+        permission_mode=permission_mode,
+        project_id=project_id,
+    )
     return f"Task {task_id} scheduled. Next run: {next_run} 权限模式：{permission_mode}"
 
 
