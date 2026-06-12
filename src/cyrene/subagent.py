@@ -87,6 +87,7 @@ async def _publish_registry_event(agent_id: str) -> None:
         "created_at": entry.get("created_at"),
         "updated_at": entry.get("updated_at"),
         "round_id": entry.get("round_id", ""),
+        "session_id": entry.get("session_id", ""),
     })
 
 

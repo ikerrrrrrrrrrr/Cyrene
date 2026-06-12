@@ -57,6 +57,7 @@ from cyrene.agent.state import (
     _active_main_round_prompt,
     _active_main_round_public_prompt,
     _active_main_round_started_at,
+    _active_workspace_dir,
     _agent_lock,
     _AWAITING_USER_SENTINEL,
     _call_llm,
@@ -197,9 +198,15 @@ async def run_agent(
     public_attachments: list[dict[str, Any]] | None = None,
     permission_mode: str = "default",
     session_id: str = "",
+    workspace_dir: str = "",
 ) -> str:
-    """Main entry point. Runs the main agent loop with full tools."""
+    """Main entry point. Runs the main agent loop with full tools.
+
+    ``workspace_dir`` scopes the agent's file tools + Bash cwd to a specific
+    directory (a Workbench project's workspacePath). Empty → global WORKSPACE_DIR.
+    """
     session_token = _current_session_id.set(session_id)
+    workspace_token = _active_workspace_dir.set(workspace_dir or "")
     try:
         ctx = _ensure_session(session_id)
         if ctx.lock.locked():
@@ -214,6 +221,7 @@ async def run_agent(
             )
     finally:
         _current_session_id.reset(session_token)
+        _active_workspace_dir.reset(workspace_token)
 
 
 async def _clear_interrupt_when_idle(session_id: str = "") -> None:

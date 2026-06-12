@@ -336,8 +336,10 @@ def register_workbench_chat_routes(router: APIRouter, bot: Any, db_path: str) ->
             if not project or str(chat.get("projectId") or "") == project
         ]
         if project and data_key == "default":
+            legacy = _legacy_chats(project)
+            legacy.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
             chats.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
-            chats = _legacy_chats(project) + chats
+            chats = chats + legacy
         else:
             chats.sort(key=lambda item: str(item.get("updatedAt") or ""), reverse=True)
         return {"chats": chats}

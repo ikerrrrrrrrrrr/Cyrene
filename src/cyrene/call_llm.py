@@ -608,10 +608,12 @@ async def _publish_llm_event(
     response: dict,
     model: str,
     duration_ms: int,
+    session_id: str = "",
+    round_id: str = "",
 ) -> None:
     from cyrene import debug
 
-    await debug.publish_event({
+    event = {
         "type": "llm_call",
         "caller": caller,
         "phase": phase,
@@ -622,7 +624,10 @@ async def _publish_llm_event(
         "response": response,
         "usage": response.get("usage") or {},
         "duration_ms": duration_ms,
-    })
+    }
+    if round_id:
+        event["round_id"] = round_id
+    await debug.publish_event(event, session_id=session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +652,7 @@ async def call_llm(
     publish_events: bool = True,
     record_usage: bool = True,
     round_id: str = "",
+    session_id: str = "",
 ) -> dict | str:
     """Unified LLM calling entry point.
 
@@ -777,7 +783,10 @@ async def call_llm(
                             cy_debug.log_llm_call(caller, phase, messages, tools, msg, duration_ms)
 
                         if publish_events:
-                            await _publish_llm_event(caller, phase, messages, tools, msg, model, duration_ms)
+                            await _publish_llm_event(
+                                caller, phase, messages, tools, msg, model, duration_ms,
+                                session_id=session_id, round_id=round_id,
+                            )
 
                         if record_usage:
                             _record_token_usage_faf(

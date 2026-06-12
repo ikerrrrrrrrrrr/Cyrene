@@ -87,7 +87,6 @@
     var [color, setColor] = useState(PROJECT_COLORS[0]);
     var [template, setTemplate] = useState("blank");
     var [workspacePath, setWorkspacePath] = useState(props.defaultWorkspacePath || "");
-    var [advancedOpen, setAdvancedOpen] = useState(false);
     var [busy, setBusy] = useState(false);
     var [error, setError] = useState("");
     var customColorRef = useRef(null);
@@ -227,19 +226,13 @@
                     </button>
                   </div>
 
-                  <button type="button" className="wb-cp-advanced-toggle" onClick={function () { setAdvancedOpen(!advancedOpen); }}>
-                    <span>{T("create.project.advanced")}</span>
-                    <span className="wb-cp-advanced-state">{advancedOpen ? T("common.collapse") : T("common.expand")} <i className={"wb-cp-caret" + (advancedOpen ? " up" : "")}>⌄</i></span>
-                  </button>
-                  {advancedOpen && (
-                    <div className="wb-cp-advanced">
-                      <label className="wb-cp-label">{T("create.project.workspacePath")}</label>
-                      <button type="button" className="wb-cp-path-button" disabled={busy} onClick={pickWorkspacePath}>
-                        <span className={"wb-cp-path-text" + (!workspacePath.trim() ? " empty" : "")}>{workspacePath.trim() || T("create.project.selectWorkspacePath")}</span>
-                        <span className="wb-cp-path-action">{T("create.project.choosePath")}</span>
-                      </button>
-                    </div>
-                  )}
+                  <div className="wb-cp-advanced">
+                    <label className="wb-cp-label">{T("create.project.workspacePath")}</label>
+                    <button type="button" className="wb-cp-path-button" disabled={busy} onClick={pickWorkspacePath}>
+                      <span className={"wb-cp-path-text" + (!workspacePath.trim() ? " empty" : "")}>{workspacePath.trim() || T("create.project.selectWorkspacePath")}</span>
+                      <span className="wb-cp-path-action">{T("create.project.choosePath")}</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="wb-cp-right">
@@ -540,14 +533,24 @@
     var genRef = useRef({});
     var saveTimer = useRef(null);
 
-    // Re-sync local answers / expanded section when the session changes.
+    // Re-sync answers + expanded section when the session changes or the agent
+    // regenerates the question set. Deliberately NOT keyed on `init.answers`:
+    // answers are edited locally and mirrored into the store optimistically, so
+    // depending on them here would reset the expanded section on every keystroke.
     useEffect(function () {
       var nextInit = (session && session.init) || {};
       setAnswers(nextInit.answers || {});
-      setTaskPlan(Array.isArray(nextInit.taskPlan) ? nextInit.taskPlan : []);
       var secs = Array.isArray(nextInit.sections) ? nextInit.sections : [];
-      setExpanded(secs[0] ? secs[0].id : "");
-    }, [sid, init.answers, init.sections, init.taskPlan]);
+      setExpanded(function (prev) {
+        if (prev && secs.some(function (s) { return s.id === prev; })) return prev;
+        return secs[0] ? secs[0].id : "";
+      });
+    }, [sid, init.sections]);
+
+    // Re-sync the editable task plan whenever the server (re)generates it.
+    useEffect(function () {
+      setTaskPlan(Array.isArray(init.taskPlan) ? init.taskPlan : []);
+    }, [sid, init.taskPlan]);
 
     // Ask the agent to generate questions once per init session.
     useEffect(function () {
@@ -562,6 +565,10 @@
     }, [sid, init.generated, completed]);
 
     function persist(nextAnswers) {
+      // Mirror the edit into the shared store immediately so the right-panel
+      // 初始化进度 (a sibling reading session.init.answers) updates live, then
+      // debounce the durable server write.
+      if (props.onInitPatch) props.onInitPatch({ answers: nextAnswers });
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(function () {
         model.patchSession(sid, { init: { answers: nextAnswers } }).catch(function () {});
@@ -616,7 +623,7 @@
     function revisePlan() {
       if (planning || completed) return;
       setPlanning(true);
-      model.reviseInitPlan(sid, feedback)
+      model.reviseInitPlan(sid, feedback, taskPlan)
         .then(function (next) { setFeedback(""); props.onRefresh && props.onRefresh(next); })
         .catch(function (e) { window.alert((e && e.message) || String(e)); })
         .finally(function () { setPlanning(false); });
@@ -633,6 +640,9 @@
     var greetingLines = String(init.greeting || "").split("\n");
     var planReady = !!init.planReady || taskPlan.length > 0;
     var showPlan = planReady && !completed;
+    // Agent's latest message about the plan (生成 / 调整反馈 / 服务不可用), shown
+    // so 让 Agent 调整计划 always surfaces an outcome instead of looking inert.
+    var planNote = String((session && session.agentReply) || "").trim();
 
     return (
       <div className="wb-init">
@@ -693,6 +703,12 @@
 
           {showPlan && (
             <React.Fragment>
+              {planNote && (
+                <div className="wb-init-plan-note">
+                  <span className="wb-init-plan-note-ico">{SparkIcon}</span>
+                  <span>{planNote}</span>
+                </div>
+              )}
               <InitTaskPlan tasks={taskPlan} onChange={setTaskPlan} />
               {!completed && (
                 <div className="wb-init-feedback">
@@ -732,17 +748,21 @@
     var init = (session && session.init) || {};
     var sections = Array.isArray(init.sections) ? init.sections : [];
     var answers = init.answers || {};
+    var planReady = !!init.planReady;
+    var completed = !!init.completed;
     var firstIncomplete = -1;
     var rows = sections.map(function (section, i) {
       var done = sectionComplete(section, answers);
       if (!done && firstIncomplete === -1) firstIncomplete = i;
       return { label: section.title, done: done };
     });
-    rows.forEach(function (row, i) { row.active = i === firstIncomplete; });
+    // Once the plan stage is reached, stop highlighting an unfinished question —
+    // the user has moved on to confirming the plan.
+    rows.forEach(function (row, i) { row.active = !planReady && i === firstIncomplete; });
     rows.push({
-      label: init.planReady ? "确认计划并创建 sessions" : "生成大任务计划",
-      done: !!init.completed,
-      active: firstIncomplete === -1 && !init.completed,
+      label: planReady ? "确认计划并创建 sessions" : "生成大任务计划",
+      done: completed,
+      active: !completed && (planReady || firstIncomplete === -1),
     });
     return (
       <div className="wb-init-progress">

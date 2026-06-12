@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import difflib
 import getpass
 import json
 import logging
@@ -9,6 +10,7 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 import uuid
@@ -674,6 +676,217 @@ def _is_workspace_empty(workspace_root: Path | None) -> bool:
     return True
 
 
+# Read-only workspace-exploration tools shared by the init-form agent, the task
+# plan generator, and the init task-plan agent. Scoped to a project workspace.
+_WORKBENCH_EXPLORE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_directory",
+            "description": "列出工作区指定路径下的文件和目录。返回文件名/目录名列表，不递归。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "相对于工作区根目录的路径，例如 '.'（根目录）或 'src'。默认 '.'",
+                        "default": ".",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "读取工作区中指定文本文件的内容（最多 4000 字符）。二进制文件会提示不可读。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "相对于工作区根目录的文件路径，例如 'README.md' 或 'src/main.py'",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "glob",
+            "description": "按通配符模式搜索工作区中的文件路径。支持 ** 递归匹配。例如：'**/*.py' 查找所有 Python 文件，'*.toml' 查找根目录下的 TOML 文件，'src/**/*.tsx' 查找 src 下所有 React 组件。自动跳过隐藏文件。最多返回 50 条结果。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "glob 搜索模式，相对于工作区根目录",
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    },
+]
+
+
+def _workbench_parse_json_object(text: str) -> dict[str, Any] | None:
+    """Parse a JSON object from an LLM reply, tolerating prose / code fences.
+
+    Models often wrap the JSON in a ```json … ``` fence and/or prefix it with
+    prose ("以下是总结：…"), so try several extractions before giving up.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    candidates: list[str] = [raw]
+    # Content inside a ```json … ``` (or plain ```) fence.
+    fence = re.search(r"```(?:json)?\s*(.*?)```", raw, re.DOTALL | re.IGNORECASE)
+    if fence and fence.group(1).strip():
+        candidates.append(fence.group(1).strip())
+    # Greedy first-brace-to-last-brace span (handles prose around the object).
+    brace = re.search(r"\{.*\}", raw, re.DOTALL)
+    if brace:
+        candidates.append(brace.group(0))
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+async def _workbench_exec_explore_tool(tc: dict, workspace_root: Path | None) -> str:
+    """Execute one workspace-exploration tool call, confined to workspace_root."""
+    name = tc["function"]["name"]
+    try:
+        args = json.loads(tc["function"].get("arguments") or "{}")
+    except json.JSONDecodeError:
+        return "Error: invalid tool arguments"
+
+    rel_path = str(args.get("path") or ".").strip()
+    if not workspace_root or not workspace_root.is_dir():
+        return "Error: workspace directory does not exist or is inaccessible"
+
+    target = (workspace_root / rel_path).resolve()
+    if not str(target).startswith(str(workspace_root)):
+        return "Error: path is outside the workspace directory"
+
+    try:
+        if name == "list_directory":
+            entries: list[str] = []
+            for p in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                if p.name.startswith("."):
+                    continue
+                suffix = "/" if p.is_dir() else ""
+                entries.append(f"{p.name}{suffix}")
+            if not entries:
+                return "(empty directory)"
+            return "\n".join(entries)
+
+        elif name == "read_file":
+            if not target.is_file():
+                return "Error: not a file or does not exist"
+            if target.stat().st_size > 256 * 1024:
+                return "Error: file too large (>256KB)"
+            try:
+                text = target.read_text(encoding="utf-8", errors="replace")
+                if len(text) > 4000:
+                    text = text[:4000] + "\n\n...(truncated)"
+                return text
+            except (UnicodeDecodeError, LookupError):
+                return "Error: binary file (cannot read as text)"
+
+        elif name == "glob":
+            pattern = str(args.get("pattern") or "").strip()
+            if not pattern:
+                return "Error: missing glob pattern"
+            it = workspace_root.rglob(pattern.lstrip("/"))
+            matches: list[str] = []
+            for p in sorted(it):
+                rel = str(p.relative_to(workspace_root))
+                suffix = "/" if p.is_dir() else ""
+                matches.append(f"{rel}{suffix}")
+            if len(matches) > 50:
+                matches = matches[:50] + [f"... and {len(matches) - 50} more"]
+            return "\n".join(matches) if matches else "(no matches)"
+
+    except PermissionError:
+        return "Error: permission denied"
+    except OSError as e:
+        return f"Error: {e}"
+
+    return f"Error: unknown tool '{name}'"
+
+
+async def _workbench_run_explore_agent(
+    workspace_root: Path | None,
+    prompt: str,
+    *,
+    max_turns: int = 8,
+    max_tokens: int = 3000,
+    timeout: float = 90,
+    secondary: bool = False,
+) -> dict[str, Any] | None:
+    """Run an LLM that may explore the workspace (list_directory/read_file/glob)
+    before answering, and return the JSON object it emits (or None on failure).
+
+    Rich workspaces can tempt the model to keep exploring past the turn budget,
+    so after ``max_turns`` of tool use we force one final answer WITHOUT tools —
+    the model must return the JSON from what it has already gathered.
+    """
+    messages = [{"role": "user", "content": prompt}]
+    for turn in range(max_turns):
+        try:
+            response = await asyncio.wait_for(
+                _call_llm(
+                    messages,
+                    tools=_WORKBENCH_EXPLORE_TOOLS,
+                    max_tokens=max_tokens,
+                    secondary=secondary,
+                    thinking="disabled",
+                ),
+                timeout=timeout,
+            )
+        except Exception:
+            logger.exception("Workbench explore-agent failed (turn %d)", turn + 1)
+            return None
+        tool_calls = response.get("tool_calls") or []
+        if not tool_calls:
+            return _workbench_parse_json_object(response.get("content") or "")
+        # The assistant tool-call message MUST be appended before the tool
+        # results — a 'tool' message has to follow an assistant message carrying
+        # its tool_calls, otherwise the next request is malformed and rejected.
+        assistant_entry: dict[str, Any] = {"role": "assistant", "content": response.get("content") or "", "tool_calls": tool_calls}
+        if response.get("reasoning_content"):
+            assistant_entry["reasoning_content"] = response["reasoning_content"]
+        messages.append(assistant_entry)
+        for tc in tool_calls:
+            result = await _workbench_exec_explore_tool(tc, workspace_root)
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+
+    # Turn budget exhausted while still exploring — force a final answer with no
+    # tools available, so the model has to emit the JSON now.
+    messages.append({
+        "role": "user",
+        "content": "请停止探索。基于你已经了解到的信息，现在只返回最终的 JSON 对象本身，不要再调用任何工具，也不要任何额外说明或 Markdown 代码块标记。",
+    })
+    try:
+        final = await asyncio.wait_for(
+            _call_llm(messages, tools=None, max_tokens=max_tokens, secondary=secondary, thinking="disabled"),
+            timeout=timeout,
+        )
+    except Exception:
+        logger.exception("Workbench explore-agent final answer failed")
+        return None
+    return _workbench_parse_json_object(final.get("content") or "")
+
+
 async def _workbench_generate_init_form(
     project: dict[str, Any],
     lang: str = "",
@@ -772,172 +985,10 @@ async def _workbench_generate_init_form(
         f"- 全部使用{language}，语气友好专业。最后只返回 JSON。"
     )
 
-    # Lightweight tools the init agent can use to explore the workspace.
-    # Note: list_directory and read_file use target=resolved from args.path;
-    # glob uses workspace_root directly since it has its own pattern parameter.
-    init_tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "list_directory",
-                "description": "列出工作区指定路径下的文件和目录。返回文件名/目录名列表，不递归。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "相对于工作区根目录的路径，例如 '.'（根目录）或 'src'。默认 '.'",
-                            "default": ".",
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "读取工作区中指定文本文件的内容（最多 4000 字符）。二进制文件会提示不可读。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "相对于工作区根目录的文件路径，例如 'README.md' 或 'src/main.py'",
-                        },
-                    },
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "glob",
-                "description": "按通配符模式搜索工作区中的文件路径。支持 ** 递归匹配。例如：'**/*.py' 查找所有 Python 文件，'*.toml' 查找根目录下的 TOML 文件，'src/**/*.tsx' 查找 src 下所有 React 组件。自动跳过隐藏文件。最多返回 50 条结果。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {
-                            "type": "string",
-                            "description": "glob 搜索模式，相对于工作区根目录",
-                        },
-                    },
-                    "required": ["pattern"],
-                },
-            },
-        },
-    ]
-
-    async def _exec_init_tool(tc: dict) -> str:
-        name = tc["function"]["name"]
-        try:
-            args = json.loads(tc["function"].get("arguments") or "{}")
-        except json.JSONDecodeError:
-            return "Error: invalid tool arguments"
-
-        rel_path = str(args.get("path") or ".").strip()
-        if not workspace_root or not workspace_root.is_dir():
-            return "Error: workspace directory does not exist or is inaccessible"
-
-        target = (workspace_root / rel_path).resolve()
-        if not str(target).startswith(str(workspace_root)):
-            return "Error: path is outside the workspace directory"
-
-        try:
-            if name == "list_directory":
-                entries: list[str] = []
-                for p in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-                    if p.name.startswith("."):
-                        continue
-                    suffix = "/" if p.is_dir() else ""
-                    entries.append(f"{p.name}{suffix}")
-                if not entries:
-                    return "(empty directory)"
-                return "\n".join(entries)
-
-            elif name == "read_file":
-                if not target.is_file():
-                    return "Error: not a file or does not exist"
-                if target.stat().st_size > 256 * 1024:
-                    return "Error: file too large (>256KB)"
-                try:
-                    text = target.read_text(encoding="utf-8", errors="replace")
-                    if len(text) > 4000:
-                        text = text[:4000] + "\n\n...(truncated)"
-                    return text
-                except (UnicodeDecodeError, LookupError):
-                    return "Error: binary file (cannot read as text)"
-
-            elif name == "glob":
-                pattern = str(args.get("pattern") or "").strip()
-                if not pattern:
-                    return "Error: missing glob pattern"
-                # Python 3.12 Path.glob("**") requires recursive=True which
-                # the method doesn't support for Path; use rglob instead.
-                it = workspace_root.rglob(pattern.lstrip("/"))
-                matches: list[str] = []
-                for p in sorted(it):
-                    rel = str(p.relative_to(workspace_root))
-                    suffix = "/" if p.is_dir() else ""
-                    matches.append(f"{rel}{suffix}")
-                if len(matches) > 50:
-                    matches = matches[:50] + [f"... and {len(matches) - 50} more"]
-                return "\n".join(matches) if matches else "(no matches)"
-
-        except PermissionError:
-            return "Error: permission denied"
-        except OSError as e:
-            return f"Error: {e}"
-
-        return f"Error: unknown tool '{name}'"
-
-    messages = [{"role": "user", "content": prompt}]
-    MAX_TURNS = 6
-
-    for turn in range(MAX_TURNS):
-        try:
-            response = await asyncio.wait_for(
-                _call_llm(
-                    messages,
-                    tools=init_tools,
-                    max_tokens=3000,
-                    secondary=False,
-                    thinking="disabled",
-                ),
-                timeout=90,
-            )
-        except Exception:
-            logger.exception(
-                "Workbench init-question generation failed (turn %d) for project %s",
-                turn + 1, project.get("id"),
-            )
-            break
-
-        tool_calls = response.get("tool_calls") or []
-        if not tool_calls:
-            text = response.get("content") or ""
-            try:
-                parsed = json.loads(text.strip())
-            except Exception:
-                match = re.search(r"\{.*\}", text, re.DOTALL)
-                if not match:
-                    break
-                try:
-                    parsed = json.loads(match.group(0))
-                except Exception:
-                    break
-            return _workbench_coerce_init_form(parsed, base_form)
-
-        for tc in tool_calls:
-            result = await _exec_init_tool(tc)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result,
-            })
-
-    return None
+    parsed = await _workbench_run_explore_agent(workspace_root, prompt, max_tokens=6000, timeout=120)
+    if not parsed:
+        return None
+    return _workbench_coerce_init_form(parsed, base_form)
 
 
 def _workbench_init_brief(project: dict[str, Any], form: dict[str, Any]) -> str:
@@ -1058,16 +1109,47 @@ async def _workbench_generate_init_task_plan(
     project: dict[str, Any],
     form: dict[str, Any],
     feedback: str = "",
+    current_plan: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Ask the initialization agent to split the project into major task sessions.
 
     Returns ``(plan, from_llm)`` — ``from_llm`` is False when generation failed
     and the deterministic fallback was used, so callers can tell the user the
     truth instead of pretending the feedback was applied.
+
+    When ``current_plan`` is given (a revision), it is shown to the agent so the
+    output adjusts the existing plan rather than regenerating from scratch, and
+    it becomes the fallback so an LLM failure preserves the user's edits.
     """
     fallback = _workbench_fallback_init_task_plan(project, form)
+    if isinstance(current_plan, list) and current_plan:
+        fallback = current_plan
     brief = _workbench_init_brief(project, form)
     feedback = str(feedback or "").strip()
+    workspace_path = str(project.get("workspacePath") or "").strip()
+    workspace_root = Path(workspace_path).expanduser().resolve() if workspace_path else None
+    current_plan_block = ""
+    if isinstance(current_plan, list) and current_plan:
+        try:
+            slim = [
+                {
+                    "title": str(item.get("title") or ""),
+                    "goal": str(item.get("goal") or ""),
+                    "priority": str(item.get("priority") or "medium"),
+                    "constraints": item.get("constraints") or [],
+                    "acceptanceCriteria": item.get("acceptanceCriteria") or [],
+                }
+                for item in current_plan
+                if isinstance(item, dict)
+            ]
+            current_plan_block = (
+                "当前任务计划（请在此基础上按反馈调整，保留未被反馈提到的部分，"
+                "不要无故重排或删除）：\n"
+                + json.dumps(slim, ensure_ascii=False)
+                + "\n\n"
+            )
+        except Exception:
+            current_plan_block = ""
     prompt = (
         "你是项目初始化 Agent。用户已经完成初始化问答。请把项目拆解成若干个"
         "可独立推进的大任务，每个大任务后续会创建为一个 workbench session。\n\n"
@@ -1075,7 +1157,10 @@ async def _workbench_generate_init_task_plan(
         f"项目类型：{_WORKBENCH_TEMPLATE_LABELS.get(str(project.get('template') or ''), str(project.get('template') or ''))}\n"
         f"初始化总结：\n{brief or '暂无'}\n"
         f"{('用户对计划的修改反馈：' + feedback) if feedback else ''}\n\n"
-        "只返回 JSON，不要 Markdown。结构：\n"
+        f"{current_plan_block}"
+        "工作区已有文件，你可以使用 list_directory、read_file、glob 工具先探索项目，"
+        "让大任务贴合项目实际（尽量引用真实的文件/目录/模块），不要套用空泛模板。\n\n"
+        "充分了解后再返回 JSON，只返回一个 JSON 对象，不要 Markdown。结构：\n"
         "{\n"
         '  "tasks": [\n'
         "    {\n"
@@ -1090,35 +1175,12 @@ async def _workbench_generate_init_task_plan(
         "要求：生成 3-6 个大任务；每个任务要能对应一个独立 session；避免过细的步骤；"
         "保留初始化回答中的时间、范围、技术约束。"
     )
-    try:
-        # 结构化 JSON 输出：关闭 thinking 降低延迟；预算放宽到 75s。
-        response = await asyncio.wait_for(
-            _call_llm(
-                [{"role": "user", "content": prompt}],
-                tools=None,
-                max_tokens=2400,
-                secondary=True,
-                thinking="disabled",
-            ),
-            timeout=75,
-        )
-    except Exception:
-        logger.exception("Workbench init task-plan generation failed for project %s", project.get("id"))
+    parsed = await _workbench_run_explore_agent(
+        workspace_root, prompt, max_tokens=4000, timeout=120, secondary=True,
+    )
+    if not isinstance(parsed, dict):
+        logger.warning("Workbench init task-plan generation returned no JSON for project %s", project.get("id"))
         return fallback, False
-    text = ""
-    if isinstance(response, dict):
-        content = response.get("content")
-        text = content if isinstance(content, str) else ""
-    try:
-        parsed = json.loads(text.strip())
-    except Exception:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            return fallback, False
-        try:
-            parsed = json.loads(match.group(0))
-        except Exception:
-            return fallback, False
     return _workbench_coerce_init_task_plan(parsed, fallback), True
 
 
@@ -1291,8 +1353,27 @@ def _workbench_extract_constraints(text: str) -> list[str]:
     return constraints[:6]
 
 
+def _workbench_new_plan_step(title: str, description: str, order: int, task_id: str = "") -> dict[str, Any]:
+    """A single execution-plan step — always starts pending (no pre-completion)."""
+    return {
+        "id": _short_id("step"),
+        "taskId": task_id,
+        "title": str(title or "").strip(),
+        "description": str(description or "").strip(),
+        "status": "pending",
+        "order": order,
+        "currentAction": "",
+        "relatedFiles": [],
+        "progressEvents": [],
+        "toolCalls": [],
+        "artifacts": [],
+        "error": None,
+    }
+
+
 def _workbench_plan_from_input(user_input: str, session: dict[str, Any]) -> list[dict[str, Any]]:
-    now = _utc_now_iso()
+    """Deterministic FALLBACK plan, used only when LLM plan generation is
+    unavailable. Every step starts ``pending`` — nothing is pre-marked done."""
     existing = session.get("plan") if isinstance(session.get("plan"), list) else []
     if existing:
         return existing
@@ -1304,25 +1385,144 @@ def _workbench_plan_from_input(user_input: str, session: dict[str, Any]) -> list
         "推进执行",
         "验证结果并总结",
     ]
+    task_id = session.get("id", "")
     return [
-        {
-            "id": _short_id("step"),
-            "taskId": session.get("id", ""),
-            "title": title,
-            "description": "由任务初始化自动生成。",
-            "status": "pending" if index else "completed",
-            "order": index + 1,
-            "currentAction": "已完成初始理解。" if index == 0 else "",
-            "relatedFiles": [],
-            "progressEvents": [
-                {"time": now, "text": "创建初始任务步骤。"}
-            ] if index == 0 else [],
-            "toolCalls": [],
-            "artifacts": [],
-            "error": None,
-        }
+        _workbench_new_plan_step(title, "由兜底计划生成，请按需编辑。", index + 1, task_id)
         for index, title in enumerate(base_steps)
     ]
+
+
+def _workbench_coerce_plan_steps(raw: Any, session: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize an LLM plan reply (``{"steps": [...]}`` or a bare list) into
+    execution-plan steps. All steps start ``pending``."""
+    items: list[Any] = []
+    if isinstance(raw, dict) and isinstance(raw.get("steps"), list):
+        items = raw["steps"]
+    elif isinstance(raw, list):
+        items = raw
+    task_id = session.get("id", "")
+    steps: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("name") or "").strip()
+            description = str(item.get("description") or item.get("detail") or "").strip()
+        else:
+            title = str(item or "").strip()
+            description = ""
+        if not title:
+            continue
+        steps.append(_workbench_new_plan_step(title, description, len(steps) + 1, task_id))
+        if len(steps) >= 12:
+            break
+    return steps
+
+
+def _workbench_plan_title_key(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _workbench_plan_reset_requested(feedback: str) -> bool:
+    return bool(re.search(r"(重新生成|重新规划|重排|重做|从头|替换|清空|不要原计划|不保留原计划)", str(feedback or "")))
+
+
+def _workbench_existing_plan_block(session: dict[str, Any]) -> str:
+    plan = session.get("plan") if isinstance(session.get("plan"), list) else []
+    rows: list[str] = []
+    for index, step in enumerate(plan[:12], 1):
+        if not isinstance(step, dict):
+            continue
+        title = str(step.get("title") or "").strip()
+        if not title:
+            continue
+        status = str(step.get("status") or "pending").strip()
+        description = str(step.get("description") or "").strip()
+        suffix = f" — {description}" if description else ""
+        rows.append(f"{index}. [{status}] {title}{suffix}")
+    if not rows:
+        return ""
+    return "\n当前已有执行计划（除非用户明确要求删除/重排，请保留并在此基础上调整）：\n" + "\n".join(rows)
+
+
+def _workbench_reconcile_revised_plan(
+    existing: list[dict[str, Any]],
+    generated: list[dict[str, Any]],
+    feedback: str,
+) -> list[dict[str, Any]]:
+    if not existing or not feedback or _workbench_plan_reset_requested(feedback):
+        return generated
+    if not generated:
+        return existing
+
+    existing_keys = [_workbench_plan_title_key(step.get("title")) for step in existing if isinstance(step, dict)]
+    generated_keys = [_workbench_plan_title_key(step.get("title")) for step in generated if isinstance(step, dict)]
+    overlap = sum(1 for key in existing_keys if key and key in generated_keys)
+    if existing_keys and overlap >= max(1, len(existing_keys) // 2):
+        return generated
+
+    merged = [dict(step) for step in existing if isinstance(step, dict)]
+    seen = {_workbench_plan_title_key(step.get("title")) for step in merged}
+    next_order = len(merged) + 1
+    for step in generated:
+        if not isinstance(step, dict):
+            continue
+        key = _workbench_plan_title_key(step.get("title"))
+        if not key or key in seen:
+            continue
+        next_step = dict(step)
+        next_step["order"] = next_order
+        merged.append(next_step)
+        seen.add(key)
+        next_order += 1
+    return merged
+
+
+async def _workbench_generate_plan_steps(
+    session: dict[str, Any],
+    project: dict[str, Any],
+    feedback: str = "",
+) -> tuple[list[dict[str, Any]], bool]:
+    """Generate a REAL execution plan for a task session from its goal +
+    constraints, exploring the project workspace. Returns ``(steps, from_llm)``;
+    ``from_llm`` is False when generation failed and the fallback was used."""
+    goal = str(session.get("goal") or session.get("title") or "").strip()
+    existing_plan = session.get("plan") if isinstance(session.get("plan"), list) else []
+    feedback = str(feedback or "").strip()
+    fallback = existing_plan if feedback and existing_plan else _workbench_plan_from_input(goal, {"id": session.get("id", "")})
+    if not goal:
+        return fallback, False
+
+    constraints = [str(c).strip() for c in (session.get("constraints") or []) if str(c).strip()]
+    workspace_path = str(project.get("workspacePath") or "").strip()
+    workspace_root = Path(workspace_path).expanduser().resolve() if workspace_path else None
+
+    constraints_block = ("\n约束：\n" + "\n".join(f"- {c}" for c in constraints)) if constraints else ""
+    feedback_block = ("\n用户对计划的修改反馈（请据此调整）：" + feedback) if feedback else ""
+    existing_plan_block = _workbench_existing_plan_block(session) if feedback else ""
+    prompt = (
+        "你是任务执行规划 Agent。请把下面这个任务拆解成清晰、有顺序、可逐步执行的步骤。\n"
+        "工作区已有文件，你可以使用 list_directory、read_file、glob 工具先探索再规划，"
+        "让步骤贴合项目实际（尽量引用真实的文件/目录/模块），不要套用空泛模板。\n\n"
+        f"任务目标：{goal}{constraints_block}{existing_plan_block}{feedback_block}\n\n"
+        "充分了解后再返回 JSON，只返回一个 JSON 对象，不要 Markdown 代码块标记。结构：\n"
+        "{\n"
+        '  "steps": [\n'
+        '    {"title": "动宾短语的步骤标题（中文，简洁）", "description": "这一步具体做什么、涉及哪些文件或模块"}\n'
+        "  ]\n"
+        "}\n\n"
+        "要求：生成 3-7 个步骤；顺序合理、彼此衔接；每个步骤聚焦一件可执行的事；"
+        "尽量引用工作区里的真实文件或模块；全部使用简体中文。"
+        "如果是修改已有计划，必须返回完整的修订后计划，保留未被反馈明确要求删除的原步骤，"
+        "只调整相关步骤或追加必要的新步骤。"
+    )
+    parsed = await _workbench_run_explore_agent(workspace_root, prompt, max_tokens=4000, timeout=120)
+    if not isinstance(parsed, dict):
+        return fallback, False
+    steps = _workbench_coerce_plan_steps(parsed, session)
+    if not steps:
+        return fallback, False
+    if feedback:
+        steps = _workbench_reconcile_revised_plan(existing_plan, steps, feedback)
+    return steps, True
 
 
 def _workbench_acceptance_from_session(session: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1364,6 +1564,364 @@ def _workbench_normalize_attachments(attachments: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _tool_args_preview(args: Any) -> str:
+    """One-line compact preview of tool arguments (≤80 chars)."""
+    if not isinstance(args, dict) or not args:
+        return ""
+    parts: list[str] = []
+    for v in args.values():
+        if v is None or v == "":
+            continue
+        sv = str(v).strip()
+        if not sv:
+            continue
+        sv = sv.replace("\n", " ").replace("\r", "")
+        if len(sv) > 50:
+            sv = sv[:47] + "…"
+        parts.append(sv)
+        if len(parts) >= 2:
+            break
+    result = "  ".join(parts)
+    return result[:80]
+
+
+def _workbench_workspace_root(project: dict[str, Any] | None) -> Path | None:
+    workspace_path = str((project or {}).get("workspacePath") or "").strip()
+    if not workspace_path:
+        return None
+    try:
+        return Path(workspace_path).expanduser().resolve()
+    except OSError:
+        return None
+
+
+def _workbench_display_path(path_value: Any, workspace_root: Path | None = None) -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    try:
+        path = Path(raw).expanduser()
+        if path.is_absolute():
+            resolved = path.resolve()
+            if workspace_root:
+                try:
+                    workspace_root = workspace_root.resolve()
+                except OSError:
+                    pass
+                try:
+                    return resolved.relative_to(workspace_root).as_posix()
+                except ValueError:
+                    pass
+            return resolved.as_posix()
+        return path.as_posix().lstrip("./")
+    except Exception:
+        return raw
+
+
+def _workbench_file_change(path_value: Any, status: str, workspace_root: Path | None = None, source: str = "") -> dict[str, Any] | None:
+    path = _workbench_display_path(path_value, workspace_root)
+    if not path:
+        return None
+    return {
+        "id": _short_id("file"),
+        "path": path,
+        "status": status,
+        "changeType": status,
+        "source": source,
+    }
+
+
+def _workbench_file_changes_from_tool_event(event: dict[str, Any], workspace_root: Path | None = None) -> list[dict[str, Any]]:
+    tool = str(event.get("tool") or "").strip()
+    args = event.get("args") if isinstance(event.get("args"), dict) else {}
+    result = str(event.get("result") or "")
+    changes: list[dict[str, Any]] = []
+
+    if tool == "Write" and isinstance(args, dict):
+        change = _workbench_file_change(args.get("path"), "created/updated", workspace_root, tool)
+        if change:
+            changes.append(change)
+    elif tool == "Edit" and isinstance(args, dict):
+        change = _workbench_file_change(args.get("path"), "modified", workspace_root, tool)
+        if change:
+            changes.append(change)
+
+    # Tool output is a useful fallback for older/remote tool names and for
+    # cases where the arguments were redacted or shaped differently.
+    for match in re.finditer(r"\b(Wrote|Edited)\s+([^\n]+?)(?:\. Replacements:.*)?$", result, flags=re.MULTILINE):
+        verb = match.group(1)
+        path_text = match.group(2).strip()
+        status = "modified" if verb == "Edited" else "created/updated"
+        change = _workbench_file_change(path_text, status, workspace_root, tool)
+        if change:
+            changes.append(change)
+    return _workbench_merge_file_changes(changes)
+
+
+def _workbench_merge_file_changes(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    rank = {"created": 4, "modified": 3, "deleted": 3, "renamed": 3, "created/updated": 2}
+    for item in changes:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or item.get("name") or "").strip()
+        if not path:
+            continue
+        key = path
+        if key not in merged:
+            merged[key] = dict(item)
+            order.append(key)
+            continue
+        old = merged[key]
+        new_status = str(item.get("status") or item.get("changeType") or "")
+        old_status = str(old.get("status") or old.get("changeType") or "")
+        if rank.get(new_status, 0) > rank.get(old_status, 0):
+            old["status"] = new_status
+            old["changeType"] = new_status
+        if item.get("source") and not old.get("source"):
+            old["source"] = item.get("source")
+    return [merged[key] for key in order]
+
+
+def _workbench_git_status_snapshot(workspace_root: Path | None) -> dict[str, str]:
+    if not workspace_root:
+        return {}
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(workspace_root), "status", "--porcelain=v1", "--untracked-files=all"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    snapshot: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if path:
+            snapshot[path] = code
+    return snapshot
+
+
+def _workbench_git_status_change_type(code: str) -> str:
+    if "D" in code:
+        return "deleted"
+    if "R" in code:
+        return "renamed"
+    if "A" in code or code == "??":
+        return "created"
+    return "modified"
+
+
+def _workbench_git_status_delta(before: dict[str, str], after: dict[str, str], workspace_root: Path | None = None) -> list[dict[str, Any]]:
+    changes: list[dict[str, Any]] = []
+    for path, code in after.items():
+        if before.get(path) == code:
+            continue
+        change = _workbench_file_change(path, _workbench_git_status_change_type(code), workspace_root, "git")
+        if change:
+            changes.append(change)
+    return changes
+
+
+def _workbench_resolve_workspace_file(workspace_root: Path | None, path_value: Any) -> Path:
+    if not workspace_root:
+        raise ValueError("workspace directory is not configured")
+    root = workspace_root.resolve()
+    raw = str(path_value or "").strip()
+    if not raw:
+        raise ValueError("path is required")
+    path = Path(raw).expanduser()
+    target = path.resolve() if path.is_absolute() else (root / path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise ValueError("path is outside the workspace directory")
+    return target
+
+
+def _workbench_unified_diff(left_text: str, right_text: str, left_label: str, right_label: str) -> str:
+    return "".join(difflib.unified_diff(
+        left_text.splitlines(keepends=True),
+        right_text.splitlines(keepends=True),
+        fromfile=left_label,
+        tofile=right_label,
+    ))
+
+
+async def _workbench_git_diff_for_path(workspace_root: Path | None, path_value: Any) -> dict[str, Any]:
+    target = _workbench_resolve_workspace_file(workspace_root, path_value)
+    root = workspace_root.resolve() if workspace_root else None
+    rel = target.relative_to(root).as_posix() if root else str(path_value)
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git",
+            "diff",
+            "--",
+            rel,
+            cwd=str(root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except asyncio.TimeoutError:
+        raise TimeoutError("git diff timed out")
+    except FileNotFoundError:
+        raise RuntimeError("git not available")
+
+    if proc.returncode not in (0, 1):
+        raise RuntimeError(stderr.decode("utf-8", errors="replace") or "git diff failed")
+
+    diff = stdout.decode("utf-8", errors="replace")
+    if not diff.strip() and target.is_file():
+        tracked = await asyncio.create_subprocess_exec(
+            "git",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            rel,
+            cwd=str(root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await tracked.communicate()
+        if tracked.returncode != 0:
+            try:
+                right_text = target.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                right_text = ""
+            if right_text:
+                diff = _workbench_unified_diff("", right_text, "/dev/null", f"b/{rel}")
+
+    return {"path": rel, "diff": diff, "has_changes": bool(diff.strip())}
+
+
+def _workbench_apply_step_file_changes(session: dict[str, Any], step_id: str, file_changes: list[dict[str, Any]]) -> None:
+    if not step_id or not file_changes:
+        return
+    plan = session.get("plan") if isinstance(session.get("plan"), list) else []
+    for step in plan:
+        if not isinstance(step, dict) or str(step.get("id") or "") != step_id:
+            continue
+        existing = step.get("relatedFiles") if isinstance(step.get("relatedFiles"), list) else []
+        step["relatedFiles"] = _workbench_merge_file_changes([*existing, *file_changes])
+        break
+
+
+def _collect_run_tool_events(session_id: str, run_start_ts: str, run_id: str, workspace_root: Path | None = None) -> list[dict[str, Any]]:
+    """Return ToolCallEvent dicts for tool calls published during an agent run."""
+    return [
+        event for event in _collect_run_activity_events(session_id, run_start_ts, run_id, workspace_root)
+        if event.get("type") == "ToolCallEvent"
+    ]
+
+
+def _workbench_actor_label(caller: Any, agent_id: Any = "") -> str:
+    raw_agent = str(agent_id or "").strip()
+    raw = str(caller or "").strip()
+    if raw_agent:
+        return raw_agent
+    if raw.startswith("subagent_"):
+        return raw.replace("subagent_", "", 1) or raw
+    if raw == "main_agent":
+        return "main agent"
+    return raw or "agent"
+
+
+def _workbench_subagent_status_text(status: Any) -> str:
+    mapping = {
+        "running": "正在执行",
+        "resumed": "恢复执行",
+        "waiting": "等待其他 subagent",
+        "done": "已完成",
+        "timeout": "已超时",
+    }
+    return mapping.get(str(status or "").strip(), str(status or "").strip() or "状态更新")
+
+
+def _collect_run_activity_events(session_id: str, run_start_ts: str, run_id: str, workspace_root: Path | None = None) -> list[dict[str, Any]]:
+    """Return workbench log events for runtime activity published during a run."""
+    from cyrene.debug import get_recent_events
+
+    raw = get_recent_events(500)
+    out: list[dict[str, Any]] = []
+    for e in raw:
+        if str(e.get("session_id") or "") != session_id:
+            continue
+        ts = str(e.get("timestamp") or "")
+        if ts and ts < run_start_ts:
+            continue
+        event_type = str(e.get("type") or "")
+        created_at = ts or run_start_ts
+
+        if event_type == "tool_call":
+            tool_name = str(e.get("tool") or "").strip()
+            if not tool_name:
+                continue
+            actor = _workbench_actor_label(e.get("caller"))
+            file_changes = _workbench_file_changes_from_tool_event(e, workspace_root)
+            out.append({
+                "id": _short_id("event"),
+                "type": "ToolCallEvent",
+                "runId": run_id,
+                "createdAt": created_at,
+                "tool": tool_name,
+                "actor": actor,
+                "argsPreview": _tool_args_preview(e.get("args")),
+                "fileChanges": file_changes,
+                "body": f"{actor} 调用工具 {tool_name}",
+            })
+        elif event_type == "llm_call":
+            actor = _workbench_actor_label(e.get("caller"))
+            phase = str(e.get("phase") or "").strip()
+            duration = e.get("duration_ms")
+            duration_text = ""
+            try:
+                if duration is not None:
+                    duration_text = f"，耗时 {float(duration) / 1000:.1f}s"
+            except (TypeError, ValueError):
+                duration_text = ""
+            tools = e.get("tools") if isinstance(e.get("tools"), list) else []
+            tool_text = f"，可用工具 {len(tools)} 个" if tools else ""
+            phase_text = f"（{phase}）" if phase else ""
+            out.append({
+                "id": _short_id("event"),
+                "type": "LlmCallEvent",
+                "runId": run_id,
+                "createdAt": created_at,
+                "actor": actor,
+                "phase": phase,
+                "model": str(e.get("model") or ""),
+                "body": f"{actor} 完成一轮思考{phase_text}{tool_text}{duration_text}",
+            })
+        elif event_type == "subagent_update":
+            actor = _workbench_actor_label("", e.get("agent_id"))
+            status_text = _workbench_subagent_status_text(e.get("status"))
+            task = str(e.get("task") or "").strip()
+            body = f"{actor} {status_text}" + (f"：{task[:120]}" if task else "")
+            out.append({
+                "id": _short_id("event"),
+                "type": "SubagentStatusEvent",
+                "runId": run_id,
+                "createdAt": created_at,
+                "actor": actor,
+                "status": str(e.get("status") or ""),
+                "body": body,
+            })
+    out.sort(key=lambda item: str(item.get("createdAt") or ""))
+    return out
+
+
 async def _workbench_agent_reply(
     user_input: str,
     session: dict[str, Any],
@@ -1371,15 +1929,30 @@ async def _workbench_agent_reply(
     attachments: Any = None,
     permission_mode: str = "auto",
     command: str = "",
+    project_workspace: str = "",
 ) -> str:
     """Execute a real agent run for a workbench session.
 
     Mirrors the /api/chat pipeline for attachments + permission mode + slash
     command so the new workbench composer matches the legacy chat composer.
+
+    ``project_workspace`` confines the agent's file tools + Bash cwd to the
+    project's workspacePath; empty → the global WORKSPACE_DIR (legacy behaviour).
     """
     session_id = str(session.get("id") or "").strip()
     if not session_id:
         return str(user_input or "").strip()
+    # Confine this run's file operations to the project's workspace.
+    workspace_dir = ""
+    ws_raw = str(project_workspace or "").strip()
+    if ws_raw:
+        try:
+            ws_path = Path(ws_raw).expanduser()
+            ws_path.mkdir(parents=True, exist_ok=True)
+            workspace_dir = str(ws_path.resolve())
+        except OSError:
+            logger.warning("Workbench workspace unavailable, using global: %s", ws_raw)
+            workspace_dir = ""
     from cyrene.agent.state import PERMISSION_MODES
     mode = str(permission_mode or "auto").strip().lower()
     if mode not in PERMISSION_MODES:
@@ -1412,6 +1985,7 @@ async def _workbench_agent_reply(
             command=str(command or "").strip(),
             public_user_message=(str(user_input or "") or None),
             public_attachments=public_attachments,
+            workspace_dir=workspace_dir,
         )
     except Exception:
         logger.exception("Workbench agent run failed for session %s", session_id)
@@ -3851,6 +4425,19 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         result = mark_notifications_read(ids, mark_all=mark_all)
         return {**result, **list_notifications(limit=80)}
 
+    @router.patch("/api/workbench/activate")
+    async def api_workbench_activate(request: Request):
+        body = await request.json()
+        payload = _read_workbench_store()
+        pid = str(body.get("projectId") or "").strip()
+        if pid:
+            payload["activeProjectId"] = pid
+        sid = str(body.get("sessionId") or "").strip()
+        if sid:
+            payload["activeSessionId"] = sid
+        _write_workbench_store(payload)
+        return {"ok": True, **payload}
+
     @router.post("/api/projects")
     async def api_workbench_create_project(request: Request):
         body = await request.json()
@@ -4027,7 +4614,12 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             session["init"] = generated
             session["agentReply"] = generated.get("greeting") or session.get("agentReply") or ""
         else:
-            current["generated"] = True  # mark attempted to avoid client retry loops
+            # Generation failed (LLM error / unparseable output). Keep the
+            # deterministic fallback but DON'T mark it generated — the client
+            # guards re-entry per mount (genRef), so leaving generated=False lets
+            # it self-heal on the next open instead of permanently sticking the
+            # generic form. The user can also press 重新生成问题 to retry now.
+            current["generated"] = False
             session["init"] = current
         now = _utc_now_iso()
         session["updatedAt"] = now
@@ -4044,6 +4636,22 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not session:
             return JSONResponse({"error": "session not found"}, status_code=404)
         return {"project": project, "session": session}
+
+    @router.get("/api/task-sessions/{session_id}/files/diff")
+    async def api_workbench_file_diff(session_id: str, path: str = ""):
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        try:
+            result = await _workbench_git_diff_for_path(_workbench_workspace_root(project), path)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except TimeoutError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=504)
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+        return result
 
     @router.patch("/api/task-sessions/{session_id}")
     async def api_workbench_update_session(session_id: str, request: Request):
@@ -4097,6 +4705,52 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             )
         return {"ok": True, "project": project, "session": session, **payload}
 
+    @router.post("/api/task-sessions/{session_id}/plan/generate")
+    async def api_workbench_generate_plan(session_id: str, request: Request):
+        """Generate a REAL execution plan for a task session.
+
+        The agent reads the session goal + constraints and explores the project
+        workspace, then returns ordered steps (all ``pending`` — nothing is run
+        or pre-completed here). Drives the idle → planning transition.
+        """
+        body = await request.json()
+        goal = str(body.get("goal") or "").strip()
+        feedback = str(body.get("feedback") or "").strip()
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+
+        if goal:
+            session["goal"] = goal
+            merged = list(session.get("constraints") or [])
+            for item in _workbench_extract_constraints(goal):
+                if item not in merged:
+                    merged.append(item)
+            session["constraints"] = merged
+
+        steps, from_llm = await _workbench_generate_plan_steps(session, project, feedback=feedback)
+        session["plan"] = steps
+        session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
+        session["status"] = "planning"
+        if from_llm:
+            session["agentReply"] = "我已结合工作区里的实际内容拆解出执行计划。你可以直接编辑，或逐步执行（顺序由你决定）。"
+        else:
+            session["agentReply"] = "计划生成服务暂时不可用，我先给出一份基础计划，你可以编辑后逐步执行，或稍后让我重新拆解。"
+        now = _utc_now_iso()
+        session["events"] = list(session.get("events") or []) + [{
+            "id": _short_id("event"),
+            "type": "PlanGenerated",
+            "createdAt": now,
+            "body": f"生成执行计划，共 {len(steps)} 步。" + ("" if from_llm else "（兜底计划）"),
+        }]
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, "planSource": "llm" if from_llm else "fallback", **payload}
+
     @router.post("/api/task-sessions/{session_id}/runs")
     async def api_workbench_create_run(session_id: str, request: Request):
         body = await request.json()
@@ -4111,31 +4765,54 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not session or not project:
             return JSONResponse({"error": "session not found"}, status_code=404)
 
+        # A per-step run (from runStep) executes one already-planned step — it must
+        # NOT rebuild the plan / acceptance / goal / status; the client drives those.
+        step_id = str(body.get("stepId") or "").strip()
+        action = str(body.get("action") or "").strip()
+        is_step_run = bool(step_id) or action == "spawn_subagent"
+
         now = _utc_now_iso()
-        constraints = _workbench_extract_constraints(user_input)
-        merged_constraints = list(session.get("constraints") or [])
-        for item in constraints:
-            if item not in merged_constraints:
-                merged_constraints.append(item)
-        if not session.get("goal") or session.get("status") == "idle":
-            session["goal"] = user_input
-        session["constraints"] = merged_constraints
-        session["plan"] = _workbench_plan_from_input(user_input, session)
-        session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
-        agent_reply = await _workbench_agent_reply(user_input, session, constraints, attachments=attachments, permission_mode=mode, command=command)
+        if not is_step_run:
+            constraints = _workbench_extract_constraints(user_input)
+            merged_constraints = list(session.get("constraints") or [])
+            for item in constraints:
+                if item not in merged_constraints:
+                    merged_constraints.append(item)
+            if not session.get("goal") or session.get("status") == "idle":
+                session["goal"] = user_input
+            session["constraints"] = merged_constraints
+            session["plan"] = _workbench_plan_from_input(user_input, session)
+            session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
+        else:
+            constraints = []
+        run_start_ts = _utc_now_iso()
+        workspace_root = _workbench_workspace_root(project)
+        git_status_before = _workbench_git_status_snapshot(workspace_root)
+        agent_reply = await _workbench_agent_reply(user_input, session, constraints, attachments=attachments, permission_mode=mode, command=command, project_workspace=str(project.get("workspacePath") or ""))
+        git_status_after = _workbench_git_status_snapshot(workspace_root)
         session["agentReply"] = agent_reply
         # Sink durable memories from this exchange into the project's workspace store.
         if not command:
             schedule_capture(_workbench_project_data_key(project), user_input, agent_reply)
-        session["status"] = "planning" if session.get("status") in ("idle", "pending") else session.get("status", "planning")
+        if not is_step_run:
+            session["status"] = "planning" if session.get("status") in ("idle", "pending") else session.get("status", "planning")
         session["updatedAt"] = now
         project["updatedAt"] = now
 
         normalized_attachments = _workbench_normalize_attachments(attachments)
         public_attachments = [build_public_attachment_payload(item) for item in normalized_attachments]
         run_id = _short_id("run")
+        activity_events = _collect_run_activity_events(session_id, run_start_ts, run_id, workspace_root)
+        tool_call_events = [event for event in activity_events if event.get("type") == "ToolCallEvent"]
+        file_changes = _workbench_merge_file_changes([
+            *[change for event in tool_call_events for change in (event.get("fileChanges") or [])],
+            *_workbench_git_status_delta(git_status_before, git_status_after, workspace_root),
+        ])
+        if is_step_run and step_id:
+            _workbench_apply_step_file_changes(session, step_id, file_changes)
         events = [
             {"id": _short_id("event"), "type": "UserMessageEvent", "runId": run_id, "createdAt": now, "body": user_input or "[附件]", "attachments": public_attachments},
+            *activity_events,
             {"id": _short_id("event"), "type": "AgentResponseEvent", "runId": run_id, "createdAt": now, "body": agent_reply},
             {"id": _short_id("event"), "type": "PlanUpdatedEvent", "runId": run_id, "createdAt": now, "stepCount": len(session.get("plan") or [])},
         ]
@@ -4149,8 +4826,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             "endedAt": now,
             "contextPackId": _short_id("ctx"),
             "events": events,
-            "fileChanges": [],
-            "toolCalls": [],
+            "fileChanges": file_changes,
+            "toolCalls": [{"tool": e["tool"], "argsPreview": e["argsPreview"]} for e in tool_call_events],
             "artifacts": [],
             "attachments": public_attachments,
             "mode": mode,
@@ -4198,7 +4875,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         project, session = _workbench_find_session(payload, session_id)
         if not session or not project:
             return JSONResponse({"error": "session not found"}, status_code=404)
-        agent_reply = await _workbench_agent_reply(message, session, [], attachments=attachments, permission_mode=mode, command=command)
+        chat_run_start_ts = _utc_now_iso()
+        agent_reply = await _workbench_agent_reply(message, session, [], attachments=attachments, permission_mode=mode, command=command, project_workspace=str(project.get("workspacePath") or ""))
         session["agentReply"] = agent_reply
         # Sink durable memories from this exchange into the project's workspace store.
         if not command:
@@ -4207,6 +4885,10 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         now = _utc_now_iso()
         session["updatedAt"] = now
         project["updatedAt"] = now
+        chat_run_id = _short_id("run")
+        chat_tool_events = _collect_run_tool_events(session_id, chat_run_start_ts, chat_run_id)
+        if chat_tool_events:
+            session.setdefault("events", []).extend(chat_tool_events)
         payload["activeProjectId"] = project.get("id")
         payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
@@ -4290,16 +4972,26 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         form = session.get("init") if isinstance(session.get("init"), dict) else _workbench_default_init_form(project)
         if bool(form.get("completed")):
             return JSONResponse({"error": "init already completed"}, status_code=409)
-        task_plan, plan_from_llm = await _workbench_generate_init_task_plan(project, form, feedback=feedback)
+        # The client sends the plan currently on screen (incl. manual edits) so
+        # the agent adjusts THAT plan; fall back to the persisted one.
+        incoming_plan = body.get("taskPlan") if isinstance(body.get("taskPlan"), list) else None
+        current_plan = _workbench_coerce_init_task_plan(incoming_plan, []) if incoming_plan else None
+        if not current_plan:
+            existing = form.get("taskPlan")
+            current_plan = existing if isinstance(existing, list) and existing else None
+        task_plan, plan_from_llm = await _workbench_generate_init_task_plan(
+            project, form, feedback=feedback, current_plan=current_plan,
+        )
         if plan_from_llm:
             form["taskPlan"] = task_plan
             form["planSource"] = "llm"
             session["agentReply"] = "我已按你的反馈更新任务计划。你可以继续修改，或确认创建 sessions。"
         else:
             # 生成失败时保留当前计划——直接用兜底计划覆盖会吞掉用户反馈，
-            # 还会把之前 LLM 生成的计划替换成模板。
-            existing = form.get("taskPlan")
-            if not (isinstance(existing, list) and existing):
+            # 还会把之前 LLM 生成的计划（或用户的手动编辑）替换成模板。
+            if current_plan:
+                form["taskPlan"] = current_plan
+            elif not (isinstance(form.get("taskPlan"), list) and form.get("taskPlan")):
                 form["taskPlan"] = task_plan
                 form["planSource"] = "fallback"
             session["agentReply"] = "计划生成服务暂时不可用，这次的反馈还没有应用，当前计划保持不变。你可以稍后重试，或直接手动编辑计划。"

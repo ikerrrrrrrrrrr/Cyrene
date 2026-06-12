@@ -6,7 +6,6 @@ from typing import Any
 
 from cyrene import tool_legacy as _legacy
 from cyrene.tool_legacy import (
-    WORKSPACE_DIR,
     _command_is_file_deletion,
     _guard_shell_command_workspace_write,
     _is_dangerous_subshell,
@@ -55,11 +54,12 @@ async def _tool_bash(args: dict[str, Any], _bot: Any, _chat_id: int, _db_path: s
     timeout_ms = int(args.get("timeout_ms", 120000))
     timeout_sec = timeout_ms / 1000
     shell = os.environ.get("SHELL") or "/bin/sh"
+    from cyrene.agent.state import active_workspace_dir
     proc = await asyncio.create_subprocess_exec(
         shell,
         "-lc",
         command,
-        cwd=str(WORKSPACE_DIR),
+        cwd=str(active_workspace_dir()),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

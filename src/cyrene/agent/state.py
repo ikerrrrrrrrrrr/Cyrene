@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 from contextvars import ContextVar
 
 from cyrene import debug
-from cyrene.config import ASSISTANT_NAME, DATA_DIR as _DATA_DIR, STATE_FILE as _STATE_FILE
+from cyrene.config import ASSISTANT_NAME, DATA_DIR as _DATA_DIR, STATE_FILE as _STATE_FILE, WORKSPACE_DIR as _WORKSPACE_DIR
 
 # Mutable references so tests that swap STATE_FILE/DATA_DIR are visible to all
 # ``agent.*`` sub-modules (which import ``state.STATE_FILE`` / ``state.DATA_DIR``).
@@ -54,6 +54,27 @@ class SessionContext:
 
 # Per‑session identifier carried by ContextVar — set at entry to run_agent()
 _current_session_id: ContextVar[str] = ContextVar("_current_session_id", default="")
+
+# Per‑run workspace root for the agent's FILE operations (Read/Write/Edit/Glob)
+# and Bash cwd. Empty → fall back to the global WORKSPACE_DIR. Set at run_agent()
+# entry from the active Workbench project's workspacePath so each project's agent
+# stays confined to its own workspace.
+#
+# NOTE: SOUL.md / memory / behaviour‑learning files keep using the global
+# WORKSPACE_DIR directly — they are cross‑project runtime state, not project
+# files, so they must NOT be redirected here.
+_active_workspace_dir: ContextVar[str] = ContextVar("_active_workspace_dir", default="")
+
+
+def active_workspace_dir() -> Path:
+    """Return the workspace root for the current agent run.
+
+    Falls back to the global ``WORKSPACE_DIR`` when no per‑run override is set
+    (legacy chat, scheduler runs, or any agent outside a Workbench project)."""
+    raw = _active_workspace_dir.get()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return _WORKSPACE_DIR.resolve()
 
 # Lazily populated cache of SessionContext instances, keyed by session_id.
 # The default session (id="") is created on first access and lives forever.
@@ -265,6 +286,7 @@ async def _call_llm(
         caller=_caller_type.get(),
         phase=_llm_phase_name(tools),
         round_id=_current_round_id.get(),
+        session_id=_current_session_id.get(),
     )
 
 
@@ -280,6 +302,7 @@ async def _call_llm_stream(messages: list[dict], max_tokens: int | None = 32000,
         caller=_caller_type.get(),
         phase=_llm_phase_name(None),
         round_id=_current_round_id.get(),
+        session_id=_current_session_id.get(),
     )
 
 

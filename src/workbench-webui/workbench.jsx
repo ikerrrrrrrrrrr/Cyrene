@@ -6,6 +6,112 @@ var {
   useRef: useWorkbenchRef,
 } = React;
 
+function wbArgsPreview(args) {
+  if (!args || typeof args !== "object") return "";
+  var parts = [];
+  Object.keys(args).forEach(function (key) {
+    if (parts.length >= 2) return;
+    var value = args[key];
+    if (value == null || value === "") return;
+    var text = String(value).replace(/\s+/g, " ").trim();
+    if (!text) return;
+    if (text.length > 50) text = text.slice(0, 47) + "...";
+    parts.push(text);
+  });
+  return parts.join("  ").slice(0, 80);
+}
+
+function wbActorLabel(caller, agentId) {
+  var aid = String(agentId || "").trim();
+  if (aid) return aid;
+  var raw = String(caller || "").trim();
+  if (raw.indexOf("subagent_") === 0) return raw.slice("subagent_".length) || raw;
+  if (raw === "main_agent") return "main agent";
+  return raw || "agent";
+}
+
+function wbSubagentStatusText(status) {
+  var map = {
+    running: "正在执行",
+    resumed: "恢复执行",
+    waiting: "等待其他 subagent",
+    done: "已完成",
+    timeout: "已超时",
+  };
+  return map[String(status || "").trim()] || String(status || "状态更新");
+}
+
+function wbLiveEventFromSse(data) {
+  if (!data || !data.type) return null;
+  var createdAt = data.timestamp || new Date().toISOString();
+  if (data.type === "tool_call") {
+    var toolName = String(data.tool || "").trim();
+    if (!toolName) return null;
+    var actor = wbActorLabel(data.caller);
+    return {
+      id: data.event_id || ("live_tool_" + createdAt + "_" + toolName),
+      type: "ToolCallEvent",
+      createdAt: createdAt,
+      tool: toolName,
+      actor: actor,
+      argsPreview: wbArgsPreview(data.args),
+      body: actor + " 调用工具 " + toolName,
+      live: true,
+    };
+  }
+  if (data.type === "llm_call") {
+    var actor2 = wbActorLabel(data.caller);
+    var phase = String(data.phase || "").trim();
+    return {
+      id: data.event_id || ("live_llm_" + createdAt + "_" + actor2),
+      type: "LlmCallEvent",
+      createdAt: createdAt,
+      actor: actor2,
+      phase: phase,
+      model: String(data.model || ""),
+      body: actor2 + " 正在思考" + (phase ? "（" + phase + "）" : ""),
+      live: true,
+    };
+  }
+  if (data.type === "subagent_update") {
+    var actor3 = wbActorLabel("", data.agent_id);
+    var task = String(data.task || "").trim();
+    return {
+      id: "live_subagent_" + actor3 + "_" + createdAt,
+      type: "SubagentStatusEvent",
+      createdAt: createdAt,
+      actor: actor3,
+      status: String(data.status || ""),
+      body: actor3 + " " + wbSubagentStatusText(data.status) + (task ? "：" + task.slice(0, 120) : ""),
+      live: true,
+    };
+  }
+  return null;
+}
+
+function wbMergeLiveEventIntoSession(session, event) {
+  if (!session || !event) return session;
+  var events = Array.isArray(session.events) ? session.events.slice() : [];
+  if (!events.some(function (item) { return item && item.id === event.id; })) {
+    events.push(event);
+    if (events.length > 240) events = events.slice(events.length - 240);
+  }
+  var updatedPlan = Array.isArray(session.plan) ? session.plan.map(function (step) {
+    if (!step || step.status !== "running") return step;
+    var progressEvents = Array.isArray(step.progressEvents) ? step.progressEvents.slice() : [];
+    if (!progressEvents.some(function (item) { return item && item.id === event.id; })) {
+      progressEvents.push({ id: event.id, time: event.createdAt, body: event.body });
+      if (progressEvents.length > 30) progressEvents = progressEvents.slice(progressEvents.length - 30);
+    }
+    return Object.assign({}, step, {
+      currentAction: event.body || step.currentAction || "",
+      progressEvents: progressEvents,
+      updatedAt: event.createdAt || new Date().toISOString(),
+    });
+  }) : session.plan;
+  return Object.assign({}, session, { events: events, plan: updatedPlan });
+}
+
 function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   useDataVersion();
   var workbenchI18n = window.useWorkbenchI18n();
@@ -82,18 +188,57 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
     return undefined;
   }, []);
 
+  useWorkbenchEffect(function () {
+    function handleRuntimeEvent(data) {
+      if (!data || ["tool_call", "llm_call", "subagent_update"].indexOf(data.type) < 0) return;
+      setStore(function (prev) {
+        var active = prev && prev.activeSession;
+        if (!active || active.status !== "running") return prev;
+        var dataSessionId = String(data.session_id || "").trim();
+        if (dataSessionId && dataSessionId !== active.id) return prev;
+        if (!dataSessionId && String(data.caller || "").indexOf("subagent_") !== 0) return prev;
+        var event = wbLiveEventFromSse(data);
+        if (!event) return prev;
+        var nextSession = wbMergeLiveEventIntoSession(active, event);
+        if (nextSession === active) return prev;
+        function mergeSession(session) {
+          return session && session.id === active.id ? nextSession : session;
+        }
+        var nextProjects = (prev.projects || []).map(function (project) {
+          if (!project || project.id !== prev.activeProjectId) return project;
+          return Object.assign({}, project, { sessions: (project.sessions || []).map(mergeSession) });
+        });
+        return Object.assign({}, prev, {
+          projects: nextProjects,
+          activeProject: nextProjects.find(function (project) { return project.id === prev.activeProjectId; }) || prev.activeProject,
+          activeSession: nextSession,
+        });
+      });
+    }
+    if (window.__sseHandlers && window.__sseHandlers.add) {
+      window.__sseHandlers.add(handleRuntimeEvent);
+      return function () {
+        window.__sseHandlers.delete(handleRuntimeEvent);
+      };
+    }
+    return undefined;
+  }, []);
+
   function selectProject(projectId) {
     var project = store.projects.find(function (item) { return item.id === projectId; });
     if (!project) return;
+    var nextSession = project.sessions[0] || null;
+    var nextSessionId = nextSession ? nextSession.id : "";
     setStore(function (prev) {
       var next = { ...prev };
       next.activeProjectId = project.id;
       next.activeProject = project;
-      next.activeSession = project.sessions[0] || null;
-      next.activeSessionId = next.activeSession ? next.activeSession.id : "";
+      next.activeSession = nextSession;
+      next.activeSessionId = nextSessionId;
       return next;
     });
     setExpandedStepId("");
+    window.WorkbenchModel.setActiveProject(project.id, nextSessionId).catch(function () {});
   }
 
   function selectSession(sessionId) {
@@ -105,6 +250,32 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
       return { ...prev, activeSessionId: session.id, activeSession: session };
     });
     setExpandedStepId("");
+    window.WorkbenchModel.setActiveProject(project.id, sessionId).catch(function () {});
+  }
+
+  // Optimistically merge fields into the active session's `init` object so the
+  // init view and the right-panel 初始化进度 (siblings reading store data) stay
+  // in sync between server writes. Used while answering onboarding questions.
+  function patchActiveInit(initPatch) {
+    if (!initPatch) return;
+    setStore(function (prev) {
+      if (!prev.activeSession) return prev;
+      var activeId = prev.activeSession.id;
+      function mergeSession(s) {
+        if (!s || s.id !== activeId) return s;
+        return { ...s, init: { ...(s.init || {}), ...initPatch } };
+      }
+      var nextProjects = (prev.projects || []).map(function (p) {
+        if (!p || p.id !== prev.activeProjectId) return p;
+        return { ...p, sessions: (p.sessions || []).map(mergeSession) };
+      });
+      return {
+        ...prev,
+        projects: nextProjects,
+        activeProject: nextProjects.find(function (p) { return p.id === prev.activeProjectId; }) || prev.activeProject,
+        activeSession: mergeSession(prev.activeSession),
+      };
+    });
   }
 
   // New project / task creation now goes through dedicated workbench modals
@@ -242,6 +413,7 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
             onRightTab={setRightTab}
             onSelectSession={selectSession}
             onCreateSession={createSession}
+            onInitPatch={patchActiveInit}
             onRefresh={function (nextStore) {
               setStore(function (prev) {
                 // Preserve expandedStepId, rightTab, etc. from current UI state
@@ -811,6 +983,12 @@ function isDoneStepStatus(status) {
   return status === "completed" || status === "done";
 }
 
+// A step the user no longer needs to act on: completed OR explicitly skipped.
+// Used to find the "next" runnable step and to decide when the plan is finished.
+function isResolvedStepStatus(status) {
+  return isDoneStepStatus(status) || status === "skipped";
+}
+
 function isRunningStepStatus(status) {
   return status === "running";
 }
@@ -883,38 +1061,143 @@ function useTaskController(session, onRefresh, runtime) {
     setBusy(true);
     return promise.then(apply).catch(fail).finally(function () { setBusy(false); });
   }
+  function firstUnresolvedStepIndex(plan) {
+    var items = Array.isArray(plan) ? plan : [];
+    for (var i = 0; i < items.length; i++) {
+      if (!isResolvedStepStatus(items[i] && items[i].status)) return i;
+    }
+    return -1;
+  }
+  function stepFailedPatch(baseSession, basePlan, index, stepTitle, stepId, msg) {
+    return model.patchSession(sid, {
+      status: "failed",
+      plan: model.markStep(basePlan, index, "failed", msg),
+      agentReply: "步骤执行失败：" + msg,
+      events: model.withEvent(baseSession, "ExecutionFailed", "步骤「" + stepTitle + "」执行失败：" + msg, { stepId: stepId || "" }),
+    }).then(apply);
+  }
+  function runStepCore(baseSession, step, index, options) {
+    options = options || {};
+    if (!baseSession || !step || index < 0) return Promise.resolve(null);
+    interruptedRef.current = false;
+    var basePlan = Array.isArray(baseSession.plan) ? baseSession.plan : [];
+    var ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    runAbortRef.current = ac;
+    var stepTitle = String(step.title || ("步骤 " + (index + 1))).trim();
+    var startPlan = model.markStep(basePlan, index, "running", "正在启动 subagent，等待模型思考…");
+    var startEvents = model.withEvent(baseSession, "ExecutionStarted", "开始执行步骤：" + stepTitle, { stepId: step.id || "" });
+    return model.patchSession(sid, { status: "running", plan: startPlan, agentReply: "正在执行步骤：" + stepTitle, events: startEvents })
+      .then(apply)
+      .then(function (patched) {
+        var patchedSession = (patched && patched.activeSession) || baseSession;
+        return model.createRun(sid, stepExecutionPrompt(patchedSession, step), {
+          attachments: (runtime && runtime.attachments) || [],
+          mode: (runtime && runtime.mode) || undefined,
+          command: (runtime && runtime.command) || undefined,
+          stepId: step.id || undefined,
+          stepTitle: stepTitle,
+          action: "spawn_subagent",
+          meta: { scope: "plan_step" },
+          signal: ac ? ac.signal : undefined,
+        });
+      })
+      .then(function (next) {
+        var s2 = (next && next.activeSession) || baseSession;
+        var returnedPlan = Array.isArray(s2.plan) && s2.plan.length ? s2.plan : basePlan;
+        // Real tool activity from this step's run → show it on the step.
+        var latestRun = (Array.isArray(s2.runs) && s2.runs.length) ? s2.runs[s2.runs.length - 1] : null;
+        var stepToolCalls = (latestRun && Array.isArray(latestRun.toolCalls)) ? latestRun.toolCalls : [];
+        var doneAction = stepToolCalls.length ? ("已完成，本步调用工具 " + stepToolCalls.length + " 次。") : "已完成该步骤。";
+        var completedPlan = model.markStep(returnedPlan, index, "completed", doneAction).map(function (st, i) {
+          return i === index ? Object.assign({}, st, { toolCalls: stepToolCalls }) : st;
+        });
+        var doneCount = completedPlan.filter(function (item) { return isResolvedStepStatus(item && item.status); }).length;
+        var fullyDone = doneCount >= completedPlan.length && completedPlan.length > 0;
+        var events2 = model.withEvent(s2, "ExecutionFinished", "步骤「" + stepTitle + "」执行完成。", { stepId: step.id || "" });
+        var finalPatch = {
+          status: fullyDone ? "review" : (options.continueAll ? "running" : "paused"),
+          plan: completedPlan,
+          events: events2,
+        };
+        if (options.continueAll && !fullyDone) {
+          finalPatch.agentReply = "步骤「" + stepTitle + "」已完成，继续执行下一步。";
+        }
+        if (fullyDone) {
+          // Don't auto-pass acceptance — those weren't verified. The user
+          // checks each criterion in the 验收标准 panel, or confirms via 标记完成.
+          finalPatch.artifacts = model.ensureArtifacts(s2);
+        }
+        if (runtime && runtime.clearAttachments) runtime.clearAttachments();
+        if (runtime && runtime.clearCommand) runtime.clearCommand();
+        return model.patchSession(sid, finalPatch);
+      })
+      .then(apply)
+      .catch(function (err) {
+        if (interruptedRef.current || (err && err.name === "AbortError")) return null;
+        var msg = (err && err.message) || String(err);
+        return stepFailedPatch(baseSession, basePlan, index, stepTitle, step.id || "", msg).then(function (next) {
+          throw err;
+        });
+      })
+      .finally(function () { runAbortRef.current = null; });
+  }
 
   var ctrl = {
     busy: busy,
     applyStore: apply,
 
-    // idle → planning. Generate the plan + acceptance from the goal first
-    // ("执行前必须有计划"); no agent work runs yet.
+    // idle → planning. Generate a REAL plan from the goal — the agent explores
+    // the project workspace server-side ("执行前必须有计划"); no agent work runs
+    // yet. On failure, fall back to an honest client-side template (all pending).
     start: function (goalText) {
       var goal = (goalText != null ? String(goalText) : (session.goal || "")).trim();
-      var constraints = session.constraints || [];
-      var plan = (session.plan && session.plan.length) ? session.plan : model.buildPlanSteps(goal, constraints);
-      var accept = (session.acceptanceCriteria && session.acceptanceCriteria.length) ? session.acceptanceCriteria : model.buildAcceptance(goal, constraints);
-      var events = model.withEvent(session, "PlanGenerated", "生成执行计划，共 " + plan.length + " 步。");
-      return run(patch({
-        status: "planning",
-        goal: goal || session.goal || "",
-        plan: plan,
-        acceptanceCriteria: accept,
-        agentReply: "我将按以下步骤执行当前任务，请你先确认计划。",
-        events: events,
+      if (!goal) return Promise.resolve();
+      return run(model.generatePlan(sid, goal).catch(function () {
+        var constraints = session.constraints || [];
+        return patch({
+          status: "planning",
+          goal: goal,
+          plan: model.buildPlanSteps(goal, constraints),
+          acceptanceCriteria: model.buildAcceptance(goal, constraints),
+          agentReply: "计划生成服务暂时不可用，已生成基础计划，你可以编辑后逐步执行，或稍后重试。",
+          events: model.withEvent(session, "PlanGenerated", "生成基础执行计划（兜底）。"),
+        });
       }));
     },
 
+    // Revise the plan from natural-language feedback. While the plan is still
+    // untouched or already fully handled, regenerate it with the feedback. While
+    // execution is still in progress, just record the note — regenerating would
+    // wipe completed steps' progress (use 重新生成 explicitly to start over).
     modifyPlan: function (text) {
-      var events = model.withEvent(session, "PlanRevised", "按用户要求调整计划：" + text);
-      return run(patch({ status: "planning", agentReply: "已根据你的要求调整计划：\n" + text, events: events }));
+      var goal = (session.goal || "").trim();
+      var plan = Array.isArray(session.plan) ? session.plan : [];
+      if (model.hasUnresolvedStartedSteps(plan)) {
+        return run(patch({
+          agentReply: "已记录你的补充：\n" + text + "\n（任务已在执行中，计划未重置；如需重排可点「重新生成」。）",
+          events: model.withEvent(session, "PlanRevised", "执行中补充：" + text),
+        }));
+      }
+      return run(model.generatePlan(sid, goal, { feedback: text }).catch(function () {
+        var keepPlan = Array.isArray(session.plan) && session.plan.length ? session.plan : model.buildPlanSteps(goal, session.constraints || []);
+        var keepAcceptance = Array.isArray(session.acceptanceCriteria) && session.acceptanceCriteria.length
+          ? session.acceptanceCriteria
+          : model.buildAcceptance(goal, session.constraints || []);
+        return patch({
+          status: "planning",
+          plan: keepPlan,
+          acceptanceCriteria: keepAcceptance,
+          agentReply: "计划生成服务暂时不可用，已保留原计划并记录你的调整：\n" + text,
+          events: model.withEvent(session, "PlanRevised", "按用户要求调整计划：" + text),
+        });
+      }));
     },
 
     regeneratePlan: function () {
-      var plan = model.buildPlanSteps(session.goal || "", session.constraints || []);
-      var events = model.withEvent(session, "PlanGenerated", "重新生成执行计划。");
-      return run(patch({ status: "planning", plan: plan, agentReply: "已重新生成执行计划，请确认。", events: events }));
+      var goal = (session.goal || "").trim();
+      return run(model.generatePlan(sid, goal).catch(function () {
+        return patch({ status: "planning", plan: model.buildPlanSteps(goal, session.constraints || []), agentReply: "重新生成失败，已保留基础计划。", events: model.withEvent(session, "PlanGenerated", "重新生成执行计划（兜底）。") });
+      }));
     },
 
     // planning → waiting_for_approval — the 需要你确认 gate before any change.
@@ -928,63 +1211,62 @@ function useTaskController(session, onRefresh, runtime) {
       return run(patch({ status: "planning", agentReply: "操作已取消。你可以修改要求，或让我重新规划。", events: events }));
     },
 
-    // waiting → running → (real agent) → review. Reused by resume / retry.
-    // Sends the composer's attachments + permission mode, and is abortable.
-    execute: function (inputOverride) {
+    // Honest execution: run the NEXT pending step for real. Delegates to the
+    // per-step run, which executes one step and marks ONLY that step done, with
+    // real timing + real tool data. The user can also run any step directly via
+    // its 执行此步骤 button, in any order. Reused by resume / retry.
+    execute: function () {
+      var plan = Array.isArray(session.plan) ? session.plan : [];
+      var nextIndex = firstUnresolvedStepIndex(plan);
+      if (nextIndex < 0) {
+        return run(patch({
+          status: "review",
+          agentReply: "所有步骤已完成，请验收。",
+          events: model.withEvent(session, "ExecutionFinished", "全部步骤已完成，等待你验收。"),
+        }));
+      }
+      return ctrl.runStep(plan[nextIndex], nextIndex);
+    },
+
+    // Run every unresolved step in order. Each iteration starts from the latest
+    // server-returned session so completed/failed/skipped state is preserved.
+    executeAll: function () {
       setBusy(true);
-      var runStartMs = Date.now();
       interruptedRef.current = false;
-      var ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
-      runAbortRef.current = ac;
-      var startPlan = model.markStep(session.plan, 0, "running", "正在执行第一步…");
-      var startEvents = model.withEvent(session, "ExecutionStarted", "开始执行任务。");
-      return patch({ status: "running", plan: startPlan, agentReply: "正在执行当前任务…", events: startEvents })
+      var currentSession = session;
+      var startedEvents = model.withEvent(session, "ExecutionStarted", "开始连续执行全部剩余步骤。");
+      return model.patchSession(sid, { status: "running", agentReply: "正在按顺序执行全部剩余步骤。", events: startedEvents })
         .then(apply)
-        .then(function () {
-          var input = String(inputOverride || session.goal || session.title || "").trim();
-          return model.createRun(sid, input || "执行当前任务", {
-            attachments: (runtime && runtime.attachments) || [],
-            mode: (runtime && runtime.mode) || undefined,
-            command: (runtime && runtime.command) || undefined,
-            signal: ac ? ac.signal : undefined,
-          });
-        })
         .then(function (next) {
-          var s2 = next.activeSession || session;
-          var donePlan = model.markAllSteps(s2.plan, "completed");
-          // Agent ran the plan as one unit; spread the real elapsed time across
-          // steps with no measured duration so each row still shows a 时长.
-          var totalSec = Math.max(donePlan.length, Math.round((Date.now() - runStartMs) / 1000));
-          var perStep = Math.max(1, Math.round(totalSec / Math.max(1, donePlan.length)));
-          donePlan = donePlan.map(function (st) {
-            return (st && st.durationSec != null) ? st : Object.assign({}, st, { durationSec: perStep });
-          });
-          var passed = model.markAllAcceptance(s2.acceptanceCriteria, "passed");
-          var artifacts = model.ensureArtifacts(s2);
-          var events2 = model.withEvent(s2, "ExecutionFinished", "Agent 执行完成，等待你验收。");
-          if (runtime && runtime.clearAttachments) runtime.clearAttachments();
-          if (runtime && runtime.clearCommand) runtime.clearCommand();
-          return model.patchSession(sid, {
-            status: "review", plan: donePlan, acceptanceCriteria: passed, artifacts: artifacts, events: events2,
-          });
+          currentSession = (next && next.activeSession) || currentSession;
+          function loop() {
+            if (interruptedRef.current) return null;
+            var plan = Array.isArray(currentSession.plan) ? currentSession.plan : [];
+            var nextIndex = firstUnresolvedStepIndex(plan);
+            if (nextIndex < 0) {
+              return model.patchSession(sid, {
+                status: "review",
+                agentReply: "所有步骤已完成，请验收。",
+                artifacts: model.ensureArtifacts(currentSession),
+                events: model.withEvent(currentSession, "ExecutionFinished", "全部步骤已完成，等待你验收。"),
+              }).then(apply);
+            }
+            return runStepCore(currentSession, plan[nextIndex], nextIndex, { continueAll: true })
+              .then(function (nextStore) {
+                if (interruptedRef.current || !nextStore) return null;
+                currentSession = (nextStore && nextStore.activeSession) || currentSession;
+                if (String(currentSession.status || "") === "failed") return nextStore;
+                if (String(currentSession.status || "") === "review") return nextStore;
+                return loop();
+              });
+          }
+          return loop();
         })
-        .then(apply)
         .catch(function (err) {
-          // Interrupted by the user → interrupt() already moved it to paused.
           if (interruptedRef.current || (err && err.name === "AbortError")) return;
-          var msg = (err && err.message) || String(err);
-          // Don't leave the first step spinning as "running" after a failure.
-          var failedPlan = Array.isArray(startPlan) ? startPlan.map(function (s) {
-            return (s && s.status === "running") ? Object.assign({}, s, { status: "failed", error: msg, updatedAt: new Date().toISOString() }) : s;
-          }) : startPlan;
-          return model.patchSession(sid, {
-            status: "failed",
-            plan: failedPlan,
-            agentReply: "执行失败：" + msg,
-            events: model.withEvent(session, "ExecutionFailed", msg),
-          }).then(apply).catch(fail);
+          fail(err);
         })
-        .finally(function () { runAbortRef.current = null; setBusy(false); });
+        .finally(function () { setBusy(false); });
     },
 
     // Stop the in-flight run (abort the fetch + server-side interrupt) → paused.
@@ -1015,58 +1297,12 @@ function useTaskController(session, onRefresh, runtime) {
     runStep: function (step, index) {
       if (!step || index < 0) return Promise.resolve();
       setBusy(true);
-      interruptedRef.current = false;
-      var ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
-      runAbortRef.current = ac;
-      var stepTitle = String(step.title || ("步骤 " + (index + 1))).trim();
-      var startPlan = model.markStep(session.plan, index, "running", "已派发给 subagent 执行…");
-      var startEvents = model.withEvent(session, "ExecutionStarted", "开始执行步骤：" + stepTitle, { stepId: step.id || "" });
-      return patch({ status: "running", plan: startPlan, agentReply: "正在执行步骤：" + stepTitle, events: startEvents })
-        .then(apply)
-        .then(function () {
-          return model.createRun(sid, stepExecutionPrompt(session, step), {
-            attachments: (runtime && runtime.attachments) || [],
-            mode: (runtime && runtime.mode) || undefined,
-            command: (runtime && runtime.command) || undefined,
-            stepId: step.id || undefined,
-            stepTitle: stepTitle,
-            action: "spawn_subagent",
-            meta: { scope: "plan_step" },
-            signal: ac ? ac.signal : undefined,
-          });
-        })
-        .then(function (next) {
-          var s2 = next.activeSession || session;
-          var returnedPlan = Array.isArray(s2.plan) && s2.plan.length ? s2.plan : (session.plan || []);
-          var completedPlan = model.markStep(returnedPlan, index, "completed", "subagent 已完成该步骤。");
-          var doneCount = completedPlan.filter(function (item) { return isDoneStepStatus(item && item.status); }).length;
-          var fullyDone = doneCount >= completedPlan.length && completedPlan.length > 0;
-          var events2 = model.withEvent(s2, "ExecutionFinished", "步骤「" + stepTitle + "」执行完成。", { stepId: step.id || "" });
-          var finalPatch = {
-            status: fullyDone ? "review" : "paused",
-            plan: completedPlan,
-            events: events2,
-          };
-          if (fullyDone) {
-            finalPatch.acceptanceCriteria = model.markAllAcceptance(s2.acceptanceCriteria, "passed");
-            finalPatch.artifacts = model.ensureArtifacts(s2);
-          }
-          if (runtime && runtime.clearAttachments) runtime.clearAttachments();
-          if (runtime && runtime.clearCommand) runtime.clearCommand();
-          return model.patchSession(sid, finalPatch);
-        })
-        .then(apply)
+      return runStepCore(session, step, index)
         .catch(function (err) {
           if (interruptedRef.current || (err && err.name === "AbortError")) return;
-          var msg = (err && err.message) || String(err);
-          return model.patchSession(sid, {
-            status: "failed",
-            plan: model.markStep(session.plan, index, "failed", msg),
-            agentReply: "步骤执行失败：" + msg,
-            events: model.withEvent(session, "ExecutionFailed", "步骤「" + stepTitle + "」执行失败：" + msg, { stepId: step.id || "" }),
-          }).then(apply).catch(fail);
+          fail(err);
         })
-        .finally(function () { runAbortRef.current = null; setBusy(false); });
+        .finally(function () { setBusy(false); });
     },
 
     resume: function () {
@@ -1076,14 +1312,37 @@ function useTaskController(session, onRefresh, runtime) {
 
     retry: function () { return ctrl.execute(); },
 
+    // Skip the failed step (or the first unresolved one) — only that step, not
+    // the whole plan. Continue if work remains, else go to review.
     skipStep: function () {
-      var plan = model.markAllSteps(session.plan, "completed");
-      var events = model.withEvent(session, "StepSkipped", "跳过失败步骤，继续验收。");
-      return run(patch({ status: "review", plan: plan, agentReply: "已跳过该步骤，请验收当前结果。", events: events }));
+      var plan = Array.isArray(session.plan) ? session.plan : [];
+      var idx = -1;
+      for (var i = 0; i < plan.length; i++) {
+        if (plan[i] && plan[i].status === "failed") { idx = i; break; }
+      }
+      if (idx < 0) {
+        for (var j = 0; j < plan.length; j++) {
+          if (!isResolvedStepStatus(plan[j] && plan[j].status)) { idx = j; break; }
+        }
+      }
+      var skipped = (idx >= 0) ? model.markStep(plan, idx, "skipped", "已跳过该步骤。") : plan;
+      var remaining = skipped.filter(function (s) { return !isResolvedStepStatus(s && s.status); }).length;
+      var events = model.withEvent(session, "StepSkipped", "跳过该步骤。");
+      return run(patch({
+        status: remaining > 0 ? "paused" : "review",
+        plan: skipped,
+        agentReply: remaining > 0 ? "已跳过该步骤，可继续执行剩余步骤。" : "已跳过该步骤，剩余步骤已处理完，请验收。",
+        events: events,
+      }));
     },
 
     markComplete: function () {
-      var passed = model.markAllAcceptance(session.acceptanceCriteria, "passed");
+      // Confirm the still-unverified criteria as passed, but respect any the user
+      // explicitly marked 未通过 — don't silently flip them green.
+      var items = Array.isArray(session.acceptanceCriteria) ? session.acceptanceCriteria : [];
+      var passed = items.map(function (a) {
+        return (a && a.status === "failed") ? a : Object.assign({}, a, { status: "passed" });
+      });
       var events = model.withEvent(session, "TaskCompleted", "用户确认任务完成。");
       return run(patch({ status: "completed", acceptanceCriteria: passed, events: events }));
     },
@@ -1139,6 +1398,7 @@ function TaskWorkArea(props) {
           project: project,
           session: session,
           onRefresh: props.onRefresh,
+          onInitPatch: props.onInitPatch,
         })}
       </main>
     );
@@ -1402,13 +1662,21 @@ function WbBtn({ kind, onClick, disabled, children }) {
   );
 }
 
+function wbRenderMarkdown(text) {
+  var source = String(text == null ? "" : text);
+  try {
+    var raw = window.marked ? window.marked.parse(source) : source.replace(/\n/g, "<br>");
+    return window.DOMPurify ? window.DOMPurify.sanitize(raw) : raw;
+  } catch (e) {
+    return source;
+  }
+}
+
 function AgentReplyBlock({ text }) {
   var reply = String(text || "").trim();
   if (!reply) return null;
   return (
-    <div className="wb-agent-body">
-      {reply.split("\n").map(function (line, i) { return <p key={i}>{line || " "}</p>; })}
-    </div>
+    <div className="wb-agent-body markdown" dangerouslySetInnerHTML={{ __html: wbRenderMarkdown(reply) }} />
   );
 }
 
@@ -1527,6 +1795,7 @@ function PausedCard({ session, controller }) {
       <p className="wb-card-hint">当前停在：第 {Math.min(done + 1, plan.length || 1)} 步{current ? "：" + current.title : ""}。</p>
       <WbActions>
         <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.resume(); }}>继续任务</WbBtn>
+        <WbBtn kind="ghost" disabled={controller.busy} onClick={function () { controller.executeAll(); }}>{wbT("task.action.runAll", "Run all")}</WbBtn>
         <WbBtn kind="ghost" disabled={controller.busy} onClick={focusComposer}>修改要求</WbBtn>
         <WbBtn kind="danger" disabled={controller.busy} onClick={function () { controller.cancel(); }}>取消任务</WbBtn>
       </WbActions>
@@ -1624,8 +1893,9 @@ function TaskPlanList({ session, expandedStepId, onToggleStep, onRightTab, contr
           var doneStep = isDoneStepStatus(step.status);
           var runningStep = isRunningStepStatus(step.status);
           var failedStep = step.status === "failed";
-          var state = doneStep ? "done" : runningStep ? "current" : failedStep ? "failed" : "idle";
-          var statusLabel = doneStep ? "已完成" : runningStep ? "进行中" : failedStep ? "需处理" : "等待执行";
+          var skippedStep = step.status === "skipped";
+          var state = doneStep ? "done" : runningStep ? "current" : failedStep ? "failed" : skippedStep ? "skipped" : "idle";
+          var statusLabel = doneStep ? "已完成" : runningStep ? "进行中" : failedStep ? "需处理" : skippedStep ? "已跳过" : "等待执行";
           var doneStamp = step.completedAt || step.updatedAt || "";
           var time = doneStep && doneStamp ? WorkbenchModel.formatTime(doneStamp) : "";
           var duration = doneStep ? stepDurationText(step) : "";
@@ -1769,6 +2039,7 @@ function composerChips(status, controller, onRightTab) {
   if (status === "paused") {
     return [
       { label: wbT("task.action.resumeTask", "Resume task"), onClick: function () { controller.resume(); } },
+      { label: wbT("task.action.runAll", "Run all"), onClick: function () { controller.executeAll(); } },
       { label: wbT("task.action.reviseRequest", "Revise request"), onClick: focusComposer },
       { label: wbT("task.action.cancelTask", "Cancel task"), onClick: function () { controller.cancel(); } },
     ];
@@ -2077,7 +2348,7 @@ function ContextTab({ project, session, activeStep }) {
       <SideSection title="项目上下文">
         <div className="wb-kv"><span>项目</span><b>{project ? project.name : "—"}</b></div>
         <p className="workbench-muted">{(project && project.workspacePath) || "—"}</p>
-        {project && project.context && project.context.summary && !isInit && <p>{project.context.summary}</p>}
+        {project && project.context && project.context.summary && !isInit && <div className="wb-agent-body markdown" dangerouslySetInnerHTML={{ __html: wbRenderMarkdown(project.context.summary) }} />}
       </SideSection>
       <SideSection title={"任务约束 (" + constraints.length + ")"}>
         {constraints.length
@@ -2099,15 +2370,93 @@ function ContextTab({ project, session, activeStep }) {
 
 function FilesTab({ session, activeStep }) {
   var files = [];
-  if (activeStep && Array.isArray(activeStep.relatedFiles)) files = files.concat(activeStep.relatedFiles);
-  (session && session.artifacts || []).forEach(function (artifact) {
-    if (artifact.type === "file_change") files.push(artifact);
+  var seen = {};
+  var [selectedFile, setSelectedFile] = useWorkbenchState(null);
+  var [diffState, setDiffState] = useWorkbenchState({ loading: false, diff: "", error: "", path: "" });
+  function add(list) {
+    (Array.isArray(list) ? list : []).forEach(function (file) {
+      if (!file) return;
+      var key = String(file.path || file.name || file.id || "").trim();
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      files.push(file);
+    });
+  }
+  if (activeStep && Array.isArray(activeStep.relatedFiles)) add(activeStep.relatedFiles);
+  (session && session.plan || []).forEach(function (step) {
+    add(step && step.relatedFiles);
   });
+  (session && session.runs || []).forEach(function (run) {
+    add(run && run.fileChanges);
+  });
+  (session && session.artifacts || []).forEach(function (artifact) {
+    if (artifact.type === "file_change") add([artifact]);
+  });
+  useWorkbenchEffect(function () {
+    setSelectedFile(null);
+    setDiffState({ loading: false, diff: "", error: "", path: "" });
+  }, [session && session.id]);
+  function openDiff(file) {
+    var path = String((file && (file.path || file.name)) || "").trim();
+    if (!path || !session || !session.id) return;
+    var selectedPath = selectedFile && String(selectedFile.path || selectedFile.name || "");
+    if (selectedPath === path) {
+      setSelectedFile(null);
+      setDiffState({ loading: false, diff: "", error: "", path: "" });
+      return;
+    }
+    setSelectedFile(file);
+    setDiffState({ loading: true, diff: "", error: "", path: path });
+    WorkbenchModel.fetchFileDiff(session.id, path)
+      .then(function (data) {
+        setDiffState({
+          loading: false,
+          diff: data.diff || "",
+          error: data.has_changes ? "" : "当前 git 工作区中没有可显示的差异。",
+          path: data.path || path,
+        });
+      })
+      .catch(function (err) {
+        setDiffState({ loading: false, diff: "", error: (err && err.message) || String(err), path: path });
+      });
+  }
   return (
     <div className="workbench-side-stack">
       <SideSection title={"文件变更 (" + files.length + ")"}>
         {files.length ? files.map(function (file, i) {
-          return <div className="workbench-file-row" key={file.id || file.path || file.name || i}><span>{file.path || file.name}</span><small>{file.status || file.changeType || file.type || ""}</small></div>;
+          var path = file.path || file.name || "";
+          var selected = selectedFile && String(selectedFile.path || selectedFile.name || "") === String(path);
+          return (
+            <div
+              className={"workbench-file-row wb-file-diff-card" + (selected ? " active" : "")}
+              key={file.id || file.path || file.name || i}
+            >
+              <button
+                type="button"
+                className="wb-file-diff-trigger"
+                onClick={function () { openDiff(file); }}
+                title={selected ? "收起文件 diff" : "查看文件 diff"}
+              >
+                <span>{path}</span>
+                <small>{file.status || file.changeType || file.type || ""}</small>
+              </button>
+              {selected && (
+                <div className="wb-file-diff-inline">
+                  {diffState.loading ? (
+                    <p className="workbench-muted">正在加载 diff...</p>
+                  ) : diffState.error ? (
+                    <p className="workbench-muted">{diffState.error}</p>
+                  ) : typeof DiffViewerPanel !== "undefined" ? (
+                    <div className="wb-file-diff-panel">
+                      <DiffViewerPanel diff={diffState.diff} mode="text" />
+                    </div>
+                  ) : (
+                    <pre className="wb-file-diff-fallback">{diffState.diff}</pre>
+                  )}
+                </div>
+              )}
+            </div>
+          );
         }) : <p className="workbench-muted">当前任务还没有记录文件变更。</p>}
       </SideSection>
     </div>
@@ -2119,8 +2468,27 @@ function LogsTab({ session }) {
   return (
     <div className="workbench-side-stack">
       <SideSection title={"运行日志 (" + events.length + ")"}>
-        {events.length ? events.slice().reverse().slice(0, 40).map(function (event, i) {
-          return <div className="workbench-log-row" key={event.id || i}><time>{WorkbenchModel.formatTime(event.createdAt)}</time><span>{WorkbenchModel.eventLabel(event.type)}</span><p>{event.body || (event.stepCount != null ? ("步骤数 " + event.stepCount) : "")}</p></div>;
+        {events.length ? events.slice().reverse().slice(0, 60).map(function (event, i) {
+          if (event.type === "ToolCallEvent") {
+            return (
+              <div className="workbench-log-row wb-log-tool" key={event.id || i}>
+                <time>{WorkbenchModel.formatTime(event.createdAt)}</time>
+                <span className="wb-log-tool-name">{event.body || event.tool || "tool"}</span>
+                {event.argsPreview ? <small className="wb-log-tool-args">{event.argsPreview}</small> : null}
+              </div>
+            );
+          }
+          if (event.type === "LlmCallEvent" || event.type === "SubagentStatusEvent") {
+            return (
+              <div className="workbench-log-row" key={event.id || i}>
+                <time>{WorkbenchModel.formatTime(event.createdAt)}</time>
+                <span>{WorkbenchModel.eventLabel(event.type)}</span>
+                <div className="wb-agent-body markdown wb-log-body" dangerouslySetInnerHTML={{ __html: wbRenderMarkdown(event.body || "") }} />
+              </div>
+            );
+          }
+          var logBody = event.body || (event.stepCount != null ? ("步骤数 " + event.stepCount) : "");
+          return <div className="workbench-log-row" key={event.id || i}><time>{WorkbenchModel.formatTime(event.createdAt)}</time><span>{WorkbenchModel.eventLabel(event.type)}</span>{logBody && <div className="wb-agent-body markdown wb-log-body" dangerouslySetInnerHTML={{ __html: wbRenderMarkdown(logBody) }} />}</div>;
         }) : <p className="workbench-muted">暂无运行日志。</p>}
       </SideSection>
     </div>
@@ -2139,12 +2507,32 @@ function AcceptanceTab({ session, onRefresh }) {
       .catch(function (err) { window.alert(err.message || String(err)); })
       .finally(function () { setBusy(false); });
   }
+  // Verify a criterion by clicking it — cycle 待验证 → 已通过 → 未通过 → 待验证.
+  function toggle(id) {
+    var nextStatus = { pending: "passed", passed: "failed", failed: "pending", done: "pending" };
+    var next = items.map(function (a) {
+      return a.id === id ? Object.assign({}, a, { status: nextStatus[a.status] || "passed" }) : a;
+    });
+    setBusy(true);
+    window.WorkbenchModel.patchSession(session.id, { acceptanceCriteria: next })
+      .then(function (n) { onRefresh && onRefresh(n); })
+      .catch(function (err) { window.alert(err.message || String(err)); })
+      .finally(function () { setBusy(false); });
+  }
   return (
     <div className="workbench-side-stack">
       <SideSection title={"验收标准" + (items.length ? " (" + passed + "/" + items.length + ")" : "")}>
         {items.length ? items.map(function (item) {
-          var dot = (item.status === "passed" || item.status === "done") ? "green" : item.status === "failed" ? "red" : "muted";
-          return <div className="workbench-check" key={item.id}><span className={"workbench-status-dot " + dot}></span>{item.text}</div>;
+          var done = item.status === "passed" || item.status === "done";
+          var dot = done ? "green" : item.status === "failed" ? "red" : "muted";
+          var label = done ? "已通过" : item.status === "failed" ? "未通过" : "待验证";
+          return (
+            <button type="button" className="workbench-check wb-accept-toggle" key={item.id} disabled={busy} onClick={function () { toggle(item.id); }} title="点击逐条核验验收标准">
+              <span className={"workbench-status-dot " + dot}></span>
+              <span className="wb-accept-text">{item.text}</span>
+              <span className={"wb-accept-state " + dot}>{label}</span>
+            </button>
+          );
         }) : (
           <div className="wb-empty-action">
             <p className="workbench-muted">暂无验收标准。</p>

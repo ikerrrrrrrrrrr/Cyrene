@@ -82,10 +82,11 @@ _MAIN_ONLY_TOOLS = {
 
 
 def _resolve_workspace_path(path_str: str) -> Path:
+    from cyrene.agent.state import active_workspace_dir
+    workspace = active_workspace_dir()
     candidate = Path(path_str)
-    path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
+    path = candidate if candidate.is_absolute() else workspace / candidate
     resolved = path.resolve()
-    workspace = WORKSPACE_DIR.resolve()
     if resolved != workspace and workspace not in resolved.parents:
         raise ValueError(
             f"⛔ 已禁止：路径超出 workspace 范围。\n"
@@ -102,11 +103,11 @@ def _workspace_permission_error() -> str:
 
 
 def _resolve_workspace_write_target(path_str: str) -> Path:
-    from cyrene.agent.state import _temporary_full_access
+    from cyrene.agent.state import _temporary_full_access, active_workspace_dir
     from cyrene.settings_store import get_write_permission_mode
     if get_write_permission_mode() == "full_access" or _temporary_full_access.get():
         candidate = Path(path_str)
-        path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
+        path = candidate if candidate.is_absolute() else active_workspace_dir() / candidate
         return path.resolve()
     try:
         return _resolve_workspace_path(path_str)
@@ -508,7 +509,7 @@ def _resolve_tool_path(path_str: str) -> Path:
     if is_uploaded_attachment_path(path_str) or is_exported_attachment_path(path_str):
         return Path(path_str).resolve()
     # Auto-resolve filename to the correct upload path when the agent guesses wrong paths.
-    from cyrene.agent.state import _attachment_paths_by_name, _temporary_full_access
+    from cyrene.agent.state import _attachment_paths_by_name, _temporary_full_access, active_workspace_dir
     from cyrene.settings_store import get_write_permission_mode
     att_map = _attachment_paths_by_name.get()
     if att_map:
@@ -518,7 +519,7 @@ def _resolve_tool_path(path_str: str) -> Path:
     # Honour temporary full-access grants (write-once, read-always) and permanent mode.
     if _temporary_full_access.get() or get_write_permission_mode() == "full_access":
         candidate = Path(path_str)
-        path = candidate if candidate.is_absolute() else WORKSPACE_DIR / candidate
+        path = candidate if candidate.is_absolute() else active_workspace_dir() / candidate
         return path.resolve()
     return _resolve_workspace_path(path_str)
 

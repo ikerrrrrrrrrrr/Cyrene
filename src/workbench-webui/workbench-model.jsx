@@ -125,11 +125,14 @@ var WorkbenchModel = (function () {
     }).then(normalizeStore);
   }
 
-  function reviseInitPlan(sessionId, feedback) {
+  function reviseInitPlan(sessionId, feedback, taskPlan) {
     return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/init/plan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ feedback: feedback || "" }),
+      body: JSON.stringify({
+        feedback: feedback || "",
+        taskPlan: Array.isArray(taskPlan) ? taskPlan : [],
+      }),
     }).then(normalizeStore);
   }
 
@@ -162,6 +165,18 @@ var WorkbenchModel = (function () {
     return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/runs", init).then(normalizeStore);
   }
 
+  // Generate a REAL execution plan from the session goal (+ optional revision
+  // feedback). The agent explores the project workspace server-side; no agent
+  // work runs here — it only fills session.plan (all steps pending).
+  function generatePlan(sessionId, goal, options) {
+    options = options || {};
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/plan/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: goal || "", feedback: options.feedback || "" }),
+    }).then(normalizeStore);
+  }
+
   function sendChat(sessionId, message, options) {
     options = options || {};
     var init = {
@@ -176,6 +191,25 @@ var WorkbenchModel = (function () {
     };
     if (options.signal) init.signal = options.signal;
     return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/chat", init).then(normalizeStore);
+  }
+
+  function fetchFileDiff(sessionId, path) {
+    return apiJson(
+      "/api/task-sessions/" + encodeURIComponent(sessionId) + "/files/diff?path=" + encodeURIComponent(path || "")
+    );
+  }
+
+  // Persist the active project (and optionally session) to the server store so
+  // the selection survives page refresh. Returns a normalized store snapshot.
+  function setActiveProject(projectId, sessionId) {
+    var body = {};
+    if (projectId != null) body.projectId = projectId;
+    if (sessionId != null) body.sessionId = sessionId;
+    return apiJson("/api/workbench/activate", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(normalizeStore);
   }
 
   // Stop the active agent run for a session (best-effort, per-session interrupt).
@@ -261,6 +295,9 @@ var WorkbenchModel = (function () {
       TaskCompleted: ["event.taskCompleted", "Task completed"],
       Reopened: ["event.reopened", "Reopened"],
       Cancelled: ["event.cancelled", "Task cancelled"],
+      ToolCallEvent: ["event.toolCall", "工具调用"],
+      LlmCallEvent: ["event.llmCall", "模型思考"],
+      SubagentStatusEvent: ["event.subagentStatus", "Subagent 状态"],
     };
     var item = map[String(type || "")];
     return item ? wbModelT(item[0], item[1]) : String(type || wbModelT("event.generic", "Event"));
@@ -457,6 +494,23 @@ var WorkbenchModel = (function () {
     return items.map(function (item) { return Object.assign({}, item, { status: status }); });
   }
 
+  function isDoneStepStatus(status) {
+    return status === "completed" || status === "done";
+  }
+
+  function isResolvedStepStatus(status) {
+    return isDoneStepStatus(status) || status === "skipped";
+  }
+
+  function hasUnresolvedStartedSteps(plan) {
+    if (!Array.isArray(plan)) return false;
+    return plan.some(function (step) {
+      if (!step) return false;
+      var status = step.status || "pending";
+      return status !== "pending" && !isResolvedStepStatus(status);
+    });
+  }
+
   // Ensure the session has at least one artifact once it has executed.
   function ensureArtifacts(session) {
     var arr = session && Array.isArray(session.artifacts) ? session.artifacts.slice() : [];
@@ -492,8 +546,11 @@ var WorkbenchModel = (function () {
     reviseInitPlan: reviseInitPlan,
     confirmInitPlan: confirmInitPlan,
     createRun: createRun,
+    generatePlan: generatePlan,
     sendChat: sendChat,
+    fetchFileDiff: fetchFileDiff,
     patchSession: patchSession,
+    setActiveProject: setActiveProject,
     interruptSession: interruptSession,
     uploadAttachments: uploadAttachments,
     statusText: statusText,
@@ -513,6 +570,7 @@ var WorkbenchModel = (function () {
     markStep: markStep,
     markAllSteps: markAllSteps,
     markAllAcceptance: markAllAcceptance,
+    hasUnresolvedStartedSteps: hasUnresolvedStartedSteps,
     ensureArtifacts: ensureArtifacts,
     looksOutOfScope: looksOutOfScope,
   };
