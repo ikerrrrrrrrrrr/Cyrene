@@ -187,6 +187,7 @@ def _serialize(entry: dict) -> dict:
         "updated_at": str(entry.get("last_mentioned") or entry.get("first_seen") or ""),
         "citations": entry.get("citations") if isinstance(entry.get("citations"), list) else [],
         "emotional_valence": entry.get("emotional_valence", 0),
+        "stale": bool(entry.get("stale")),
     }
 
 
@@ -463,9 +464,11 @@ def add_agent_memory(
     today = _today()
     dup = _similar_entry(entries, content)
     if dup is not None:
-        # Reinforce an existing memory rather than duplicating it.
+        # Reinforce an existing memory rather than duplicating it. Re-recording a
+        # fact also revives it if it had been retired (stale).
         dup["last_mentioned"] = today
         dup["mention_count"] = int(dup.get("mention_count") or 1) + 1
+        dup["stale"] = False
         _save(workspace_id, entries)
         return _serialize(dup)
     entry: dict[str, Any] = {
@@ -510,6 +513,8 @@ def render_memory_for_injection(
     for e in entries:
         if not isinstance(e, dict):
             continue
+        if e.get("stale"):
+            continue  # retired memory — never inject into a run
         cat = _entry_category(e)
         if cat not in _INJECT_CATEGORIES:
             continue
@@ -635,6 +640,10 @@ def register_workbench_memory_routes(router: APIRouter) -> None:
                     target.pop("confidence", None)
             if "tags" in body:
                 target["tags"] = _normalize_tags(body.get("tags"))
+            if "stale" in body:
+                # Retire (or revive) a memory: stale entries stay on the page but
+                # are no longer injected into agent runs.
+                target["stale"] = bool(body.get("stale"))
             # An edit counts as a fresh touch — drives the "更新时间".
             target["last_mentioned"] = _today()
 

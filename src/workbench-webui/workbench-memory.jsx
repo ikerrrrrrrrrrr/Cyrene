@@ -215,6 +215,7 @@
           (m.tags.length ? m.tags : []).map(function (t, i) { return h(Chip, { key: i }, t); }),
           h("button", { type: "button", className: "wb-mem-tag-add", title: "编辑标签", onClick: function () { props.onEdit(m); } }, "+")) }),
         MetaRow({ label: "来源", children: m.source_label }),
+        m.stale && MetaRow({ label: "状态", children: h(Chip, { tone: "slate" }, "已过时 · 不注入") }),
         MetaRow({ label: "创建时间", children: formatFull(m.created_at) }),
         MetaRow({ label: "更新时间", children: formatFull(m.updated_at) }),
         MetaRow({ label: "置信度", children: h(Chip, { tone: CONF_TONE[m.confidence] }, m.confidence_label) }),
@@ -259,6 +260,7 @@
       tab === "detail" ? detailBody : tab === "cite" ? citeBody : tab === "related" ? relatedBody : historyBody,
       h("div", { className: "wb-mem-detail-foot" },
         h("button", { type: "button", className: "wb-btn ghost", onClick: function () { props.onEdit(m); } }, "编辑记忆"),
+        h("button", { type: "button", className: "wb-btn ghost", disabled: props.busy, title: m.stale ? "恢复后会重新注入 Agent" : "过时后不再注入 Agent，但保留记录", onClick: function () { props.onToggleStale(m); } }, m.stale ? "恢复使用" : "标记过时"),
         h("button", { type: "button", className: "wb-btn danger", onClick: function () { props.onDelete(m); } }, "删除记忆")));
   }
 
@@ -341,6 +343,15 @@
         .then(function (p) { applyPayload(p); if (selectedId === m.id) setSelectedId(""); })
         .catch(function (e) { setError(e.message || String(e)); });
     }
+    // Retire / revive a memory: stale entries stay listed but are no longer
+    // injected into agent runs.
+    function handleToggleStale(m) {
+      setBusy(true);
+      client.update(m.id, { stale: !m.stale })
+        .then(applyPayload)
+        .catch(function (e) { setError(e.message || String(e)); })
+        .finally(function () { setBusy(false); });
+    }
 
     if (!project) {
       return h("section", { className: "wb-mem-page" },
@@ -395,7 +406,7 @@
     // ── memory card list ──
     function card(m) {
       var meta = catMeta(m.category);
-      return h("button", { key: m.id, type: "button", className: "wb-mem-item" + (selectedId === m.id ? " active" : ""), onClick: function () { setSelectedId(m.id); } },
+      return h("button", { key: m.id, type: "button", className: "wb-mem-item" + (selectedId === m.id ? " active" : "") + (m.stale ? " stale" : ""), onClick: function () { setSelectedId(m.id); } },
         h("span", { className: "wb-mem-ico " + meta.tone }, catIcon(m.category, 17)),
         h("div", { className: "wb-mem-item-body" },
           h("div", { className: "wb-mem-item-top" },
@@ -433,10 +444,11 @@
       rail,
       main,
       h(DetailPanel, {
-        memory: selected, related: related,
+        memory: selected, related: related, busy: busy,
         onSelect: setSelectedId,
         onEdit: function (m) { setModal({ mode: "edit", id: m.id, draft: { content: m.content, category: m.category, source: m.source, confidence: m.confidence, tags: m.tags } }); },
         onDelete: handleDelete,
+        onToggleStale: handleToggleStale,
       }),
       menu && h("div", { className: "wb-mem-scrim", onClick: function () { setMenu(""); } }),
       modal && h(MemoryModal, {

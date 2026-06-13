@@ -197,6 +197,20 @@ var WorkbenchModel = (function () {
     }).then(normalizeStore);
   }
 
+  // Accept a sibling-reflection hint → merge its packet into this session.
+  function acceptHint(sessionId, hintId) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/hints/" + encodeURIComponent(hintId) + "/accept", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }).then(normalizeStore);
+  }
+
+  // Dismiss a sibling-reflection hint (no change to this session).
+  function dismissHint(sessionId, hintId) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/hints/" + encodeURIComponent(hintId) + "/dismiss", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }).then(normalizeStore);
+  }
+
   function generatePlan(sessionId, goal, options) {
     options = options || {};
     return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/plan/generate", {
@@ -596,6 +610,8 @@ var WorkbenchModel = (function () {
     reflect: reflect,
     verify: verify,
     reflectAndFork: reflectAndFork,
+    acceptHint: acceptHint,
+    dismissHint: dismissHint,
     generatePlan: generatePlan,
     sendChat: sendChat,
     fetchFileDiff: fetchFileDiff,

@@ -1430,6 +1430,14 @@ function useTaskController(session, onRefresh, runtime) {
     reflectAndFork: function () {
       return run(model.reflectAndFork(sid));
     },
+    // Accept a sibling-reflection hint → merge its packet into this session.
+    acceptHint: function (hintId) {
+      return run(model.acceptHint(sid, hintId));
+    },
+    // Dismiss a sibling-reflection hint (no change to this session).
+    dismissHint: function (hintId) {
+      return run(model.dismissHint(sid, hintId));
+    },
 
     reopen: function () {
       var events = model.withEvent(session, "Reopened", "重新打开任务。");
@@ -1492,6 +1500,7 @@ function TaskWorkArea(props) {
       <TaskHeader project={project} session={session} controller={controller} onRightTab={props.onRightTab} onSelectSession={props.onSelectSession} />
       {props.error && <div className="workbench-error">{props.error}</div>}
       <div className="workbench-stage">
+        <ReflectionHintBanner session={session} controller={controller} />
         <StateCard
           session={session}
           project={project}
@@ -1519,6 +1528,41 @@ function TaskWorkArea(props) {
         onModeChange={setMode}
       />
     </main>
+  );
+}
+
+// Banner above the task card: a sibling task's reflection produced an insight
+// relevant to THIS task. Suggestion only — the user adopts (merges the packet
+// into this session's reflection) or ignores it. Never auto-applied.
+function ReflectionHintBanner({ session, controller }) {
+  var hints = Array.isArray(session.pendingHints) ? session.pendingHints : [];
+  var pending = hints.filter(function (h) { return h && h.status === "pending"; });
+  if (pending.length === 0) return null;
+  return (
+    <div className="wb-hint-stack">
+      {pending.map(function (h) {
+        return (
+          <div className="wb-hint-banner" key={h.id}>
+            <span className="wb-hint-icon">{ICONS.spark}</span>
+            <div className="wb-hint-body">
+              <div className="wb-hint-label">
+                {wbT("task.hint.label", "来自相关任务的启发")}
+                {h.fromTitle ? " · 《" + h.fromTitle + "》" : ""}
+              </div>
+              <div className="wb-hint-text">{h.hint}</div>
+            </div>
+            <div className="wb-hint-actions">
+              <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.acceptHint(h.id); }}>
+                {wbT("task.hint.accept", "纳入")}
+              </WbBtn>
+              <WbBtn kind="ghost" disabled={controller.busy} onClick={function () { controller.dismissHint(h.id); }}>
+                {wbT("task.hint.dismiss", "忽略")}
+              </WbBtn>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

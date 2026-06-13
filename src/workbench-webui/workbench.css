@@ -2210,6 +2210,24 @@ html[data-theme="dark"] .wbp-detail-card .wbp-ctx-input {
   flex-direction: column;
   gap: 10px;
 }
+/* Reflection-hint banner (cross-task insight suggestion) */
+.wb-hint-stack { display: flex; flex-direction: column; gap: 8px; }
+.wb-hint-banner {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--wb-line);
+  border-left: 3px solid var(--wb-blue);
+  border-radius: 10px;
+  background: var(--wb-card-bg);
+  padding: 10px 12px;
+}
+.wb-hint-icon { color: var(--wb-blue); display: inline-flex; flex: 0 0 auto; margin-top: 1px; }
+.wb-hint-body { flex: 1 1 auto; min-width: 0; }
+.wb-hint-label { font-size: 12px; color: var(--wb-muted); margin-bottom: 2px; }
+.wb-hint-text { font-size: 13.5px; color: var(--wb-text); line-height: 1.5; word-break: break-word; }
+.wb-hint-actions { display: flex; gap: 6px; flex: 0 0 auto; align-items: center; }
 .wb-card-head {
   display: flex;
   align-items: center;
@@ -5222,6 +5240,10 @@ html[data-theme="light"] .wb-tool-list .mono {
   border-color: var(--wb-active-border);
   box-shadow: 0 0 0 1px var(--wb-active-border);
 }
+/* Retired (stale) memory: dimmed, struck through — kept for the record but
+   no longer injected into agent runs. */
+.wb-mem-item.stale { opacity: 0.55; }
+.wb-mem-item.stale .wb-mem-item-text { text-decoration: line-through; text-decoration-color: var(--wb-muted); }
 .wb-mem-item-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .wb-mem-item-top { display: flex; align-items: flex-start; gap: 12px; }
 .wb-mem-item-text {

@@ -2116,6 +2116,131 @@ async def _workbench_should_reflect(goal: str, acceptance: list[Any], feedback: 
     return bool(parsed.get("reflect")) if isinstance(parsed, dict) else False
 
 
+# Session statuses still "open" enough that a sibling's reflection is worth a nudge.
+_WORKBENCH_OPEN_STATUSES = {"idle", "pending", "planning", "paused", "review", "failed"}
+
+
+async def _workbench_match_relevant_sessions(
+    packet: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Ask the LLM which candidate sessions a reflection packet is relevant to.
+
+    One lightweight secondary call. Returns ``{sessionId: hint}`` for candidates
+    judged genuinely relevant (threshold = the model's own relevant=true + a
+    non-empty hint). Best-effort: any failure returns ``{}`` and never raises."""
+    if not packet or not candidates:
+        return {}
+    objective = str(packet.get("objective") or packet.get("goal") or "").strip()
+    excluded = packet.get("excluded_paths") if isinstance(packet.get("excluded_paths"), list) else []
+    promising = packet.get("promising_directions") if isinstance(packet.get("promising_directions"), list) else []
+    findings = "\n".join(filter(None, [
+        ("目标：" + objective) if objective else "",
+        ("应避免：" + "；".join(str(x) for x in excluded[:5])) if excluded else "",
+        ("有效方向：" + "；".join(str(x) for x in promising[:5])) if promising else "",
+    ])).strip()
+    if not findings:
+        return {}
+    cand_lines = []
+    for c in candidates:
+        cid = str(c.get("id") or "")
+        goal = str(c.get("goal") or c.get("title") or "").strip()
+        cons = "；".join(str(x) for x in (c.get("constraints") or []) if str(x).strip())
+        cand_lines.append(f"- id={cid}: 目标={goal}" + (f"；约束={cons}" if cons else ""))
+    prompt = (
+        "一个任务完成了深度反思，得到下面的结论。请判断这些结论对【其它正在进行的任务】是否有借鉴价值"
+        "（例如同样会踩的死路、可复用的有效方向）。\n\n"
+        f"【反思结论】\n{findings}\n\n"
+        "【候选任务】\n" + "\n".join(cand_lines) + "\n\n"
+        '只返回 JSON：{"matches":[{"sessionId":"...","relevant":true/false,'
+        '"hint":"给该任务的一句具体建议（中文，<=40字）"}]}。'
+        "只有确有借鉴价值才 relevant=true；无关一律 false，hint 留空。"
+    )
+    try:
+        resp = await asyncio.wait_for(
+            _call_llm([{"role": "user", "content": prompt}], tools=None, max_tokens=400, secondary=True, thinking="disabled"),
+            timeout=30,
+        )
+    except Exception:
+        logger.exception("Workbench hint-matcher failed")
+        return {}
+    parsed = _workbench_parse_json_object(resp.get("content") or "")
+    out: dict[str, str] = {}
+    if isinstance(parsed, dict):
+        for m in (parsed.get("matches") or []):
+            if not isinstance(m, dict) or not bool(m.get("relevant")):
+                continue
+            sid = str(m.get("sessionId") or "").strip()
+            hint = str(m.get("hint") or "").strip()
+            if sid and hint:
+                out[sid] = hint
+    return out
+
+
+async def _workbench_dispatch_reflection_hints(
+    project: dict[str, Any] | None,
+    source_session: dict[str, Any],
+    packet: dict[str, Any],
+) -> None:
+    """After a reflection, nudge OTHER open sessions in the same project that the
+    packet is relevant to — by appending a *pending* hint (+ a ReflectionHint
+    event) for the user to accept or dismiss. Suggestion only: it never
+    auto-modifies another session, stays within the project, and dedups one live
+    hint per source session. Mutates sessions in-place under ``project`` so the
+    caller's single store-write persists them atomically. Best-effort."""
+    try:
+        if not isinstance(project, dict) or not isinstance(packet, dict) or not packet:
+            return
+        source_id = str(source_session.get("id") or "")
+        source_title = str(source_session.get("title") or "任务")
+        candidates = [
+            s for s in (project.get("sessions") or [])
+            if isinstance(s, dict)
+            and str(s.get("id") or "") != source_id
+            and str(s.get("status") or "idle") in _WORKBENCH_OPEN_STATUSES
+        ]
+        if not candidates:
+            return
+        matches = await _workbench_match_relevant_sessions(packet, candidates)
+        if not matches:
+            return
+        now = _utc_now_iso()
+        for sess in candidates:
+            hint_text = matches.get(str(sess.get("id") or ""))
+            if not hint_text:
+                continue
+            hints = sess.get("pendingHints")
+            if not isinstance(hints, list):
+                hints = []
+                sess["pendingHints"] = hints
+            # Dedup: at most one live (pending) hint per source session.
+            if any(
+                isinstance(h, dict)
+                and str(h.get("fromSessionId")) == source_id
+                and str(h.get("status")) == "pending"
+                for h in hints
+            ):
+                continue
+            hints.append({
+                "id": _short_id("hint"),
+                "fromSessionId": source_id,
+                "fromTitle": source_title,
+                "hint": hint_text,
+                "packet": packet,
+                "status": "pending",
+                "createdAt": now,
+            })
+            sess["events"] = list(sess.get("events") or []) + [{
+                "id": _short_id("event"),
+                "type": "ReflectionHint",
+                "createdAt": now,
+                "body": f"相关任务《{source_title}》反思发现：{hint_text}",
+            }]
+            sess["updatedAt"] = now
+    except Exception:
+        logger.exception("Failed to dispatch reflection hints")
+
+
 async def _workbench_verify_acceptance(
     session: dict[str, Any],
     project: dict[str, Any],
@@ -5006,6 +5131,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             )
             if packet:
                 _workbench_store_reflection(session, packet, trigger="feedback", project=project)
+                await _workbench_dispatch_reflection_hints(project, session, packet)
         steps, from_llm = await _workbench_generate_plan_steps(session, project, feedback=feedback)
         session["plan"] = steps
         session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
@@ -5043,6 +5169,7 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not packet:
             return JSONResponse({"error": "no history to reflect on"}, status_code=400)
         _workbench_store_reflection(session, packet, trigger="manual", project=project)
+        await _workbench_dispatch_reflection_hints(project, session, packet)
         now = _utc_now_iso()
         session["updatedAt"] = now
         project["updatedAt"] = now
@@ -5118,6 +5245,9 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         new_session["parentSessionId"] = session_id
         if isinstance(packet, dict) and packet:
             _workbench_store_reflection(new_session, packet, trigger="forked", source_session_id=session_id, project=project)
+            # Nudge sibling open sessions before the fork joins the list (so it
+            # isn't a candidate for its own packet).
+            await _workbench_dispatch_reflection_hints(project, session, packet)
         project.setdefault("sessions", []).insert(0, new_session)
         now = _utc_now_iso()
         project["updatedAt"] = now
@@ -5125,6 +5255,54 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeSessionId"] = new_session["id"]
         _write_workbench_store(payload)
         return {"ok": True, "session": new_session, "sourceSessionId": session_id, **payload}
+
+    def _workbench_find_pending_hint(session: dict[str, Any], hint_id: str) -> dict[str, Any] | None:
+        hints = session.get("pendingHints") if isinstance(session.get("pendingHints"), list) else []
+        return next((h for h in hints if isinstance(h, dict) and str(h.get("id")) == hint_id), None)
+
+    @router.post("/api/task-sessions/{session_id}/hints/{hint_id}/accept")
+    async def api_workbench_accept_hint(session_id: str, hint_id: str):
+        """Accept a sibling-reflection hint: merge its packet into THIS session's
+        reflection (so its next plan/run benefits) and mark the hint accepted."""
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        hint = _workbench_find_pending_hint(session, hint_id)
+        if not hint:
+            return JSONResponse({"error": "hint not found"}, status_code=404)
+        packet = hint.get("packet") if isinstance(hint.get("packet"), dict) else None
+        if packet:
+            _workbench_store_reflection(
+                session, packet, trigger="hint",
+                source_session_id=str(hint.get("fromSessionId") or ""), project=project,
+            )
+        hint["status"] = "accepted"
+        now = _utc_now_iso()
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/hints/{hint_id}/dismiss")
+    async def api_workbench_dismiss_hint(session_id: str, hint_id: str):
+        """Dismiss a sibling-reflection hint (no change to this session)."""
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        hint = _workbench_find_pending_hint(session, hint_id)
+        if not hint:
+            return JSONResponse({"error": "hint not found"}, status_code=404)
+        hint["status"] = "dismissed"
+        now = _utc_now_iso()
+        session["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, **payload}
 
     @router.post("/api/task-sessions/{session_id}/runs")
     async def api_workbench_create_run(session_id: str, request: Request):
