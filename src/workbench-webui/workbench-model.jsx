@@ -168,6 +168,35 @@ var WorkbenchModel = (function () {
   // Generate a REAL execution plan from the session goal (+ optional revision
   // feedback). The agent explores the project workspace server-side; no agent
   // work runs here — it only fills session.plan (all steps pending).
+  // Run deep reflection over a task's accumulated history; attaches the packet
+  // to session.reflection (used by replanning + execution).
+  function reflect(sessionId, options) {
+    options = options || {};
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/reflect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ focus: options.focus || "", goalGap: options.goalGap || "" }),
+    }).then(normalizeStore);
+  }
+
+  // Independent acceptance agent verifies criteria against the real results.
+  function verify(sessionId) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).then(normalizeStore);
+  }
+
+  // Reflect on a failed task, then fork a fresh session carrying the packet.
+  function reflectAndFork(sessionId) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/reflect-and-fork", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }).then(normalizeStore);
+  }
+
   function generatePlan(sessionId, goal, options) {
     options = options || {};
     return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId) + "/plan/generate", {
@@ -564,6 +593,9 @@ var WorkbenchModel = (function () {
     reviseInitPlan: reviseInitPlan,
     confirmInitPlan: confirmInitPlan,
     createRun: createRun,
+    reflect: reflect,
+    verify: verify,
+    reflectAndFork: reflectAndFork,
     generatePlan: generatePlan,
     sendChat: sendChat,
     fetchFileDiff: fetchFileDiff,

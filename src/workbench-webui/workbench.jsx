@@ -985,29 +985,6 @@ function wbT(key, fallback, params) {
   return fallback || key;
 }
 
-// Legacy chat slash commands, surfaced in the composer's "/" menu. Selecting one
-// sets `command`, which is passed to the agent run at execution time.
-var WB_SLASH_COMMANDS = [
-  { id: "quick-answer", labelKey: "workbenchChat.command.quick-answer.label", descKey: "workbenchChat.command.quick-answer.desc", icon: ICONS.cmdQuick },
-  { id: "deep-research", labelKey: "workbenchChat.command.deep-research.label", descKey: "workbenchChat.command.deep-research.desc", icon: ICONS.cmdResearch },
-  { id: "deep-reflect", labelKey: "workbenchChat.command.deep-reflect.label", descKey: "workbenchChat.command.deep-reflect.desc", icon: ICONS.cmdReflect },
-  { id: "help-me-decide", labelKey: "workbenchChat.command.help-me-decide.label", descKey: "workbenchChat.command.help-me-decide.desc", icon: ICONS.cmdDecide },
-  { id: "learning-plan", labelKey: "workbenchChat.command.learning-plan.label", descKey: "workbenchChat.command.learning-plan.desc", icon: ICONS.cmdLearn },
-  { id: "daily-review", labelKey: "workbenchChat.command.daily-review.label", descKey: "workbenchChat.command.daily-review.desc", icon: ICONS.cmdReview },
-  { id: "deep-compare", labelKey: "workbenchChat.command.deep-compare.label", descKey: "workbenchChat.command.deep-compare.desc", icon: ICONS.cmdCompare },
-  { id: "claude-code", labelKey: "workbenchChat.command.claude-code.label", descKey: "workbenchChat.command.claude-code.desc", icon: ICONS.cmdCode },
-];
-
-function wbCommandMeta(id) {
-  for (var i = 0; i < WB_SLASH_COMMANDS.length; i++) {
-    if (WB_SLASH_COMMANDS[i].id === id) {
-      var c = WB_SLASH_COMMANDS[i];
-      return { ...c, label: wbT(c.labelKey, c.id), desc: wbT(c.descKey, "") };
-    }
-  }
-  return null;
-}
-
 // Permission modes for the composer mode-switcher (mirrors the legacy chat
 // modes; the workbench default is "auto" since it executes tasks).
 var WB_MODES = [
@@ -1171,7 +1148,6 @@ function useTaskController(session, onRefresh, runtime) {
         return model.createRun(sid, effectiveStepPrompt(patchedSession, step), {
           attachments: uploadCtx.concat((runtime && runtime.attachments) || []),
           mode: (runtime && runtime.mode) || undefined,
-          command: (runtime && runtime.command) || undefined,
           stepId: step.id || undefined,
           stepTitle: stepTitle,
           action: "spawn_subagent",
@@ -1206,7 +1182,6 @@ function useTaskController(session, onRefresh, runtime) {
           finalPatch.artifacts = model.ensureArtifacts(s2);
         }
         if (runtime && runtime.clearAttachments) runtime.clearAttachments();
-        if (runtime && runtime.clearCommand) runtime.clearCommand();
         return model.patchSession(sid, finalPatch);
       })
       .then(apply)
@@ -1282,6 +1257,12 @@ function useTaskController(session, onRefresh, runtime) {
     approvePlan: function () {
       var events = model.withEvent(session, "PlanApproved", "用户批准执行计划。");
       return run(patch({ status: "waiting_for_approval", agentReply: "执行前请确认下面的操作。", events: events }));
+    },
+
+    // planning → 跳过单独确认，直接连续执行全部步骤。
+    approveAndRunAll: function () {
+      return model.patchSession(sid, { events: model.withEvent(session, "PlanApproved", "用户批准计划并连续执行全部步骤。") })
+        .then(apply).then(function () { return ctrl.executeAll(); });
     },
 
     reject: function () {
@@ -1437,6 +1418,19 @@ function useTaskController(session, onRefresh, runtime) {
       return run(patch({ status: "completed", acceptanceCriteria: passed, events: events }));
     },
 
+    // Deep reflection over the task's accumulated history → session.reflection.
+    reflect: function (focus) {
+      return run(model.reflect(sid, { focus: focus || "" }));
+    },
+    // Independent acceptance agent verifies criteria against the real results.
+    verify: function () {
+      return run(model.verify(sid));
+    },
+    // Reflect on a failed task, then fork a fresh session carrying the packet.
+    reflectAndFork: function () {
+      return run(model.reflectAndFork(sid));
+    },
+
     reopen: function () {
       var events = model.withEvent(session, "Reopened", "重新打开任务。");
       return run(patch({ status: "planning", agentReply: "任务已重新打开，请确认计划后继续。", events: events }));
@@ -1461,16 +1455,13 @@ function TaskWorkArea(props) {
   var session = props.session;
   var [attachments, setAttachments] = useWorkbenchState([]);
   var [mode, setMode] = useWorkbenchState("auto");
-  var [command, setCommand] = useWorkbenchState("");
   var sid = session ? session.id : "";
-  // Pending attachments / command belong to the task being composed — reset on switch.
-  useWorkbenchEffect(function () { setAttachments([]); setCommand(""); }, [sid]);
+  // Pending attachments belong to the task being composed — reset on switch.
+  useWorkbenchEffect(function () { setAttachments([]); }, [sid]);
   var controller = useTaskController(session, props.onRefresh, {
     attachments: attachments,
     mode: mode,
-    command: command,
     clearAttachments: function () { setAttachments([]); },
-    clearCommand: function () { setCommand(""); },
   });
   if (props.loading) {
     return <main className="workbench-main"><div className="workbench-empty">正在加载工作台...</div></main>;
@@ -1498,7 +1489,7 @@ function TaskWorkArea(props) {
     && Array.isArray(session.plan) && session.plan.length > 0;
   return (
     <main className="workbench-main">
-      <TaskHeader project={project} session={session} controller={controller} onRightTab={props.onRightTab} />
+      <TaskHeader project={project} session={session} controller={controller} onRightTab={props.onRightTab} onSelectSession={props.onSelectSession} />
       {props.error && <div className="workbench-error">{props.error}</div>}
       <div className="workbench-stage">
         <StateCard
@@ -1526,8 +1517,6 @@ function TaskWorkArea(props) {
         onAttachmentsChange={setAttachments}
         mode={mode}
         onModeChange={setMode}
-        command={command}
-        onCommandChange={setCommand}
       />
     </main>
   );
@@ -1580,7 +1569,7 @@ function sessionSummaryText(session) {
   return compactText(summary || session.goal || session.agentReply || "Agent 会在执行过程中生成这个 session 的内容总结。", 128);
 }
 
-function TaskHeader({ project, session, controller, onRightTab }) {
+function TaskHeader({ project, session, controller, onRightTab, onSelectSession }) {
   var tone = WorkbenchModel.statusTone(session.status);
   var status = String(session.status || "idle");
   var [editing, setEditing] = useWorkbenchState(false);
@@ -1624,6 +1613,8 @@ function TaskHeader({ project, session, controller, onRightTab }) {
       });
   }
 
+  var menuActions = headerMenuActions(status, controller, session, project, onSelectSession);
+
   return (
     <div className="workbench-task-header">
       <div className="wb-th-main">
@@ -1661,7 +1652,6 @@ function TaskHeader({ project, session, controller, onRightTab }) {
         </div>
       </div>
       <div className="wb-th-action-wrap">
-        <HeaderActions status={status} controller={controller} onRightTab={onRightTab} />
         <button
           type="button"
           className="wb-th-control-btn wb-th-pause"
@@ -1680,6 +1670,10 @@ function TaskHeader({ project, session, controller, onRightTab }) {
             <>
               <div className="wb-th-menu-scrim" onClick={function () { setMenuOpen(false); }}></div>
               <div className="wb-th-menu">
+                {menuActions.map(function (a, i) {
+                  return <button key={"act" + i} type="button" disabled={controller.busy} onClick={function () { setMenuOpen(false); a.onClick(); }}>{a.label}</button>;
+                })}
+                {menuActions.length > 0 && <div className="wb-th-menu-sep" />}
                 <button type="button" onClick={function () { setMenuOpen(false); onRightTab && onRightTab("context"); }}>查看上下文</button>
                 <button type="button" onClick={function () { setMenuOpen(false); onRightTab && onRightTab("logs"); }}>运行日志</button>
                 <button type="button" onClick={function () { setMenuOpen(false); onRightTab && onRightTab("acceptance"); }}>验收标准</button>
@@ -1693,36 +1687,53 @@ function TaskHeader({ project, session, controller, onRightTab }) {
   );
 }
 
-// Top-right action buttons; the set changes with the task status.
-function HeaderActions({ status, controller, onRightTab }) {
-  var btns = [];
-  if (status === "idle" || status === "pending") {
-    btns = [];
-  } else if (status === "planning") {
-    btns = [["批准执行", "primary", function () { controller.approvePlan(); }], ["取消", "ghost", function () { controller.cancel(); }]];
-  } else if (status === "waiting_for_approval" || status === "waiting_for_user" || status === "blocked") {
-    btns = [["批准", "primary", function () { controller.execute(); }], ["拒绝", "ghost", function () { controller.reject(); }]];
-  } else if (status === "running") {
-    btns = [["查看日志", "ghost", function () { onRightTab && onRightTab("logs"); }, true]];
-  } else if (status === "paused") {
-    btns = [["继续任务", "primary", function () { controller.resume(); }], ["取消", "ghost", function () { controller.cancel(); }]];
-  } else if (status === "failed") {
-    btns = [["重试", "primary", function () { controller.retry(); }], ["取消", "ghost", function () { controller.cancel(); }]];
-  } else if (status === "review" || status === "done") {
-    btns = [["标记完成", "primary", function () { controller.markComplete(); }], ["创建后续任务", "ghost", function () { controller.createFollowUp(); }]];
-  } else if (status === "completed") {
-    btns = [["重新打开", "ghost", function () { controller.reopen(); }], ["创建后续任务", "ghost", function () { controller.createFollowUp(); }]];
-  } else if (status === "cancelled") {
-    btns = [["重新打开", "primary", function () { controller.reopen(); }]];
+// Status-dependent secondary actions, folded into the ⋯ menu. The primary action
+// surface is the composer quick-chips below; this is overflow. Returns
+// [{ label, onClick }]; running/idle add nothing (covered by chips + static items).
+function headerMenuActions(status, controller, session, project, onSelectSession) {
+  function openNext() { openNextSession(session, project, onSelectSession); }
+  if (status === "planning") {
+    return [
+      { label: "批准执行", onClick: function () { controller.approvePlan(); } },
+      { label: "取消", onClick: function () { controller.cancel(); } },
+    ];
   }
-  if (!btns.length) return null;
-  return (
-    <div className="wb-th-actions">
-      {btns.map(function (b, i) {
-        return <button key={i} type="button" className={"wb-btn " + b[1]} disabled={b[3] ? false : controller.busy} onClick={b[2]}>{b[0]}</button>;
-      })}
-    </div>
-  );
+  if (status === "waiting_for_approval" || status === "waiting_for_user" || status === "blocked") {
+    return [
+      { label: "批准", onClick: function () { controller.execute(); } },
+      { label: "拒绝", onClick: function () { controller.reject(); } },
+    ];
+  }
+  if (status === "paused") {
+    return [
+      { label: "继续任务", onClick: function () { controller.resume(); } },
+      { label: "取消", onClick: function () { controller.cancel(); } },
+    ];
+  }
+  if (status === "failed") {
+    return [
+      { label: "重试", onClick: function () { controller.retry(); } },
+      { label: "取消", onClick: function () { controller.cancel(); } },
+    ];
+  }
+  if (status === "review" || status === "done") {
+    return [
+      { label: "标记完成", onClick: function () { controller.markComplete(); } },
+      { label: "创建后续任务", onClick: function () { controller.createFollowUp(); } },
+      { label: "打开下一个任务", onClick: openNext },
+    ];
+  }
+  if (status === "completed") {
+    return [
+      { label: "重新打开", onClick: function () { controller.reopen(); } },
+      { label: "创建后续任务", onClick: function () { controller.createFollowUp(); } },
+      { label: "打开下一个任务", onClick: openNext },
+    ];
+  }
+  if (status === "cancelled") {
+    return [{ label: "重新打开", onClick: function () { controller.reopen(); } }];
+  }
+  return [];
 }
 
 // ---- Shared card primitives ------------------------------------------------
@@ -1816,12 +1827,6 @@ function AgentPlanCard({ session, controller, onRightTab }) {
         <ol className="wb-ordered">{plan.map(function (s) { return <li key={s.id}>{s.title}</li>; })}</ol>
       </div>
       <p className="wb-card-hint">是否继续？批准后会进入确认环节，再开始执行。</p>
-      <WbActions>
-        <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.approvePlan(); }}>批准执行</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={focusComposer}>修改计划</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={function () { controller.regeneratePlan(); }}>重新生成</WbBtn>
-        <WbBtn kind="danger" disabled={controller.busy} onClick={function () { controller.cancel(); }}>取消任务</WbBtn>
-      </WbActions>
     </WbCard>
   );
 }
@@ -1838,12 +1843,6 @@ function ConfirmCard({ session, controller, onRightTab }) {
       <div className="wb-brief-row"><label>影响范围</label>
         <ul className="wb-bullet">{summary.scope.map(function (s, i) { return <li key={i}>{s}</li>; })}</ul>
       </div>
-      <WbActions>
-        <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.execute(); }}>批准执行</WbBtn>
-        <WbBtn kind="ghost" onClick={function () { onRightTab && onRightTab("context"); }}>查看详情</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={focusComposer}>修改要求</WbBtn>
-        <WbBtn kind="danger" disabled={controller.busy} onClick={function () { controller.reject(); }}>拒绝</WbBtn>
-      </WbActions>
     </WbCard>
   );
 }
@@ -1866,11 +1865,6 @@ function AgentActivityCard({ session, controller, onRightTab }) {
           return <li key={s.id} className={st}>{i + 1}. {s.title}</li>;
         })}
       </ul>
-      <WbActions>
-        <WbBtn kind="danger" onClick={function () { controller.interrupt(); }}>停止执行</WbBtn>
-        <WbBtn kind="ghost" onClick={function () { onRightTab && onRightTab("logs"); }}>查看日志</WbBtn>
-        <WbBtn kind="ghost" onClick={function () { onRightTab && onRightTab("files"); }}>查看变更</WbBtn>
-      </WbActions>
     </WbCard>
   );
 }
@@ -1883,12 +1877,6 @@ function PausedCard({ session, controller }) {
   return (
     <WbCard tone="paused" icon={ICONS.pause} title="任务已暂停">
       <p className="wb-card-hint">当前停在：第 {Math.min(done + 1, plan.length || 1)} 步{current ? "：" + current.title : ""}。</p>
-      <WbActions>
-        <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.resume(); }}>继续任务</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={function () { controller.executeAll(); }}>{wbT("task.action.runAll", "Run all")}</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={focusComposer}>修改要求</WbBtn>
-        <WbBtn kind="danger" disabled={controller.busy} onClick={function () { controller.cancel(); }}>取消任务</WbBtn>
-      </WbActions>
     </WbCard>
   );
 }
@@ -1901,12 +1889,9 @@ function FailedCard({ session, controller }) {
     <WbCard tone="failed" icon={ICONS.alert} title="任务执行失败">
       <AgentReplyBlock text={session.agentReply || "执行过程中出现错误。"} />
       {failedIdx >= 0 && <p className="wb-card-hint">失败位置：第 {failedIdx + 1} 步：{plan[failedIdx].title}</p>}
-      <WbActions>
-        <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.retry(); }}>重试</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={focusComposer}>修改要求</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={function () { controller.skipStep(); }}>跳过此步骤</WbBtn>
-        <WbBtn kind="danger" disabled={controller.busy} onClick={function () { controller.cancel(); }}>取消任务</WbBtn>
-      </WbActions>
+      {session.recommendReflection && (
+        <p className="wb-card-hint">验收建议：先「深度反思」，再「新建任务」换思路重试，或在本任务继续。</p>
+      )}
     </WbCard>
   );
 }
@@ -1927,12 +1912,6 @@ function CompletionCard({ session, controller, onRightTab, onSelectSession, proj
           <b>{artifacts.length}</b><small>产物</small>
         </button>
       </div>
-      <WbActions>
-        {!confirmed && <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.markComplete(); }}>标记完成</WbBtn>}
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={focusComposer}>继续修改</WbBtn>
-        <WbBtn kind="ghost" disabled={controller.busy} onClick={function () { controller.createFollowUp(); }}>创建后续任务</WbBtn>
-        <WbBtn kind="ghost" onClick={function () { openNextSession(session, project, onSelectSession); }}>打开下一个任务</WbBtn>
-      </WbActions>
     </WbCard>
   );
 }
@@ -1942,9 +1921,6 @@ function CancelledCard({ session, controller }) {
   return (
     <WbCard tone="cancelled" icon={ICONS.x} title="任务已取消">
       <p className="wb-card-hint">这个任务已被取消，当前进度仍然保留。你可以重新打开它继续。</p>
-      <WbActions>
-        <WbBtn kind="primary" disabled={controller.busy} onClick={function () { controller.reopen(); }}>重新打开</WbBtn>
-      </WbActions>
     </WbCard>
   );
 }
@@ -2258,6 +2234,7 @@ function composerChips(status, controller, onRightTab) {
   if (status === "planning") {
     return [
       { label: wbT("task.action.approveExecution", "Approve execution"), onClick: function () { controller.approvePlan(); } },
+      { label: wbT("task.action.approveRunAll", "Approve & run all"), onClick: function () { controller.approveAndRunAll(); } },
       { label: wbT("task.action.editPlan", "Edit plan"), onClick: focusComposer },
       { label: wbT("task.action.regenerate", "Regenerate"), onClick: function () { controller.regeneratePlan(); } },
     ];
@@ -2280,12 +2257,15 @@ function composerChips(status, controller, onRightTab) {
     return [
       { label: wbT("task.action.resumeTask", "Resume task"), onClick: function () { controller.resume(); } },
       { label: wbT("task.action.runAll", "Run all"), onClick: function () { controller.executeAll(); } },
+      { label: wbT("task.action.reflect", "深度反思"), onClick: function () { controller.reflect(); } },
       { label: wbT("task.action.reviseRequest", "Revise request"), onClick: focusComposer },
       { label: wbT("task.action.cancelTask", "Cancel task"), onClick: function () { controller.cancel(); } },
     ];
   }
   if (status === "failed") {
     return [
+      { label: wbT("task.action.reflectFork", "深度反思+新建任务"), onClick: function () { controller.reflectAndFork(); } },
+      { label: wbT("task.action.reflect", "深度反思"), onClick: function () { controller.reflect(); } },
       { label: wbT("task.action.retry", "Retry"), onClick: function () { controller.retry(); } },
       { label: wbT("task.action.reviseRequest", "Revise request"), onClick: focusComposer },
       { label: wbT("task.action.skipStep", "Skip this step"), onClick: function () { controller.skipStep(); } },
@@ -2294,6 +2274,8 @@ function composerChips(status, controller, onRightTab) {
   if (status === "review" || status === "done") {
     return [
       { label: wbT("task.action.markComplete", "Mark complete"), onClick: function () { controller.markComplete(); } },
+      { label: wbT("task.action.verify", "验收"), onClick: function () { controller.verify(); } },
+      { label: wbT("task.action.reflect", "深度反思"), onClick: function () { controller.reflect(); } },
       { label: wbT("task.action.continueEditing", "Continue editing"), onClick: focusComposer },
       { label: wbT("task.action.createFollowUp", "Create follow-up task"), onClick: function () { controller.createFollowUp(); } },
     ];
@@ -2311,13 +2293,11 @@ function composerChips(status, controller, onRightTab) {
 }
 
 // Composer is always bound to the current task. Behaviour + quick-chips depend
-// on the task status. Action row: attachments / slash commands / permission
-// mode / send · stop — mirroring the legacy chat composer's capabilities.
-function TaskComposer({ session, controller, onRightTab, attachments, onAttachmentsChange, mode, onModeChange, command, onCommandChange }) {
+// on the task status. Action row: attachments / permission mode / send · stop.
+function TaskComposer({ session, controller, onRightTab, attachments, onAttachmentsChange, mode, onModeChange }) {
   var model = window.WorkbenchModel;
   var [draft, setDraft] = useWorkbenchState("");
   var [scopePrompt, setScopePrompt] = useWorkbenchState(null);
-  var [slashOpen, setSlashOpen] = useWorkbenchState(false);
   var [modeOpen, setModeOpen] = useWorkbenchState(false);
   var [uploading, setUploading] = useWorkbenchState(false);
   var taRef = useWorkbenchRef(null);
@@ -2333,7 +2313,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
   }, []);
 
   // Reset transient composer state when switching tasks.
-  useWorkbenchEffect(function () { setScopePrompt(null); setSlashOpen(false); setModeOpen(false); }, [session.id]);
+  useWorkbenchEffect(function () { setScopePrompt(null); setModeOpen(false); }, [session.id]);
 
   function syncHeight() {
     var ta = taRef.current;
@@ -2367,7 +2347,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
 
   function onKeyDown(event) {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); submit(); }
-    else if (event.key === "Escape") { setSlashOpen(false); setModeOpen(false); }
+    else if (event.key === "Escape") { setModeOpen(false); }
   }
 
   function pickFiles() { if (fileRef.current) fileRef.current.click(); }
@@ -2384,21 +2364,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
     onAttachmentsChange(attachments.filter(function (_a, i) { return i !== index; }));
   }
 
-  // Slash menu = the legacy agent commands, filtered by the text after "/".
-  var slashQuery = draft.indexOf("/") === 0 ? draft.slice(1).toLowerCase() : "";
-  var translatedCommands = WB_SLASH_COMMANDS.map(function (c) { return wbCommandMeta(c.id); }).filter(Boolean);
   var translatedModes = WB_MODES.map(function (m) { return wbModeMeta(m.id); });
-  var slashItems = translatedCommands.filter(function (c) {
-    return !slashQuery || c.id.indexOf(slashQuery) !== -1 || c.label.toLowerCase().indexOf(slashQuery) !== -1;
-  });
-  var showSlash = (slashOpen || (draft.indexOf("/") === 0 && draft.indexOf(" ") === -1)) && slashItems.length > 0 && !running;
-  function pickCommand(id) {
-    onCommandChange(id);
-    setSlashOpen(false);
-    if (draft.indexOf("/") === 0) resetDraft();
-    if (taRef.current) taRef.current.focus();
-  }
-  var activeCommand = command ? wbCommandMeta(command) : null;
 
   var chips = composerChips(status, controller, onRightTab);
   var disabled = controller.busy || running;
@@ -2424,15 +2390,6 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
           })}
         </div>
       )}
-      {activeCommand && (
-        <div className="wb-command-chip-row">
-          <span className="wb-command-chip">
-            <span className="wb-command-chip-ico">{activeCommand.icon}</span>
-            {activeCommand.label}
-            <button type="button" className="wb-command-chip-x" onClick={function () { onCommandChange(""); }} aria-label={wbT("workbenchChat.removeCommand", "Remove command")}>{ICONS.x}</button>
-          </span>
-        </div>
-      )}
       <div className="workbench-composer-box">
         {attachments.length > 0 && (
           <div className="wb-attach-row">
@@ -2454,7 +2411,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
           value={draft}
           onChange={function (event) { setDraft(event.target.value); syncHeight(); }}
           onKeyDown={onKeyDown}
-          placeholder={activeCommand ? ("（" + activeCommand.label + "）" + composerPlaceholder(status)) : composerPlaceholder(status)}
+          placeholder={composerPlaceholder(status)}
           rows={2}
           disabled={disabled}
         />
@@ -2464,28 +2421,7 @@ function TaskComposer({ session, controller, onRightTab, attachments, onAttachme
             {uploading ? <span className="wb-spinner" /> : ICONS.attach}
           </button>
           <span className="wb-popover-anchor">
-            <button type="button" className={"wb-composer-icon" + (showSlash || command ? " active" : "")} title={wbT("workbenchChat.commands", "Commands")} disabled={running} onClick={function () { setSlashOpen(!slashOpen); setModeOpen(false); }}>{ICONS.slash}</button>
-            {showSlash && (
-              <div className="wb-popmenu wb-mode-menu wb-slash-menu">
-                <div className="wb-menu-head">{wbT("workbenchChat.commands", "Commands")}</div>
-                {slashItems.map(function (c) {
-                  var on = command === c.id;
-                  return (
-                    <button key={c.id} type="button" className={"wb-mode-item" + (on ? " active" : "")} onClick={function () { pickCommand(on ? "" : c.id); }}>
-                      <span className="wb-mode-item-ico">{c.icon}</span>
-                      <span className="wb-mode-item-body">
-                        <span className="wb-mode-item-label">{c.label}</span>
-                        <span className="wb-mode-item-desc">{c.desc}</span>
-                      </span>
-                      <span className="wb-mode-item-check">{on ? ICONS.checkSmall : null}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </span>
-          <span className="wb-popover-anchor">
-            <button type="button" className={"wb-composer-icon mode" + (modeOpen ? " active" : "")} title={wbT("workbenchChat.permissionMode", "Permission mode")} onClick={function () { setModeOpen(!modeOpen); setSlashOpen(false); }}>
+            <button type="button" className={"wb-composer-icon mode" + (modeOpen ? " active" : "")} title={wbT("workbenchChat.permissionMode", "Permission mode")} onClick={function () { setModeOpen(!modeOpen); }}>
               <span className="wb-mode-ico">{current.icon}</span>
               <span className="wb-mode-label">{current.label}</span>
             </button>
@@ -2566,6 +2502,33 @@ function RightContextPanel({ project, session, expandedStepId, tab, onTabChange,
   );
 }
 
+// Renders the latest deep-reflection packet attached to a task session.
+function ReflectionSection({ session }) {
+  var reflection = session && session.reflection;
+  var packet = reflection && reflection.packet;
+  if (!packet || typeof packet !== "object") return null;
+  function bullets(items) {
+    var arr = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (!arr.length) return null;
+    return <ul className="wb-bullet">{arr.map(function (x, i) { return <li key={i}>{String(x)}</li>; })}</ul>;
+  }
+  return (
+    <SideSection title="深度反思">
+      {packet.goal_gap && <div className="wb-brief-row"><label>目标差距</label><p>{String(packet.goal_gap)}</p></div>}
+      {Array.isArray(packet.excluded_paths) && packet.excluded_paths.length > 0 && (
+        <div className="wb-brief-row"><label>应避开（死路）</label>{bullets(packet.excluded_paths)}</div>
+      )}
+      {Array.isArray(packet.promising_directions) && packet.promising_directions.length > 0 && (
+        <div className="wb-brief-row"><label>可行方向</label>{bullets(packet.promising_directions)}</div>
+      )}
+      {packet.next_step && <div className="wb-brief-row"><label>下一步</label><p>{String(packet.next_step)}</p></div>}
+      {Array.isArray(packet.open_questions) && packet.open_questions.length > 0 && (
+        <div className="wb-brief-row"><label>待解问题</label>{bullets(packet.open_questions)}</div>
+      )}
+    </SideSection>
+  );
+}
+
 function ContextTab({ project, session, activeStep }) {
   var constraints = (session && session.constraints) || [];
   var isInit = !!(session && session.kind === "init");
@@ -2585,9 +2548,8 @@ function ContextTab({ project, session, activeStep }) {
         {!isInit && <div className="wb-kv"><span>优先级</span><b>{priorityText(session.priority)}</b></div>}
         <p>{session.goal || "暂无任务目标"}</p>
       </SideSection>
+      <ReflectionSection session={session} />
       <SideSection title="项目上下文">
-        <div className="wb-kv"><span>项目</span><b>{project ? project.name : "—"}</b></div>
-        <p className="workbench-muted">{(project && project.workspacePath) || "—"}</p>
         {project && project.context && project.context.summary && !isInit && <div className="wb-agent-body markdown" dangerouslySetInnerHTML={{ __html: wbRenderMarkdown(project.context.summary) }} />}
       </SideSection>
       <SideSection title={"任务约束 (" + constraints.length + ")"}>

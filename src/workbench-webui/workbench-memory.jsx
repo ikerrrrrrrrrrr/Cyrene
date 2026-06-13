@@ -58,7 +58,7 @@
     conversation: { label: "对话记忆", tone: "violet" },
   };
   var CAT_ORDER = ["preference", "project", "habit", "fact", "conversation"];
-  var SOURCE_TONE = { conversation: "violet", knowledge: "amber", manual: "green", other: "slate" };
+  var SOURCE_TONE = { conversation: "violet", knowledge: "amber", manual: "green", agent: "blue", other: "slate" };
   var CONF_TONE = { high: "green", medium: "amber", low: "slate" };
 
   function catMeta(id) { return CATS[id] || { label: id, tone: "slate" }; }
@@ -348,7 +348,7 @@
     }
 
     var typeOptions = [{ id: "all", label: "全部类型" }].concat(CAT_ORDER.map(function (c) { return { id: c, label: CATS[c].label }; }));
-    var sourceOptions = [{ id: "", label: "全部来源" }, { id: "conversation", label: "对话" }, { id: "knowledge", label: "知识库" }, { id: "manual", label: "手动添加" }, { id: "other", label: "其他" }];
+    var sourceOptions = [{ id: "", label: "全部来源" }, { id: "conversation", label: "对话" }, { id: "knowledge", label: "知识库" }, { id: "manual", label: "手动添加" }, { id: "agent", label: "Agent 记录" }, { id: "other", label: "其他" }];
     var sortOptions = [{ id: "updated", label: "最新更新" }, { id: "created", label: "最近创建" }, { id: "citations", label: "引用最多" }];
     function curLabel(opts, val) { for (var i = 0; i < opts.length; i++) if (opts[i].id === val) return opts[i].label; return opts[0].label; }
 

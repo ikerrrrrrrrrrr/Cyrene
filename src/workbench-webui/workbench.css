@@ -1376,6 +1376,8 @@ html[data-theme="dark"] .workbench-notif-item-icon.system { background: rgba(255
 
 .wb-th-menu button:hover { background: var(--wb-row-hover-bg); }
 
+.wb-th-menu-sep { height: 1px; background: var(--wb-line); margin: 4px 6px; }
+
 .workbench-initial-chat {
   min-height: 0;
   flex: 1;

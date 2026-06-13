@@ -33,7 +33,12 @@ from webui.routes_amap import register_amap_routes
 from webui.routes_entities import register_entity_routes
 from webui.routes_knowledge import register_knowledge_routes
 from webui.routes_workbench_knowledge import register_workbench_knowledge_routes
-from webui.routes_workbench_memory import register_workbench_memory_routes, schedule_capture
+from webui.routes_workbench_memory import (
+    add_agent_memory,
+    register_workbench_memory_routes,
+    render_memory_for_injection,
+    schedule_capture,
+)
 from webui.routes_workbench_schedule import register_workbench_schedule_routes
 from webui.routes_workbench_chat import register_workbench_chat_routes
 from webui.workbench_notifications import append_notification, list_notifications, mark_notifications_read
@@ -1498,11 +1503,18 @@ async def _workbench_generate_plan_steps(
     constraints_block = ("\n约束：\n" + "\n".join(f"- {c}" for c in constraints)) if constraints else ""
     feedback_block = ("\n用户对计划的修改反馈（请据此调整）：" + feedback) if feedback else ""
     existing_plan_block = _workbench_existing_plan_block(session) if feedback else ""
+    reflection_text = _workbench_render_reflection_block(session)
+    reflection_block = (
+        "\n\n## 深度反思结论（必须据此调整计划）\n"
+        "下面是对既往尝试的复盘。请避开其中的 excluded_paths（已被证明是死路的做法），"
+        "优先采用 promising_directions（更有希望的方向），并参考 next_step：\n"
+        + reflection_text
+    ) if reflection_text else ""
     prompt = (
         "你是任务执行规划 Agent。请把下面这个任务拆解成清晰、有顺序、可逐步执行的步骤。\n"
         "工作区已有文件，你可以使用 list_directory、read_file、glob 工具先探索再规划，"
         "让步骤贴合项目实际（尽量引用真实的文件/目录/模块），不要套用空泛模板。\n\n"
-        f"任务目标：{goal}{constraints_block}{existing_plan_block}{feedback_block}\n\n"
+        f"任务目标：{goal}{constraints_block}{existing_plan_block}{feedback_block}{reflection_block}\n\n"
         "充分了解后再返回 JSON，只返回一个 JSON 对象，不要 Markdown 代码块标记。结构：\n"
         "{\n"
         '  "steps": [\n'
@@ -1922,6 +1934,217 @@ def _collect_run_activity_events(session_id: str, run_start_ts: str, run_id: str
     return out
 
 
+# ---- Deep reflection for task sessions -------------------------------------
+# Reflection runs over a task session's accumulated agent history (the same
+# per-session store each step run writes to). It is cross-session safe: the
+# history is loaded by id, so we can reflect on a session that is not the
+# active one (e.g. a failed task being forked into a fresh retry).
+
+def _workbench_session_history(session_id: str) -> list[dict[str, Any]]:
+    """Load a task session's user-visible agent message history."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return []
+    try:
+        from cyrene.agent.session import _load_session_state
+        state = _load_session_state(sid)
+    except Exception:
+        logger.exception("Failed to load session history for reflection: %s", sid)
+        return []
+    messages = state.get("messages", []) if isinstance(state, dict) else []
+    return [
+        m for m in messages
+        if isinstance(m, dict)
+        and str(m.get("role") or "") != "system"
+        and not bool(m.get("hidden_from_ui"))
+        and not bool(m.get("deep_reflection_record"))
+    ]
+
+
+async def _workbench_run_reflection(
+    session_id: str,
+    *,
+    focus: str = "",
+    goal_gap: str = "",
+) -> dict[str, Any] | None:
+    """Run deep reflection over a session's history; return the packet dict."""
+    history = _workbench_session_history(session_id)
+    if not history:
+        return None
+    from cyrene.agent.deep_reflection import create_deep_reflection_record
+    from cyrene.agent.state import _current_session_id
+    # Tag reflection runtime events to the session being reflected on.
+    token = _current_session_id.set(str(session_id or ""))
+    try:
+        record = await create_deep_reflection_record(
+            list(history),
+            scope="session_tail",
+            goal_gap=goal_gap or "任务执行未达成目标/验收，需要复盘并重整方向。",
+            focus=str(focus or ""),
+            lang_text=str(focus or goal_gap or "深度反思"),
+        )
+    except Exception:
+        logger.exception("Workbench deep reflection failed for session %s", session_id)
+        return None
+    finally:
+        _current_session_id.reset(token)
+    packet = record.get("packet") if isinstance(record, dict) else None
+    return packet if isinstance(packet, dict) else None
+
+
+def _workbench_sink_reflection_insights(
+    project: dict[str, Any] | None,
+    packet: dict[str, Any],
+) -> None:
+    """Distill a reflection packet's durable insights (excluded_paths /
+    promising_directions) into the project memory store, so they propagate to
+    every session in the project and surface on the memory page. Best-effort."""
+    if not project or not isinstance(packet, dict):
+        return
+    try:
+        data_key = _workbench_project_data_key(project)
+        excluded = packet.get("excluded_paths") if isinstance(packet.get("excluded_paths"), list) else []
+        promising = packet.get("promising_directions") if isinstance(packet.get("promising_directions"), list) else []
+        for path in excluded[:5]:
+            text = str(path or "").strip()
+            if text:
+                add_agent_memory(data_key, "避免：" + text, category="fact", source="agent", tags=["反思", "死路"])
+        for direction in promising[:5]:
+            text = str(direction or "").strip()
+            if text:
+                add_agent_memory(data_key, "有效方向：" + text, category="fact", source="agent", tags=["反思", "有效方向"])
+    except Exception:
+        logger.exception("Failed to sink reflection insights into project memory")
+
+
+def _workbench_store_reflection(
+    session: dict[str, Any],
+    packet: dict[str, Any],
+    *,
+    trigger: str = "manual",
+    source_session_id: str = "",
+    project: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Attach a reflection packet to a task session (+ timeline event).
+
+    When ``project`` is given, the packet's durable insights are also distilled
+    into the project memory store (cross-session propagation + memory page)."""
+    entry = {
+        "packet": packet,
+        "createdAt": _utc_now_iso(),
+        "trigger": str(trigger or "manual"),
+        "sourceSessionId": str(source_session_id or session.get("id") or ""),
+    }
+    session["reflection"] = entry
+    next_step = str(packet.get("next_step") or "").strip()
+    body = "已完成深度反思。" + (f"建议下一步：{next_step}" if next_step else "已生成方向重整建议。")
+    session["events"] = list(session.get("events") or []) + [{
+        "id": _short_id("event"),
+        "type": "DeepReflection",
+        "createdAt": entry["createdAt"],
+        "body": body,
+    }]
+    _workbench_sink_reflection_insights(project, packet)
+    return entry
+
+
+def _workbench_render_reflection_block(session: dict[str, Any]) -> str:
+    """Render the session's current reflection packet as a prompt text block."""
+    reflection = session.get("reflection") if isinstance(session.get("reflection"), dict) else None
+    packet = reflection.get("packet") if isinstance(reflection, dict) else None
+    if not isinstance(packet, dict) or not packet:
+        return ""
+    try:
+        from cyrene.agent.deep_reflection_prompts import render_deep_reflection_packet
+        return render_deep_reflection_packet(packet)
+    except Exception:
+        logger.exception("Failed to render reflection packet")
+        return ""
+
+
+def _workbench_compose_ephemeral_system(
+    project: dict[str, Any] | None,
+    session: dict[str, Any],
+) -> str:
+    """Assemble the per-run system block for a Workbench agent run: the project's
+    durable memory + the session's deep-reflection seed.
+
+    Injected via ``ephemeral_system`` (prompt tail, never persisted), so it never
+    invalidates the cached system+history prefix and preserves prompt-cache hits.
+    """
+    parts: list[str] = []
+    try:
+        mem_block = render_memory_for_injection(_workbench_project_data_key(project))
+    except Exception:
+        logger.exception("Failed to render project memory for injection")
+        mem_block = ""
+    if mem_block:
+        parts.append(mem_block)
+    reflection_seed = _workbench_render_reflection_block(session)
+    if reflection_seed:
+        parts.append(
+            "## 深度反思结论（执行时请避开 excluded_paths，优先 promising_directions）\n"
+            + reflection_seed
+        )
+    return "\n\n".join(parts).strip()
+
+
+async def _workbench_should_reflect(goal: str, acceptance: list[Any], feedback: str) -> bool:
+    """Decide if feedback signals a goal-level miss (→ reflect) vs a minor tweak."""
+    fb = str(feedback or "").strip()
+    if not fb:
+        return False
+    accept_text = "；".join(
+        str(a.get("text") or "") for a in (acceptance or []) if isinstance(a, dict) and str(a.get("text") or "").strip()
+    )
+    prompt = (
+        "你在判断用户对一个任务结果的反馈，是意味着【整体方向/目标没达成、需要复盘重整】，"
+        "还是只是【局部小修小补】。只返回 JSON：{\"reflect\": true/false}。\n\n"
+        f"任务目标：{goal}\n验收标准：{accept_text}\n用户反馈：{fb}\n\n"
+        "若反馈表达不满意、结果不对、偏离目标、要重做或换思路 → reflect=true；"
+        "若只是微调措辞/参数/补充细节 → reflect=false。"
+    )
+    try:
+        resp = await asyncio.wait_for(
+            _call_llm([{"role": "user", "content": prompt}], tools=None, max_tokens=60, secondary=True, thinking="disabled"),
+            timeout=30,
+        )
+    except Exception:
+        logger.exception("Workbench reflect-classifier failed")
+        return False
+    parsed = _workbench_parse_json_object(resp.get("content") or "")
+    return bool(parsed.get("reflect")) if isinstance(parsed, dict) else False
+
+
+async def _workbench_verify_acceptance(
+    session: dict[str, Any],
+    project: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Independent acceptance agent: inspect the workspace + task results and
+    judge each acceptance criterion, and whether reflection is advised."""
+    goal = str(session.get("goal") or session.get("title") or "").strip()
+    criteria = [a for a in (session.get("acceptanceCriteria") or []) if isinstance(a, dict)]
+    if not criteria:
+        return None
+    workspace_path = str(project.get("workspacePath") or "").strip()
+    workspace_root = Path(workspace_path).expanduser().resolve() if workspace_path else None
+    crit_lines = "\n".join(f'- id={a.get("id")}: {a.get("text") or ""}' for a in criteria)
+    prompt = (
+        "你是独立验收 Agent。请基于工作区里的真实产物，逐条核验下面的验收标准是否达成。"
+        "可以用 list_directory、read_file、glob 工具检查文件/结果，不要臆测。\n\n"
+        f"任务目标：{goal}\n验收标准：\n{crit_lines}\n\n"
+        "核验后只返回一个 JSON 对象，不要 Markdown：\n"
+        "{\n"
+        '  "results": [{"id": "标准id", "passed": true/false, "evidence": "依据（简短）"}],\n'
+        '  "recommend_reflection": true/false,\n'
+        '  "reason": "为什么建议/不建议深度反思（简短）"\n'
+        "}\n"
+        "只要有任一标准未达成，通常 recommend_reflection 应为 true。"
+    )
+    parsed = await _workbench_run_explore_agent(workspace_root, prompt, max_tokens=3000, timeout=120)
+    return parsed if isinstance(parsed, dict) else None
+
+
 async def _workbench_agent_reply(
     user_input: str,
     session: dict[str, Any],
@@ -1930,6 +2153,7 @@ async def _workbench_agent_reply(
     permission_mode: str = "auto",
     command: str = "",
     project_workspace: str = "",
+    ephemeral_system: str = "",
 ) -> str:
     """Execute a real agent run for a workbench session.
 
@@ -1986,6 +2210,7 @@ async def _workbench_agent_reply(
             public_user_message=(str(user_input or "") or None),
             public_attachments=public_attachments,
             workspace_dir=workspace_dir,
+            ephemeral_system=str(ephemeral_system or ""),
         )
     except Exception:
         logger.exception("Workbench agent run failed for session %s", session_id)
@@ -4770,6 +4995,17 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                     merged.append(item)
             session["constraints"] = merged
 
+        # If the revision feedback signals a goal-level miss (not a minor tweak),
+        # deep-reflect first so the regenerated plan avoids the dead-ends. The
+        # packet is stored on the session and consumed by plan generation below.
+        if feedback and await _workbench_should_reflect(
+            str(session.get("goal") or ""), session.get("acceptanceCriteria") or [], feedback
+        ):
+            packet = await _workbench_run_reflection(
+                session_id, focus=feedback, goal_gap="用户对当前计划/结果不满意：" + feedback
+            )
+            if packet:
+                _workbench_store_reflection(session, packet, trigger="feedback", project=project)
         steps, from_llm = await _workbench_generate_plan_steps(session, project, feedback=feedback)
         session["plan"] = steps
         session["acceptanceCriteria"] = _workbench_acceptance_from_session(session)
@@ -4791,6 +5027,104 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         payload["activeSessionId"] = session_id
         _write_workbench_store(payload)
         return {"ok": True, "project": project, "session": session, "planSource": "llm" if from_llm else "fallback", **payload}
+
+    @router.post("/api/task-sessions/{session_id}/reflect")
+    async def api_workbench_reflect(session_id: str, request: Request):
+        """Run deep reflection over this task's history and attach the packet."""
+        body = await request.json()
+        focus = str(body.get("focus") or "").strip()
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        packet = await _workbench_run_reflection(
+            session_id, focus=focus, goal_gap=str(body.get("goalGap") or "").strip()
+        )
+        if not packet:
+            return JSONResponse({"error": "no history to reflect on"}, status_code=400)
+        _workbench_store_reflection(session, packet, trigger="manual", project=project)
+        now = _utc_now_iso()
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "project": project, "session": session, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/verify")
+    async def api_workbench_verify(session_id: str, request: Request):
+        """Independent acceptance agent verifies the criteria against results."""
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        verdict = await _workbench_verify_acceptance(session, project)
+        if not isinstance(verdict, dict):
+            return JSONResponse({"error": "verification unavailable"}, status_code=503)
+        results = verdict.get("results") if isinstance(verdict.get("results"), list) else []
+        by_id = {str(r.get("id")): r for r in results if isinstance(r, dict)}
+        criteria = [a for a in (session.get("acceptanceCriteria") or []) if isinstance(a, dict)]
+        any_failed = False
+        for a in criteria:
+            r = by_id.get(str(a.get("id")))
+            if isinstance(r, dict):
+                passed = bool(r.get("passed"))
+                a["status"] = "passed" if passed else "failed"
+                a["evidence"] = str(r.get("evidence") or "")
+                if not passed:
+                    any_failed = True
+        session["acceptanceCriteria"] = criteria
+        recommend = bool(verdict.get("recommend_reflection")) if any_failed else False
+        now = _utc_now_iso()
+        if any_failed:
+            session["status"] = "failed"
+            session["verifyReason"] = str(verdict.get("reason") or "")
+            session["recommendReflection"] = recommend
+            session["agentReply"] = "独立验收未通过：" + str(verdict.get("reason") or "部分验收标准未达成。")
+            session["events"] = list(session.get("events") or []) + [{
+                "id": _short_id("event"), "type": "VerificationFailed", "createdAt": now,
+                "body": "独立验收未通过。" + str(verdict.get("reason") or ""),
+            }]
+        else:
+            session["recommendReflection"] = False
+            session["agentReply"] = "独立验收通过：所有验收标准均已达成。"
+            session["events"] = list(session.get("events") or []) + [{
+                "id": _short_id("event"), "type": "VerificationPassed", "createdAt": now,
+                "body": "独立验收通过，所有标准达成。",
+            }]
+        session["updatedAt"] = now
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project.get("id")
+        payload["activeSessionId"] = session_id
+        _write_workbench_store(payload)
+        return {"ok": True, "verdict": verdict, "project": project, "session": session, **payload}
+
+    @router.post("/api/task-sessions/{session_id}/reflect-and-fork")
+    async def api_workbench_reflect_and_fork(session_id: str, request: Request):
+        """Reflect on a (failed) task, then create a fresh sibling session that
+        inherits the goal/constraints and carries the reflection packet so its
+        plan avoids the dead-ends. Returns the new session (made active)."""
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        packet = await _workbench_run_reflection(
+            session_id, goal_gap="任务验收未通过，需在新任务中换思路重试。"
+        )
+        project_id = str(project.get("id") or "")
+        new_title = (str(session.get("title") or "任务") + " · 反思重试")[:80]
+        new_session = _workbench_new_session(project_id, new_title, str(session.get("goal") or "").strip())
+        new_session["constraints"] = list(session.get("constraints") or [])
+        new_session["parentSessionId"] = session_id
+        if isinstance(packet, dict) and packet:
+            _workbench_store_reflection(new_session, packet, trigger="forked", source_session_id=session_id, project=project)
+        project.setdefault("sessions", []).insert(0, new_session)
+        now = _utc_now_iso()
+        project["updatedAt"] = now
+        payload["activeProjectId"] = project_id
+        payload["activeSessionId"] = new_session["id"]
+        _write_workbench_store(payload)
+        return {"ok": True, "session": new_session, "sourceSessionId": session_id, **payload}
 
     @router.post("/api/task-sessions/{session_id}/runs")
     async def api_workbench_create_run(session_id: str, request: Request):
@@ -4829,7 +5163,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         run_start_ts = _utc_now_iso()
         workspace_root = _workbench_workspace_root(project)
         git_status_before = _workbench_git_status_snapshot(workspace_root)
-        agent_reply = await _workbench_agent_reply(user_input, session, constraints, attachments=attachments, permission_mode=mode, command=command, project_workspace=str(project.get("workspacePath") or ""))
+        ephemeral_system = _workbench_compose_ephemeral_system(project, session)
+        agent_reply = await _workbench_agent_reply(user_input, session, constraints, attachments=attachments, permission_mode=mode, command=command, project_workspace=str(project.get("workspacePath") or ""), ephemeral_system=ephemeral_system)
         git_status_after = _workbench_git_status_snapshot(workspace_root)
         session["agentReply"] = agent_reply
         # Sink durable memories from this exchange into the project's workspace store.
@@ -4917,7 +5252,8 @@ def register_routes(app, bot: Any, db_path: str) -> None:
         if not session or not project:
             return JSONResponse({"error": "session not found"}, status_code=404)
         chat_run_start_ts = _utc_now_iso()
-        agent_reply = await _workbench_agent_reply(message, session, [], attachments=attachments, permission_mode=mode, command=command, project_workspace=str(project.get("workspacePath") or ""))
+        ephemeral_system = _workbench_compose_ephemeral_system(project, session)
+        agent_reply = await _workbench_agent_reply(message, session, [], attachments=attachments, permission_mode=mode, command=command, project_workspace=str(project.get("workspacePath") or ""), ephemeral_system=ephemeral_system)
         session["agentReply"] = agent_reply
         # Sink durable memories from this exchange into the project's workspace store.
         if not command:

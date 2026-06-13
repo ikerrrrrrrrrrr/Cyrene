@@ -30,6 +30,7 @@ _NATIVE_TOOL_MODULES = [
     "cyrene.tool_impl.grep",  # Grep
     "cyrene.tool_impl.bash",  # Bash
     "cyrene.tool_impl.recall_memory",  # RecallMemory
+    "cyrene.tool_impl.save_project_memory",  # save_project_memory
     "cyrene.tool_impl.search_knowledge",  # SearchKnowledge
     "cyrene.tool_impl.start_shell",  # StartShell
     "cyrene.tool_impl.send_shell",  # SendShell
@@ -71,6 +72,7 @@ _MAIN_ONLY_TOOLS = {
     "ask_user",
     "enter_plan_mode",
     "DeepReflect",
+    "save_project_memory",
     "spawn_subagent",
     "query_round",
     "browser_navigate",

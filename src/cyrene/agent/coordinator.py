@@ -199,11 +199,17 @@ async def run_agent(
     permission_mode: str = "default",
     session_id: str = "",
     workspace_dir: str = "",
+    ephemeral_system: str = "",
 ) -> str:
     """Main entry point. Runs the main agent loop with full tools.
 
     ``workspace_dir`` scopes the agent's file tools + Bash cwd to a specific
     directory (a Workbench project's workspacePath). Empty → global WORKSPACE_DIR.
+
+    ``ephemeral_system`` is an extra system block injected for this run only
+    (e.g. a Workbench project's memory / reflection seed). It is appended at the
+    prompt tail and never persisted, so it leaves the cached system+history
+    prefix intact — keep it out of the base system prompt for cache hit rate.
     """
     session_token = _current_session_id.set(session_id)
     workspace_token = _active_workspace_dir.set(workspace_dir or "")
@@ -217,7 +223,7 @@ async def run_agent(
                 user_message, bot, chat_id, db_path,
                 client_request_id=client_request_id, lang=lang, command=command,
                 public_user_message=public_user_message, public_attachments=public_attachments,
-                permission_mode=permission_mode,
+                permission_mode=permission_mode, ephemeral_system=ephemeral_system,
             )
     finally:
         _current_session_id.reset(session_token)

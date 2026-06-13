@@ -67,9 +67,14 @@ _SOURCE_LABELS: dict[str, str] = {
     "conversation": "对话",
     "knowledge": "知识库",
     "manual": "手动添加",
+    "agent": "Agent 记录",
     "other": "其他",
 }
-_SOURCE_ORDER = ["conversation", "knowledge", "manual", "other"]
+_SOURCE_ORDER = ["conversation", "knowledge", "manual", "agent", "other"]
+
+# Memory categories worth injecting into an agent run. "conversation" (idle
+# chatter distilled from talk) is excluded — high noise, low task value.
+_INJECT_CATEGORIES = {"preference", "project", "habit", "fact"}
 
 _CONFIDENCE_LABELS = {"high": "高", "medium": "中", "low": "低"}
 
@@ -427,6 +432,108 @@ def schedule_capture(workspace_id: str | None, user_text: str, agent_text: str) 
         return
     _pending_captures.add(task)
     task.add_done_callback(_pending_captures.discard)
+
+
+def add_agent_memory(
+    workspace_id: str | None,
+    content: str,
+    *,
+    category: str = "fact",
+    tags: Any = None,
+    confidence: str = "",
+    source: str = "agent",
+) -> dict | None:
+    """Append one durable memory written by the task agent into the project store.
+
+    Reuses the same store + dedup as conversation capture so agent-written items
+    show up on the Workbench memory page AND feed back into future runs. Returns
+    the serialized entry, or ``None`` when skipped (blank/too short, or a
+    non-Workbench session that resolves to the global ``default`` store — which
+    aliases short-term memory and must never be written here).
+    """
+    content = str(content or "").strip()
+    if len(content) < 4:
+        return None
+    if _resolve_workspace_id(workspace_id) == "default":
+        return None
+    category = str(category or "").strip().lower()
+    if category not in _CATEGORY_LABELS:
+        category = "fact"
+    entries = _load(workspace_id)
+    today = _today()
+    dup = _similar_entry(entries, content)
+    if dup is not None:
+        # Reinforce an existing memory rather than duplicating it.
+        dup["last_mentioned"] = today
+        dup["mention_count"] = int(dup.get("mention_count") or 1) + 1
+        _save(workspace_id, entries)
+        return _serialize(dup)
+    entry: dict[str, Any] = {
+        "id": "mem_" + uuid.uuid4().hex[:12],
+        "content": content,
+        "type": category,
+        "category": category,
+        "source": source if source in _SOURCE_LABELS else "agent",
+        "tags": _normalize_tags(tags),
+        "first_seen": today,
+        "last_mentioned": today,
+        "mention_count": 1,
+        "emotional_valence": 0,
+    }
+    conf = str(confidence or "").strip().lower()
+    if conf in _CONFIDENCE_LABELS:
+        entry["confidence"] = conf
+    entries.append(entry)
+    _save(workspace_id, entries)
+    return _serialize(entry)
+
+
+def render_memory_for_injection(
+    workspace_id: str | None,
+    *,
+    limit: int = 20,
+    max_chars: int = 2000,
+) -> str:
+    """Render a project's durable memories as a compact prompt block for a run.
+
+    Cache note: callers inject this via ``ephemeral_system`` (prompt tail), so it
+    never invalidates the cached system+history prefix. ``conversation`` memories
+    are skipped (noise); strongest (most reinforced, then most recent) first.
+    Returns "" when there is nothing worth injecting.
+    """
+    if _resolve_workspace_id(workspace_id) == "default":
+        return ""
+    entries = _load(workspace_id)
+    if not entries:
+        return ""
+    items: list[tuple[int, str, str, str]] = []
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        cat = _entry_category(e)
+        if cat not in _INJECT_CATEGORIES:
+            continue
+        content = str(e.get("content") or "").strip()
+        if not content:
+            continue
+        mc = int(e.get("mention_count") or 1)
+        ts = str(e.get("last_mentioned") or e.get("first_seen") or "")
+        items.append((mc, ts, cat, content))
+    if not items:
+        return ""
+    items.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    lines: list[str] = []
+    used = 0
+    for _mc, _ts, cat, content in items[:limit]:
+        line = f"- [{_CATEGORY_LABELS.get(cat, cat)}] {content}"
+        if lines and used + len(line) > max_chars:
+            break
+        lines.append(line)
+        used += len(line)
+    if not lines:
+        return ""
+    header = "## 项目记忆（本项目此前沉淀/记录的长期信息，执行时请参考复用、避免重复摸索；与当前任务无关则忽略）"
+    return header + "\n" + "\n".join(lines)
 
 
 def register_workbench_memory_routes(router: APIRouter) -> None:

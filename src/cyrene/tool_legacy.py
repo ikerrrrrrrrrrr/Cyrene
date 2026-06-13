@@ -1868,6 +1868,41 @@ TOOL_DEFS = [
     },
     {
         "type": "function",
+        "function": {
+            "name": "save_project_memory",
+            "description": (
+                "Save a durable fact about THIS project into its long-term memory so future runs "
+                "(in any task/chat of this project) automatically see and reuse it. Use proactively "
+                "when you learn something worth remembering: a confirmed constraint or decision, a "
+                "tool/approach that works, a dead-end to avoid, a key file or command, the user's "
+                "stated preference, or an environment fact. Persistent and visible to the user on the "
+                "project's Memory page. Do NOT use it for transient chit-chat, one-off task output, or "
+                "secrets. Duplicates are merged automatically, so saving the same fact twice is safe."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "The fact to remember, as one concise self-contained sentence (e.g. 'Under MPS, batch sizes above 512 OOM; cap at 256.').",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["fact", "project", "preference", "habit"],
+                        "description": "fact = factual/technical info (default); project = project background/goal; preference = user's stated preference; habit = a recurring way of working.",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional short keyword tags for grouping (e.g. ['training', 'MPS']).",
+                    },
+                },
+                "required": ["content"],
+            },
+        },
+    },
+    {
+        "type": "function",
         "function": {"name": "list_tasks", "description": "List all scheduled tasks.", "parameters": {"type": "object", "properties": {}}},
     },
     {
