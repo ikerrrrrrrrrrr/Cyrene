@@ -122,7 +122,9 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
   });
   var [loading, setLoading] = useWorkbenchState(true);
   var [error, setError] = useWorkbenchState("");
-  var [fullPage, setFullPage] = useWorkbenchState(null);
+  var [fullPage, setFullPage] = useWorkbenchState(function () {
+    try { return localStorage.getItem("wb-active-page") || null; } catch (e) { return null; }
+  });
   var [rightTab, setRightTab] = useWorkbenchState("context");
   var [expandedStepId, setExpandedStepId] = useWorkbenchState("");
   var [searchOpen, setSearchOpen] = useWorkbenchState(false);
@@ -168,6 +170,13 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
         setLoading(false);
       });
   }
+
+  useWorkbenchEffect(function () {
+    try {
+      if (fullPage) localStorage.setItem("wb-active-page", fullPage);
+      else localStorage.removeItem("wb-active-page");
+    } catch (e) {}
+  }, [fullPage]);
 
   useWorkbenchEffect(function () {
     reloadWorkbench();
@@ -311,6 +320,17 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
     });
   }
 
+  function handleDeleteSession(session) {
+    if (!session) return;
+    if (!window.confirm("确定删除任务「" + (session.title || "此任务") + "」吗？删除后无法恢复。")) return;
+    model.deleteSession(session.id).then(function (next) {
+      setStore(next);
+      setExpandedStepId("");
+    }).catch(function (err) {
+      setError(err.message || String(err));
+    });
+  }
+
   function handleDeleteProject(project) {
     if (!project) return Promise.resolve();
     if (!window.confirm(wbT("project.confirmDelete", "Delete project \"{name}\"? Data inside the project will also be deleted.", { name: project.name }))) return Promise.resolve();
@@ -402,6 +422,7 @@ function WorkbenchApp({ theme, actualTheme, onToggleTheme }) {
             activeSessionId={store.activeSessionId}
             onSelectSession={selectSession}
             onCreateSession={createSession}
+            onDeleteSession={handleDeleteSession}
             loading={loading}
           />
           <TaskWorkArea
@@ -851,26 +872,32 @@ function ProjectRail({ projects, activeProjectId, activePage, onSelectProject, o
   );
 }
 
-function TaskRail({ project, activeSessionId, onSelectSession, onCreateSession, loading }) {
+function TaskRail({ project, activeSessionId, onSelectSession, onCreateSession, onDeleteSession, loading }) {
   var { t } = window.useWorkbenchI18n();
   var sessions = project && Array.isArray(project.sessions) ? project.sessions : [];
+  var [menuId, setMenuId] = useWorkbenchState("");
+
   return (
     <aside className="workbench-task-rail">
       <div className="workbench-rail-head">
         <span>{t("rail.tasks")}</span>
         <button type="button" onClick={onCreateSession} disabled={!project}>+ {t("rail.newTask")}</button>
       </div>
+      {menuId && <div className="wb-card-menu-scrim" onClick={function () { setMenuId(""); }} />}
       {loading && <div className="workbench-muted">{t("rail.loadingTasks")}</div>}
       {!loading && sessions.length === 0 && <div className="workbench-muted">{t("rail.noTasks")}</div>}
       <div className="workbench-task-list">
         {sessions.map(function (session) {
           var tone = WorkbenchModel.statusTone(session.status);
+          var isMenuOpen = menuId === session.id;
           return (
-            <button
-              type="button"
+            <div
               key={session.id}
-              className={"workbench-task-card" + (session.id === activeSessionId ? " active" : "")}
-              onClick={function () { onSelectSession(session.id); }}
+              role="button"
+              tabIndex={0}
+              className={"workbench-task-card" + (session.id === activeSessionId ? " active" : "") + (isMenuOpen ? " menu-open" : "")}
+              onClick={function () { setMenuId(""); onSelectSession(session.id); }}
+              onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelectSession(session.id); } }}
             >
               <span className="workbench-task-top">
                 <span className={"workbench-status-dot " + tone}></span>
@@ -883,7 +910,26 @@ function TaskRail({ project, activeSessionId, onSelectSession, onCreateSession, 
                 </span>
                 <time>{WorkbenchModel.formatTime(session.updatedAt || session.createdAt)}</time>
               </span>
-            </button>
+              <div className="wb-card-actions">
+                <button
+                  type="button"
+                  className="wb-card-menu-btn"
+                  title="更多操作"
+                  onClick={function (e) { e.stopPropagation(); setMenuId(isMenuOpen ? "" : session.id); }}
+                >
+                  {ICONS.dots}
+                </button>
+                {isMenuOpen && (
+                  <div className="wb-card-menu">
+                    <button type="button" className="danger" onClick={function (e) {
+                      e.stopPropagation();
+                      setMenuId("");
+                      onDeleteSession && onDeleteSession(session);
+                    }}>删除任务</button>
+                  </div>
+                )}
+              </div>
+            </div>
           );
         })}
       </div>
@@ -1003,6 +1049,37 @@ function stepExecutionPrompt(session, step) {
   return lines.filter(Boolean).join("\n");
 }
 
+// Pre-run context files the user pinned for a step, split by source: workspace
+// path references (read by the subagent's file tools) vs uploaded attachments.
+function splitStepContextFiles(step) {
+  var files = (step && Array.isArray(step.contextFiles)) ? step.contextFiles : [];
+  var workspace = [];
+  var uploads = [];
+  files.forEach(function (f) {
+    if (!f) return;
+    if (f.source === "upload") uploads.push(f);
+    else workspace.push(f);
+  });
+  return { workspace: workspace, uploads: uploads };
+}
+
+// The prompt actually sent to the subagent: the user's edited override (or the
+// default), plus a reference block for any workspace context files they pinned.
+function effectiveStepPrompt(session, step) {
+  var override = (step && typeof step.promptOverride === "string") ? step.promptOverride.trim() : "";
+  var base = override || stepExecutionPrompt(session, step);
+  var workspace = splitStepContextFiles(step).workspace;
+  if (workspace.length) {
+    var rows = workspace
+      .map(function (f) { return "- " + String((f && (f.path || f.name)) || "").trim(); })
+      .filter(function (row) { return row !== "- "; });
+    if (rows.length) {
+      base += "\n\n请重点参考以下工作区文件（先用 read_file 等工具阅读再动手）：\n" + rows.join("\n");
+    }
+  }
+  return base;
+}
+
 function formatDurationSec(sec) {
   if (!Number.isFinite(sec) || sec < 1) return "";
   sec = Math.max(1, Math.round(sec));
@@ -1090,8 +1167,9 @@ function useTaskController(session, onRefresh, runtime) {
       .then(apply)
       .then(function (patched) {
         var patchedSession = (patched && patched.activeSession) || baseSession;
-        return model.createRun(sid, stepExecutionPrompt(patchedSession, step), {
-          attachments: (runtime && runtime.attachments) || [],
+        var uploadCtx = splitStepContextFiles(step).uploads;
+        return model.createRun(sid, effectiveStepPrompt(patchedSession, step), {
+          attachments: uploadCtx.concat((runtime && runtime.attachments) || []),
           mode: (runtime && runtime.mode) || undefined,
           command: (runtime && runtime.command) || undefined,
           stepId: step.id || undefined,
@@ -1303,6 +1381,18 @@ function useTaskController(session, onRefresh, runtime) {
           fail(err);
         })
         .finally(function () { setBusy(false); });
+    },
+
+    // Merge fields into a single plan step and persist (used by the pre-run
+    // command editor: prompt override + context files). Does not toggle busy —
+    // these are lightweight edits that shouldn't disable the run buttons.
+    patchStep: function (index, fields) {
+      var plan = Array.isArray(session.plan) ? session.plan : [];
+      if (index < 0 || index >= plan.length) return Promise.resolve();
+      var nextPlan = plan.map(function (s, i) {
+        return i === index ? Object.assign({}, s, fields) : s;
+      });
+      return model.patchSession(sid, { plan: nextPlan }).then(apply).catch(fail);
     },
 
     resume: function () {
@@ -1877,6 +1967,149 @@ var ICON_FILE = (
   </svg>
 );
 
+// Pre-run editor shown in an expanded step BEFORE it executes: an editable
+// command (the exact prompt handed to the subagent) + a context-file list the
+// user can grow by referencing workspace paths or uploading files. Both persist
+// onto the step (promptOverride / contextFiles) via controller.patchStep.
+function StepCommandEditor({ session, step, index, controller }) {
+  var model = window.WorkbenchModel;
+  var defaultPrompt = stepExecutionPrompt(session, step);
+  function overrideOf(s) { return (s && typeof s.promptOverride === "string" && s.promptOverride.length > 0) ? s.promptOverride : ""; }
+  var [draft, setDraft] = useWorkbenchState(overrideOf(step) || defaultPrompt);
+  var [pathInput, setPathInput] = useWorkbenchState("");
+  var [adding, setAdding] = useWorkbenchState(false);
+  var [uploading, setUploading] = useWorkbenchState(false);
+  var [hint, setHint] = useWorkbenchState("");
+  var fileRef = useWorkbenchRef(null);
+
+  // Re-sync the textarea when the expanded step changes (the editor instance is
+  // reused across steps because the key is stable at the .wbp-detail level).
+  useWorkbenchEffect(function () {
+    setDraft(overrideOf(step) || stepExecutionPrompt(session, step));
+    setPathInput("");
+    setHint("");
+  }, [step.id]);
+
+  var contextFiles = Array.isArray(step.contextFiles) ? step.contextFiles : [];
+  var hasOverride = overrideOf(step).length > 0;
+
+  function persistPrompt() {
+    // Store an override only when it diverges from the default, so a step still
+    // tracks a regenerated default prompt until the user actually edits it.
+    var trimmed = draft.trim();
+    var nextOverride = (trimmed && trimmed !== defaultPrompt.trim()) ? draft : "";
+    if ((step.promptOverride || "") === nextOverride) return;
+    controller.patchStep(index, { promptOverride: nextOverride });
+  }
+  function resetPrompt() {
+    setDraft(defaultPrompt);
+    if (step.promptOverride) controller.patchStep(index, { promptOverride: "" });
+  }
+  function addWorkspaceFile() {
+    var p = pathInput.trim();
+    if (!p || adding) return;
+    setAdding(true);
+    setHint("");
+    model.checkWorkspacePath(session.id, p)
+      .then(function (res) {
+        if (!res || !res.exists) {
+          setHint((res && res.error) ? res.error : "工作区中找不到该文件");
+          return;
+        }
+        var rel = res.path || p;
+        var dup = contextFiles.some(function (f) { return f && f.source !== "upload" && f.path === rel; });
+        if (dup) { setHint("该文件已添加"); return; }
+        controller.patchStep(index, { contextFiles: contextFiles.concat([{ source: "workspace", path: rel, name: rel.split("/").pop() }]) });
+        setPathInput("");
+      })
+      .finally(function () { setAdding(false); });
+  }
+  function pickUpload() { if (fileRef.current) fileRef.current.click(); }
+  function onUploadPick(e) {
+    var files = e.target.files;
+    if (!files || !files.length) return;
+    setUploading(true);
+    setHint("");
+    model.uploadAttachments(files)
+      .then(function (uploaded) {
+        var tagged = (uploaded || []).map(function (u) { return Object.assign({}, u, { source: "upload" }); });
+        controller.patchStep(index, { contextFiles: contextFiles.concat(tagged) });
+      })
+      .catch(function (err) { setHint("上传失败：" + ((err && err.message) || String(err))); })
+      .finally(function () { setUploading(false); if (fileRef.current) fileRef.current.value = ""; });
+  }
+  function removeFile(target) {
+    controller.patchStep(index, { contextFiles: contextFiles.filter(function (f) { return f !== target; }) });
+  }
+
+  return (
+    <div className="wbp-detail-grid">
+      <div className="wbp-detail-card">
+        <div className="wbp-detail-label">
+          <span>命令</span>
+          <span className="wbp-cmd-hint">运行前可编辑，将原样交给 subagent</span>
+        </div>
+        <textarea
+          className="wbp-cmd-textarea"
+          value={draft}
+          rows={6}
+          spellCheck={false}
+          placeholder="描述要交给 subagent 执行的指令…"
+          onChange={function (e) { setDraft(e.target.value); }}
+          onBlur={persistPrompt}
+        />
+        {hasOverride && (
+          <div className="wbp-cmd-actions">
+            <button type="button" className="wbp-tiny-btn" onClick={resetPrompt}>恢复默认</button>
+          </div>
+        )}
+      </div>
+      <div className="wbp-detail-card">
+        <div className="wbp-detail-label">
+          {ICON_FILE}<span>相关文件</span>
+          {contextFiles.length > 0 && <span className="wbp-file-count">{contextFiles.length}</span>}
+        </div>
+        {contextFiles.length > 0 ? (
+          <div className="wbp-ctx-list">
+            {contextFiles.map(function (f, i) {
+              var isUpload = f && f.source === "upload";
+              var label = isUpload ? (f.name || "file") : String((f && (f.path || f.name)) || "").split("/").pop();
+              return (
+                <span key={(f && (f.path || f.id || f.name) || "") + "_" + i} className={"wbp-ctx-chip" + (isUpload ? " upload" : "")} title={(f && (f.path || f.name)) || ""}>
+                  <span className="wbp-ctx-tag">{isUpload ? "上传" : "工作区"}</span>
+                  <span className="wbp-ctx-name">{label}</span>
+                  <button type="button" className="wbp-ctx-x" onClick={function () { removeFile(f); }} aria-label="移除文件">{ICONS.x}</button>
+                </span>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="wbp-detail-empty">添加要交给 subagent 的上下文文件。</p>
+        )}
+        <div className="wbp-ctx-add">
+          <div className="wbp-ctx-add-row">
+            <input
+              type="text"
+              className="wbp-ctx-input"
+              value={pathInput}
+              placeholder="工作区相对路径，如 src/app.py"
+              onChange={function (e) { setPathInput(e.target.value); }}
+              onKeyDown={function (e) { if (e.key === "Enter") { e.preventDefault(); addWorkspaceFile(); } }}
+            />
+            <button type="button" className="wbp-tiny-btn" disabled={adding || !pathInput.trim()} onClick={addWorkspaceFile}>{adding ? "校验中…" : "添加"}</button>
+          </div>
+          <button type="button" className="wbp-tiny-btn wbp-ctx-upload" disabled={uploading} onClick={pickUpload}>
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 10.5V3.5" /><path d="M5 6l3-3 3 3" /><path d="M3 11v1.5A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5V11" /></svg>
+            {uploading ? "上传中…" : "上传文件"}
+          </button>
+          <input ref={fileRef} type="file" multiple style={{ display: "none" }} onChange={onUploadPick} />
+        </div>
+        {hint && <p className="wbp-ctx-hint">{hint}</p>}
+      </div>
+    </div>
+  );
+}
+
 // The 执行计划 list — collapsible steps with per-step status + progress.
 // Visual: timeline rail (done = green check, running = spinner ring, idle =
 // hollow dot) + a status / time / duration row. Click a row to expand detail.
@@ -1902,6 +2135,9 @@ function TaskPlanList({ session, expandedStepId, onToggleStep, onRightTab, contr
           var estimate = runningStep && step.estimate ? String(step.estimate) : "";
           var hasFiles = Array.isArray(step.relatedFiles) && step.relatedFiles.length > 0;
           var progressText = step.currentAction || step.description || "";
+          // Before a step has started, the detail shows an editable command card
+          // + context-file editor instead of the (empty) progress view.
+          var beforeRun = !step.status || step.status === "pending";
           var isLast = index === steps.length - 1;
           return (
             <div key={step.id} className={"wbp-step " + state + (expanded ? " expanded" : "")}>
@@ -1942,6 +2178,9 @@ function TaskPlanList({ session, expandedStepId, onToggleStep, onRightTab, contr
                 {/* Expanded detail */}
                 {expanded && (
                   <div className="wbp-detail" onClick={function (e) { e.stopPropagation(); }}>
+                    {beforeRun ? (
+                      <StepCommandEditor session={session} step={step} index={index} controller={controller} />
+                    ) : (
                     <div className="wbp-detail-grid">
                       <div className="wbp-detail-card">
                         <div className="wbp-detail-label">步骤进展</div>
@@ -1979,6 +2218,7 @@ function TaskPlanList({ session, expandedStepId, onToggleStep, onRightTab, contr
                         )}
                       </div>
                     </div>
+                    )}
                     {!doneStep && (
                       <div className="wbp-detail-actions">
                         {runningStep ? (

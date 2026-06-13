@@ -199,6 +199,17 @@ var WorkbenchModel = (function () {
     );
   }
 
+  // Validate a workspace-relative context-file path. Resolves to
+  // { exists, path, isDir, error? }; never throws (a 400 still carries a body so
+  // the per-step file editor can show inline feedback).
+  function checkWorkspacePath(sessionId, path) {
+    return fetch(
+      "/api/task-sessions/" + encodeURIComponent(sessionId) + "/workspace/exists?path=" + encodeURIComponent(path || "")
+    )
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .catch(function () { return { exists: false, path: path || "", error: "网络错误" }; });
+  }
+
   // Persist the active project (and optionally session) to the server store so
   // the selection survives page refresh. Returns a normalized store snapshot.
   function setActiveProject(projectId, sessionId) {
@@ -232,6 +243,12 @@ var WorkbenchModel = (function () {
         return Array.isArray(payload.files) ? payload.files : [];
       });
     });
+  }
+
+  function deleteSession(sessionId) {
+    return apiJson("/api/task-sessions/" + encodeURIComponent(sessionId), {
+      method: "DELETE",
+    }).then(normalizeStore);
   }
 
   // Generic session patch — drives the task state machine entirely from the
@@ -539,6 +556,7 @@ var WorkbenchModel = (function () {
     updateProject: updateProject,
     deleteProject: deleteProject,
     createSession: createSession,
+    deleteSession: deleteSession,
     fetchNotifications: fetchNotifications,
     markNotificationsRead: markNotificationsRead,
     generateInitForm: generateInitForm,
@@ -549,6 +567,7 @@ var WorkbenchModel = (function () {
     generatePlan: generatePlan,
     sendChat: sendChat,
     fetchFileDiff: fetchFileDiff,
+    checkWorkspacePath: checkWorkspacePath,
     patchSession: patchSession,
     setActiveProject: setActiveProject,
     interruptSession: interruptSession,

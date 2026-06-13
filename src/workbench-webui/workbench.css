@@ -910,10 +910,12 @@ html[data-theme="dark"] .workbench-notif-item-icon.system { background: rgba(255
   display: flex;
   flex-direction: column;
   gap: 9px;
+  position: relative;
 }
 
 .workbench-task-card:hover,
-.workbench-task-card.active {
+.workbench-task-card.active,
+.workbench-task-card.menu-open {
   background: var(--wb-active-bg);
   border-color: var(--wb-active-border);
 }
@@ -936,6 +938,7 @@ html[data-theme="dark"] .workbench-notif-item-icon.system { background: rgba(255
   white-space: nowrap;
   font-size: 14px;
   font-weight: 650;
+  padding-right: 20px;
 }
 
 .workbench-task-bottom {
@@ -972,6 +975,112 @@ html[data-theme="dark"] .workbench-notif-item-icon.system { background: rgba(255
 .workbench-task-status.green { background: color-mix(in srgb, var(--wb-green) 16%, transparent); color: var(--wb-green); }
 .workbench-task-status.amber { background: color-mix(in srgb, var(--wb-amber) 18%, transparent); color: var(--wb-amber); }
 .workbench-task-status.red { background: color-mix(in srgb, var(--wb-red) 16%, transparent); color: var(--wb-red); }
+
+/* ---- Card action menu (task rail + chat rail hover dots) ---- */
+
+/* Task card: absolute overlay in top-right corner */
+.wb-card-actions {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+
+.workbench-task-card:hover .wb-card-actions,
+.workbench-task-card.active .wb-card-actions,
+.workbench-task-card.menu-open .wb-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* Chat card: inline in card-top, replaces the time on hover */
+.wbc-chat-card-right {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.wbc-chat-card-actions {
+  display: none;
+  position: relative;
+}
+
+.wbc-chat-card:hover .wbc-chat-card-time,
+.wbc-chat-card.active .wbc-chat-card-time,
+.wbc-chat-card.menu-open .wbc-chat-card-time {
+  display: none;
+}
+
+.wbc-chat-card:hover .wbc-chat-card-actions,
+.wbc-chat-card.active .wbc-chat-card-actions,
+.wbc-chat-card.menu-open .wbc-chat-card-actions {
+  display: flex;
+  align-items: center;
+}
+
+.wb-card-menu-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: var(--wb-muted);
+  cursor: pointer;
+  padding: 0;
+}
+
+.wb-card-menu-btn:hover {
+  background: var(--wb-line);
+  color: var(--wb-text);
+}
+
+.wb-card-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 120px;
+  background: var(--wb-overlay-bg, var(--wb-surface));
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .14);
+  overflow: hidden;
+  z-index: 200;
+}
+
+.wb-card-menu button {
+  display: block;
+  width: 100%;
+  padding: 9px 14px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--wb-text);
+  background: none;
+  border: none;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.wb-card-menu button:hover {
+  background: var(--wb-row-hover-bg, var(--wb-active-bg));
+}
+
+.wb-card-menu button.danger {
+  color: var(--wb-red);
+}
+
+.wb-card-menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 199;
+}
+
+/* ---- /Card action menu ---- */
 
 .workbench-status-dot {
   width: 9px;
@@ -1690,11 +1799,203 @@ html[data-theme="dark"] .workbench-notif-item-icon.system { background: rgba(255
   height: 30px;
 }
 
+/* ── Pre-run command + context-file editor ───────────────────── */
+
+.wbp-cmd-hint {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 11.5px;
+  color: var(--wb-faint);
+}
+
+/* `.wbp-detail-card` prefix lifts these above `.workbench-shell textarea
+   { font: inherit }` (0,1,1) so the field tracks the app body size + sans
+   font, not the inherited 16px. Keep the command + path fields on one scale. */
+.wbp-detail-card .wbp-cmd-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 104px;
+  border: 1px solid var(--wb-line);
+  border-radius: 8px;
+  background: var(--wb-bg-2);
+  color: var(--wb-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  transition: border-color 110ms, box-shadow 110ms;
+}
+
+.wbp-detail-card .wbp-cmd-textarea::placeholder { color: var(--wb-faint); }
+
+.wbp-detail-card .wbp-cmd-textarea:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--wb-accent) 55%, var(--wb-line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent) 12%, transparent);
+}
+
+.wbp-cmd-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+/* `.wbp-detail-card` prefix beats `.workbench-shell button { font: inherit }`
+   (0,1,1), keeping these on the 12px button scale instead of the 16px body. */
+.wbp-detail-card .wbp-tiny-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  border: 1px solid var(--wb-line);
+  border-radius: 7px;
+  background: var(--wb-control-bg);
+  color: var(--wb-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  padding: 0 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 110ms, border-color 110ms, color 110ms;
+}
+
+.wbp-detail-card .wbp-tiny-btn:hover:not(:disabled) {
+  background: var(--wb-control-hover-bg);
+  border-color: color-mix(in srgb, var(--wb-accent) 30%, var(--wb-line));
+  color: var(--wb-text);
+}
+
+.wbp-detail-card .wbp-tiny-btn:disabled { opacity: 0.5; cursor: default; }
+
+.wbp-detail-card .wbp-tiny-btn svg { opacity: 0.8; }
+
+.wbp-ctx-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 0;
+}
+
+.wbp-ctx-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--wb-accent) 18%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--wb-accent) 7%, transparent);
+  padding: 5px 6px 5px 8px;
+}
+
+.wbp-ctx-chip.upload {
+  border-color: color-mix(in srgb, var(--wb-purple) 22%, transparent);
+  background: color-mix(in srgb, var(--wb-purple) 8%, transparent);
+}
+
+.wbp-ctx-tag {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--wb-accent);
+  background: color-mix(in srgb, var(--wb-accent) 13%, transparent);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.wbp-ctx-chip.upload .wbp-ctx-tag {
+  color: var(--wb-purple);
+  background: color-mix(in srgb, var(--wb-purple) 14%, transparent);
+}
+
+.wbp-ctx-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--wb-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wbp-ctx-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--wb-faint);
+  cursor: pointer;
+  transition: background 110ms, color 110ms;
+}
+
+.wbp-ctx-x:hover {
+  background: var(--wb-error-bg);
+  color: var(--wb-red);
+}
+
+.wbp-ctx-x svg { width: 11px; height: 11px; }
+
+.wbp-ctx-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.wbp-ctx-add-row {
+  display: flex;
+  gap: 6px;
+}
+
+.wbp-detail-card .wbp-ctx-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 30px;
+  border: 1px solid var(--wb-line);
+  border-radius: 7px;
+  background: var(--wb-bg-2);
+  color: var(--wb-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  padding: 0 10px;
+  transition: border-color 110ms, box-shadow 110ms;
+}
+
+.wbp-detail-card .wbp-ctx-input::placeholder { color: var(--wb-faint); }
+
+.wbp-detail-card .wbp-ctx-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--wb-accent) 55%, var(--wb-line));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent) 12%, transparent);
+}
+
+.wbp-ctx-upload { align-self: flex-start; }
+
+.wbp-ctx-hint {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: var(--wb-red);
+}
+
 /* ── Dark mode ───────────────────────────────────────────────── */
 
 html[data-theme="dark"] .wbp-detail-card {
   background: color-mix(in srgb, var(--wb-accent) 8%, var(--wb-card-bg));
   border-color: color-mix(in srgb, var(--wb-accent) 20%, var(--wb-line));
+}
+
+html[data-theme="dark"] .wbp-detail-card .wbp-cmd-textarea,
+html[data-theme="dark"] .wbp-detail-card .wbp-ctx-input {
+  background: color-mix(in srgb, #000 22%, var(--wb-card-bg));
 }
 
 /* ── Responsive ──────────────────────────────────────────────── */
@@ -2043,23 +2344,25 @@ html[data-theme="dark"] .wbp-detail-card {
 .wb-empty-action { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
 
 /* Composer quick-chips + out-of-scope prompt */
-.wb-composer-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 9px; }
+.wb-composer-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
 .wb-chip {
   height: 30px;
   padding: 0 12px;
-  border: 1px solid var(--wb-line);
-  border-radius: 999px;
-  background: var(--wb-control-bg);
-  color: var(--wb-text);
+  border: 0;
+  border-radius: 8px;
+  background: var(--wb-icon-bg);
+  color: var(--wb-muted);
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
 }
 .wb-chip:first-child {
-  border-color: color-mix(in srgb, var(--wb-accent) 45%, transparent);
-  color: var(--wb-accent);
+  background: var(--wb-accent);
+  color: var(--wb-accent-text);
 }
-.wb-chip:hover { background: var(--wb-control-hover-bg); }
+.wb-chip:hover { background: var(--wb-control-hover-bg); color: var(--wb-text); }
+.wb-chip:first-child:hover { filter: brightness(1.06); color: var(--wb-accent-text); background: var(--wb-accent); }
 .wb-chip:disabled { opacity: 0.45; cursor: not-allowed; }
 .wb-scope-prompt {
   border: 1px solid color-mix(in srgb, var(--wb-amber) 40%, var(--wb-line));
@@ -2079,34 +2382,28 @@ html[data-theme="dark"] .wbp-detail-card {
 .workbench-composer-actions { gap: 6px; }
 
 .workbench-composer-actions .wb-composer-icon {
-  height: 34px;
-  min-width: 34px;
+  height: 30px;
+  min-width: 30px;
   padding: 0 9px;
-  border: 1px solid color-mix(in srgb, var(--wb-line) 82%, transparent);
-  border-radius: 10px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--wb-control-bg) 94%, #fff 6%), var(--wb-control-bg));
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
   color: var(--wb-muted);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   font-weight: 650;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.07);
   cursor: pointer;
-  transition: border-color 0.16s ease, box-shadow 0.16s ease, color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+  transition: background 0.14s ease, color 0.14s ease;
 }
 .workbench-composer-actions .wb-composer-icon:hover {
-  border-color: color-mix(in srgb, var(--wb-accent) 34%, var(--wb-line));
   background: var(--wb-control-hover-bg);
   color: var(--wb-text);
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.1);
-  transform: translateY(-1px);
 }
 .workbench-composer-actions .wb-composer-icon.active {
-  border-color: color-mix(in srgb, var(--wb-accent) 56%, transparent);
-  background: color-mix(in srgb, var(--wb-accent) 10%, var(--wb-control-bg));
+  background: color-mix(in srgb, var(--wb-accent) 12%, transparent);
   color: var(--wb-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--wb-accent) 12%, transparent);
 }
 .workbench-composer-actions .wb-composer-icon:focus-visible,
 .workbench-composer-actions .wb-composer-send:focus-visible {
@@ -2116,8 +2413,6 @@ html[data-theme="dark"] .wbp-detail-card {
 .workbench-composer-actions .wb-composer-icon:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
 }
 .wb-composer-icon svg { display: block; }
 .wb-mode-ico { display: inline-flex; }
@@ -2126,50 +2421,38 @@ html[data-theme="dark"] .wbp-detail-card {
 .wb-composer-spacer { flex: 1 1 auto; }
 
 .workbench-composer-actions .wb-composer-send {
-  height: 34px;
-  min-width: 72px;
-  padding: 0 13px;
-  border: 1px solid color-mix(in srgb, var(--wb-line) 82%, #dcdcd8);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--wb-control-bg) 86%, #f2f2f0);
-  color: var(--wb-muted);
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--wb-accent);
+  color: var(--wb-accent-text);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 12px;
-  font-weight: 760;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+  font-size: 13px;
+  font-weight: 640;
   cursor: pointer;
-  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+  transition: filter 0.14s ease, opacity 0.14s ease;
 }
 .workbench-composer-actions .wb-composer-send:hover {
-  border-color: color-mix(in srgb, var(--wb-line) 52%, var(--wb-accent));
-  background: var(--wb-control-hover-bg);
-  color: var(--wb-text);
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
-  transform: translateY(-1px);
+  filter: brightness(1.06);
 }
 .workbench-composer-actions .wb-composer-send:active,
 .workbench-composer-actions .wb-composer-icon:active {
-  transform: translateY(0);
+  opacity: 0.85;
 }
 .workbench-composer-actions .wb-composer-send:disabled {
-  border-color: var(--wb-line);
-  background: var(--wb-control-bg);
-  color: var(--wb-faint);
+  opacity: 0.45;
   cursor: not-allowed;
-  box-shadow: none;
-  transform: none;
 }
 .workbench-composer-actions .wb-composer-send.stop {
-  border-color: color-mix(in srgb, var(--wb-red) 38%, transparent);
-  background: color-mix(in srgb, var(--wb-red) 12%, var(--wb-card-bg));
-  color: var(--wb-red);
+  background: var(--wb-red);
+  color: #fff;
 }
 .workbench-composer-actions .wb-composer-send.stop:hover {
-  background: color-mix(in srgb, var(--wb-red) 18%, var(--wb-card-bg));
+  filter: brightness(1.06);
 }
 .wb-composer-send svg { display: block; width: 16px; height: 16px; }
 .wb-composer-send-label { line-height: 1; }
@@ -5533,13 +5816,15 @@ html[data-theme="dark"] .wb-init-progress-dot { border-color: #46586b; }
   text-align: left;
   cursor: pointer;
   transition: border-color .12s ease, background .12s ease;
+  position: relative;
 }
 
 .wbc-chat-card:hover {
   background: var(--wb-row-hover-bg);
 }
 
-.wbc-chat-card.active {
+.wbc-chat-card.active,
+.wbc-chat-card.menu-open {
   background: var(--wb-active-bg);
   border-color: var(--wb-active-border);
 }
@@ -5561,7 +5846,7 @@ html[data-theme="dark"] .wb-init-progress-dot { border-color: #46586b; }
   min-width: 0;
 }
 
-.wbc-chat-card-top time {
+.wbc-chat-card-time {
   flex: 0 0 auto;
   font-size: 11px;
   color: var(--wb-faint);

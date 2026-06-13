@@ -569,15 +569,19 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
 
   function handleDelete() {
     if (!activeChat) return;
+    handleDeleteChat(activeChat.id);
+  }
+
+  function handleDeleteChat(chatId) {
+    if (!chatId) return;
     if (!window.confirm(wbcT("workbenchChat.confirmDelete", "Delete this chat? Its messages cannot be recovered."))) return;
-    var doomedId = activeChat.id;
-    model.deleteChat(doomedId).then(function () {
-      setActiveChat(null);
+    model.deleteChat(chatId).then(function () {
       setChats(function (prev) {
-        var next = prev.filter(function (item) { return item.id !== doomedId; });
-        setActiveChatId(next[0] ? next[0].id : "");
+        var next = prev.filter(function (item) { return item.id !== chatId; });
+        if (activeChatId === chatId) setActiveChatId(next[0] ? next[0].id : "");
         return next;
       });
+      if (activeChatId === chatId) setActiveChat(null);
     }).catch(function (err) { setError(wbcErrorText(err)); });
   }
 
@@ -599,6 +603,7 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
         runningChatId={runtime ? runtime.chatId : ""}
         onSelect={function (id) { if (!running || (runtime && runtime.chatId === id)) setActiveChatId(id); }}
         onCreate={handleCreateChat}
+        onDelete={handleDeleteChat}
       />
       <WbcMain
         project={project}
@@ -635,8 +640,9 @@ function WorkbenchChatPage({ project, onOpenTask, onActiveChatChange }) {
 // Conversation rail (column 2)
 // ---------------------------------------------------------------------------
 
-function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCreate }) {
+function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCreate, onDelete }) {
   var [query, setQuery] = useWbcState("");
+  var [menuId, setMenuId] = useWbcState("");
   var filtered = useWbcMemo(function () {
     var q = query.trim().toLowerCase();
     if (!q) return chats;
@@ -663,6 +669,7 @@ function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCrea
           placeholder={wbcT("workbenchChat.search", "Search chats...")}
         />
       </div>
+      {menuId && <div className="wb-card-menu-scrim" onClick={function () { setMenuId(""); }} />}
       {loading && <div className="workbench-muted">{wbcT("workbenchChat.loading", "Loading chats...")}</div>}
       {!loading && filtered.length === 0 && (
         <div className="workbench-muted">{query ? wbcT("workbenchChat.noMatches", "No matching chats.") : wbcT("workbenchChat.emptyRail", "No chats yet. Create one from the top right.")}</div>
@@ -671,22 +678,46 @@ function WbcRail({ chats, activeChatId, loading, runningChatId, onSelect, onCrea
         {filtered.map(function (chat) {
           var active = chat.id === activeChatId;
           var chatRunning = chat.id === runningChatId || chat.status === "running";
+          var isMenuOpen = menuId === chat.id;
           return (
-            <button
-              type="button"
+            <div
               key={chat.id}
-              className={"wbc-chat-card" + (active ? " active" : "")}
-              onClick={function () { onSelect(chat.id); }}
+              role="button"
+              tabIndex={0}
+              className={"wbc-chat-card" + (active ? " active" : "") + (isMenuOpen ? " menu-open" : "")}
+              onClick={function () { setMenuId(""); onSelect(chat.id); }}
+              onKeyDown={function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(chat.id); } }}
             >
               <span className="wbc-chat-card-top">
                 <b>{chat.title || wbcT("workbenchChat.newChat", "New chat")}</b>
-                <time>{wbcFormatTime(chat.updatedAt || chat.createdAt)}</time>
+                <span className="wbc-chat-card-right">
+                  <time className="wbc-chat-card-time">{wbcFormatTime(chat.updatedAt || chat.createdAt)}</time>
+                  <span className="wbc-chat-card-actions">
+                    <button
+                      type="button"
+                      className="wb-card-menu-btn"
+                      title="更多操作"
+                      onClick={function (e) { e.stopPropagation(); setMenuId(isMenuOpen ? "" : chat.id); }}
+                    >
+                      {WBC_ICONS.dots}
+                    </button>
+                    {isMenuOpen && (
+                      <div className="wb-card-menu">
+                        <button type="button" className="danger" onClick={function (e) {
+                          e.stopPropagation();
+                          setMenuId("");
+                          onDelete && onDelete(chat.id);
+                        }}>删除对话</button>
+                      </div>
+                    )}
+                  </span>
+                </span>
               </span>
               <span className="wbc-chat-card-preview">
                 {chatRunning ? <i className="wbc-running-dot" /> : null}
                 {chat.preview || wbcT("workbenchChat.noMessages", "No messages yet")}
               </span>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -1105,7 +1136,6 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
   var showSlash = (slashOpen || (draft.indexOf("/") === 0 && draft.indexOf(" ") === -1)) && slashItems.length > 0 && !running;
   var activeCommand = command ? wbcCommandMeta(command) : null;
   var currentMode = wbcModeMeta(mode);
-  var workspaceTail = (project && project.workspacePath || "").split("/").filter(Boolean).pop() || "workspace";
   var soulOn = !contextState || contextState.soul_active !== false;
   var modelName = (chat && chat.model) || (project && project.model) || "";
   var sendDisabled = running ? false : (!draft.trim() && attachments.length === 0);
@@ -1162,9 +1192,6 @@ function WbcComposer({ chat, project, running, onSend, onInterrupt }) {
         <div className="wbc-context-chips">
           <span className="wbc-ctx-chip" title={soulOn ? wbcT("workbenchChat.personaOnTitle", "Persona context is on") : wbcT("workbenchChat.personaOffTitle", "Persona context is off")}>
             {WBC_ICONS.spark}<span>{soulOn ? wbcT("workbenchChat.persona", "Persona") : wbcT("workbenchChat.personaOff", "Persona: off")}</span>
-          </span>
-          <span className="wbc-ctx-chip" title={project && project.workspacePath}>
-            {WBC_ICONS.folder}<span>{wbcT("workbenchChat.workspaceChip", "Workspace: {name}", { name: workspaceTail })}</span>
           </span>
         </div>
         <div className="wbc-composer-actions">

@@ -4653,6 +4653,32 @@ def register_routes(app, bot: Any, db_path: str) -> None:
             return JSONResponse({"error": str(exc)}, status_code=500)
         return result
 
+    @router.get("/api/task-sessions/{session_id}/workspace/exists")
+    async def api_workbench_workspace_exists(session_id: str, path: str = ""):
+        """Validate a context-file path for the per-step '相关文件' editor: confirm
+        it resolves INSIDE the project workspace and exists. Returns the workspace-
+        relative path so the client stores a normalized reference."""
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        root = _workbench_workspace_root(project)
+        if not root:
+            return JSONResponse({"error": "no workspace configured"}, status_code=400)
+        raw = str(path or "").strip()
+        if not raw:
+            return {"exists": False, "path": "", "isDir": False}
+        try:
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            resolved = candidate.resolve()
+            rel = resolved.relative_to(root).as_posix()
+        except (ValueError, OSError):
+            return JSONResponse({"exists": False, "path": raw, "error": "路径不在工作区内"}, status_code=400)
+        exists = resolved.exists()
+        return {"exists": exists, "path": rel, "isDir": resolved.is_dir() if exists else False}
+
     @router.patch("/api/task-sessions/{session_id}")
     async def api_workbench_update_session(session_id: str, request: Request):
         body = await request.json()
@@ -4704,6 +4730,21 @@ def register_routes(app, bot: Any, db_path: str) -> None:
                 meta={"sessionId": session_id, "status": next_status},
             )
         return {"ok": True, "project": project, "session": session, **payload}
+
+    @router.delete("/api/task-sessions/{session_id}")
+    async def api_workbench_delete_session(session_id: str):
+        payload = _read_workbench_store()
+        project, session = _workbench_find_session(payload, session_id)
+        if not session or not project:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        project["sessions"] = [s for s in project.get("sessions", []) if str(s.get("id") or "") != session_id]
+        now = _utc_now_iso()
+        project["updatedAt"] = now
+        if str(payload.get("activeSessionId") or "") == session_id:
+            remaining = project.get("sessions") or []
+            payload["activeSessionId"] = remaining[0]["id"] if remaining else ""
+        _write_workbench_store(payload)
+        return {"ok": True, **payload}
 
     @router.post("/api/task-sessions/{session_id}/plan/generate")
     async def api_workbench_generate_plan(session_id: str, request: Request):
